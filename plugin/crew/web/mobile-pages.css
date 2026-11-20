@@ -226,7 +226,8 @@ body:has(>.nw-menu)::after{content:"";position:fixed;inset:0;z-index:69;backgrou
 .utable .cell-name{width:100%;min-height:32px;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;gap:8px}
 .share{justify-content:flex-start}
 .share .b{display:block;width:44px}
-.usage-codex-count{font-size:12px}
+.usage-codex-count,.usage-sub{font-size:12px}
+.utable.weeks td.num[data-label]:nth-child(n)::before{content:attr(data-label)}
 .utable:has(thead th:nth-child(2).num) td:nth-child(2)::before{content:"Claude Token"}
 .utable:has(thead th:nth-child(2).num) td:nth-child(3)::before{content:"Claude 折合"}
 .utable:has(thead th:nth-child(2).num) td:nth-child(4)::before{content:"占比"}

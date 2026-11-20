@@ -252,8 +252,10 @@
         const renderingSession = documentLink ? (typeof info.session_id === "string" ? info.session_id : "") : data.session_id;
         const resolved = documentLink ? {document_id:data.document_id} : {path:info.path, session_id:data.session_id};
         const localDesktop = !window.CrewAccess || window.CrewAccess.local_desktop;
+        // A Crew desktop client connected to a host cannot open host files either; name where they open.
+        const elsewhere = window.CrewAccess?.client === "desktop" ? "此格式不能在这里预览，请在主机上的 Crew 中查看。" : "此格式暂不能在浏览器预览，请在运行 Crew 的电脑上查看。";
         if (info.type === "external" && info.open_with === "default") {
-          if (!localDesktop) throw Error("此格式暂不能在浏览器预览，请在运行 Crew 的电脑上查看。任务报告可从“交付与文档”打开。");
+          if (!localDesktop) throw Error(elsewhere + "任务报告可从“交付与文档”打开。");
           await api("/api/files/open", resolved); return;
         }
         let content;
@@ -266,7 +268,7 @@
         const openLabel = info.open_with === "vscode" ? "在 VS Code 打开" : "用默认程序打开";
         const openButton = !localDesktop || info.open_with === "blocked" ? "" : `<button class="btn file-open">${openLabel}</button>`;
         const actions = localDesktop ? `${openButton}<button class="btn file-reveal">在文件夹中显示</button>` : "";
-        const bodyMarkup = info.open_with === "blocked" ? escape(localDesktop ? "这类文件不直接打开，请用‘在文件夹中显示’" : "此格式暂不能在浏览器预览，请在运行 Crew 的电脑上查看。")
+        const bodyMarkup = info.open_with === "blocked" ? escape(localDesktop ? "这类文件不直接打开，请用‘在文件夹中显示’" : elsewhere)
           : info.kind === "image" ? `<img class="file-image" alt="${escape(info.path)}" src="${escape(fileContentUrl(info.path, data.session_id || "", null, true, documentLink ? data.document_id : null))}">`
           : (content.truncated ? `<p class="note">文件较大，仅显示${escape(content.portion)} 256 KiB</p>` : "") + (info.kind === "markdown" ? `<div class="markdown">${renderMarkdown(content.content, renderingSession, info.path)}</div>` : `<pre class="file-text">${escape(content.content)}</pre>`);
         // Beside a conversation the file opens in the shared reading pane; elsewhere (channel, assistant page) in the drawer.
@@ -276,7 +278,7 @@
           panel.classList.remove("show");
           host = document.createElement("section"); host.className = "file-reader";
           const name = documentLink ? link.textContent.trim() : info.path.split(/[\\/]/).pop();
-          host.innerHTML = `<div class="head file-reader-head"><div class="file-reader-heading"><div class="title">${escape(name)}</div><div class="sub file-path" title="${escape(info.path)}">${escape(info.path)}</div></div><div class="file-reader-actions">${actions}${window.CrewReader.chatButton()}<button class="btn file-close">关闭</button></div></div><div class="file-reader-body reader-quotable">${bodyMarkup}</div>`;
+          host.innerHTML = `<div class="head file-reader-head"><div class="file-reader-heading reader-heading"><div class="title">${escape(name)}</div><div class="sub file-path" title="${escape(info.path)}">${escape(info.path)}</div></div><div class="file-reader-actions reader-actions">${actions}${window.CrewReader.chatButton()}<button class="btn file-close">关闭</button></div></div><div class="file-reader-body reader-quotable">${bodyMarkup}</div>`;
           window.CrewReader.open(host, {label:"文件预览", reading:{label:name, data:documentLink ? {kind:"document", document_id:data.document_id} : {kind:"file", path:info.path, session_id:data.session_id || ""}},
             onClose:() => { if (sequence === request) request++; }});
           host.querySelector(".file-close").onclick = () => window.CrewReader.close(host, {animate:true});
@@ -428,6 +430,7 @@
     context.send.disabled = context.loading || context.cache.sending || !hasContent;
     const external = context.session.where === "vscode";
     context.hint.textContent = context.busy || context.cache.sending ? "" : external ? "会话仍在原工具中；退出并交给 Crew 后才能接话" : "Enter 发送 · Shift+Enter 换行";
+    context.hint.classList.toggle("key-hint", !external);
     context.send.hidden = context.busy && !hasContent;
     context.send.title = context.busy ? "工作中插话" : "发送";
     const stopReason = external ? "回复在 VS Code 或终端中运行，请在原工具中断。" : context.session.where !== "bg" && !context.session.running ? "正在等待 Crew 托管会话，稍后可停止。" : "";
@@ -500,12 +503,12 @@
     if (verb === "spawn") {
       const nameIndex = words.indexOf("--name");
       const name = words[nameIndex === -1 ? 2 : nameIndex + 1];
-      return name !== undefined && !name.startsWith("--") ? `开新下属 ${name}` : null;
+      return name !== undefined && !name.startsWith("--") ? `开执行 ${name}` : null;
     }
     if (verb === "answer" && /^\d+$/.test(words[2])) return `答复拍板：${words.slice(3).join(" ")}`;
     if (verb === "withdraw" && /^\d+$/.test(words[2])) return "撤回一道拍板";
-    if ((verb === "open" || verb === "who" || verb === "join") && words[2] !== undefined) {
-      const label = {open:"在 VS Code 打开", who:"查看下属", join:"登记下属"}[verb];
+    if ((verb === "who" || verb === "join") && words[2] !== undefined) {
+      const label = {who:"查看下属", join:"登记下属"}[verb];
       return `${label} ${words[2]}`;
     }
     if (verb === "card") return words.includes("--scope") || words.includes("--done-when") ? "更新任务卡" : "查看任务卡";
@@ -562,7 +565,6 @@
     return {turn, process, final:final ? {...final.item, content:indexes.map(index => final.blocks[index]), text:""} : null};
   }
   function turnDuration(turn) {
-    if (turn.nativeImported) return null;
     const milliseconds = Date.parse(turn.endedAt) - Date.parse(turn.startedAt);
     if (!Number.isFinite(milliseconds) || milliseconds < 0) return null;
     const seconds = Math.round(milliseconds / 1000);
@@ -732,7 +734,7 @@
   function assistant(context, event) {
     let item = context.byId.get(event.id);
     if (!item) {
-      context.turn ||= {seq:context.turnStart?.seq ?? event.seq, startedAt:context.turnStart?.at ?? event.at, finished:false, items:[], nativeImported:!!event.native_imported};
+      context.turn ||= {seq:context.turnStart?.seq ?? event.seq, startedAt:context.turnStart?.at ?? event.at, finished:false, items:[]};
       item = { id: event.id, kind: "assistant", seq: event.seq, lastSeq: event.seq, at: event.at, text: "", content: null, replyText:"", replySeq:0, turn:context.turn };
       context.turn.items.push(item);
       context.items.push(item); context.byId.set(item.id, item);
@@ -1050,7 +1052,7 @@
     const context = { ...options, cacheKey, activityKey:`chat:${cacheKey}`, session:options.session, selectedTask:null, taskBound:false, note:null, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), events:[], firstSeq:0, hasMore:false, cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.session.busy : true, reading: false, initialPosition: null, stream: null };
     active = context;
     options.host.classList.add("chat-host");
-    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><button type="button" class="chat-note-chip" hidden></button><button type="button" class="chat-reading-chip" aria-pressed="true" hidden></button><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="${options.goalId ? `在任务「${escape(options.goalTitle)}」里跟 ${escape(options.session.name)} 说…` : `跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）`}"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 Ctrl+V）" aria-label="添加图片">${icon("image")}</button><button type="button" class="chat-task-binding" aria-pressed="false" hidden></button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;
+    options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><button type="button" class="chat-note-chip" hidden></button><button type="button" class="chat-reading-chip" aria-pressed="true" hidden></button><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="${options.goalId ? `在任务「${escape(options.goalTitle)}」里跟 ${escape(options.session.name)} 说…` : `跟 ${escape(options.session.name)} 说…（可以直接粘贴截图）`}"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 ${window.CrewBrowser.keyboardShortcut("V")}）" aria-label="添加图片">${icon("image")}</button><button type="button" class="chat-task-binding" aria-pressed="false" hidden></button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;
     context.scroll = options.host.querySelector(".chat-scroll"); context.inner = options.host.querySelector(".chat-inner");
     context.jump = options.host.querySelector(".jump"); context.error = options.host.querySelector(".chat-connection-error");
     context.jump.onclick = () => { context.scroll.scrollTop = context.scroll.scrollHeight; context.jump.classList.remove("show"); scheduleRead(context); };

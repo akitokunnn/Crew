@@ -8,7 +8,7 @@ import subprocess
 import threading
 import uuid
 
-from . import board, goal_context, goals, install, messaging, models, native_handoff, report_preview, runtimes, spawn, store, trust_mode
+from . import board, goal_context, goals, install, messaging, models, report_preview, runtimes, spawn, store, trust_mode
 
 
 def protocol(conn, execution):
@@ -79,7 +79,6 @@ class Controller:
             raise board.Conflict(gate['reason'])
         execution = self.current(conn, goal_id, session_id)
         if execution is not None and execution['status'] not in goals.TERMINAL:
-            native_handoff.assert_control(conn, session_id, execution['id'])
             mapping, options = runtimes.get(conn, session_id), models.get(conn, session_id)
             if execution['runtime'] != mapping['runtime']:
                 if self.manager.busy(execution['id']):
@@ -96,7 +95,7 @@ class Controller:
             goals.assign(conn, goal_id, session_id, '处理用户在此目标内的输入')
         mapping, options = runtimes.get(conn, session_id), models.get(conn, session_id)
         return goals.create_execution(conn, goal_id, session_id, runtime=mapping['runtime'],
-                                      model=options['model'], effort=options['effort'])
+                                      model=options['model'], effort=options['effort'], speed=options['speed'])
 
     def ensure_discussion(self, conn, goal_id, session_id, identity):
         current = self.current(conn, goal_id, session_id)
@@ -109,7 +108,8 @@ class Controller:
         self.stop_delivered(conn, goal_id)
         mapping, options = runtimes.get(conn, session_id), models.get(conn, session_id)
         return goals.create_execution(conn, goal_id, session_id, runtime=mapping['runtime'],
-                                      model=options['model'], effort=options['effort'], discussion_message_id=identity)
+                                      model=options['model'], effort=options['effort'], speed=options['speed'],
+                                      discussion_message_id=identity)
 
     def target(self, conn, execution):
         return {**board.session(conn, execution['session_id']), '_storage_id': execution['id'],
@@ -270,14 +270,13 @@ class Controller:
         if previous is not None and not previous.reader_done.wait(10):
             raise board.BoardError('上一轮目标执行的输出尚未排空，请稍后重试；未启动新进程')
         with closing(store.connect(self.home)) as conn:
-            native_handoff.assert_control(conn, logical_id, key, spec.get('_native_control_token'))
-            if maintenance is None and not spec.get('_native_control_token'):
+            if maintenance is None:
                 gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key, allow_discussion=True)
                 if not gate['allowed']:
                     raise board.Conflict(gate['reason'])
             from . import settings
             permission_mode = settings.get_execution(conn)['claude']
-        options = {'model': execution['model'], 'effort': execution['effort']}
+        options = {'model': execution['model'], 'effort': execution['effort'], 'speed': execution['speed']}
         binding = next((item for item in execution['bindings'] if item['runtime'] == execution['runtime']), None)
         if execution['runtime'] == 'claude' and binding is not None:
             if self.live_native is None:
@@ -352,8 +351,6 @@ class Controller:
         with self.manager.lock, closing(store.connect(self.home)) as conn:
             goal = goals.get(conn, goal_id)
             goals._member(conn, goal, session_id)
-            for row in conn.execute('SELECT id FROM goal_executions WHERE goal_id=? AND session_id=?', (goal_id, session_id)):
-                native_handoff.assert_control(conn, session_id, row['id'])
             if self.manager.maintenance_held(session_id):
                 # Refuse before any goal or execution state changes.
                 from . import chat
@@ -551,6 +548,31 @@ class Controller:
             executions = conn.execute('SELECT id FROM goal_executions WHERE goal_id=?', (value['id'],)).fetchall()
             if blocked and not any(self.manager.busy(e['id']) for e in executions):
                 goals.transition(conn, value['id'], 'waiting_user', actor=value['leader_session_id'])
+        self.retire_finished_members(conn)
+
+    def retire_finished_members(self, conn):
+        """A member exists for parts of tasks; once every task it worked on is accepted,
+        cancelled or handed over, archive it (history kept, restorable). Members that
+        never had a task (adopted sessions) and failed tasks, which may be retried, stay."""
+        from . import session_ops
+        rows = conn.execute(
+            "SELECT s.session_id FROM sessions s LEFT JOIN session_controls c ON c.session_id=s.session_id "
+            "WHERE s.role='member' AND s.group_name IS NOT NULL AND s.status<>'closed' "
+            "AND c.archived_status IS NULL AND COALESCE(c.removed,0)=0 "
+            "AND EXISTS (SELECT 1 FROM goal_assignments a WHERE a.session_id=s.session_id) "
+            "AND NOT EXISTS (SELECT 1 FROM goal_assignments a JOIN goals g ON g.id=a.goal_id "
+            "  WHERE a.session_id=s.session_id AND a.status='assigned' AND g.status NOT IN ('completed','cancelled')) "
+            "AND NOT EXISTS (SELECT 1 FROM goal_executions e WHERE e.session_id=s.session_id "
+            "  AND e.status IN ('queued','running','pausing'))").fetchall()
+        retired = []
+        for row in rows:
+            identity = row['session_id']
+            if any(self.manager.busy(key) for key in self.manager._identity_keys(conn, identity)):
+                continue
+            session_ops.archive(conn, identity)
+            self.manager.stop_managed(identity, reason='session_archive')
+            retired.append(identity)
+        return retired
 
     def finalize_transfer(self, conn, goal_id):
         """Hand the task over once nobody is mid-turn; idle processes of the old side are closed first."""
@@ -609,8 +631,6 @@ class Controller:
                 self.recovery.remove(key)
                 continue
             execution = goals.get_execution(conn, key)
-            if native_handoff.blocked(conn, execution['session_id'], key):
-                continue
             if runtime is not None and execution['runtime'] != runtime:
                 continue
             gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key)

@@ -142,7 +142,6 @@ def parser():
     c.add_argument("--project")
     command("who", True).add_argument("name")
     command("compact", True).add_argument("name", nargs="?")
-    command("open").add_argument("name")
     c = command("lease").add_subparsers(dest="action", required=True)
     a = c.add_parser("take")
     a.add_argument("resource")
@@ -258,6 +257,7 @@ def parser():
     a.add_argument("--name", required=True)
     a.add_argument("--model", default=argparse.SUPPRESS)
     a.add_argument("--effort", default=argparse.SUPPRESS)
+    a.add_argument("--speed", default=argparse.SUPPRESS, help="Codex 速度：default 为标准，或模型清单中的档位（如 priority）")
     a.add_argument("--runtime", choices=runtimes.RUNTIMES, default=argparse.SUPPRESS)
     a.add_argument("--members")
     a.add_argument("--task")
@@ -270,6 +270,7 @@ def parser():
     a.add_argument("--name", required=True)
     a.add_argument("--model", default=argparse.SUPPRESS)
     a.add_argument("--effort", default=argparse.SUPPRESS)
+    a.add_argument("--speed", default=argparse.SUPPRESS, help="Codex 速度：default 为标准，或模型清单中的档位（如 priority）")
     a.add_argument("--runtime", choices=runtimes.RUNTIMES, default=argparse.SUPPRESS)
     a.add_argument("--task", required=True)
     a.add_argument("--group")
@@ -482,8 +483,6 @@ def _emit(value, as_json=False, command=None, channel_card=None, git_assistant=N
                 print('Git 助手：%s（%s）' % (git_assistant['crew_name'], git_assistant['session_id']))
         else:
             print("Git 助手未启用")
-    elif command == "open":
-        print("已取消，会话继续保持原样" if value.get("cancelled") else "已在 VS Code 打开会话：" + value["session_id"])
     elif command == "wake":
         if "notice_id" in value:
             print(value["message"])
@@ -920,9 +919,6 @@ def execute(conn, args, cwd, agents_provider):
             person.update(runtimes.get(conn, person['session_id']))
         _with_context(args.home, p, people)
         return value
-    if cmd == "open":
-        from . import open_session
-        return open_session.cli_open(conn, args.home, board.named_session(conn, p, args.name)["session_id"], agents_provider)
     if cmd == "who":
         s = board.named_session(conn, p, args.name)
         if runtimes.get(conn, s["session_id"])["runtime"] == "codex":

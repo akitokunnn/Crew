@@ -11,15 +11,16 @@ const fixture = () => ({models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude
     {id:"claude", name:"Claude Code", available:true, error:null,
       models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude-haiku-4-5-20251001", name:"Haiku"}], efforts:["low", "medium", "high", "max"]},
     {id:"codex", name:"Codex", available:true, error:null, models:[
-      {id:"gpt-a", name:"GPT A", efforts:["low", "medium"]},
-      {id:"gpt-b", name:"GPT B", efforts:["high", "max"], defaultReasoningEffort:"high"},
+      {id:"gpt-a", name:"GPT A", efforts:["low", "medium"], speeds:[{id:"priority", name:"Fast", description:"1.5x speed"}]},
+      {id:"gpt-b", name:"GPT B", efforts:["high", "max"], defaultReasoningEffort:"high",
+        speeds:[{id:"priority", name:"Fast", description:"2x speed"}, {id:"ultrafast", name:"Ultrafast", description:"fastest"}]},
       {id:"gpt-c", name:"GPT C", efforts:[]},
     ], efforts:["low", "medium", "high", "max"]},
   ]});
 const session = extra => ({session_id:"session-codex", runtime:"codex", model:"gpt-a", effort:"medium",
   applied:{model:"gpt-a", effort:"medium"}, where:"bg", running:true, ...extra});
-const form = (runtime="codex", model="", effort="") => ({dataset:{runtimeExplicit:"true"},elements:{name:{value:" fixture "}, task:{value:" work "},
-  runtime:{value:runtime}, model:{value:model}, effort:{value:effort}},
+const form = (runtime="codex", model="", effort="", speed="") => ({dataset:{runtimeExplicit:"true"},elements:{name:{value:" fixture "}, task:{value:" work "},
+  runtime:{value:runtime}, model:{value:model}, effort:{value:effort}, speed:{value:speed}},
   submit:{disabled:false}, refresh:{disabled:false, hidden:false},
   querySelector(selector) { return selector === '[type="submit"]' ? this.submit : this.refresh; }});
 
@@ -28,7 +29,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   const nodes = new Map(), listeners = new Map();
   const node = () => ({innerHTML:"", textContent:"", className:"", hidden:false, dataset:{},classList:{contains:()=>false,remove(){}},
     contains:() => false, querySelectorAll:() => [], setAttribute(name, value) { this[name] = value; }});
-  for (const id of ["menu", "backdrop", "main", "leader-panel", "trust-error", "leader-runtime-options", "leader-runtime-status", "leader-model-options", "leader-effort-note", "leader-effort-options"]) nodes.set(id, node());
+  for (const id of ["menu", "backdrop", "main", "leader-panel", "trust-error", "leader-runtime-options", "leader-runtime-status", "leader-model-options", "leader-effort-note", "leader-effort-options", "leader-speed-field", "leader-speed-options"]) nodes.set(id, node());
   const escape = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
   const sandbox = {window:{matchMedia:() => ({matches:false})}, document:{visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:(type, handler) => listeners.set(type, handler)},
     location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console,
@@ -40,12 +41,13 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   sandbox.CrewActivity={markup:()=>""};
   vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/workspace-home.js"),"utf8"),sandbox);
   sandbox.CrewWorkspaceHome=sandbox.window.CrewWorkspaceHome;
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/settings-ui.js"),"utf8"),sandbox);
   // Expose lexical UI functions while leaving setup and its state-poll timer off.
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
   const clickSource = source.slice(source.indexOf('    document.addEventListener("click",'), source.indexOf('    document.addEventListener("input",'));
   vm.runInContext(source.replace(end, `${clickSource}  window.ui = {runtimeList, runtimeInfo, defaultRuntime, modelEfforts, modelMenu, optionChange,
-    optionsLabel, optionChangeNotice, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, editorHandoffReason, sessionMenu, chatAccess,
+    optionsLabel, optionChangeNotice, leaderPayload, renderLeaderRuntime, selectLeaderOption, refreshRuntimes, sessionMenu, chatAccess,
     setPinned, sortableLeaders, railQuota, renderSidebar, contextRing, contextControls, sidebarLeader, memberNode, workingRow, compactContext, compactions,
     compactFailures, setGoal(client, id) {goals=client;goalId=id;},
     openTodos, todosOf, decisionsOf, todoCard, todoTray, todoExpanded, todoActions,
@@ -91,12 +93,15 @@ test("runtime refresh corrects an automatic leader default while preserving the 
 });
 
 test("saved default overrides installation order and keeps custom model and effort through catalog refresh",async()=>{
-  const state=fixture();state.ai={default:{runtime:"codex",model:"future-native",effort:"deep"},digest:null,git:null,operations:null};
+  const state=fixture();state.ai={default:{runtime:"codex",model:"future-native",effort:"deep",speed:"priority"},digest:null,git:null,operations:null};
   const {ui,nodes}=harness(state,async()=>({ok:true,json:async()=>({runtimes:state.runtimes})}));
   const leader=form("");leader.dataset={};nodes.set("leader-form",leader);ui.renderLeaderRuntime();await ui.refreshRuntimes();
   assert.equal(leader.elements.runtime.value,"codex");assert.equal(leader.elements.model.value,"future-native");assert.equal(leader.elements.effort.value,"deep");
-  assert.deepEqual(plain(ui.leaderPayload(leader)),{name:"fixture",task:"work",runtime:"codex",model:"future-native",effort:"deep"});
+  assert.equal(leader.elements.speed.value,"priority");assert.equal(nodes.get("leader-speed-field").hidden,false);
+  assert.deepEqual(plain(ui.leaderPayload(leader)),{name:"fixture",task:"work",runtime:"codex",model:"future-native",effort:"deep",speed:"priority"});
   ui.selectLeaderOption(leader,"runtime","claude");ui.renderLeaderRuntime();assert.equal(leader.elements.runtime.value,"claude");assert.equal(leader.elements.model.value,"");
+  assert.equal(leader.elements.speed.value,"");assert.equal(nodes.get("leader-speed-field").hidden,true);assert.equal(nodes.get("leader-speed-options").innerHTML,"");
+  assert.equal(plain(ui.leaderPayload(leader)).speed,null);
 });
 
 test("explicit runtime and model choices survive a changed installation catalog instead of silently switching tools", async () => {
@@ -122,6 +127,34 @@ test("collected offline people can start a conversation while known external ses
 
 test("a paused task does not lock the person's independent general conversation",()=>{
   const state=fixture();state.goals=[{id:"goal",status:"paused"}];const {ui}=harness(state),person={active_goal_id:"goal",web_chat:true,running:false,where:"offline"};assert.equal(ui.chatAccess(person,null).readonly,false);assert.equal(ui.chatAccess(person).readonly,false);state.goals[0].status="completed";assert.equal(ui.chatAccess(person,null).readonly,false);
+});
+
+test("Codex speed comes from the model's own tiers, is codex-only and stays visible in labels", () => {
+  const {ui, nodes} = harness();
+  const menu = ui.modelMenu(session({speed:"priority", applied:{model:"gpt-a", effort:"medium", speed:"priority"}}));
+  assert(menu.includes('id="menu-speed-label"'));
+  for (const id of ["", "default", "priority"]) assert(menu.includes(`data-speed="${id}"`));
+  assert(!menu.includes('data-speed="ultrafast"'));
+  assert(/aria-checked="true" data-act="set-speed" data-id="session-codex" data-speed="priority"/.test(menu));
+  assert(ui.modelMenu(session({model:"gpt-b"})).includes('data-speed="ultrafast"'));
+  // No model chosen: only tiers every listed model offers.
+  const unset = ui.modelMenu(session({model:null, applied:null}));
+  assert(unset.includes('data-speed="priority"') && !unset.includes('data-speed="ultrafast"'));
+  assert(!ui.modelMenu(session({runtime:"claude", model:"claude-sonnet", applied:null})).includes("set-speed"));
+  assert.equal(ui.optionsLabel(session({applied:{model:"gpt-b", effort:"high", speed:"ultrafast"}})), "GPT B · high · Ultrafast");
+  assert.equal(ui.optionsLabel(session({applied:{model:"gpt-a", effort:"medium", speed:"default"}})), "GPT A · medium");
+  assert.deepEqual(plain(ui.optionChange(session(), "speed", "priority")), {speed:"priority"});
+  assert.throws(() => ui.optionChange(session(), "speed", "ultrafast"), /速度/);
+  const offline = session({model:"gpt-b", speed:"ultrafast", where:"offline", running:false, applied:null});
+  assert.deepEqual(plain(ui.optionChange(offline, "model", "gpt-a")), {model:"gpt-a", speed:null});
+  assert.throws(() => ui.optionChange(session({model:"gpt-b", speed:"ultrafast", applied:{model:"gpt-b", effort:"high"}}), "model", "gpt-a"), /速度/);
+  assert.equal(ui.optionChangeNotice(session(), {speed:"priority"}), "下一步启用速度：Fast");
+  assert.equal(ui.optionChangeNotice(session(), {speed:null}), "下一步启用速度：跟随 Codex 设置");
+  const leader = form("codex", "gpt-b", "", "ultrafast"); nodes.set("leader-form", leader); ui.renderLeaderRuntime();
+  assert(nodes.get("leader-speed-options").innerHTML.includes('data-speed="ultrafast" aria-pressed="true"'));
+  assert.equal(plain(ui.leaderPayload(leader)).speed, "ultrafast");
+  ui.selectLeaderOption(leader, "model", "gpt-a"); ui.renderLeaderRuntime();
+  assert.throws(() => ui.leaderPayload(leader), /速度/);
 });
 
 test("existing session model menus use its own tool catalog and never expose runtime conversion", () => {
@@ -188,23 +221,14 @@ test("a combined model and effort change overrides both stored and applied optio
   assert.deepEqual(plain(item), before);
 });
 
-test("Codex editor handoff is disabled while leader chat and member history remain available", () => {
+test("session menus keep leader chat and member history without a VS Code handoff", () => {
   const state = fixture(), leader = session({session_id:"lead", name:"Codex leader", pinned:false, member_ids:["member"]});
   const member = session({session_id:"member", name:"Codex member", leader_session_id:"lead", status:"idle", web_chat:true});
   state.leaders = [leader]; state.members = [member];
-  const {ui} = harness(state), reason = "Codex 会话在 Crew 内继续；暂不支持转到 VS Code";
-  for (const item of [leader, member]) {
-    const markup = ui.sessionMenu(item);
-    assert.equal(ui.editorHandoffReason(item), reason);
-    assert.match(markup, new RegExp('data-act="open-vscode"[^>]*disabled title="' + reason + '"'));
-    assert(markup.includes('<p class="editor-handoff-note">' + reason + '</p>'));
-  }
+  const {ui} = harness(state);
   assert.match(ui.sessionMenu(leader), /data-act="leader"[^>]*>打开对话/);
   assert.match(ui.sessionMenu(member), /data-act="member-history"[^>]*>进入本人对话/);
-  assert.equal(ui.editorHandoffReason({runtime:"claude"}), "");
-  const claude = {...member, runtime:"claude"};
-  assert.match(ui.sessionMenu(claude), /data-act="open-vscode"[^>]*>在 VS Code 打开/);
-  assert(!ui.sessionMenu(claude).includes(reason));
+  for (const item of [leader, member, {...member, runtime:"claude"}]) assert(!ui.sessionMenu(item).includes("VS Code"));
 });
 
 test("creation preserves custom models and explicit efforts and reports known capability conflicts", () => {

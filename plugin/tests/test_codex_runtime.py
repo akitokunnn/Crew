@@ -29,6 +29,7 @@ class FakeClient:
     def __init__(self, **kwargs):
         self.kwargs, self.calls, self.closed = kwargs, [], False
         self.process, self.turn_id, self.thread_id = FakeProcess(), None, "native-1"
+        self.service_tier = None
         self.transport_done, self.notifications_done = threading.Event(), threading.Event()
         self.fail_turn = False
 
@@ -37,7 +38,9 @@ class FakeClient:
 
     def start_thread(self, **params):
         self.calls.append(("thread/start", params))
+        self.service_tier = params.get("serviceTier")
         return {"thread": {"id": self.thread_id}, "model": "actual-model", "reasoningEffort": "medium",
+                "serviceTier": self.service_tier,
                 "sandbox": {"type": "workspaceWrite", "networkAccess": False,
                             "excludeTmpdirEnvVar": True, "excludeSlashTmp": True,
                             "writableRoots": params.get('config', {}).get('sandbox_workspace_write', {}).get('writable_roots', [])}}
@@ -45,7 +48,9 @@ class FakeClient:
     def resume_thread(self, identity, **params):
         self.thread_id = identity
         self.calls.append(("thread/resume", {"threadId": identity, **params}))
+        self.service_tier = params.get("serviceTier")
         return {"thread": {"id": identity}, "model": "actual-model", "reasoningEffort": "medium",
+                "serviceTier": self.service_tier,
                 "sandbox": {"type": "workspaceWrite", "networkAccess": False,
                             "excludeTmpdirEnvVar": True, "excludeSlashTmp": True,
                             "writableRoots": params.get('config', {}).get('sandbox_workspace_write', {}).get('writable_roots', [])}}
@@ -82,8 +87,10 @@ class FakeClient:
         if method == "thread/list":
             return {"data": [], "nextCursor": None}
         if method == "thread/settings/update":
+            self.service_tier = params.get("serviceTier", self.service_tier)
             self.emit("thread/settings/updated", threadSettings={"model": params.get("model", "actual-model"),
-                                                                 "effort": params.get("effort", "medium")})
+                                                                 "effort": params.get("effort", "medium"),
+                                                                 "serviceTier": self.service_tier})
         return {}
 
     def close(self):
@@ -151,7 +158,7 @@ class CodexRuntimeTests(unittest.TestCase):
                 self.assertIs(params['config']['agents']['enabled'], False)
                 self.assertIs(params['config']['features']['multi_agent'], False)
                 self.assertIs(params['config']['features']['multi_agent_v2'], False)
-                self.assertIn('不能创建 Crew 成员/leader、调用原生子代理或团队工具', params['developerInstructions'])
+                self.assertIn('不能开执行、建 leader、调用原生子代理或团队工具', params['developerInstructions'])
                 self.assertIn('可以使用派工 skill 启动本人的临时执行进程', params['developerInstructions'])
 
     def test_leader_preserves_user_native_agent_settings(self):
@@ -176,10 +183,10 @@ class CodexRuntimeTests(unittest.TestCase):
         params = client.calls[0][1]
         self.assertIs(params['config']['agents']['enabled'], False)
         self.assertIs(params['config']['features']['multi_agent_v2'], False)
-        self.assertIn('不能创建 Crew 成员/leader、调用原生子代理或团队工具', params['developerInstructions'])
+        self.assertIn('不能开执行、建 leader、调用原生子代理或团队工具', params['developerInstructions'])
         self.assertIn('可以使用派工 skill 启动本人的临时执行进程', params['developerInstructions'])
 
-    def test_idle_reclaim_closes_goal_execution_without_archiving_its_thread(self):
+    def test_idle_reclaim_archives_a_goal_execution_thread_until_it_resumes(self):
         with closing(store.connect(self.home)) as conn:
             board.join(conn, 'leader', 'demo', 'leader', self.root, None, 'main', role='leader')
             board.roster(conn, 'demo', 'move', 'leader', session_ids=['worker'])
@@ -196,10 +203,23 @@ class CodexRuntimeTests(unittest.TestCase):
         later = store.parse_iso(store.now_iso()) + chat.datetime.timedelta(minutes=31)
         self.assertEqual(manager.reclaim_idle(now=later), [execution['id']])
         self.assertTrue(client.closed)
-        self.assertNotIn('thread/archive', [call[0] for call in client.calls])
+        # An idle execution leaves the Codex sidebar; resuming restores it (restore_internal).
+        self.assertEqual([call for call in client.calls if call[0] == 'thread/archive'],
+                         [('thread/archive', {'threadId': running.thread_id})])
         self.assertEqual(running.journal.status, 'offline')
         self.assertFalse([event for event in running.journal.events if event['type'] == 'error'])
         self.assertEqual([event['reason'] for event in running.journal.events if event['type'] == 'runtime_released'], ['idle'])
+
+    def test_idle_reclaim_keeps_a_person_thread_unarchived(self):
+        running, client = self.make_running()
+        running.send('work', 'message-1')
+        client.finish()
+        manager = chat.Manager(self.home, self.plugin, lambda: [])
+        manager.processes['worker'] = running
+        later = store.parse_iso(store.now_iso()) + chat.datetime.timedelta(minutes=31)
+        self.assertEqual(manager.reclaim_idle(now=later), ['worker'])
+        self.assertTrue(client.closed)
+        self.assertNotIn('thread/archive', [call[0] for call in client.calls])
 
     def test_explicit_execution_permission_is_used_only_when_a_carrier_starts(self):
         with closing(store.connect(self.home)) as conn:
@@ -249,7 +269,7 @@ class CodexRuntimeTests(unittest.TestCase):
     def test_initialization_binds_thread_identity_without_model_turn(self):
         running, client = self.make_running(options={"model": "requested-model", "effort": "high"})
         self.assertEqual([method for method, _ in client.calls], ["thread/start", "thread/name/set"])
-        self.assertEqual(running.applied, {"model": "actual-model", "effort": "medium"})
+        self.assertEqual(running.applied, {"model": "actual-model", "effort": "medium", "speed": None})
         start = client.calls[0][1]
         self.assertEqual(start["sandbox"], "workspace-write")
         self.assertEqual(start["approvalPolicy"], "on-request")
@@ -480,10 +500,29 @@ class CodexRuntimeTests(unittest.TestCase):
     def test_settings_are_actual_native_reply_and_null_reset_is_explicit(self):
         running, client = self.make_running()
         running.set_options({"model": "new-model", "effort": "high"})
-        self.assertEqual(running.applied, {"model": "new-model", "effort": "high"})
+        self.assertEqual(running.applied, {"model": "new-model", "effort": "high", "speed": None})
         with self.assertRaisesRegex(ValueError, "停止"):
             running.set_options({"model": "new-model", "effort": None})
         self.assertEqual(running.applied["effort"], "high")
+
+    def test_speed_is_the_native_service_tier_and_unset_leaves_codex_setting(self):
+        plain_running, plain = self.make_running()
+        self.assertNotIn("serviceTier", plain.calls[0][1])
+        plain_running.close()
+        self.assertTrue(plain_running.reader_done.wait(2))
+        running, client = self.make_running(options={"model": None, "effort": None, "speed": "priority"})
+        self.assertEqual(client.calls[0][1]["serviceTier"], "priority")
+        self.assertEqual(running.applied["speed"], "priority")
+        running.set_options({"model": None, "effort": None, "speed": "default"})
+        self.assertEqual(client.calls[-1], ("thread/settings/update", {"threadId": "native-1", "serviceTier": "default"}))
+        self.assertEqual(running.applied["speed"], "default")
+        with self.assertRaisesRegex(ValueError, "停止"):
+            running.set_options({"model": None, "effort": None, "speed": None})
+        self.assertEqual(running.applied["speed"], "default")
+        running.close()
+        self.assertTrue(running.reader_done.wait(2))
+        _, resumed = self.make_running(options={"model": None, "effort": None, "speed": "priority"}, resume=True)
+        self.assertEqual(resumed.calls[0], ("thread/resume", {**resumed.calls[0][1], "serviceTier": "priority"}))
 
     def test_tools_bind_sender_and_deduplicate_call_id(self):
         router = mock.Mock(return_value={"ok": True})
@@ -650,6 +689,16 @@ class RuntimeLeaseTests(unittest.TestCase):
         identity = codex_runtime.process_identity(os.getpid())
         self.assertIsInstance(identity, str)
         self.assertEqual(codex_runtime.process_identity(os.getpid()), identity)
+
+    def test_macos_process_identity_uses_c_locale_without_changing_parent_environment(self):
+        result = subprocess.CompletedProcess([], 0, " Thu Nov 19 18:20:01 2026\n", "")
+        with mock.patch.object(os, "name", "posix"), mock.patch.object(sys, "platform", "darwin"), \
+             mock.patch.dict(os.environ, {"LC_ALL": "ja_JP.UTF-8", "PATH": "/usr/bin"}, clear=True), \
+             mock.patch.object(subprocess, "run", return_value=result) as run:
+            self.assertEqual(codex_runtime.process_identity(101), "ps:Thu Nov 19 18:20:01 2026")
+            self.assertEqual(os.environ["LC_ALL"], "ja_JP.UTF-8")
+        run.assert_called_once_with(["ps", "-p", "101", "-o", "lstart="], capture_output=True, text=True,
+                                    encoding="utf-8", timeout=5, env={"LC_ALL": "C", "PATH": "/usr/bin"})
 
     def test_failed_sidecar_cleanup_still_releases_kernel_lock(self):
         lease = codex_runtime.RuntimeLease(self.home, "crew").acquire()

@@ -25,3 +25,22 @@ test("operations form rejects malformed JSON and commands without program names"
   for (const text of ['"python"', '["python"]', '[[]]', '[[" "]]', '[["python", 3]]']) assert.throws(() => ui.parseCommands(text, "验证命令"), /验证命令需要填写命令列表/);
   assert.deepEqual(plain(ui.parseCommands("[]", "验证命令")), []);
 });
+
+function operationsHarness(){
+  const element=()=>({innerHTML:"",textContent:"",hidden:false,classList:{toggle(){},add(){}},setAttribute(){},addEventListener(){},append(){},querySelector(){return element();},querySelectorAll(){return [];},focus(){},scrollIntoView(){}});
+  const panel=element(),root={...element(),querySelector:selector=>selector===".co-panel"?panel:element()};
+  const sandbox={window:{},document:{createElement:()=>root,addEventListener(){},hidden:false},setTimeout,clearTimeout};
+  vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/operations-ui.js"),"utf8"),sandbox);
+  return {ui:sandbox.window.CrewOperations,root,panel};
+}
+test("a LAN host keeps its operations chat and repair policy on the host: only status and connection remain",()=>{
+  const {ui,root,panel}=operationsHarness();let reads=0;
+  ui.create({api:{launch:{get:()=>{reads++;return new Promise(()=>{});}}},remote:true}).mount({append(){}},{home:"/Users/host/.crew",backend:"/Applications/Crew/backend"});
+  assert.doesNotMatch(root.innerHTML,/data-operations-tab="chat"|data-operations-tab="config"|运维 AI 大脑/);
+  assert.match(root.innerHTML,/data-operations-tab="status" aria-controls="co-operations-panel" aria-selected="true"/);assert.match(root.innerHTML,/data-operations-tab="launch"/);
+  assert.match(panel.innerHTML,/主机数据目录 · HOME/);assert.match(panel.innerHTML,/\/Users\/host\/\.crew/);assert.match(panel.innerHTML,/更改连接与目录/);
+  assert.doesNotMatch(panel.innerHTML,/co-actual-service/);assert.equal(reads,0,"host version and health come from the host health panel");
+  const local=operationsHarness();
+  local.ui.create({api:{snapshot:()=>new Promise(()=>{}),configGet(){},launch:{get:()=>new Promise(()=>{})}}}).mount({append(){}},{});
+  assert.match(local.root.innerHTML,/data-operations-tab="chat"[^>]*aria-selected="true"/);assert.match(local.root.innerHTML,/data-operations-tab="config"/);assert.match(local.root.innerHTML,/运维 AI 大脑/);
+});

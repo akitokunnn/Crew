@@ -41,7 +41,7 @@ test("task documents keep independent action scopes without a global material su
 test("sidebar has no materials overview and old document routes return to the workspace",()=>{
   const nodes=new Map(),calls=[];
   const node=id=>{if(!nodes.has(id))nodes.set(id,{querySelector:()=>null,setAttribute(){},style:{setProperty(){}},matches:()=>false,innerHTML:"",dataset:{},classList:{toggle(){},remove(){}}});return nodes.get(id);};
-  const sandbox={window:{},document:{getElementById:node,addEventListener(){}},URLSearchParams,location:{search:"?project=alpha",pathname:"/",hash:"#documents"},history:{replaceState(_state,_title,url){sandbox.location.hash=url.slice(url.indexOf("#"));}},CrewChat:{unmount(){},setTask(){}},CrewGit:{unmount(){}},CrewTheme:{logo:()=>""}};
+  const sandbox={window:{},document:{getElementById:node,addEventListener(){}},URLSearchParams,location:{search:"?project=alpha",pathname:"/",hash:"#documents"},history:{replaceState(_state,_title,url){sandbox.location.hash=url.slice(url.indexOf("#"));}},CrewChat:{unmount(){},setTask(){}},CrewGit:{unmount(){}},CrewArchitecture:{unmount(){}},CrewTheme:{logo:()=>""}};
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(web,"workspace-home.js"),"utf8"),sandbox);sandbox.CrewWorkspaceHome=sandbox.window.CrewWorkspaceHome;
   const source=fs.readFileSync(path.join(web,"app.js"),"utf8").replace(/\r\n/g,"\n");

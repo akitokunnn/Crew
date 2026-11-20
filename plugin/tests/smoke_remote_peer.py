@@ -28,7 +28,7 @@ connection=socket.create_connection((target.hostname,target.port),8)
 peer_ip=connection.getsockname()[0];connection.close()
 assert peer_ip!=target.hostname,'client must have its own network address'
 assert request('/api/state?project=demo')[0]==401;checks.append('anonymous client refused')
-status,body,headers=request('/remote/login',{'code':config['code'],'device_name':'WSL network client'})
+status,body,headers=request('/remote/login',{'code':config['code'],'kind':'browser','device_name':'WSL network client'})
 assert status==200;cookie=headers['Set-Cookie'].split(';',1)[0];checks.append('one-time pairing accepted')
 query=urlencode({'project':'demo','session_id':config['leader']})
 message={'session_id':config['leader'],'message_id':'peer-one-message','text':'remote peer sends exactly once'}

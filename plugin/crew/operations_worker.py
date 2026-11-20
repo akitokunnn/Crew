@@ -108,6 +108,8 @@ def default_runner(home, which=None):
             command += ['--model', selected['model']]
         if selected['effort'] is not None:
             command += ['-c', 'model_reasoning_effort=' + json.dumps(selected['effort'])]
+        if selected.get('speed') is not None:
+            command += ['-c', 'service_tier=' + json.dumps(selected['speed'])]
         return command + ['-']
     command = [chat.claude_executable(), '-p', '--no-session-persistence', '--permission-mode', 'acceptEdits',
                '--strict-mcp-config', '--settings', '{"disableAllHooks":true}', '--tools', 'Read,Edit,Write,Glob,Grep']

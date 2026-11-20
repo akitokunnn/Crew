@@ -56,7 +56,7 @@ class RemoteNetworkTests(unittest.TestCase):
         self.assertTrue(value['addresses'][0]['bound'])
         self.assertEqual(401, self.request('/api/state')[0])
         code = self.controller.action({'action': 'pair'})['code']
-        status, _, headers = self.request('/remote/login', {'code': code})
+        status, _, headers = self.request('/remote/login', {'code': code, 'kind': 'browser'})
         self.assertEqual(200, status)
         cookie = headers['Set-Cookie'].split(';')[0]
         self.assertEqual(200, self.request('/api/chat/send', {'text': 'one input'}, cookie)[0])

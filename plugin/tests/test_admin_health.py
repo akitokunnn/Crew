@@ -2,6 +2,7 @@
 import tests
 import json
 import os
+import socket
 from pathlib import Path
 import threading
 import unittest
@@ -28,6 +29,7 @@ class AdminHealthTests(ShellFixture, unittest.TestCase):
             self.assertEqual(health['service'], 'crew')
             self.assertEqual(health['home'], str(Path(self.home).resolve()))
             self.assertEqual(health['pid'], os.getpid())
+            self.assertEqual(health['host_name'], socket.gethostname(), 'a Crew desktop client names the host by its computer name')
             self.assertEqual(set(health['workers']), {'agents', 'notices', 'git_ci'})
         finally:
             server.shutdown()

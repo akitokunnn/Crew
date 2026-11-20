@@ -103,5 +103,83 @@ class CrewWeeklyTests(UsageFixture, unittest.TestCase):
         self.assertEqual([result[field] for field in ("cost_usd", "points", "low", "high")], [0] * 4)
 
 
+class ClaudeWeekHistoryTests(UsageFixture, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.now = dt.datetime(2026, 10, 21, 0, 1, 40, tzinfo=dt.timezone.utc)
+        self.conn.execute("INSERT INTO sessions (session_id, role, project, started_at) VALUES ('leader', 'leader', 'demo', ?)", (stamp(),))
+
+    def request(self, session, key, seconds, model="claude-test"):
+        path = self.claude / "project" / (session + ".jsonl")
+        self.write(path, [assistant(key, seconds, model=model, tool=key + "-tool")], append=path.exists())
+
+    def record(self, reset, percent=25, captured=50):
+        usage.record_claude_week(self.conn, {"used_percent": percent, "resets_at": reset, "captured_at": stamp(captured)})
+
+    def weeks(self, now=None, prices=PRICES):
+        return usage.claude_weeks(self.conn, prices, now or self.now)
+
+    def test_last_percentage_is_kept_and_crew_is_costed_over_the_whole_window(self):
+        week = 7 * 86400
+        self.request("leader", "crew", 10)
+        self.request("outside", "outside", 20)
+        self.scan()
+        # The cache reports the same reset as the stream, plus sub-second noise.
+        self.record("2026-10-28T00:00:00.034714+00:00")
+        self.assertEqual([dict(row) for row in self.conn.execute("SELECT * FROM claude_weeks")],
+                         [{"resets_at": stamp(week), "since": stamp(), "used_percent": 25, "captured_at": stamp(50)}])
+        [current] = self.weeks()
+        self.assertTrue(current["current"])
+        self.assertAlmostEqual(current["crew"]["cost_usd"], 0.01275)
+        self.assertAlmostEqual(current["crew"]["points"], 0.01275 / 20)
+        self.assertAlmostEqual(current["machine_cost_usd"], 0.0255)
+        self.assertAlmostEqual(current["crew_share"], 0.5)
+
+        self.request("leader", "late", week - 10)
+        self.request("leader", "next-week", week + 10)
+        self.scan()
+        self.record(stamp(week), percent=40, captured=week - 5)
+        self.record(stamp(week), percent=30, captured=100)
+        [past] = self.weeks(self.now + dt.timedelta(days=7))
+        self.assertEqual((past["used_percent"], past["captured_at"], past["current"]), (40, stamp(week - 5), False))
+        self.assertAlmostEqual(past["crew"]["cost_usd"], 0.0255)
+
+    def test_weeks_back_to_crews_first_request_and_between_recorded_windows_have_no_account_percentage(self):
+        day = 86400
+        for session, key, seconds in (("outside", "before-crew", -20 * day), ("leader", "first", -8 * day),
+                                      ("leader", "previous", -day), ("leader", "gap", 9 * day)):
+            self.request(session, key, seconds)
+        self.scan()
+        self.record(stamp(7 * day))
+        # Three weeks later the account window has moved by three hours.
+        self.record(stamp(28 * day + 3 * 3600), captured=22 * day)
+        weeks = self.weeks(self.now + dt.timedelta(days=22))
+        self.assertEqual([(week["since"], week["resets_at"]) for week in weeks], [
+            (stamp(21 * day + 3 * 3600), stamp(28 * day + 3 * 3600)),
+            (stamp(14 * day + 3 * 3600), stamp(21 * day + 3 * 3600)),
+            (stamp(7 * day + 3 * 3600), stamp(14 * day + 3 * 3600)),
+            (stamp(), stamp(7 * day)), (stamp(-7 * day), stamp()), (stamp(-14 * day), stamp(-7 * day))])
+        self.assertEqual([week["used_percent"] for week in weeks], [25, None, None, 25, None, None])
+        self.assertEqual([week["current"] for week in weeks], [True] + [False] * 5)
+        self.assertEqual([round(week["crew"]["cost_usd"], 5) for week in weeks], [0, 0, 0.01275, 0, 0.01275, 0.01275])
+
+    def test_unpriced_requests_leave_costs_unknown_until_a_price_exists(self):
+        self.request("leader", "crew", 10)
+        self.request("outside", "new-model", 20, model="claude-new")
+        self.scan()
+        self.record(stamp(7 * 86400))
+        [week] = self.weeks()
+        self.assertEqual((week["machine_cost_usd"], week["crew_share"]), (None, None))
+        self.assertAlmostEqual(week["crew"]["cost_usd"], 0.01275)
+        [week] = self.weeks(prices={**PRICES, "claude-new": PRICES["claude-test"]})
+        self.assertAlmostEqual(week["machine_cost_usd"], 0.0255)
+
+    def test_nothing_is_listed_without_a_seen_window(self):
+        self.request("leader", "crew", 10)
+        self.scan()
+        usage.record_claude_week(self.conn, None)
+        usage.record_claude_week(self.conn, {"used_percent": 25, "resets_at": None, "captured_at": stamp()})
+        self.assertEqual(self.weeks(), [])
+
 if __name__ == "__main__":
     unittest.main()

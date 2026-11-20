@@ -12,8 +12,8 @@ from unittest import mock
 from crew import board, runtimes, settings, store
 
 
-def choice(runtime=None, model=None, effort=None):
-    return {'runtime': runtime, 'model': model, 'effort': effort}
+def choice(runtime=None, model=None, effort=None, speed=None):
+    return {'runtime': runtime, 'model': model, 'effort': effort, 'speed': speed}
 
 
 class SettingsTests(unittest.TestCase):
@@ -147,6 +147,19 @@ class SettingsTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(settings.SettingsError):
                 settings.save(self.home, value)
             self.assertEqual(settings.get(self.home), saved)
+
+    def test_codex_speed_is_saved_and_choices_saved_before_speed_follow_codex(self):
+        with closing(store.connect(self.home)) as conn:
+            conn.execute("INSERT INTO ai_settings(singleton,ai_json,updated_at) VALUES(1,?,?)",
+                         (json.dumps({'default': {'runtime': 'codex', 'model': 'm', 'effort': None}}), store.now_iso()))
+            self.assertEqual(settings.load(conn)['default'], choice('codex', 'm'))
+        ai = {**copy.deepcopy(settings.DEFAULT), 'default': choice('codex', speed='priority'),
+              'git': choice('codex', 'm', speed='default')}
+        self.assertEqual(settings.save(self.home, ai)['default']['speed'], 'priority')
+        self.assertEqual(settings.resolve(self.home, 'git', self.installed('codex')), choice('codex', 'm', speed='default'))
+        for bad in (choice('claude', speed='priority'), choice('codex', speed=' priority'), choice('codex', speed='-x')):
+            with self.subTest(selection=bad), self.assertRaises(settings.SettingsError):
+                settings.save(self.home, {**copy.deepcopy(settings.DEFAULT), 'default': bad})
 
     def test_legacy_database_reads_without_migration_and_new_schema_preserves_other_data(self):
         self.home.mkdir()

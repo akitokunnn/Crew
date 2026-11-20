@@ -17,6 +17,9 @@ html.crew-desktop-shell body {
   width:calc(env(titlebar-area-width,calc(100% - 138px)) - 20px);
   margin-left:env(titlebar-area-x,0px);
 }
+/* 12pt inset + two 20pt button steps + 12pt last button + 12pt clearance. */
+.crew-platform-darwin #crew-desktop-titlebar {padding-left:76px;}
+.crew-platform-darwin #crew-desktop-titlebar .crew-chrome-safe {width:100%;margin-left:0;}
 #crew-desktop-titlebar button {
   -webkit-app-region:no-drag;appearance:none;display:inline-flex;align-items:center;justify-content:center;
   flex:none;height:26px;min-width:28px;padding:0 7px;margin:0;border:0;border-radius:5px;

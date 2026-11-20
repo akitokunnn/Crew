@@ -90,7 +90,7 @@ class SessionLibraryTests(unittest.TestCase):
         sid = joined['session_id']
         self.assertNotEqual(sid, native)
         self.assertEqual(runtimes.get(self.conn, sid), {'runtime': 'codex', 'native_id': native})
-        self.assertEqual(models.get(self.conn, sid), {'model': 'gpt-native', 'effort': 'high'})
+        self.assertEqual(models.get(self.conn, sid), {'model': 'gpt-native', 'effort': 'high', 'speed': None})
         self.assertEqual(board.session(self.conn, sid)['group_name'], 'lead')
         self.assertEqual(self.service.chat.path(sid).read_text(), '')
         preview = session_library.preview(self.service, self.conn, 'alpha', 'crew:' + sid)

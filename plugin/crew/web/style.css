@@ -63,7 +63,7 @@
 *{box-sizing:border-box}
 html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--text);font:calc(14px * var(--fs))/1.55 var(--font-ui);-webkit-font-smoothing:antialiased;overflow:hidden}
-[data-access-remote="true"] [data-local-control],[data-access-remote="true"] [data-local-desktop],[data-access-remote="true"] [data-act="workspace-settings"],[data-access-remote="true"] [data-act="settings"],[data-access-remote="true"] [data-act="open-vscode"],[data-access-remote="true"] [data-doc-act="open"]{display:none!important}
+[data-access-local-controls="false"] [data-local-control],[data-access-local-controls="false"] [data-act="workspace-settings"],[data-access-local-controls="false"] [data-act="settings"],[data-access-local-desktop="false"] [data-local-desktop],[data-access-local-desktop="false"] [data-doc-act="open"]{display:none!important}
 .access-notice{position:fixed;z-index:200;top:12px;left:50%;transform:translateX(-50%);width:min(600px,calc(100vw - 24px));box-sizing:border-box;display:flex;align-items:center;gap:14px;padding:15px 18px;border:1px solid var(--warn-line);border-radius:12px;background:var(--surface);color:var(--text);box-shadow:var(--shadow-lg)}.access-notice span{flex:1}.access-notice .btn{flex:none}
 
 
@@ -501,10 +501,6 @@ svg.i.xs{width:12px;height:12px}
 .menu [role="group"]+[role="group"]{border-top:1px solid var(--line);margin-top:5px;padding-top:3px}
 .menu button.danger{color:var(--danger)}
 .menu .mtitle{font-size:calc(11.5px * var(--fs));color:var(--text-3);padding:6px 10px 4px}
-.step{display:flex;flex-direction:column;gap:8px;margin:12px 18px 0;padding:12px;border-radius:12px;background:var(--accent-softer);border:1px solid color-mix(in srgb,var(--accent) 25%,transparent);font-size:calc(13px * var(--fs))}
-.step .row{display:flex;gap:9px;align-items:flex-start;line-height:1.55}
-.step .n{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;font-size:calc(11px * var(--fs));background:var(--accent);color:var(--on-accent);flex:none;margin-top:1px}
-.step .n.todo{background:transparent;border:1.5px solid var(--accent);color:var(--accent-text)}
 
 [data-tip]{position:relative}
 [data-tip]:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);font-size:calc(11.5px * var(--fs));padding:4px 8px;border-radius:7px;white-space:nowrap;pointer-events:none;z-index:40}
@@ -538,7 +534,8 @@ svg.i.xs{width:12px;height:12px}
 .utable td.num,.utable th.num{text-align:right}
 .utable tr.grp td{font-weight:500;background:var(--hover-2);cursor:pointer}
 .utable tr.sub td:first-child{padding-left:44px}
-.usage-codex-count{font-size:calc(12px * var(--fs));color:var(--text-3);font-weight:400;margin-top:3px}
+.usage-codex-count,.usage-sub{font-size:calc(12px * var(--fs));color:var(--text-3);font-weight:400;margin-top:3px}
+.usage-none{color:var(--text-3)}
 .utable tr.cxr td{color:var(--text-3);font-size:calc(12.5px * var(--fs))}
 .utable tr.cxr td:first-child{padding-left:66px}
 .share{display:flex;align-items:center;gap:8px;justify-content:flex-end}
@@ -670,15 +667,17 @@ button.tool.indent,button.mline.indent{width:calc(100% - 42px)}
 .m-lead .body,.m-lead .markdown{overflow-wrap:anywhere}
 .m-lead .body strong{font-weight:500}
 .m-lead .body a{color:var(--accent-text);text-underline-offset:3px}
-.m-lead .body pre{max-width:100%;overflow:auto;padding:12px 14px;background:var(--hover-2);border:1px solid var(--line);border-radius:12px;font-size:calc(12.5px * var(--fs));line-height:1.7}
-.m-lead .body pre code{padding:0;background:transparent;border-radius:0;font-size:inherit}
-.code-block{position:relative;margin:1em 0}.code-block>pre{margin:0}.m-lead .body .code-block>pre{padding-right:78px}
+.m-lead .body pre,:is(.file-reader-body,.file-body) .markdown pre{max-width:100%;overflow:auto;padding:12px 14px;background:var(--hover-2);border:1px solid var(--line);border-radius:12px;font-size:calc(12.5px * var(--fs));line-height:1.7}
+.m-lead .body pre code,:is(.file-reader-body,.file-body) .markdown pre code{padding:0;background:transparent;border-radius:0;font-size:inherit}
+.code-block{position:relative;margin:1em 0}.code-block>pre{margin:0}.m-lead .body .code-block>pre,:is(.file-reader-body,.file-body) .markdown .code-block>pre{padding-right:78px}
 .code-copy{position:absolute;top:7px;right:7px;display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 8px 0 6px;border:1px solid var(--line-strong);border-radius:7px;background:var(--surface);color:var(--text-2);font:inherit;font-size:var(--fs-xs);line-height:1;cursor:pointer;transition:color .15s,border-color .15s,background .15s}
 .code-copy:hover{color:var(--text);background:var(--surface-2);border-color:var(--text-3)}.code-copy:focus-visible{outline:2px solid var(--accent);outline-offset:1px}.code-copy.copied{color:var(--accent-text);border-color:var(--accent)}
 .m-lead .body blockquote{margin:10px 0;padding:2px 14px;border-left:2px solid var(--line-strong);color:var(--text-2)}
 .m-lead .body ul,.m-lead .body ol{margin:6px 0 10px;padding-left:24px}
-.m-lead .body table{display:block;width:100%;max-width:100%;overflow:auto;border-collapse:collapse;font-size:calc(13px * var(--fs));line-height:1.6}
-.m-lead .body th,.m-lead .body td{padding:6px 10px;border:1px solid var(--line);text-align:left}
+.m-lead .body table,:is(.file-reader-body,.file-body) .markdown table{display:block;width:100%;max-width:100%;overflow:auto;border-collapse:collapse;font-size:calc(13px * var(--fs));line-height:1.6}
+.m-lead .body th,.m-lead .body td,:is(.file-reader-body,.file-body) .markdown :is(th,td){padding:6px 10px;border:1px solid var(--line);text-align:left}
+/* Short Chinese headers stay on one line in a narrow preview instead of stacking a character per row. */
+:is(.file-reader-body,.file-body) .markdown th{word-break:keep-all}
 .m-lead .body hr{border:0;border-top:1px solid var(--line);margin:16px 0}
 .channel-history{text-align:center;padding:14px 24px 0}
 .channel-pin{flex:none;padding:12px 24px 0}
@@ -738,6 +737,10 @@ button.tool.indent,button.mline.indent{width:calc(100% - 42px)}
 .chat-error{margin:12px 0;color:var(--danger);font-size:calc(13px * var(--fs));line-height:1.6;overflow-wrap:anywhere}
 .readonly-note{flex:none;margin:0;padding:14px 24px 18px;text-align:center;font-size:calc(12px * var(--fs));color:var(--text-3);border-top:1px solid var(--line)}
 .c-row .hint{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A narrow composer (beside a reading pane, or a narrow window) drops the key hint rather than cutting it
+   mid-word; a notice in the same place (the session is still in its own tool) always stays. */
+.composer{container:crew-composer/inline-size}
+@container crew-composer (max-width:30em){.c-row .hint.key-hint{display:none}}
 .composer textarea:focus-visible{outline:none}
 .btn:disabled,.opt:disabled{opacity:.45}
 .btn.danger,.danger-text{color:var(--danger)}
@@ -920,7 +923,7 @@ a.btn{color:inherit;text-decoration:none}
 .file-preview{width:680px;z-index:45}
 .file-title{overflow-wrap:anywhere;min-width:0;font-family:var(--font-mono);font-size:13px}
 .file-body{padding-top:14px}
-.file-image,.file-body .markdown img{max-width:100%;height:auto}
+.file-image,:is(.file-reader-body,.file-body) .markdown img{max-width:100%;height:auto}
 .file-text{font-family:var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
 [data-file-path]{color:var(--accent-text);text-decoration:underline;cursor:pointer;overflow-wrap:anywhere}
 /* Session context menus share the model picker and support nested panels. */
@@ -972,7 +975,6 @@ a.btn{color:inherit;text-decoration:none}
 .side-decision{border-bottom:1px solid var(--line)}.side-decision>summary{list-style:none;display:flex;align-items:flex-start;gap:8px;padding:9px 0;cursor:pointer;font-size:calc(12px * var(--fs));line-height:1.6}.side-decision>summary::-webkit-details-marker{display:none}.side-decision>summary>span:first-child{flex:1;min-width:0}.side-decision>summary::after{content:'›';color:var(--text-3)}.side-decision[open]>summary::after{transform:rotate(90deg)}.side-decision-owner{color:var(--text-3);font-size:calc(10.5px * var(--fs));max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.side-decision>.dc{margin-bottom:10px}.attention-panel .side-decision .decision-card .dc-top{display:none}
 .goal-tools h1{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.goal-tools .goal-detail-title{flex-wrap:nowrap}
 
-.native-handoff-error{display:inline-block;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;color:var(--muted);font-size:11px;margin-left:6px}
 
 /* A continuous trunk belongs to the members container, independent of each card's height. */
 .members{margin-left:20px;padding:16px 0 0 18px;border-left:1.5px solid var(--line-strong)}
@@ -981,10 +983,23 @@ a.btn{color:inherit;text-decoration:none}
 .members>.session-node:last-child{margin-bottom:0}
 .members>.session-node::before{content:"";position:absolute;left:-18px;top:25px;width:18px;border-top:1.5px solid var(--line-strong)}
 .cx-summary{font-size:calc(11.5px * var(--fs));color:var(--text-3)}
+/* Right panel: leader → open task → its executions. */
+.members>.rp-task{position:relative;margin-bottom:16px}
+.members>.rp-task:last-child{margin-bottom:0}
+.members>.rp-task::before{content:"";position:absolute;left:-18px;top:17px;width:18px;border-top:1.5px solid var(--line-strong)}
+.rp-task>.members{margin-left:14px;padding-top:12px}
+.rp-task-title{display:flex;align-items:center;gap:8px;width:100%;min-height:34px;padding:6px 10px;border:1px dashed var(--line-strong);border-radius:10px;background:var(--surface);color:var(--text);font:inherit;font-size:calc(12.5px * var(--fs));font-weight:500;text-align:left;cursor:pointer;transition:border-color .15s,background .15s}
+.rp-task-title:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line-strong));background:var(--hover)}
+.rp-task-title:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.rp-task-title>span:first-child{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rp-task-title .goal-status{flex:none}
+.rp-task-title.is-static{cursor:default;color:var(--text-3);font-weight:400;background:transparent}
+.rp-task-title.is-static:hover{border-color:var(--line-strong);background:transparent}
+.rp-empty{margin:16px 4px 6px;padding:14px;border:1px dashed var(--line);border-radius:12px;font-size:calc(12.5px * var(--fs));color:var(--text-3);line-height:1.6}
 
 .dispatch-history{max-height:55vh;overflow:auto}.dispatch-history .chip{align-items:flex-start}.dispatch-history .chip .grow{min-width:0;overflow-wrap:anywhere}
 
-[data-access-remote="true"] [data-view="adopt"],[data-access-remote="true"] [data-act="git-settings"],[data-access-remote="true"] [data-git-act="settings"],[data-access-remote="true"] [data-git-act="fetch"],[data-access-remote="true"] [data-git-act="enable"]{display:none!important}
+[data-access-local-controls="false"] [data-view="adopt"],[data-access-local-controls="false"] [data-act="git-settings"],[data-access-local-controls="false"] [data-git-act="settings"],[data-access-local-controls="false"] [data-git-act="fetch"],[data-access-local-controls="false"] [data-git-act="enable"]{display:none!important}
 
 /* A single rail leaves the workspace to conversations and tasks. */
 :root{--sb-w:64px}

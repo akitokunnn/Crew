@@ -5,6 +5,7 @@ import functools
 import html
 import json
 import math
+import os
 import sqlite3
 import uuid
 
@@ -520,7 +521,7 @@ def mark_read(conn, execution_id, read_seq, *, now=None):
 
 
 @atomic
-def configure_execution(conn, execution_id, runtime, *, model=None, effort=None, now=None):
+def configure_execution(conn, execution_id, runtime, *, model=None, effort=None, now=None, speed=None):
     """Persist an idle target configuration; caller still owns native liveness checks."""
     current = get_execution(conn, execution_id)
     if runtime not in ('claude', 'codex'):
@@ -530,10 +531,10 @@ def configure_execution(conn, execution_id, runtime, *, model=None, effort=None,
     goal = _row(conn, current['goal_id'])
     if goal['status'] in TERMINAL or current['round'] != goal['current_round']:
         raise board.Conflict('已结束轮次不能配置为新工作')
-    if (current['runtime'], current['model'], current['effort']) == (runtime, model, effort):
+    if (current['runtime'], current['model'], current['effort'], current['speed']) == (runtime, model, effort, speed):
         return current
-    conn.execute('UPDATE goal_executions SET runtime=?,model=?,effort=?,updated_at=? WHERE id=?',
-                 (runtime, model, effort, board._time(now), execution_id))
+    conn.execute('UPDATE goal_executions SET runtime=?,model=?,effort=?,speed=?,updated_at=? WHERE id=?',
+                 (runtime, model, effort, speed, board._time(now), execution_id))
     if current['runtime'] != runtime:
         conn.execute('DELETE FROM goal_context_applied WHERE execution_id=?', (execution_id,))
     _touch(conn, current['goal_id'], now)
@@ -541,7 +542,7 @@ def configure_execution(conn, execution_id, runtime, *, model=None, effort=None,
 
 
 @atomic
-def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=None, discussion_message_id=None, now=None):
+def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=None, discussion_message_id=None, now=None, speed=None):
     goal = _row(conn, goal_id)
     if discussion_message_id is not None:
         _text(discussion_message_id, '用户消息编号', limit=160)
@@ -552,7 +553,7 @@ def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=N
     _member(conn, goal, session_id)
     if runtime not in ('claude', 'codex'):
         raise board.BoardError('执行工具无效')
-    for value, label in ((model, '模型'), (effort, '档位')):
+    for value, label in ((model, '模型'), (effort, '档位'), (speed, '速度')):
         if value is not None:
             _text(value, label, limit=300)
     if conn.execute("SELECT 1 FROM goal_assignments WHERE goal_id=? AND session_id=? AND status='assigned'", (goal_id, session_id)).fetchone() is None:
@@ -563,8 +564,9 @@ def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=N
     generation = conn.execute('SELECT COALESCE(MAX(generation),0)+1 FROM goal_executions WHERE goal_id=? AND round=? AND session_id=?',
                               (goal_id, goal['current_round'], session_id)).fetchone()[0]
     identity, at = uuid.uuid4().hex, board._time(now)
-    conn.execute('INSERT INTO goal_executions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                 (identity, goal_id, goal['current_round'], session_id, generation, runtime, model, effort,
+    conn.execute('INSERT INTO goal_executions(id,goal_id,round,session_id,generation,runtime,model,effort,speed,status,'
+                 'requirement_version,created_at,updated_at,ended_at,error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                 (identity, goal_id, goal['current_round'], session_id, generation, runtime, model, effort, speed,
                   'queued', goal['requirement_version'], at, at, None, None))
     if discussion_message_id is not None:
         conn.execute('INSERT INTO goal_discussion_executions VALUES(?,?,?,NULL,NULL)', (identity, discussion_message_id, at))
@@ -572,7 +574,7 @@ def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=N
 
 
 @atomic
-def bind_native(conn, execution_id, runtime, native_id, *, model=None, effort=None, now=None):
+def bind_native(conn, execution_id, runtime, native_id, *, model=None, effort=None, now=None, speed=None):
     execution = get_execution(conn, execution_id)
     if runtime not in ('claude', 'codex'):
         raise board.BoardError('执行工具无效')
@@ -582,9 +584,10 @@ def bind_native(conn, execution_id, runtime, native_id, *, model=None, effort=No
         raise board.Conflict('同一执行代次的原生绑定不能被另一段历史覆盖')
     runtimes.check_native_owner(conn, runtime, native_id, execution_id=execution_id)
     try:
-        conn.execute('INSERT INTO goal_execution_bindings VALUES(?,?,?,?,?,?) ON CONFLICT(execution_id,runtime) '
-                     'DO UPDATE SET model=excluded.model,effort=excluded.effort,updated_at=excluded.updated_at',
-                     (execution_id, runtime, native_id, model, effort, board._time(now)))
+        conn.execute('INSERT INTO goal_execution_bindings(execution_id,runtime,native_id,model,effort,speed,updated_at) '
+                     'VALUES(?,?,?,?,?,?,?) ON CONFLICT(execution_id,runtime) '
+                     'DO UPDATE SET model=excluded.model,effort=excluded.effort,speed=excluded.speed,updated_at=excluded.updated_at',
+                     (execution_id, runtime, native_id, model, effort, speed, board._time(now)))
     except sqlite3.IntegrityError as exc:
         raise board.Conflict('原生历史已绑定其他目标执行') from exc
     return get_execution(conn, execution['id'])
@@ -664,6 +667,8 @@ def validate_report(conn, goal_id, data):
     for key in ('delivered', 'unresolved', 'artifacts', 'tradeoffs'):
         result[key] = _strings(result.get(key, []), key)
     result['follow_up'] = _text(result.get('follow_up', ''), '后续修改入口', required=False)
+    if 'folder' in result:
+        result['folder'] = _text(result['folder'], 'folder 交付文件夹', required=False, limit=1000).strip()
     final = outcome in ('awaiting_acceptance', 'completed')
     entries, standards = result.get('acceptance', []), {item['id']: item['title'] for item in req['acceptance']}
     if not isinstance(entries, builtins.list) or final and len(entries) != len(standards):
@@ -771,9 +776,26 @@ def render_report(conn, goal_id, data):
     return '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'"><title>%s</title><style>body{font:16px/1.7 system-ui,sans-serif;max-width:960px;margin:40px auto;padding:0 24px;color:#292929;background:#fafafa}h2{margin-top:32px}svg{width:100%%;max-width:600px}table{border-collapse:collapse;width:100%%}th,td{border:1px solid #ddd;text-align:left;vertical-align:top;padding:10px;white-space:pre-wrap;overflow-wrap:anywhere}th{width:140px}p,li{white-space:pre-wrap;overflow-wrap:anywhere}</style><body>%s</body></html>' % (esc(goal['title']), ''.join(sections))
 
 
+def report_folder(root, data):
+    """Where a report's 「打开文件夹」 leads: the delivery folder the AI declared, else the workspace root.
+
+    A relative folder is read against the current workspace root, so it follows a workspace move."""
+    declared = data.get('folder') or ''
+    return {'path': os.path.abspath(os.path.join(root, declared)), 'declared': bool(declared)}
+
+
 @atomic
 def save_report(conn, goal_id, data, *, now=None):
     goal, validated = _row(conn, goal_id), validate_report(conn, goal_id, data)
+    # Checked when a delivery is submitted only: saved reports stay valid if the folder later moves.
+    if validated['outcome'] in ('awaiting_acceptance', 'completed'):
+        if not validated.get('folder'):
+            raise board.BoardError('最终交付需要 folder：本轮交付物所在的文件夹（相对工作区根目录或绝对路径），'
+                                   '用户在报告上点「打开文件夹」直接打开它；交付只在代码里时填所在仓库或 worktree 的目录')
+        root = board.project(conn, goal['project'])['root']
+        folder = report_folder(root, validated)['path']
+        if not os.path.isdir(folder):
+            raise board.BoardError('folder 交付文件夹不存在或不是文件夹：%s（相对路径按工作区根目录 %s 解析）' % (folder, root))
     identity = uuid.uuid4().hex
     version = conn.execute('SELECT COALESCE(MAX(version),0)+1 FROM goal_reports WHERE goal_id=? AND round=?', (goal_id, goal['current_round'])).fetchone()[0]
     rendered = render_report(conn, goal_id, validated)

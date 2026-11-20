@@ -113,7 +113,7 @@ class ReportPreviewHttpTests(ShellFixture, unittest.TestCase):
 
     def test_worker_endpoints_are_local_authenticated_and_close_pending_capture(self):
         for route in report_preview.WORKER_PATHS:
-            self.assertFalse(remote_routes.permitted('POST', route))
+            self.assertFalse(remote_routes.permitted('POST', route, (), 'browser'))
         request = Request(self.url + report_preview.WORKER_PREFIX + 'register', b'{}',
                           {'X-Crew': '1', 'Origin': 'https://different-host.invalid'})
         with self.assertRaises(HTTPError) as rejected:

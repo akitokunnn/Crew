@@ -6,8 +6,7 @@ const { ReadOnlyCommands } = require('./readonly-command.cjs');
 const core = require('./core.cjs');
 const {checkLatest:queryLatest,compareVersions}=require('./crew-latest.cjs');
 const execute = promisify(execFile);
-const samePath = (left, right) => typeof left === 'string' && typeof right === 'string' &&
-  (process.platform === 'win32' ? path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase() : path.resolve(left) === path.resolve(right));
+const { samePath } = require('./paths.cjs');
 
 class CrewUpdates {
   constructor(config, backend, { onChange = () => {}, onRestart = () => {}, run = execute, spawnProcess = spawn,
@@ -209,4 +208,4 @@ class CrewUpdates {
     if (reads.status === 'rejected') throw reads.reason;
   }
 }
-module.exports = { CrewUpdates, samePath };
+module.exports = { CrewUpdates };

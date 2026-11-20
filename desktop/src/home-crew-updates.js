@@ -1,6 +1,10 @@
 'use strict';
 (() => {
   const bridge = window.crewDesktop, root = document.getElementById('crew-update-card');
+  if (bridge?.platform === 'darwin' && !bridge.remote) {
+    document.getElementById('crew-mac-update-card').hidden = false;
+    return;
+  }
   if (!root || typeof bridge?.crewUpdateSnapshot !== 'function') return;
   root.hidden = false;
   let state = null, request = false;

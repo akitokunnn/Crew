@@ -269,7 +269,8 @@ CREATE TABLE IF NOT EXISTS session_options (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
     model TEXT,
     effort TEXT,
-    set_at TEXT NOT NULL
+    set_at TEXT NOT NULL,
+    speed TEXT
 );
 
 CREATE TABLE IF NOT EXISTS rule_reads (
@@ -669,6 +670,15 @@ CREATE TABLE IF NOT EXISTS codex_rate_limits (
     PRIMARY KEY (rollout_id, ts)
 );
 
+-- One row per Claude weekly quota window seen. claude-limits.json keeps only the newest
+-- window, so past weeks' account percentages live here; Crew's share is costed on read.
+CREATE TABLE IF NOT EXISTS claude_weeks (
+    resets_at     TEXT PRIMARY KEY,    -- window end, rounded to the minute (sources differ in sub-seconds)
+    since         TEXT NOT NULL,       -- resets_at minus 7 days
+    used_percent  REAL,                -- last account percentage seen in this window; NULL = never seen
+    captured_at   TEXT
+);
+
 -- A Crew identity can return to each runtime's own native history/options.
 CREATE TABLE IF NOT EXISTS session_runtime_bindings (
  session_id TEXT NOT NULL REFERENCES sessions(session_id),
@@ -677,6 +687,7 @@ CREATE TABLE IF NOT EXISTS session_runtime_bindings (
  model TEXT,
  effort TEXT,
  updated_at TEXT NOT NULL,
+ speed TEXT,
  PRIMARY KEY(session_id,runtime),
  UNIQUE(runtime,native_id)
 );
@@ -701,7 +712,8 @@ CREATE TABLE IF NOT EXISTS runtime_switches (
  attempted_at TEXT,
  accepted_message_id TEXT,
  consumed_at TEXT,
- last_error TEXT
+ last_error TEXT,
+ target_speed TEXT
 );
 CREATE INDEX IF NOT EXISTS runtime_switches_session ON runtime_switches(session_id,status,configured_at);
 
@@ -751,7 +763,7 @@ CREATE TABLE IF NOT EXISTS goal_executions (
  session_id TEXT NOT NULL REFERENCES sessions(session_id), generation INTEGER NOT NULL,
  runtime TEXT NOT NULL CHECK(runtime IN ('claude','codex')), model TEXT, effort TEXT,
  status TEXT NOT NULL, requirement_version INTEGER NOT NULL,
- created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ended_at TEXT, error TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ended_at TEXT, error TEXT, speed TEXT,
  FOREIGN KEY(goal_id,round) REFERENCES goal_rounds(goal_id,number),
  UNIQUE(goal_id,round,session_id,generation)
 );
@@ -759,7 +771,7 @@ CREATE INDEX IF NOT EXISTS goal_executions_goal ON goal_executions(goal_id,round
 CREATE TABLE IF NOT EXISTS goal_execution_bindings (
  execution_id TEXT NOT NULL REFERENCES goal_executions(id),
  runtime TEXT NOT NULL CHECK(runtime IN ('claude','codex')), native_id TEXT,
- model TEXT, effort TEXT, updated_at TEXT NOT NULL,
+ model TEXT, effort TEXT, updated_at TEXT NOT NULL, speed TEXT,
  PRIMARY KEY(execution_id,runtime), UNIQUE(runtime,native_id)
 );
 CREATE TABLE IF NOT EXISTS goal_reports (
@@ -986,4 +998,39 @@ CREATE TABLE IF NOT EXISTS goal_work_history (
     data_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     PRIMARY KEY(item_id,version)
+);
+
+-- Architecture board: each workspace's domain tree. A part nests under one parent part (NULL = top level); any
+-- number of leaders work in it and one of them may lead it. Positions and collapse are the board layout.
+CREATE TABLE IF NOT EXISTS domains (
+    id         TEXT PRIMARY KEY,
+    project    TEXT NOT NULL REFERENCES projects(name),
+    parent_id  TEXT REFERENCES domains(id),
+    name       TEXT NOT NULL,
+    x          REAL NOT NULL DEFAULT 0,
+    y          REAL NOT NULL DEFAULT 0,
+    collapsed  INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS domains_project ON domains (project, parent_id);
+-- The part a leader works in (at most one; NULL = unassigned). lead=1 marks the one leading that part, owning
+-- the work its sub-parts share (unique per part, see store migration). An archived leader keeps its place.
+-- x/y are unused since leaders are listed inside their part.
+CREATE TABLE IF NOT EXISTS domain_leaders (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    project    TEXT NOT NULL REFERENCES projects(name),
+    domain_id  TEXT REFERENCES domains(id),
+    x          REAL,
+    y          REAL,
+    updated_at TEXT NOT NULL,
+    lead       INTEGER NOT NULL DEFAULT 0
+);
+-- Bumped by every board edit, so a page holding an older copy (and its undo steps) knows to reload first.
+-- direction: TB draws the tree top-down, LR left-to-right like a blueprint.
+CREATE TABLE IF NOT EXISTS domain_boards (
+    project    TEXT PRIMARY KEY REFERENCES projects(name),
+    version    INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    direction  TEXT NOT NULL DEFAULT 'TB' CHECK (direction IN ('TB', 'LR'))
 );

@@ -11,10 +11,17 @@ function boot(fetch){
   return {window,document,nodes,events};
 }
 const response=(status,value)=>({status,ok:status>=200&&status<300,json:async()=>value});
+const local={remote:false,client:'local',local_controls:true,local_desktop:true,authenticated:true,
+  host_admin:true};
+const browser={remote:true,client:'browser',local_controls:false,local_desktop:false,authenticated:true,
+  host_admin:false};
 test('controls stay unavailable until the actual access context is known',async()=>{
   let release;const pending=new Promise(resolve=>release=resolve);const app=boot(()=>pending);
-  assert.equal(app.window.CrewAccess.local_controls,false);assert.equal(app.window.CrewAccess.local_desktop,false);
-  release(response(200,{remote:false,local_controls:true,local_desktop:true}));assert.equal(await app.window.CrewAccess.ready,true);assert.equal(app.window.CrewAccess.local_controls,true);
+  const access=app.window.CrewAccess;
+  assert.equal(access.client,'');
+  for(const field of ['local_controls','local_desktop','host_admin']) assert.equal(access[field],false);
+  release(response(200,local));assert.equal(await access.ready,true);
+  for(const field of ['client','local_controls','local_desktop','host_admin']) assert.equal(access[field],local[field]);
 });
 test('failed or malformed context never silently enables local actions',async()=>{
   for(const value of [response(503,{error:'后台未就绪'}),response(200,{remote:false})]){
@@ -23,7 +30,7 @@ test('failed or malformed context never silently enables local actions',async()=
 });
 test('an expired write prompts once, preserves the exact response, and never retries the POST',async()=>{
   let requests=0;const denied=response(401,{error:'连接已失效'});
-  const app=boot(async()=>++requests===1?response(200,{remote:true,local_controls:false,local_desktop:false,authenticated:true}):denied);
+  const app=boot(async()=>++requests===1?response(200,browser):denied);
   await app.window.CrewAccess.ready;
   assert.equal(await app.window.fetch('/api/chat/send',{method:'POST',body:'original input'}),denied);
   assert.equal(requests,2);assert.equal(app.window.CrewAccess.expired,true);assert.deepEqual(app.events,['crew-access-expired']);
@@ -31,6 +38,43 @@ test('an expired write prompts once, preserves the exact response, and never ret
   await app.window.fetch('/api/chat/history');assert.deepEqual(app.events,['crew-access-expired']);
 });
 test('a different origin refusing a request does not replace the Crew connection',async()=>{
-  let requests=0;const app=boot(async()=>++requests===1?response(200,{remote:false,local_controls:true,local_desktop:true}):response(401,{}));
+  let requests=0;const app=boot(async()=>++requests===1?response(200,local):response(401,{}));
   await app.window.CrewAccess.ready;await app.window.fetch('https://elsewhere.invalid/api/example');assert.equal(app.window.CrewAccess.expired,false);assert.equal(app.window.CrewAccess.local_controls,true);
+});
+
+test('desktop and browser flags are exposed and every required new field is validated',async()=>{
+  const desktop={...browser,client:'desktop',local_controls:true};
+  for(const value of [desktop,browser]){
+    const app=boot(async()=>response(200,value));
+    assert.equal(await app.window.CrewAccess.ready,true);
+    for(const field of ['client','local_controls','local_desktop','host_admin']){
+      assert.equal(app.window.CrewAccess[field],value[field]);
+    }
+  }
+  for(const field of ['client','host_admin']){
+    for(const invalid of [undefined,field==='client'?'unknown':'true']){
+      const app=boot(async()=>response(200,{...local,[field]:invalid}));
+      assert.equal(await app.window.CrewAccess.ready,false);
+      assert.equal(app.nodes.get('access-notice').children[0].textContent,'连接状态不完整，请重新读取。');
+    }
+  }
+});
+
+test('capability flags mark the page so a Crew desktop client keeps settings and a browser does not',async()=>{
+  const desktop={...browser,client:'desktop',local_controls:true};
+  for(const [value,expected] of [[local,{accessClient:'local',accessLocalControls:'true',accessLocalDesktop:'true'}],
+    [desktop,{accessClient:'desktop',accessLocalControls:'true',accessLocalDesktop:'false'}],
+    [browser,{accessClient:'browser',accessLocalControls:'false',accessLocalDesktop:'false'}]]){
+    const app=boot(async()=>response(200,value));await app.window.CrewAccess.ready;
+    assert.deepEqual({...app.document.documentElement.dataset},expected);
+  }
+});
+test('an expired Crew desktop client is sent back to its home page to re-pair instead of a browser login',async()=>{
+  let requests=0;const desktop={...browser,client:'desktop',local_controls:true};
+  const app=boot(async()=>++requests===1?response(200,desktop):response(401,{error:'设备授权已失效，请在主机上重新生成配对码'}));
+  await app.window.CrewAccess.ready;await app.window.fetch('/api/state?project=健身');
+  const [text,link]=app.nodes.get('access-notice').children;
+  assert.match(text.textContent,/重新生成配对码/);assert.equal(link.href,'/');assert.equal(link.textContent,'返回 Crew 首页');
+  assert.equal(app.window.CrewAccess.client,'desktop');assert.equal(app.window.CrewAccess.local_controls,false);
+  assert.equal(app.document.documentElement.dataset.accessLocalControls,'false');assert.deepEqual(app.events,['crew-access-expired']);
 });

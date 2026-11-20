@@ -16,10 +16,45 @@ async function stopReadOnlyChild(child) {
       if (child.exitCode === null && child.signalCode === null) throw error;
     }
   } else {
-    // Read helpers own a separate process group, including their version probes.
-    try { process.kill(-child.pid, 'SIGKILL'); }
-    catch (error) { if (error.code !== 'ESRCH') throw error; }
+    // macOS does not give a detached execFile child its own process group
+    // (verified on the macos-15 runner: kill(-pid) is ESRCH while the helper
+    // still runs), so stop the exact tree read from the process table.
+    const tree = await processTree(child.pid);
+    for (const pid of tree) {
+      try { process.kill(pid, 'SIGKILL'); }
+      catch (error) { if (error.code !== 'ESRCH') throw error; }
+    }
+    const deadline = Date.now() + 2000;
+    let remaining = tree;
+    while ((remaining = remaining.filter(running)).length) {
+      if (Date.now() > deadline) throw new Error('只读检查进程未能结束：' + remaining.join(', '));
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
   }
+}
+
+function running(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+}
+
+// The helper and every descendant, parents before children, from one `ps` snapshot.
+async function processTree(root) {
+  const { stdout } = await execute('ps', ['-A', '-o', 'pid=,ppid='], { timeout:10000, maxBuffer:4 * 1024 * 1024 });
+  const children = new Map();
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue;
+    const [pid, parent] = line.trim().split(/\s+/).map(Number);
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(pid);
+  }
+  const tree = [];
+  for (const queue = [root]; queue.length;) {
+    const pid = queue.shift();
+    tree.push(pid);
+    queue.push(...(children.get(pid) || []));
+  }
+  return tree;
 }
 
 class ReadOnlyCommands {
@@ -30,7 +65,7 @@ class ReadOnlyCommands {
   run(executable, args, options) {
     if (this.signal.aborted) return Promise.reject(this.signal.reason);
     let command;
-    try { command = this.execute(executable, args, { ...options, ...(process.platform === 'win32' ? {} : { detached:true }) }); }
+    try { command = this.execute(executable, args, options); }
     catch (error) { return Promise.reject(error); }
     let stopping = Promise.resolve();
     const onAbort = () => {

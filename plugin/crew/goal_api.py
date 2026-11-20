@@ -2,12 +2,12 @@
 import json
 from urllib.parse import urlencode
 
-from . import behavior_prompts, board, codex_client, documents, goal_context, goal_work, goals, native_handoff
+from . import behavior_prompts, board, codex_client, documents, goal_context, goal_work, goals
 
 ACCEPTANCE_STATUSES = ('passed', 'failed', 'unverified', 'simulated')
 
 
-def report_entry(project, value, row):
+def report_entry(project, value, row, root):
     """Read-only projection of the saved, already validated report data; no model or rewrite."""
     data = json.loads(row['data_json'])
     statuses = [item['status'] for item in data['acceptance']]
@@ -15,7 +15,7 @@ def report_entry(project, value, row):
             'outcome': row['outcome'], 'status': row['outcome'], 'created_at': row['created_at'], 'title': value['title'],
             'summary': data['summary'], 'acceptance_counts': {key: statuses.count(key) for key in ACCEPTANCE_STATUSES},
             'publication': data.get('publication'),
-            'unresolved': data['unresolved'],
+            'unresolved': data['unresolved'], 'folder': goals.report_folder(root, data),
             'current': row['round'] == value['current_round'] and row['version'] == value['latest_report_version'],
             'url': '/api/goals/report?' + urlencode({'project': project, 'goal_id': value['id'], 'report_id': row['id']})}
 
@@ -23,8 +23,6 @@ def report_entry(project, value, row):
 def card(conn, value):
     req = value['requirements']
     available = conn.execute('SELECT 1 FROM goal_reports WHERE goal_id=?', (value['id'],)).fetchone()
-    handoffs = [native_handoff.describe(conn, row['session_id'], row['id']) for row in conn.execute(
-        'SELECT id,session_id FROM goal_executions WHERE goal_id=? AND round=?', (value['id'], value['current_round']))]
     brief = None
     report = conn.execute('SELECT id,data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? '
                           'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'])).fetchone()
@@ -36,6 +34,7 @@ def card(conn, value):
         if report is not None:
             data = json.loads(report['data_json'])
             brief = {'report_id': report['id'], 'summary': data['summary'], 'user_test': data.get('user_test'),
+                     'folder': goals.report_folder(board.project(conn, value['project'], include_removed=True)['root'], data),
                      'created_at': report['created_at'], 'supplements_after_report': supplements}
     work = goal_work.items(conn, value['id'])
     doing = sorted((item for item in work if item['status'] == 'doing'), key=lambda item: (item['updated_at'], item['id']))
@@ -51,13 +50,15 @@ def card(conn, value):
                             'UNION ALL SELECT updated_at FROM goal_executions WHERE goal_id=:g '
                             'UNION ALL SELECT created_at FROM goal_reports WHERE goal_id=:g '
                             'UNION ALL SELECT created_at FROM goal_requirements WHERE goal_id=:g)', {'g': value['id']}).fetchone()[0]
-    return {**value, 'request': req['request'], 'acceptance': req['acceptance'], 'native_handoffs': handoffs,
+    # When the task ended: every terminal path goes through goals.transition, which stamps the current round's ended_at.
+    ended_at = next(row['ended_at'] for row in value['rounds'] if row['number'] == value['current_round']) if value['status'] in goals.TERMINAL else None
+    return {**value, 'request': req['request'], 'acceptance': req['acceptance'],
             'constraints': req['constraints'], 'report_available': bool(available), 'acceptance_brief': brief,
             'work_summary': goal_work.summary_of(work), 'supplements_after_report': supplements,
             'now_doing': [{'key': item['key'], 'title': item['title'], 'session_id': item['owner_session_id']} for item in doing],
             'pending_decision': dict(decision) if decision else None, 'working_count': working,
             'finish_pending': finish is not None, 'transfer_pending': goals.pending_transfer(conn, value['id']), 'observing': goals.observation(conn, value['id']),
-            'last_activity_at': max(value['updated_at'], activity or value['updated_at'])}
+            'last_activity_at': max(value['updated_at'], activity or value['updated_at']), 'ended_at': ended_at}
 
 
 def context(conn, identity, execution_id=None):
@@ -77,16 +78,16 @@ def detail(conn, project, identity, *, context_state=None):
     value = goals.get(conn, identity, project)
     executions = [goals.get_execution(conn, row['id']) for row in conn.execute(
         'SELECT id FROM goal_executions WHERE goal_id=? ORDER BY round,generation', (identity,))]
-    for execution in executions:
-        execution['native_handoff'] = native_handoff.describe(conn, execution['session_id'], execution['id'])
-        if context_state is not None:
+    if context_state is not None:
+        for execution in executions:
             execution.update(context_state(execution['id']))
     current = [e for e in executions if e['round'] == value['current_round'] and e['session_id'] == value['leader_session_id']]
     # Newest first by the stored report version within each round, the same order acceptance_target uses;
     # created_at is display-only because a saved clock can repeat or move backwards.
     latest = conn.execute('SELECT MAX(version) FROM goal_reports WHERE goal_id=? AND round=?',
                           (identity, value['current_round'])).fetchone()[0]
-    reports = [report_entry(project, {**value, 'latest_report_version': latest}, row) for row in conn.execute(
+    root = board.project(conn, project)['root']
+    reports = [report_entry(project, {**value, 'latest_report_version': latest}, row, root) for row in conn.execute(
         'SELECT id,round,requirement_version,version,outcome,data_json,created_at FROM goal_reports WHERE goal_id=? '
         'ORDER BY round DESC,version DESC', (identity,))]
     return {'goal': card(conn, value), 'executions': executions, 'work_items': goal_work.items(conn, identity),

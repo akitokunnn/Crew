@@ -1,13 +1,17 @@
-"""Read local IPv4 interfaces without subprocesses or network administration.
+"""Read local IPv4 interfaces without network administration.
 
-Windows uses GetAdaptersAddresses. The portable fallback only reports locally
-bindable hostname addresses and explicitly cannot identify adapter types.
+Windows uses GetAdaptersAddresses. macOS uses getifaddrs and reads hardware
+port labels with networksetup. The portable fallback only reports locally
+bindable hostname addresses and cannot identify adapter types.
 """
 import copy
 import ctypes
 import ipaddress
 import os
 import socket
+import struct
+import subprocess
+import sys
 import threading
 import time
 
@@ -108,6 +112,85 @@ def _windows_rows(api=None):
     raise OSError('网络接口持续变化，无法读取当前地址，请稍后重试')
 
 
+class _MacIfaddrs(ctypes.Structure):
+    pass
+
+
+_MacIfaddrs._fields_ = [
+    ('ifa_next', ctypes.POINTER(_MacIfaddrs)), ('ifa_name', ctypes.c_char_p),
+    ('ifa_flags', ctypes.c_uint), ('ifa_addr', ctypes.POINTER(ctypes.c_ubyte)),
+    ('ifa_netmask', ctypes.c_void_p), ('ifa_dstaddr', ctypes.c_void_p), ('ifa_data', ctypes.c_void_p),
+]
+# sin_len, sin_family, sin_port, sin_addr, sin_zero in Darwin's sockaddr_in.
+_MACOS_SOCKADDR_IN = struct.Struct('!BBH4s8x')
+_MACOS_ACTIVE_FLAGS = 0x1 | 0x40  # IFF_UP | IFF_RUNNING
+
+
+def _parse_macos_ipv4(data):
+    if len(data) < 2 or data[1] != socket.AF_INET:
+        return None
+    _, _, _, address = _MACOS_SOCKADDR_IN.unpack_from(data)
+    return socket.inet_ntoa(address)
+
+
+def _macos_interface_rows():
+    libc = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+    libc.getifaddrs.argtypes = [ctypes.POINTER(ctypes.POINTER(_MacIfaddrs))]
+    libc.getifaddrs.restype = ctypes.c_int
+    libc.freeifaddrs.argtypes = [ctypes.POINTER(_MacIfaddrs)]
+    libc.freeifaddrs.restype = None
+    first = ctypes.POINTER(_MacIfaddrs)()
+    if libc.getifaddrs(ctypes.byref(first)) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, 'getifaddrs: ' + os.strerror(error))
+    try:
+        rows = []
+        current = first
+        while current:
+            entry = current.contents
+            if entry.ifa_addr:
+                data = ctypes.string_at(entry.ifa_addr, entry.ifa_addr[0])  # sa_len
+                address = _parse_macos_ipv4(data)
+                if address is not None:
+                    bsd_name = entry.ifa_name.decode('ascii')
+                    rows.append({'address': address, 'name': bsd_name, 'description': bsd_name,
+                                 'bsd_name': bsd_name, 'up': entry.ifa_flags & _MACOS_ACTIVE_FLAGS == _MACOS_ACTIVE_FLAGS,
+                                 'usable': True, 'type_known': True})
+            current = entry.ifa_next
+        return rows
+    finally:
+        libc.freeifaddrs(first)
+
+
+def _parse_macos_hardware_ports(output):
+    ports = {}
+    hardware_port = None
+    for line in output.splitlines():
+        key, _, value = line.partition(':')
+        if key == 'Hardware Port':
+            hardware_port = value.strip()
+        elif key == 'Device' and hardware_port:
+            ports[value.strip()] = hardware_port
+            hardware_port = None
+    return ports
+
+
+def _macos_rows():
+    rows = _macos_interface_rows()
+    try:
+        result = subprocess.run(['/usr/sbin/networksetup', '-listallhardwareports'],
+                                capture_output=True, encoding='utf-8', check=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as exc:
+        error = '%s: %s' % (type(exc).__name__, exc)
+        if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+            error += ': ' + exc.stderr.strip()
+        return rows, error
+    ports = _parse_macos_hardware_ports(result.stdout)
+    for row in rows:
+        row['name'] = ports.get(row['bsd_name'], row['bsd_name'])
+    return rows, None
+
+
 def _fallback_rows():
     addresses = {'127.0.0.1'}
     addresses.update(info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET))
@@ -124,12 +207,25 @@ def _fallback_rows():
     return rows
 
 
+def _macos_kind(bsd_name, hardware_name, address):
+    if bsd_name.startswith('lo'):
+        return 'loopback'
+    if bsd_name.startswith(('feth', 'zt')) or 'zerotier' in hardware_name.casefold():
+        return 'zerotier'
+    if bsd_name.startswith(('en', 'bridge')) and private_address(address):
+        return 'lan'
+    return 'other'
+
+
 def _describe(row):
     address = ipaddress.ip_address(row['address'])
-    label = (row.get('name', '') + ' ' + row.get('description', '')).casefold()
-    virtual = row.get('if_type') == 131 or any(word in label for word in ('virtual', 'vethernet', 'hyper-v'))
-    kind = ('loopback' if address.is_loopback else 'zerotier' if 'zerotier' in label else
-            'lan' if row.get('type_known') and not virtual and address.version == 4 and private_address(str(address)) else 'other')
+    if 'bsd_name' in row:
+        kind = _macos_kind(row['bsd_name'], row['name'], str(address))
+    else:
+        label = (row.get('name', '') + ' ' + row.get('description', '')).casefold()
+        virtual = row.get('if_type') == 131 or any(word in label for word in ('virtual', 'vethernet', 'hyper-v'))
+        kind = ('loopback' if address.is_loopback else 'zerotier' if 'zerotier' in label else
+                'lan' if row.get('type_known') and not virtual and address.version == 4 and private_address(str(address)) else 'other')
     reason = ('仅支持局域网或 ZeroTier 的私有 IPv4 地址' if not private_address(str(address)) else
               '网络接口未连接' if not row['up'] else
               'IPv4 地址尚未就绪或存在冲突' if not row['usable'] else None)
@@ -141,9 +237,13 @@ def _describe(row):
 class Discovery:
     """A short cache for UI reads; each explicit start rechecks current interfaces."""
     def __init__(self, *, reader=None, clock=time.monotonic, ttl=2):
-        self.reader = reader or (_windows_rows if os.name == 'nt' else _fallback_rows)
-        self.source = 'windows-adapters' if os.name == 'nt' else 'hostname-fallback'
-        self.complete = os.name == 'nt'
+        if sys.platform == 'darwin':
+            self.source, self.complete = 'macos-getifaddrs', True
+        else:
+            reader = reader or (_windows_rows if os.name == 'nt' else _fallback_rows)
+            self.source = 'windows-adapters' if os.name == 'nt' else 'hostname-fallback'
+            self.complete = os.name == 'nt'
+        self.reader = (lambda: (reader(), None)) if reader else _macos_rows
         self.clock, self.ttl = clock, ttl
         self.lock = threading.Lock()
         self.saved = None
@@ -153,20 +253,21 @@ class Discovery:
         with self.lock:
             now = self.clock()
             if self.saved is None or force or now - self.stamp >= self.ttl:
-                error = None
+                complete = self.complete
                 try:
-                    rows = self.reader()
+                    rows, error = self.reader()
                 except OSError as exc:
                     # Preserve local diagnostics even when adapter discovery fails.
                     rows = [{'address': '127.0.0.1', 'name': '本机', 'description': '',
                              'up': True, 'usable': True, 'type_known': True}]
                     error = str(exc)
+                    complete = False
                 unique = {}
                 for row in rows:
                     item = _describe(row)
                     unique[(item['address'], item['name'])] = item
                 order = {'zerotier': 0, 'lan': 1, 'loopback': 2, 'other': 3}
                 self.saved = {'addresses': sorted(unique.values(), key=lambda item: (order[item['kind']], item['name'], item['address'])),
-                              'source': self.source, 'complete': self.complete and error is None, 'error': error}
+                              'source': self.source, 'complete': complete, 'error': error}
                 self.stamp = now
             return copy.deepcopy(self.saved)

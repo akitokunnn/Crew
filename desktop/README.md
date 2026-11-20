@@ -22,17 +22,13 @@
 
 “设置 → 音效”单独管理 leader 回复完成、全局助手回复完成和任务交付的声音；每类可选内置音效或关闭，并可试听。总开关和音量也控制既有拍板、错误提示。保存后，项目页与助手使用同一份配置；保存与试听不会启动 AI。首次保存前保留网页已有的静音和音量偏好。
 
-设置中的“局域网访问”可开启独立网页入口、生成一次性配对码和移除设备。手机与其他电脑使用同一后台中的已有工作区和助手；本机文件管理、后台设置及原生桌面交接仍需在运行 Crew 的电脑上操作。访问默认关闭；电脑休眠或退出 Crew 后无法访问。详见 [0.3.4 使用与验证](../docs/v2/LAN_ACCESS_0.3.4_2026-11-01.md)。
+设置中的“局域网访问”可开启独立网页入口、生成一次性配对码和移除设备。手机与其他电脑使用同一后台中的已有工作区和助手；本机文件管理和后台设置仍需在运行 Crew 的电脑上操作。访问默认关闭；电脑休眠或退出 Crew 后无法访问。详见 [0.3.4 使用与验证](../docs/v2/LAN_ACCESS_0.3.4_2026-11-01.md)。
 
 0.3.5 可在该卡片选择 ZeroTier 及其本机地址，手机加入并开启同一 ZeroTier 网络后，使用显示的网址配对。修改访问地址会短暂断开网页连接，任务执行与历史仍由原后台持有。普通 HTTP 的请求 ID 和复制由共享的 `browser-utils.js` 负责，网页与桌面注入使用同一资源。验证见 [0.3.5 说明](../docs/v2/ZEROTIER_0.3.5_2026-11-02.md)。
-
-Windows Codex 桌面接续通过交接与返回按钮轮流使用同一原生对话。Crew 打开专用的官方桌面窗口；点“回到 Crew”时窗口可以保持打开，结束后也能再次交出。已有普通窗口的旧交接需先释放其连接并接回，才能进入新路径。真实两次往返、工具验证和官方标签历史缓存的显示边界见 [0.3.3 接续说明](../docs/v2/NATIVE_DESKTOP_0.3.3_2026-10-30.md)。
 
 以下版本段落保留为基线演进记录，不代表本次新版本的验证结果。
 
 原生 Electron 窗口、工作区首页和系统托盘。需要本机已有 Python 3，以及实际要使用的 Claude Code / Codex；普通工作文件夹无需 Git，后端继续使用 Python 标准库。
-
-Windows 构建还需 .NET Framework 4 自带的 C# 编译器。`npm run build` 与 `npm run build:dir` 会先编译 `native/CrewCodexBridge.cs`，找不到 `csc.exe` 或编译失败会中止构建。生成的 `assets/CrewCodexBridge.exe` 不提交 Git，打包时放在 `app.asar.unpacked/assets/`，通过后台环境传给原生桌面接续功能。开发模式可先运行 `npm --prefix desktop run build:codex-bridge`。
 
 0.2.40 修复普通 spawn 开工后又被目标分配重复启动成员的问题：自动派工遇到仍忙的成员总对话会明确返回冲突；`crew spawn --goal <ID>` 可直接创建并启动一个目标执行，反向重复唤醒也会拒绝。原生线程绑定跨总对话和目标统一检查唯一归属，并补齐并发回归及 GitHub Actions 自动测试。已有独立目标与用户明确发起的总对话继续保留各自历史。
 
@@ -114,6 +110,12 @@ npm run build
 
 构建版本读取本目录 `package.json`，产物包括 `dist/Crew-<version>-win-x64.zip`、`dist/Crew-<version>-portable.exe`、`dist/Crew-<version>-setup.exe`。ZIP 解压一次后直接运行目录中的 `Crew.exe`，日常启动无需重复解包；portable 是每次启动时临时解包的单文件程序；setup 是当前用户安装器，提供开始菜单、桌面快捷方式和卸载入口。`dist/win-unpacked/Crew.exe` 是同版未压缩目录，日常使用建议 ZIP 目录版或安装版。安装器与应用未做代码签名；EXE 原生图标资源仍正常嵌入。后端源码随应用放在 `resources/backend`，打包版会将后端按内容哈希保留到所选 home 的 `desktop/backend`，保证 portable 解包目录清理后 CLI 和守卫路径仍有效；Python 与 Git 使用本机安装。
 
+### Mac 构建
+
+在 GitHub Actions 手动运行「Crew Mac build」。工作流使用 `macos-15` arm64 runner，在 `desktop` 中执行 `npm run build:mac`，并对 `dist/mac-arm64/Crew.app` 做签名校验和隔离启动退出冒烟。Windows 开发机不能执行这套 Mac 签名打包流程。[构建工作流](../.github/workflows/mac-build.yml)
+
+从运行记录下载 `Crew-mac-arm64`，内含 `Crew-<version>-mac-arm64.dmg`、`Crew-<version>-mac-arm64.zip` 和 `smoke-output/`，保留 7 天。应用使用 ad-hoc 签名，未使用 Developer ID 或提交公证，首次打开会遇到 Gatekeeper 提示。在 Apple 芯片 Mac 复验包时，运行 `node scripts/smoke.cjs` 和 `node scripts/verify-bundle.cjs`，分别检查启动退出与包内源码一致性。[安装和试用步骤](../docs/MAC.md)
+
 验收新版本且保留正在运行的正式实例时，使用独立数据目录。此入口不会复制正式会话、QQ 凭据或自动恢复旧任务：
 
 ```powershell
@@ -126,6 +128,8 @@ $crewVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
 桌面的“连接与目录”可修改数据目录、后台来源、已有后台地址、固定端口和 Python。数据目录变更可复制现有数据并保留旧目录，也可使用目标目录的数据；空目录从零开始。先检查并展示受影响会话，再明确停止会话、暂停目标、确认自有后台退出后应用和重新打开。借用的后台由其原窗口管理。源码可选随应用更新或指定后台程序目录；页面分别展示所选配置和实际运行来源。启动设置保存在 HOME 外的本机应用数据目录，显式命令行参数优先。坏源码或解释器可在此页修正，自带控制程序不随其切换。
 
 隔离连接迁移验收：`node desktop/scripts/smoke-launch-settings.cjs`（在仓库根目录执行），使用两个临时 HOME 和不可发现 AI CLI 的测试环境，验证真实停止、复制、配置重载及新后台启动。
+
+“连接与目录”的第三种连接方式是“局域网主机”：填主机“设置 → 局域网访问”里显示的地址、主机生成的配对码和本机设备名，连接并保存后选中应用，Crew 重新打开即连到那台主机。已保存的设备放在启动设置目录的 `remote-backends.json`，设备令牌只以系统安全存储（Windows DPAPI、macOS 钥匙串）加密后保存。连到主机时不启动本机后台、不运行 Python；工作区、聊天、任务、设置、Git 设置、存储清理、维护、收编和历史都在主机上执行，新建 / 打开工作区、更改工作目录和接续历史用页面内的“主机文件夹”选择器选主机目录，导出会下载到本机。导入工作区包、交接材料、工具与 Crew 更新、局域网访问开关和运维对话只在主机上操作，系统管理员只读显示主机健康状态；主机版本不同时首页提示，授权失效时首页提供“重新配对”和“切回本机”。
 
 运维管理员常态使用程序监测。“自动修复”可设置启用开关、Crew 源码 Git 根目录、处理时限、复现与验证命令数组及合入分支，保存到 `home/desktop/admin/operations/policy.json`；打包后的后台目录不是 Git 仓库。开启时核实配置；关闭时允许留空，且不会中止已经执行的修复。已有配置未写 `enabled` 时保持旧行为。修复始终在隔离工作树里进行，应用前还须遵守项目 PR/合并规则并独立复验。portable 缺少已验证的运行中 Git 回退基线时会以 `NoVerifiedBaseline` 拒绝自动激活，保留 commit 和报告；不会把其它源码目录冒充已经运行过的旧版本。
 
@@ -156,6 +160,8 @@ node scripts/verify-icons.cjs "dist/win-unpacked/Crew.exe" "dist/Crew-$crewVersi
 结果保存在 `smoke-output/source.json` / `packaged.json` / `portable.json` 及同名 PNG。单元测试另外覆盖已有服务复用、Git 根目录解析、新建仓库、已有文件保护与后端端口 0 / 优雅退出。
 
 `smoke-handoff.cjs` 在私有 HOME 用历史记录和假载体守卫验收交接、离线未知结果、真实失败、后续工具状态、折叠与多行草稿保留，以及窄窗深色外观；还核对“在干活”的 leader/下属总数、列表入口、组头人数和空态。证据和截图在 `smoke-output/handoff`。不会向模型发送输入。
+
+`smoke-remote-backend.cjs`（在仓库根目录执行）启动隔离主机后台（真实 HTTP / SQLite，局域网入口绑定 127.0.0.1，假载体）和隔离 HOME 与启动设置目录的源码客户端，走添加设备 → 应用（记录重启参数后按原参数重开）→ 主机工作区 → 主机文件夹新建 → 工作区聊天页 → 设置与只读管理员 → 导出下载 → 主机强制下线 → 重新配对 → 重连；浅色 / 深色、1220 / 760 宽截图与证据在 `../Temp/remote-backend/`，模型启动数为零。
 
 `smoke-remote-access.cjs` 使用真实源码桌面窗口、隔离后台与 SQLite，点通设置中的开启、配对、移除设备和关闭；验证原本机服务继续可用，模型启动数为零。结果与截图在 `../Temp/remote-desktop/current/`，`--old-bridge` 可恢复缺失 IPC 的旧错作反证。此脚本不支持包内注入钩子；打包版本用基础启动退出与 `verify-bundle.cjs` 的源码一致性检查。手机及浏览器旅程在根目录运行 `node plugin/tests/smoke_remote_access.cjs`，指定 `--lan-address <本机局域网IPv4>` 可使用真实网卡地址。
 

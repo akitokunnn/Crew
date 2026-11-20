@@ -690,6 +690,20 @@ class SupervisorUtilityTests(unittest.TestCase):
             with mock.patch.object(supervisor.socket, "socket", side_effect=AssertionError("No bind for a live backend")):
                 self.assertFalse(admin._port_free("http://127.0.0.1:12345"))
 
+    def test_port_probe_uses_exclusive_bind_on_windows_and_reuse_on_posix(self):
+        with tempfile.TemporaryDirectory(prefix="crew-admin-port-") as directory:
+            admin = supervisor.Supervisor(directory)
+            for platform, option in (("nt", mock.sentinel.exclusive), ("posix", socket.SO_REUSEADDR)):
+                with self.subTest(platform=platform), mock.patch.object(admin, "_alive", return_value=False), \
+                     mock.patch.object(os, "name", platform), \
+                     mock.patch.object(socket, "SO_EXCLUSIVEADDRUSE", mock.sentinel.exclusive, create=True), \
+                     mock.patch.object(socket, "socket") as constructor:
+                    self.assertTrue(admin._port_free("http://127.0.0.1:12345"))
+                    constructor.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
+                    probe = constructor.return_value.__enter__.return_value
+                    self.assertEqual(probe.method_calls, [mock.call.setsockopt(socket.SOL_SOCKET, option, 1),
+                                                          mock.call.bind(("127.0.0.1", 12345))])
+
     def test_broken_parent_output_pipes_do_not_raise_or_stop_administrator(self):
         for error in (False, True):
             broken = mock.Mock()

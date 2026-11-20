@@ -82,17 +82,17 @@ def atomic(conn):
 
 def binding(conn, session_id, runtime):
     runtimes.validate(runtime)
-    row=conn.execute('SELECT native_id,model,effort,updated_at FROM session_runtime_bindings WHERE session_id=? AND runtime=?',(session_id,runtime)).fetchone()
+    row=conn.execute('SELECT native_id,model,effort,speed,updated_at FROM session_runtime_bindings WHERE session_id=? AND runtime=?',(session_id,runtime)).fetchone()
     if row is not None:return dict(row)
     current=runtimes.get(conn,session_id)
     if current['runtime']==runtime:
         return {'native_id':current['native_id'],**models.get(conn,session_id),'updated_at':None}
-    return {'native_id':None,'model':None,'effort':None,'updated_at':None}
+    return {'native_id':None,'model':None,'effort':None,'speed':None,'updated_at':None}
 
 
 def remember(conn,session_id,runtime,native_id,options,now=None):
-    conn.execute('INSERT INTO session_runtime_bindings(session_id,runtime,native_id,model,effort,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,runtime) DO UPDATE SET native_id=COALESCE(excluded.native_id,session_runtime_bindings.native_id),model=excluded.model,effort=excluded.effort,updated_at=excluded.updated_at',
-        (session_id,runtime,native_id,options.get('model'),options.get('effort'),board._time(now)))
+    conn.execute('INSERT INTO session_runtime_bindings(session_id,runtime,native_id,model,effort,speed,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id,runtime) DO UPDATE SET native_id=COALESCE(excluded.native_id,session_runtime_bindings.native_id),model=excluded.model,effort=excluded.effort,speed=excluded.speed,updated_at=excluded.updated_at',
+        (session_id,runtime,native_id,options.get('model'),options.get('effort'),options.get('speed'),board._time(now)))
 
 
 def pending(conn,session_id):
@@ -218,22 +218,22 @@ def configuration(conn,session_id):
             'goal_scope':scope_snapshot(conn,session_id)}
 
 
-def validate_target(runtime,model,effort,catalog):
+def validate_target(runtime,model,effort,catalog,speed=None):
     runtimes.validate(runtime)
     entry=next((item for item in catalog if item['id']==runtime),None)
     if entry is None or not entry.get('available'):raise board.Conflict((entry or {}).get('error') or '目标载体不可用')
     choices=entry.get('models') if runtime=='codex' else None
     if runtime=='codex' and effort is not None and model is None:
         raise board.BoardError('指定 Codex 档位时请同时选择目标模型；或将模型和档位都设为默认')
-    models.validate_options(model,effort,runtime=runtime,catalog=choices)
-    return {'model':model,'effort':effort}
+    models.validate_options(model,effort,runtime=runtime,catalog=choices,speed=speed)
+    return {'model':model,'effort':effort,'speed':speed}
 
 
-def prepare(conn,session,manager,runtime,catalog,model=None,effort=None,handoff_text=None,now=None):
+def prepare(conn,session,manager,runtime,catalog,model=None,effort=None,handoff_text=None,now=None,speed=None):
     check_idle(conn,session,manager)
     source=runtimes.get(conn,session['session_id'])
     if source['runtime']==runtime:raise board.Conflict('会话已经使用这个载体')
-    options=validate_target(runtime,model,effort,catalog)
+    options=validate_target(runtime,model,effort,catalog,speed)
     preview=handoff(conn,session,manager.journal(session['session_id']))
     if handoff_text is not None:
         if not isinstance(handoff_text,str) or not handoff_text.strip() or len(handoff_text)>MAX_HANDOFF:raise board.BoardError('交接上下文必须是 1 到 %s 字符的文本'%MAX_HANDOFF)
@@ -247,8 +247,8 @@ def prepare(conn,session,manager,runtime,catalog,model=None,effort=None,handoff_
             'notice':'更换此人员的默认执行工具及其已暂停/尚未启动的当前目标执行；其他人员与历史代次保持原配置'},
         'cost':{'starts_turn':False,'requires_context_replay':True,'notice':'下次发送或唤醒会重新读取交接和本目标上下文，可能增加用量；各工具原生历史保留，不估算 token 或价格'},'starts_turn':False}
     with atomic(conn):
-        conn.execute("INSERT INTO runtime_switches(id,session_id,project,from_runtime,to_runtime,target_model,target_effort,revision,handoff,created_at,expires_at,status,preview_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,'preview',?)",
-            (identifier,session['session_id'],session['project'],source['runtime'],runtime,model,effort,digest,preview['text'],stamp,expires,json.dumps(result,ensure_ascii=False)))
+        conn.execute("INSERT INTO runtime_switches(id,session_id,project,from_runtime,to_runtime,target_model,target_effort,target_speed,revision,handoff,created_at,expires_at,status,preview_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'preview',?)",
+            (identifier,session['session_id'],session['project'],source['runtime'],runtime,model,effort,speed,digest,preview['text'],stamp,expires,json.dumps(result,ensure_ascii=False)))
     return result
 
 
@@ -261,7 +261,7 @@ def switch(conn,session,manager,preview_id,confirm,catalog,now=None):
     if store.parse_iso(stamp)>store.parse_iso(row['expires_at']):raise board.Conflict('更换预览已过期，请重新检查')
     check_idle(conn,session,manager)
     if revision(conn,session,manager)!=row['revision']:raise board.Conflict('会话状态已经变化，请重新检查交接内容')
-    options=validate_target(row['to_runtime'],row['target_model'],row['target_effort'],catalog)
+    options=validate_target(row['to_runtime'],row['target_model'],row['target_effort'],catalog,row['target_speed'])
     source=runtimes.get(conn,session['session_id']);source_options=models.get(conn,session['session_id']);target=binding(conn,session['session_id'],row['to_runtime'])
     expected=configuration(conn,session['session_id'])
     if source['runtime']!=row['from_runtime']:raise board.Conflict('当前载体已经变化，请重新检查')
@@ -289,7 +289,7 @@ def switch(conn,session,manager,preview_id,confirm,catalog,now=None):
         runtimes.set.__wrapped__(conn,session['session_id'],row['to_runtime'],target['native_id'],now=stamp)
         models.set(conn,session['session_id'],**options,runtime=row['to_runtime'],now=stamp)
         for execution in configurable_executions(conn,session['session_id']):
-            if execution['runtime'] == row['to_runtime'] and {key:execution[key] for key in ('model','effort')} == options:continue
+            if execution['runtime'] == row['to_runtime'] and {key:execution[key] for key in ('model','effort','speed')} == options:continue
             goals.configure_execution(conn,execution['id'],row['to_runtime'],**options,now=stamp)
         remember(conn,session['session_id'],row['to_runtime'],target['native_id'],options,stamp)
         conn.execute("UPDATE runtime_switches SET superseded_at=? WHERE session_id=? AND status='configured' AND consumed_at IS NULL AND superseded_at IS NULL",(stamp,session['session_id']))

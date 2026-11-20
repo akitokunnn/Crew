@@ -1,4 +1,4 @@
-"""Runtime-specific model/effort validation and per-session options."""
+"""Runtime-specific model/effort/speed validation and per-session options."""
 import re
 
 from . import runtimes, store
@@ -13,6 +13,8 @@ MODELS = [
 EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 CODEX_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
 HAIKU = "claude-haiku-4-5-20251001"
+# Codex's own name for standard speed; None leaves the tier to Codex's config.
+STANDARD_SPEED = "default"
 INHERIT = object()
 
 
@@ -66,27 +68,63 @@ def validate_effort(effort, runtime="claude", catalog=None, model=None):
     return effort
 
 
-def validate_options(model, effort, runtime="claude", catalog=None):
+def speeds(choice):
+    """Codex service tiers a catalog model offers: Crew's {id,name} list or model/list serviceTiers."""
+    if choice is None:
+        return None
+    supported = choice.get("speeds") if "speeds" in choice else choice.get("serviceTiers")
+    if supported is None:
+        return None
+    if not isinstance(supported, list):
+        raise ValueError("Codex 速度清单格式不正确")
+    allowed = [item.get("id") if isinstance(item, dict) else item for item in supported]
+    if any(not isinstance(value, str) or not value.strip() for value in allowed):
+        raise ValueError("Codex 速度清单格式不正确")
+    return allowed
+
+
+def validate_speed(speed, runtime="claude", catalog=None, model=None):
+    """Codex speed: None follows Codex's own setting, STANDARD_SPEED is standard, else a catalog tier."""
+    runtimes.validate(runtime)
+    if speed is None:
+        return None
+    if runtime != "codex":
+        raise ValueError("Claude Code 不支持速度设置，请将 speed 设为 null")
+    if not isinstance(speed, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", speed) is None:
+        raise ValueError("不支持的速度: " + str(speed))
+    choice = _choice(model, catalog)
+    allowed = speeds(choice)
+    if model is None and choice is None and _catalog(catalog):
+        # Without a chosen model, only a tier every listed model offers is safe.
+        offered = [frozenset(found) for found in map(speeds, _catalog(catalog)) if found is not None]
+        allowed = sorted(frozenset.intersection(*offered)) if offered else None
+    if speed != STANDARD_SPEED and allowed is not None and speed not in allowed:
+        raise ValueError("这个 Codex 模型不支持所选速度: " + speed)
+    return speed
+
+
+def validate_options(model, effort, runtime="claude", catalog=None, speed=None):
     validate(model, runtime=runtime, catalog=catalog)
     validate_effort(effort, runtime=runtime, catalog=catalog, model=model)
+    validate_speed(speed, runtime=runtime, catalog=catalog, model=model)
     if runtime == "claude" and model == HAIKU and effort is not None:
         raise ValueError("Haiku 4.5 不支持 effort，请将 effort 设为 null")
 
 
 def get(conn, session_id):
-    row = conn.execute("SELECT model,effort FROM session_options WHERE session_id=?", (session_id,)).fetchone()
-    return dict(row) if row is not None else {"model": None, "effort": None}
+    row = conn.execute("SELECT model,effort,speed FROM session_options WHERE session_id=?", (session_id,)).fetchone()
+    return dict(row) if row is not None else {"model": None, "effort": None, "speed": None}
 
 
-def set(conn, session_id, model, effort, now=None, runtime=None, catalog=None):
+def set(conn, session_id, model, effort, now=None, runtime=None, catalog=None, speed=None):
     runtime = runtimes.get(conn, session_id)["runtime"] if runtime is None else runtime
-    validate_options(model, effort, runtime=runtime, catalog=catalog)
-    if model is None and effort is None:
+    validate_options(model, effort, runtime=runtime, catalog=catalog, speed=speed)
+    if model is None and effort is None and speed is None:
         conn.execute("DELETE FROM session_options WHERE session_id=?", (session_id,))
     else:
-        conn.execute("INSERT INTO session_options(session_id,model,effort,set_at) VALUES(?,?,?,?) "
-                     "ON CONFLICT(session_id) DO UPDATE SET model=excluded.model,effort=excluded.effort,set_at=excluded.set_at",
-                     (session_id, model, effort, store.now_iso() if now is None else now))
+        conn.execute("INSERT INTO session_options(session_id,model,effort,speed,set_at) VALUES(?,?,?,?,?) "
+                     "ON CONFLICT(session_id) DO UPDATE SET model=excluded.model,effort=excluded.effort,speed=excluded.speed,set_at=excluded.set_at",
+                     (session_id, model, effort, speed, store.now_iso() if now is None else now))
     current=runtimes.get(conn,session_id)
-    conn.execute('INSERT INTO session_runtime_bindings(session_id,runtime,native_id,model,effort,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,runtime) DO UPDATE SET model=excluded.model,effort=excluded.effort,updated_at=excluded.updated_at',
-                 (session_id,runtime,current['native_id'] if current['runtime']==runtime else None,model,effort,store.now_iso() if now is None else now))
+    conn.execute('INSERT INTO session_runtime_bindings(session_id,runtime,native_id,model,effort,speed,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id,runtime) DO UPDATE SET model=excluded.model,effort=excluded.effort,speed=excluded.speed,updated_at=excluded.updated_at',
+                 (session_id,runtime,current['native_id'] if current['runtime']==runtime else None,model,effort,speed,store.now_iso() if now is None else now))

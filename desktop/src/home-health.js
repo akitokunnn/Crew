@@ -1,11 +1,24 @@
 'use strict';
 (() => {
   const $=id=>document.getElementById(id),bridge=window.crewDesktop,panel=$('admin-page'),nav=$('nav-admin');
-  const supported=typeof bridge?.adminStatus==='function'&&typeof bridge?.adminCheck==='function'&&typeof bridge?.adminRestart==='function';
+  // Connected to a LAN host this page only reads the host's health; recovery and operations stay on the host.
+  const remote=bridge?.remote===true;
+  const supported=typeof bridge?.adminStatus==='function'&&(remote||typeof bridge?.adminCheck==='function'&&typeof bridge?.adminRestart==='function');
   const labels={starting:'正在启动',healthy:'运行正常',degraded:'服务响应异常',recovering:'正在自动恢复',failed:'无法连接',stopped:'后台已停止',unmanaged:'外部服务',unknown:'状态未知',paused:'维护中 / 已暂停',circuit_open:'自动恢复已暂停',stopping:'正在停止'};
   let snapshot=null,pending=null,error='',controlError='',receipt=null,note='',timer=null,visible=false,incidentsKey='',operationsKey='';
   const date=value=>{const parsed=new Date(value);return value&&!Number.isNaN(parsed.valueOf())?parsed.toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}):'尚未记录';};
+  function renderRemote(){
+    const state=error?'failed':snapshot?.state||'unknown';
+    $('admin-state').textContent=error?'检测失败':{healthy:'运行正常',degraded:'部分服务未运行'}[state]||'正在读取';$('admin-state').dataset.state=state;
+    $('admin-checked').textContent=snapshot?.checked_at?date(snapshot.checked_at):'尚未检测';
+    $('admin-recoveries').textContent=snapshot?.version||'—';
+    $('admin-last-recovery').textContent=snapshot?'本机版本 '+snapshot.local_version+(snapshot.version!==snapshot.local_version?' · 版本不一致，部分功能可能不一致':''):'';
+    $('admin-error').textContent=error;$('admin-error').hidden=!error;
+    $('admin-note').textContent=pending==='status'?'正在读取主机后台状态…':snapshot?.warnings?.length?'主机上未运行的服务：'+snapshot.warnings.join('、'):'';$('admin-note').hidden=!$('admin-note').textContent;
+    for(const [id,key]of [['admin-supervisor-pid','name'],['admin-service-pid','service_pid'],['admin-service-url','url'],['admin-instance','home']])$(id).textContent=snapshot?.[key]??'—';
+  }
   function render(){
+    if(remote){renderRemote();return;}
     const state=error?'unknown':snapshot?.state||'unknown';
     $('admin-state').textContent=error?'检测失败':labels[state]||labels.unknown;$('admin-state').dataset.state=state;
     $('admin-checked').textContent=snapshot?.checked_at?date(snapshot.checked_at):'尚未检测';
@@ -75,6 +88,15 @@
     nav.classList.add('active');nav.setAttribute('aria-current','page');$('admin-title').focus();syncVisibility();
   }
   nav.hidden=!supported;
+  if(remote){
+    panel.querySelector('.admin-header p').textContent='只读显示所连主机的后台状态。重启、恢复和运维对话请在主机上的 Crew 中进行。';
+    $('admin-conversation').hidden=true;panel.querySelector('.admin-actions').hidden=true;
+    for(const section of panel.querySelectorAll('.admin-incidents-section'))section.hidden=true;
+    const stats=panel.querySelectorAll('.admin-stat');
+    stats[0].querySelector('p').textContent='只读查看，不会重启或修复主机。';stats[1].querySelector('h2').textContent='主机版本';
+    const labels=panel.querySelectorAll('.admin-details dt');for(const [index,label]of ['主机','后台进程','服务地址','主机数据目录'].entries())labels[index].textContent=label;
+    panel.querySelector('.admin-details').open=true;
+  }
   nav.addEventListener('click',show);$('nav-workspaces').addEventListener('click',hide);$('nav-tools').addEventListener('click',hide);
   $('admin-check').addEventListener('click',()=>{void request('check');});
   $('admin-conversation').addEventListener('click',()=>{void window.CrewHomeSettings.show('backend');});
@@ -82,6 +104,6 @@
   document.addEventListener('visibilitychange',syncVisibility);
   new MutationObserver(syncVisibility).observe(document.body,{subtree:true,attributes:true,attributeFilter:['hidden']});
   window.addEventListener('pagehide',clear);
-  function mount(host){const parent=panel.parentNode;host.append(panel);$('admin-conversation').hidden=true;panel.hidden=false;syncVisibility();return()=>{hide();$('admin-conversation').hidden=false;parent.append(panel);};}
+  function mount(host){const parent=panel.parentNode;host.append(panel);$('admin-conversation').hidden=true;panel.hidden=false;syncVisibility();return()=>{hide();$('admin-conversation').hidden=remote;parent.append(panel);};}
   render();window.CrewHomeHealth={show,hide,mount};
 })();

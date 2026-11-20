@@ -1,7 +1,7 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os');
-const {LaunchSettings,readSync,relaunchArgs,save}=require('../src/launch-settings.cjs');
+const {LaunchSettings,readSync,relaunchArgs,save,shape}=require('../src/launch-settings.cjs');
 const core=require('../src/core.cjs');
 const {CrewUpdates}=require('../src/crew-updates.cjs');
 const {OperationsClient}=require('../src/operations.cjs');
@@ -30,11 +30,22 @@ async function fixture(t,options={}) {
     if(route==='/api/admin/connection/prepare'){assert.deepEqual(body,{instance_id:'fixture-instance'});if(options.prepareFailure)throw Error('运维修复仍在运行');return{ok:true,pid:101,instance_id:'fixture-instance',managed_pids:[102],gate_id:'fixture-gate'};}
     throw Error('Unexpected route '+route);
   };
-  const manager=new LaunchSettings(config,{backend,updates,operations,bundledBackend:source,request,
+  const hostHealth={ok:true,service:'crew',version:options.hostVersion||'0.0.0-test',home:'/Users/host/.crew',instance_id:'host-instance',host_name:'书房的 Mac',pid:7,warnings:[]};
+  const saved=[{id:'saved-host',name:'192.168.1.20:47812',url:'http://192.168.1.20:47812',device_id:'device-1',paired_at:'2026-11-19T08:00:00.000Z'}];
+  const remotes={async list(){return saved;},async credential(id){const item=saved.find(entry=>entry.id===id);if(!item)throw Error('已保存的局域网设备不存在，请在连接设置中重新选择后台');return{...item,token:'t'.repeat(43)};},
+    async pair(body){calls.push('pair');return{...saved[0],paired:body};}};
+  const remoteRequest=async(credential,route)=>{
+    calls.push('remote '+route);assert.equal(credential.token,'t'.repeat(43));
+    if(options.revoked)throw Object.assign(Error('设备授权已失效，请在主机上重新生成配对码'),{status:401});
+    if(route==='/api/access/context')return{client:options.browserClient?'browser':'desktop'};
+    if(route==='/api/admin/health')return hostHealth;
+    throw Error('Unexpected host route '+route);
+  };
+  const manager=new LaunchSettings(config,{backend,updates,operations,remotes,remoteRequest,bundledBackend:source,request,
     probePort:options.realPort?undefined:async()=>{calls.push('probe-port');},
-    run:async(exe,args,settings)=>{calls.push('python-version');assert.equal(exe,'fixture-python');assert.deepEqual(args,['--version']);assert.equal(settings.windowsHide,true);return{stdout:options.oldPython?'Python 3.8.1':'Python 3.13.0'};},
+    run:async(exe,args,settings)=>{calls.push('python-version');assert.equal(exe,'fixture-python');assert.deepEqual(args,['-c',"import sys;print('%d.%d'%sys.version_info[:2])"]);assert.equal(settings.windowsHide,true);return{stdout:options.oldPython?'3.8':'3.13'};},
     onApplied:async()=>{calls.push('relaunch');assert.ok(readSync(config.launchSettingsPath));}});
-  const settings={mode:'local',home,source:'bundled',backend_directory:source,service_url:'',port:0,python:'fixture-python'};
+  const settings={mode:'local',home,source:'bundled',backend_directory:source,service_url:'',port:0,python:'fixture-python',remote_backend:''};
   if(options.startupFailure){backend.startupError='后台启动失败';backend.supervised=true;backend.url='http://127.0.0.1:0';}
   return{root,home,target,source,config,backend,calls,manager,settings,preparedHomes};
 }
@@ -250,9 +261,75 @@ test('real isolated HOME migration repairs missing saved source and Python using
   let relaunched=0;
   const manager=new LaunchSettings(config,{backend,updates,operations:new OperationsClient(config),bundledBackend:helper,
     request:()=>{throw Error('No service or model may be started in this fixture');},onApplied:()=>{relaunched++;}});
-  const result=await manager.apply({settings:{mode:'local',home:target,source:'bundled',backend_directory:helper,service_url:'',port:0,python:'python'},home_action:'copy'});
+  const result=await manager.apply({settings:{mode:'local',home:target,source:'bundled',backend_directory:helper,service_url:'',port:0,python:'python',remote_backend:''},home_action:'copy'});
   assert.equal(result.ok,true);assert.equal(relaunched,1);assert.equal(readSync(settingsPath).python,'python');assert.equal(readSync(settingsPath).source,'bundled');
   assert.equal(await fs.readFile(path.join(home,'important-note.txt'),'utf8'),'原始历史与文档保留');assert.equal(await fs.readFile(path.join(target,'important-note.txt'),'utf8'),'原始历史与文档保留');
   assert.equal(await fs.readFile(path.join(home,'crew.db')).then(value=>value.subarray(0,15).toString()),'SQLite format 3');
   assert.equal((await new OperationsClient({home:target,backendDir:helper}).request('snapshot')).busy,false);
+});
+
+test('launch settings saved before LAN hosts are read with an explicit empty device and saved in the current structure',async t=>{
+  const f=await fixture(t),{remote_backend:_device,...legacy}=f.settings;
+  await fs.mkdir(path.dirname(f.config.launchSettingsPath),{recursive:true});await fs.writeFile(f.config.launchSettingsPath,JSON.stringify(legacy));
+  assert.deepEqual(readSync(f.config.launchSettingsPath),f.settings);
+  await save(f.config.launchSettingsPath,readSync(f.config.launchSettingsPath));
+  assert.deepEqual(Object.keys(JSON.parse(await fs.readFile(f.config.launchSettingsPath,'utf8'))).sort(),Object.keys(f.settings).sort());
+  for(const value of [{...legacy,extra:''},{...f.settings,mode:'remote'},{...f.settings,remote_backend:'saved-host'},{...legacy,remote:''}]){
+    await fs.writeFile(f.config.launchSettingsPath,JSON.stringify(value));assert.throws(()=>readSync(f.config.launchSettingsPath),/无法读取 Crew 启动设置/);
+  }
+  assert.throws(()=>shape({...f.settings,mode:'remote'}),/请选择要连接的局域网设备/);
+  assert.equal(shape({...f.settings,mode:'remote',remote_backend:'saved-host'}).remote_backend,'saved-host');
+});
+
+test('switching a borrowed window to a LAN host checks only the host and touches no local Python, lock or HOME',async t=>{
+  const f=await fixture(t,{borrowed:true,hostVersion:'0.3.99',badCurrentPython:true});
+  f.config.backendDir=path.join(f.root,'missing backend');
+  const body={settings:{...f.settings,mode:'remote',remote_backend:'saved-host',home:'ignored draft HOME',port:4321},home_action:'existing'};
+  const preview=await f.manager.validate(body);
+  assert.deepEqual(preview.remote,{id:'saved-host',name:'192.168.1.20:47812',url:'http://192.168.1.20:47812',version:'0.3.99',local_version:'0.0.0-test'});
+  assert.equal(preview.settings.home,f.home,'this computer keeps its own HOME for switching back');assert.equal(preview.settings.port,0);assert.equal(preview.settings.python,'missing-python');
+  assert.equal(preview.impact.connection_changed,true);assert.equal(preview.impact.running_count,0);assert.equal(preview.service.home,'/Users/host/.crew');
+  const result=await f.manager.apply(body);assert.equal(result.restarting,true);
+  assert.deepEqual(readSync(f.config.launchSettingsPath),{...f.settings,mode:'remote',remote_backend:'saved-host',python:'missing-python'});
+  for(const call of ['python-version','lock','stop','prepare-home','home-inspect','probe-port','/api/admin/health'])assert.ok(!f.calls.includes(call),call);
+  assert.deepEqual(f.calls.filter(call=>call.startsWith('remote ')),['remote /api/access/context','remote /api/admin/health','remote /api/access/context','remote /api/admin/health']);
+});
+
+test('switching an owned local backend to a LAN host safely stops its sessions before saving the connection',async t=>{
+  const f=await fixture(t);
+  const result=await f.manager.apply({settings:{...f.settings,mode:'remote',remote_backend:'saved-host'},home_action:'existing'});
+  assert.equal(result.restarting,true);assert.equal(result.impact.running_count,1);
+  for(const [before,after]of [['lock','/api/admin/connection/prepare'],['/api/admin/connection/prepare','stop'],['stop','stopped'],['stopped','relaunch'],['relaunch','unlock']])assert.ok(f.calls.indexOf(before)<f.calls.indexOf(after),before+' before '+after);
+  assert.ok(!f.calls.includes('prepare-home'));assert.equal(readSync(f.config.launchSettingsPath).mode,'remote');
+});
+
+test('a LAN host that does not accept this device stops the switch before anything is saved',async t=>{
+  for(const options of [{borrowed:true,revoked:true},{borrowed:true,browserClient:true}]){
+    const f=await fixture(t,options);
+    await assert.rejects(f.manager.apply({settings:{...f.settings,mode:'remote',remote_backend:'saved-host'},home_action:'existing'}),/重新生成配对码|重新配对/);
+    await assert.rejects(fs.access(f.config.launchSettingsPath),{code:'ENOENT'});assert.ok(!f.calls.includes('relaunch'));
+  }
+  const missing=await fixture(t,{borrowed:true});
+  await assert.rejects(missing.manager.validate({settings:{...missing.settings,mode:'remote',remote_backend:'forgotten'},home_action:'existing'}),/已保存的局域网设备不存在/);
+});
+
+test('a LAN window switches back to this computer without probing the host as a borrowed local service',async t=>{
+  const f=await fixture(t,{borrowed:true,targetKind:'crew'});
+  Object.assign(f.backend,{remote:true,owned:false,child:null,url:'http://192.168.1.20:47812',startupError:'授权已失效，请在主机上重新生成配对码'});
+  f.config.remoteBackend='saved-host';
+  const current=await f.manager.get();
+  assert.equal(current.settings.mode,'remote');assert.equal(current.settings.remote_backend,'saved-host');assert.equal(current.current.service_url,'');
+  assert.equal(current.reconnect_required,true);assert.equal(current.remote_backends[0].id,'saved-host');assert.equal(typeof current.device_name,'string');
+  const result=await f.manager.apply({settings:{...current.settings,mode:'local',remote_backend:''},home_action:'existing'});
+  assert.equal(result.restarting,true);assert.deepEqual(f.preparedHomes,[{home:f.home,reset_deployment:false}]);
+  assert.ok(!f.calls.includes('stop'));assert.ok(!f.calls.includes('/api/admin/connection/plan'));
+  assert.equal(f.calls.filter(call=>call==='/api/admin/health').length,1,'only the LAN health read in get(); the host is never treated as a local service');
+  assert.deepEqual(readSync(f.config.launchSettingsPath),{...f.settings,mode:'local',remote_backend:''});
+});
+
+test('re-pairing a saved host passes only the address, code and device name',async t=>{
+  const f=await fixture(t,{borrowed:true});
+  const result=await f.manager.pair({url:'192.168.1.20:47812',code:'12345678',device_name:'书房电脑'});
+  assert.equal(result.backend.id,'saved-host');assert.deepEqual(result.backend.paired,{url:'192.168.1.20:47812',code:'12345678',device_name:'书房电脑'});
+  await assert.rejects(f.manager.pair({url:'192.168.1.20:47812',code:'12345678',device_name:'x',token:'injected'}),/只能包含/);
 });

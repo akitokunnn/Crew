@@ -23,6 +23,7 @@
     assistant: '<path d="M5 5h14a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1h-7l-4.5 3.5v-3.5H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M8.5 10.5h.01M12 10.5h.01M15.5 10.5h.01"/>',
     more: '<circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/>',
     channel: '<path d="M4 6h16v10H9l-5 4z"/>',
+    architecture: '<rect x="9" y="3" width="6" height="5" rx="1.5"/><rect x="3" y="16" width="6" height="5" rx="1.5"/><rect x="15" y="16" width="6" height="5" rx="1.5"/><path d="M12 8v4M6 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2"/>',
     git: '<circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="8" r="2"/><path d="M6.5 7.5v9M17.5 10c0 4-5 3.5-9.5 7"/>',
     usage: '<path d="M5 19V11M10 19V5M15 19v-6M20 19V9"/>',
     todos: '<path d="m5 12 3.5 3.5L19 6"/><path d="M5 19h14"/>',
@@ -61,6 +62,7 @@
     const go = [
       sheetItem("channel", "Leader 交流区", navAttrs("channel"), tag(), '<em class="m-count" data-m-count="channel" hidden></em>'),
       sheetItem("todos", "待办", navAttrs("todos"), tag()),
+      sheetItem("architecture", "架构图", navAttrs("architecture"), tag()),
       sheetItem("git", "Git 助手", navAttrs("git"), tag(), '<em class="m-count" data-m-count="git" hidden></em>'),
       sheetItem("usage", "用量与额度", navAttrs("usage"), tag()),
       sheetItem("switch", "切换工作区", 'href="/"', "a"),

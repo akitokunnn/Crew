@@ -47,7 +47,7 @@ TABLES = ('agents', 'groups', 'group_memberships', 'conversations', 'messages', 
 TERMINAL = ('completed', 'failed', 'cancelled')
 VOLATILE_TABLES = {'events','document_scans','read_cursors','channel_reads','goal_execution_reads','rule_reads','trust_leader_migrations',
     'usage_files','claude_sessions','claude_requests','claude_prompts','claude_tool_calls','claude_compactions',
-    'codex_sessions','codex_runs','codex_rate_limits'}
+    'codex_sessions','codex_runs','codex_rate_limits','claude_weeks'}
 
 
 def _json(value):
@@ -451,6 +451,7 @@ class _Materializer:
                 round=rnd['number'],session_id=execution['agent_id'],generation=execution['attempt_no'],runtime=self.runtime,
                 model=execution['requested_model'] if execution['status'] in TERMINAL else self.execution_defaults['model'],
                 effort=execution['requested_effort'] if execution['status'] in TERMINAL else self.execution_defaults['effort'],
+                speed=None if execution['status'] in TERMINAL or self.runtime != 'codex' else self.execution_defaults['speed'],
                 status=execution['status'] if execution['status'] in TERMINAL else 'paused',requirement_version=rnd['requirement_version'],
                 created_at=execution['created_at'],updated_at=self.stamp,ended_at=execution['finished_at'],error=execution['error_summary']),
                 'executions',execution['id'])

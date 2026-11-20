@@ -9,6 +9,8 @@ const crypto = require('node:crypto');
 
 const SIZES = Object.freeze([16, 20, 24, 32, 40, 48, 64, 128, 256, 512, 1024]);
 const ICO_SIZES = Object.freeze([16, 24, 32, 48, 64, 128, 256]);
+const TRAY_TEMPLATES = [['crew-trayTemplate.png', 16], ['crew-trayTemplate@2x.png', 32]];
+const BLACK = [0, 0, 0];
 const MARK_PATH = 'M14.26 8.54 A4.90 4.90 0 1 0 14.26 15.46';
 const COLORS = Object.freeze({ tile: [41, 49, 46], ring: [246, 245, 241], point: [138, 198, 184] });
 const SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 24 24">
@@ -34,33 +36,39 @@ function chunk(type, bytes) {
   checksum.writeUInt32BE(crc(Buffer.concat([name, bytes])));
   return Buffer.concat([length, name, bytes, checksum]);
 }
-function png(width, height, rgba) {
+function png(width, height, rgba, dpi) {
   const header = Buffer.alloc(13), rows = Buffer.alloc((width * 4 + 1) * height);
   header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 6;
   for (let y = 0; y < height; y++) rgba.copy(rows, y * (width * 4 + 1) + 1, y * width * 4, (y + 1) * width * 4);
-  return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', header),
-    chunk('IDAT', zlib.deflateSync(rows, { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
+  const chunks = [Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', header)];
+  if (dpi) {
+    const density = Buffer.alloc(9), pixelsPerMeter = Math.round(dpi / 0.0254);
+    density.writeUInt32BE(pixelsPerMeter, 0); density.writeUInt32BE(pixelsPerMeter, 4); density[8] = 1;
+    chunks.push(chunk('pHYs', density));
+  }
+  return Buffer.concat([...chunks, chunk('IDAT', zlib.deflateSync(rows, { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
 }
 
 // Exact circular arc geometry of the original SVG, including rounded line caps.
 const radius = 4.9, halfGap = 3.46, centerX = 14.26 - Math.sqrt(radius * radius - halfGap * halfGap);
-function sample(x, y) {
+function sample(x, y, template) {
   const dx = Math.max(Math.abs(x - 12) - 5.5, 0), dy = Math.max(Math.abs(y - 12) - 5.5, 0);
   if (dx * dx + dy * dy > 36) return null;
-  if ((x - 17.4) ** 2 + (y - 16.4) ** 2 <= 1.75 ** 2) return COLORS.point;
+  if ((x - 17.4) ** 2 + (y - 16.4) ** 2 <= 1.75 ** 2) return template ? BLACK : COLORS.point;
   const cx = x - centerX, cy = y - 12;
   const onArc = (cx <= 0 || Math.abs(cy) * Math.sqrt(radius * radius - halfGap * halfGap) >= cx * halfGap) &&
     Math.abs(Math.hypot(cx, cy) - radius) <= 1.4;
   const onCap = (x - 14.26) ** 2 + Math.min((y - 8.54) ** 2, (y - 15.46) ** 2) <= 1.4 ** 2;
+  if (template) return onArc || onCap ? BLACK : null;
   return onArc || onCap ? COLORS.ring : COLORS.tile;
 }
-function raster(size) {
+function raster(size, template = false) {
   if (!Number.isInteger(size) || size < 1 || size > 2048) throw new Error('Icon size must be between 1 and 2048');
   const rgba = Buffer.alloc(size * size * 4), grid = size <= 64 ? 8 : 3, samples = grid * grid;
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
     let red = 0, green = 0, blue = 0, count = 0;
     for (let sy = 0; sy < grid; sy++) for (let sx = 0; sx < grid; sx++) {
-      const color = sample((x + (sx + 0.5) / grid) * 24 / size, (y + (sy + 0.5) / grid) * 24 / size);
+      const color = sample((x + (sx + 0.5) / grid) * 24 / size, (y + (sy + 0.5) / grid) * 24 / size, template);
       if (color) { red += color[0]; green += color[1]; blue += color[2]; count++; }
     }
     if (count) {
@@ -105,11 +113,12 @@ function writeAssets(directory = path.resolve(__dirname, '../assets')) {
   for (const [size, data] of images) fs.writeFileSync(path.join(directory, `crew-${size}.png`), data);
   fs.writeFileSync(path.join(directory, 'crew.png'), images.get(256));
   fs.writeFileSync(path.join(directory, 'crew-tray.png'), images.get(32));
+  for (const [name, size] of TRAY_TEMPLATES) fs.writeFileSync(path.join(directory, name), png(size, size, raster(size, true), size * 72 / 16));
   const ico = makeIco(ICO_SIZES.map(size => ({ size, data: images.get(size) })));
   fs.writeFileSync(path.join(directory, 'crew.ico'), ico);
   const manifest = { source: 'plugin/crew/web/logo.svg', mark: 'open ring plus separate point',
     palette: { tile: '#29312E', ring: '#F6F5F1', point: '#8AC6B8' }, icoSizes: ICO_SIZES,
-    files: Object.fromEntries(['crew.svg', 'crew.png', 'crew-tray.png', 'crew.ico', ...SIZES.map(size => `crew-${size}.png`)].map(name =>
+    files: Object.fromEntries(['crew.svg', 'crew.png', 'crew-tray.png', 'crew.ico', ...TRAY_TEMPLATES.map(([name]) => name), ...SIZES.map(size => `crew-${size}.png`)].map(name =>
       [name, crypto.createHash('sha256').update(fs.readFileSync(path.join(directory, name))).digest('hex')])) };
   fs.writeFileSync(path.join(directory, 'crew-icons.json'), JSON.stringify(manifest, null, 2) + '\n');
   return manifest;

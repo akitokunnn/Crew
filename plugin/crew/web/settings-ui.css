@@ -49,6 +49,8 @@
 .cs-badge{display:inline-flex;align-items:center;flex:none;padding:3px 9px;border:1px solid var(--cs-line);border-radius:6px;font-size:calc(11px * var(--cs-scale));line-height:1.6;color:var(--cs-muted)}
 .cs-default .cs-badge,.cs-ready{color:var(--cs-accent);border-color:color-mix(in srgb,var(--cs-accent) 18%,var(--cs-line));background:color-mix(in srgb,var(--cs-accent) 6%,var(--cs-card))}
 .cs-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) minmax(0,1fr);gap:16px;margin-top:24px}
+.cs-fields.cs-fields-speed{grid-template-columns:repeat(2,minmax(0,1fr))}
+.cs-speed-note{min-height:25px;margin-top:-3px;color:var(--cs-muted);font-size:calc(11.5px * var(--cs-scale));line-height:1.5;overflow-wrap:anywhere}
 .cs-fields label{display:flex;flex-direction:column;min-width:0;gap:8px;font-size:calc(12.5px * var(--cs-scale));color:var(--cs-muted)}
 .cs-fields select,.cs-fields input{width:100%;min-width:0;height:calc(42px * var(--cs-scale));padding:8px 30px 8px 12px;border:1px solid var(--cs-line);border-radius:8px;background:var(--cs-bg);color:var(--cs-text);font-size:calc(13px * var(--cs-scale));line-height:1.5;transition:border-color .15s,box-shadow .15s}
 .cs-fields select:hover,.cs-fields input:hover{border-color:color-mix(in srgb,var(--cs-muted) 40%,var(--cs-line))}
@@ -139,6 +141,7 @@
 @container crew-settings-body (max-width:720px){
   .cs-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
   .cs-fields>label:first-child{grid-column:1/-1}
+  .cs-fields.cs-fields-speed>label:first-child{grid-column:auto}
   .cs-header{padding:28px 24px 24px}
   .cs-content{padding:0 24px 26px}
   .cs-footer{padding:14px 24px;flex-wrap:wrap}

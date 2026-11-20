@@ -97,7 +97,7 @@ class RuntimeSwitchTests(RuntimeFixture):
             with self.subTest(options=options),self.assertRaises(ValueError):self.prepare(**options)
         preview=self.prepare();self.assertEqual((preview['to']['model'],preview['to']['effort']),(None,None))
         self.switch(preview)
-        self.assertEqual(models.get(self.conn,'member-id'),{'model':None,'effort':None})
+        self.assertEqual(models.get(self.conn,'member-id'),{'model':None,'effort':None,'speed':None})
         runtimes.set(self.conn,'member-id','codex','native-codex')
         models.set(self.conn,'member-id','gpt-test','high')
         back=self.prepare('claude',model='claude-sonnet-5-5',effort='low');self.switch(back)
@@ -106,6 +106,21 @@ class RuntimeSwitchTests(RuntimeFixture):
         self.assertEqual(runtimes.get(self.conn,'member-id')['native_id'],'native-codex')
         old=runtime_switch.binding(self.conn,'member-id','claude')
         self.assertEqual((old['model'],old['effort']),('claude-sonnet-5-5','low'))
+
+    def test_codex_target_speed_is_previewed_saved_and_never_carried_to_claude(self):
+        catalog=[CATALOG[0],{**CATALOG[1],'models':[{'id':'gpt-test','efforts':['low','high'],'speeds':[{'id':'priority','name':'Fast'}]}]}]
+        for speed in ('ultrafast','bad speed'):
+            with self.subTest(speed=speed),self.assertRaises(ValueError):
+                self.manager.prepare_runtime(self.conn,'member-id','codex',catalog,model='gpt-test',now=NOW,speed=speed)
+        preview=self.manager.prepare_runtime(self.conn,'member-id','codex',catalog,model='gpt-test',now=NOW,speed='priority')
+        self.assertEqual(preview['to']['speed'],'priority')
+        self.assertEqual(self.manager.switch_runtime(self.conn,'member-id',preview['preview_id'],True,catalog,now=NOW)['speed'],'priority')
+        self.assertEqual(models.get(self.conn,'member-id'),{'model':'gpt-test','effort':None,'speed':'priority'})
+        self.assertEqual(runtime_switch.binding(self.conn,'member-id','codex')['speed'],'priority')
+        with self.assertRaisesRegex(ValueError,'Claude Code'):self.prepare('claude',speed='priority')
+        self.switch(self.prepare('claude'))
+        self.assertEqual(models.get(self.conn,'member-id')['speed'],None)
+        self.assertEqual(self.prepare('codex')['to']['speed'],None)
 
     def test_first_codex_to_claude_creates_then_switch_back_resumes_original_histories(self):
         runtimes.set(self.conn,'member-id','codex','native-existing')

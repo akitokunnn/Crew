@@ -4,6 +4,7 @@ import json
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from unittest import mock
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -11,6 +12,21 @@ from urllib.request import Request, urlopen
 
 from crew import web
 from test_shell import PLUGIN, ShellFixture
+
+
+class VscodeStatePathTests(unittest.TestCase):
+    def test_default_database_path_by_platform(self):
+        profile = Path('profile')
+        appdata = profile / 'AppData' / 'Roaming'
+        database = Path('Code/User/globalStorage/state.vscdb')
+        for platform, config in (('win32', appdata),
+                                 ('darwin', profile / 'Library' / 'Application Support'),
+                                 ('linux', profile / '.config')):
+            environment = {'APPDATA': str(appdata)} if platform == 'win32' else {}
+            with self.subTest(platform=platform), mock.patch('crew.web.sys.platform', platform), \
+                 mock.patch.dict('crew.web.os.environ', environment, clear=True), \
+                 mock.patch('crew.web.Path.home', return_value=profile):
+                self.assertEqual(web._vscode_state_db(), config / database)
 
 
 class FileLinksTests(ShellFixture, unittest.TestCase):
@@ -72,7 +88,7 @@ class FileLinksTests(ShellFixture, unittest.TestCase):
         for path in ('missing.md', self.worktree):
             self.assertIsNotNone(self.request('resolve', path)[1]['error'])
             self.assertEqual(self.request('content', path)[0], 400)
-            with mock.patch('crew.web.os.startfile') as opener:
+            with mock.patch('crew.web.os.startfile', create=True) as opener:
                 self.assertEqual(self.request('open', path)[0], 400)
                 opener.assert_not_called()
         for ext, kind in (('md', 'markdown'), ('txt', 'text'), ('py', 'text'), ('svg', 'image'),
@@ -111,15 +127,44 @@ class FileLinksTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.request('content', 'x.svg', raw=True, base=doc), (200, image.read_bytes()))
         self.assertEqual(self.request('content', 'x.md', base=doc)[1]['content'], '# heading')
 
+    @mock.patch('crew.web.sys.platform', 'win32')
     def test_desktop_open_and_reveal_are_mocked(self):
         file = self.worktree / 'page.html'
         file.write_text('<h1>Hello</h1>')
-        with mock.patch('crew.web.os.startfile') as opener, mock.patch('crew.web.subprocess.Popen') as explorer:
+        with mock.patch('crew.web.os.startfile', create=True) as opener, mock.patch('crew.web.subprocess.Popen') as explorer:
             self.assertEqual(self.request('open', file)[0], 200)
             opener.assert_called_once_with(str(file))
             self.assertEqual(self.request('reveal', file)[0], 200)
             explorer.assert_called_once_with(['explorer', '/select,' + str(file)])
 
+    def test_macos_opens_and_reveals_files(self):
+        file = self.worktree / 'page with spaces.html'
+        file.write_text('<h1>Hello</h1>')
+        with mock.patch('crew.web.sys.platform', 'darwin'), mock.patch('crew.web.subprocess.Popen') as opener:
+            self.assertEqual(self.request('open', file), (200, {'ok': True}))
+            self.assertEqual(self.request('reveal', file), (200, {'ok': True}))
+        self.assertEqual(opener.call_args_list, [mock.call(['open', str(file)]), mock.call(['open', '-R', str(file)])])
+
+    def test_macos_passes_the_encoded_vscode_uri_to_open(self):
+        file = '/Users/crew/代码 #100%.py'
+        info = {'path': file, 'open_with': 'vscode', 'error': None}
+        with mock.patch('crew.web.sys.platform', 'darwin'), mock.patch.object(self.service, 'resolve_file', return_value=info), \
+             mock.patch('crew.web.subprocess.Popen') as opener:
+            self.assertEqual(self.request('open', file), (200, {'ok': True}))
+        opener.assert_called_once_with(['open', 'vscode://file/Users/crew/%E4%BB%A3%E7%A0%81%20%23100%25.py'])
+
+    def test_open_and_reveal_on_other_platforms_return_an_explanation(self):
+        file = self.worktree / 'page.html'
+        file.write_text('<h1>Hello</h1>')
+        with mock.patch('crew.web.sys.platform', 'linux'), mock.patch('crew.web.subprocess.Popen') as opener, \
+             mock.patch('crew.web.os.startfile', create=True) as startfile:
+            for action in ('open', 'reveal'):
+                with self.subTest(action=action):
+                    self.assertEqual(self.request(action, file), (400, {'error': '当前系统暂不支持从 Crew 打开文件'}))
+        opener.assert_not_called()
+        startfile.assert_not_called()
+
+    @mock.patch('crew.web.sys.platform', 'win32')
     def test_document_whitelist_uses_default_app(self):
         extensions = 'md txt log json csv xml yaml yml toml ini cfg html htm pdf doc docx xls xlsx ppt pptx png jpg jpeg gif webp svg bmp'.split()
         for ext in extensions:
@@ -127,11 +172,12 @@ class FileLinksTests(ShellFixture, unittest.TestCase):
                 file = self.worktree / ('x.' + ext.upper())
                 file.write_text('sample')
                 self.assertEqual(self.request('resolve', file)[1]['open_with'], 'default')
-                with mock.patch('crew.web.os.startfile') as opener, mock.patch('crew.web.subprocess.Popen') as explorer:
+                with mock.patch('crew.web.os.startfile', create=True) as opener, mock.patch('crew.web.subprocess.Popen') as explorer:
                     self.assertEqual(self.request('open', file)[0], 200)
                     opener.assert_called_once_with(str(file))
                     explorer.assert_not_called()
 
+    @mock.patch('crew.web.sys.platform', 'win32')
     def test_code_whitelist_uses_encoded_vscode_file_uri(self):
         extensions = 'py js cjs mjs ts tsx jsx css scss ps1 bat cmd sh c h cpp hpp cs java go rs rb php sql vue svelte uproject uplugin Build.cs'.split()
         for ext in extensions:
@@ -142,18 +188,19 @@ class FileLinksTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(info['open_with'], 'vscode')
                 self.assertEqual(info['kind'], 'text')
                 expected = 'vscode://file/' + self.worktree.as_posix() + '/%E4%BB%A3%E7%A0%81%20%23100%25.' + ext
-                with mock.patch('crew.web.os.startfile') as opener, mock.patch('crew.web.subprocess.Popen') as explorer:
+                with mock.patch('crew.web.os.startfile', create=True) as opener, mock.patch('crew.web.subprocess.Popen') as explorer:
                     self.assertEqual(self.request('open', file)[0], 200)
                     opener.assert_called_once_with(expected)
                     explorer.assert_not_called()
 
+    @mock.patch('crew.web.sys.platform', 'win32')
     def test_other_types_reject_open_without_desktop_calls(self):
         for ext in ('exe', 'msi', 'com', 'scr', 'lnk', 'vbs', 'wsf', 'reg', 'jar', 'unknown', ''):
             with self.subTest(ext=ext):
                 file = self.worktree / ('x.' + ext if ext else 'no_extension')
                 file.write_text('sample')
                 self.assertEqual(self.request('resolve', file)[1]['open_with'], 'blocked')
-                with mock.patch('crew.web.os.startfile') as opener, mock.patch('crew.web.subprocess.Popen') as explorer:
+                with mock.patch('crew.web.os.startfile', create=True) as opener, mock.patch('crew.web.subprocess.Popen') as explorer:
                     status, result = self.request('open', file)
                     self.assertEqual(status, 400)
                     self.assertEqual(result['error'], '这类文件不直接打开，请用‘在文件夹中显示’')

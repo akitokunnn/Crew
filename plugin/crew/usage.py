@@ -19,6 +19,8 @@ CODEX_TOKENS = (
 # 2026-10 社区实测，Max 20x、Opus 5.5 为主：单账号 Claude Code 5 个周期 $23.5～27/点，17 账号网关中位数 $16.4/点；本机下限 $14.6/点
 CLAUDE_WEEKLY_USD_PER_POINT = 20
 CLAUDE_WEEKLY_USD_PER_POINT_RANGE = (16, 27)
+CLAUDE_WEEK = dt.timedelta(days=7)
+DEFAULT_PRICES = Path(__file__).resolve().parent.parent / "defaults" / "prices.json"
 
 
 def _iso(value):
@@ -486,7 +488,7 @@ def period(name, now):
     return _iso(start), _iso(end)
 
 
-def load_prices(path):
+def _price_file(path):
     with Path(path).open(encoding="utf-8") as stream:
         prices = json.load(stream)
     if not isinstance(prices, dict):
@@ -496,6 +498,16 @@ def load_prices(path):
             if not isinstance(rates[key], (int, float)) or rates[key] < 0:
                 raise ValueError(f"invalid price: {key}")
     return prices
+
+
+def load_prices(path):
+    """The home's price file, plus bundled prices for models it does not list.
+
+    Install copies the bundled file only once, so models released later would
+    otherwise stay unpriced on existing homes. Listed models keep the home's price.
+    """
+    home = _price_file(path)
+    return {**_price_file(DEFAULT_PRICES), **home}
 
 
 def _bounds(start, end):
@@ -535,6 +547,36 @@ def _money(row, prices):
     return (None if unsplit else cost), cost, unsplit
 
 
+def _crew_sessions(conn):
+    """Claude sessions counted as Crew: current leaders and grouped members, with their native bindings."""
+    crew = {row['session_id'] for row in conn.execute("SELECT session_id FROM sessions "
+        "WHERE role='leader' OR (group_name IS NOT NULL AND group_name!='')")}
+    return {session_id for session_id, name in _session_names(conn).items() if name['crew_session_id'] in crew}
+
+
+def _week_costs(conn, crew, since, reset, prices, now):
+    """Crew's and the whole machine's Claude API cost in [since, reset), up to now; None when unpriced."""
+    crew_cost = machine_cost = 0.0
+    for row in conn.execute('SELECT * FROM claude_requests WHERE ts>=? AND ts<? AND ts<=?',
+                            (_iso(since), _iso(reset), _iso(now))):
+        cost = _money(row, prices)[0]
+        machine_cost = None if cost is None or machine_cost is None else machine_cost + cost
+        if row['session_id'] in crew:
+            crew_cost = None if cost is None or crew_cost is None else crew_cost + cost
+    return crew_cost, machine_cost
+
+
+def _points(cost):
+    low_price, high_price = CLAUDE_WEEKLY_USD_PER_POINT_RANGE
+    return {
+        "cost_usd": cost, "points": None if cost is None else cost / CLAUDE_WEEKLY_USD_PER_POINT,
+        "low": None if cost is None else cost / high_price,
+        "high": None if cost is None else cost / low_price,
+        "usd_per_point": CLAUDE_WEEKLY_USD_PER_POINT,
+        "usd_per_point_range": list(CLAUDE_WEEKLY_USD_PER_POINT_RANGE),
+    }
+
+
 def crew_weekly(conn, seven_day, prices, now):
     """Estimate current Crew's account-wide Claude weekly quota points from API cost."""
     if seven_day is None or seven_day["used_percent"] is None or not seven_day.get("resets_at"):
@@ -542,27 +584,66 @@ def crew_weekly(conn, seven_day, prices, now):
     reset = store.parse_iso(seven_day["resets_at"])
     if reset <= now:
         return None
-    since = _iso(reset - dt.timedelta(days=7))
-    cost = 0.0
-    names = _session_names(conn)
-    crew = {row['session_id'] for row in conn.execute("SELECT session_id FROM sessions "
-        "WHERE role='leader' OR (group_name IS NOT NULL AND group_name!='')")}
-    for row in conn.execute('SELECT * FROM claude_requests WHERE ts>=? AND ts<=?', (since, _iso(now))):
-        if names[row['session_id']]['crew_session_id'] not in crew:
-            continue
-        request_cost = _money(row, prices)[0]
-        if request_cost is None:
-            cost = None
-            break
-        cost += request_cost
-    low_price, high_price = CLAUDE_WEEKLY_USD_PER_POINT_RANGE
-    return {
-        "cost_usd": cost, "points": None if cost is None else cost / CLAUDE_WEEKLY_USD_PER_POINT,
-        "low": None if cost is None else cost / high_price,
-        "high": None if cost is None else cost / low_price,
-        "usd_per_point": CLAUDE_WEEKLY_USD_PER_POINT,
-        "usd_per_point_range": list(CLAUDE_WEEKLY_USD_PER_POINT_RANGE), "since": since,
-    }
+    since = reset - CLAUDE_WEEK
+    cost = _week_costs(conn, _crew_sessions(conn), since, reset, prices, now)[0]
+    return {**_points(cost), "since": _iso(since)}
+
+
+def _week_key(resets_at):
+    """Claude's cache and stream report one reset with different sub-second noise."""
+    return _iso((store.parse_iso(resets_at) + dt.timedelta(seconds=30)).replace(second=0, microsecond=0))
+
+
+def record_claude_week(conn, seven_day):
+    """Keep the account percentage of each Claude weekly window after it resets.
+
+    seven_day is claude_limits.latest(): a window that already reset still carries
+    the last percentage seen. Only newer observations replace a recorded one.
+    """
+    if seven_day is None or not seven_day.get("resets_at"):
+        return
+    key = _week_key(seven_day["resets_at"])
+    with _transaction(conn, "claude_weeks", immediate=True):
+        old = conn.execute("SELECT * FROM claude_weeks WHERE resets_at=?", (key,)).fetchone()
+        values = {"resets_at": key, "since": _iso(store.parse_iso(key) - CLAUDE_WEEK)}
+        if seven_day["used_percent"] is not None and (
+                old is None or old["captured_at"] is None
+                or store.parse_iso(seven_day["captured_at"]) >= store.parse_iso(old["captured_at"])):
+            values.update(used_percent=seven_day["used_percent"], captured_at=_timestamp(seven_day["captured_at"]))
+        _save(conn, "claude_weeks", "resets_at", values)
+
+
+def claude_weeks(conn, prices, now):
+    """Claude weekly windows, newest first, with crew_weekly's estimate for each.
+
+    Besides the recorded windows, whole weeks back to Crew's first request and
+    between two recorded windows are listed without an account percentage.
+    Costs come from saved requests, so price fixes also correct past weeks.
+    """
+    recorded = [dict(row) for row in conn.execute("SELECT * FROM claude_weeks ORDER BY resets_at")]
+    if not recorded:
+        return []
+    crew = _crew_sessions(conn)
+    first = conn.execute("SELECT MIN(ts) FROM claude_requests WHERE session_id IN (SELECT value FROM json_each(?))",
+                         (json.dumps(sorted(crew)),)).fetchone()[0]
+    windows, earlier = [], None
+    for row in recorded:
+        end, missing = store.parse_iso(row["since"]), []
+        while (end - CLAUDE_WEEK >= earlier) if earlier else (first is not None and end > store.parse_iso(first)):
+            missing.append({"since": _iso(end - CLAUDE_WEEK), "resets_at": _iso(end), "used_percent": None, "captured_at": None})
+            end -= CLAUDE_WEEK
+        windows += [*reversed(missing), row]
+        earlier = store.parse_iso(row["resets_at"])
+    result = []
+    for window in reversed(windows):
+        reset = store.parse_iso(window["resets_at"])
+        crew_cost, machine = _week_costs(conn, crew, store.parse_iso(window["since"]), reset, prices, now)
+        result.append({
+            "since": window["since"], "resets_at": window["resets_at"], "current": reset > now,
+            "used_percent": window["used_percent"], "captured_at": window["captured_at"], "machine_cost_usd": machine,
+            "crew_share": crew_cost / machine if crew_cost is not None and machine else None, "crew": _points(crew_cost),
+        })
+    return result
 
 
 def _aggregate():

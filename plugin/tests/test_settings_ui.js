@@ -48,8 +48,8 @@ test("an automatic sole task runtime supplies its actual model list and model-sp
   const ai=config();ai.default.runtime="codex";ai.digest=selection;assert.deepEqual(plain(ui.validate(ai,sole).digest),selection);
 });
 test("changing a model under automatic sole runtime refreshes effort options and saves the user's explicit compatible choice",async()=>{
-  const handlers={},nodes=new Map(),picker={tagName:"SELECT",innerHTML:""},element=()=>({classList:{add(){},toggle(){}},setAttribute(){},focus(){},textContent:"",innerHTML:"",disabled:false});
-  const content={...element(),querySelector:()=>picker},root={...element(),contains:()=>true,querySelectorAll:()=>[],querySelector(selector){if(selector===".cs-content")return content;if(!nodes.has(selector))nodes.set(selector,element());return nodes.get(selector);},addEventListener:(type,handler)=>handlers[type]=handler};
+  const handlers={},nodes=new Map(),picker={tagName:"SELECT",innerHTML:""},speedPicker={tagName:"SELECT",innerHTML:""},element=()=>({classList:{add(){},toggle(){}},setAttribute(){},focus(){},textContent:"",innerHTML:"",disabled:false});
+  const content={...element(),querySelector:selector=>selector.includes('"speed"')?speedPicker:picker},root={...element(),contains:()=>true,querySelectorAll:()=>[],querySelector(selector){if(selector===".cs-content")return content;if(!nodes.has(selector))nodes.set(selector,element());return nodes.get(selector);},addEventListener:(type,handler)=>handlers[type]=handler};
   const ai=config();ai.default.runtime="codex";ai.digest={runtime:null,model:"native-b",effort:"deep"};const snapshot={ai,runtimes:[{...catalog[0],available:false},{...catalog[1],models:[...catalog[1].models,{id:"native-c",efforts:["light"]}]}]};let saved;
   const settings=ui.create({host:root,read:async()=>snapshot,save:async body=>{saved=plain(body);return {...snapshot,ai:body.ai,execution:body.execution};}});settings.open();for(let i=0;i<12;i++)await Promise.resolve();
   handlers.change({target:{dataset:{aiKey:"digest",aiField:"model"},value:"native-c"}});assert(picker.innerHTML.includes('value="light"'));assert.equal(settings.getDraft().digest.effort,"deep");assert.equal(saved,undefined);
@@ -59,7 +59,8 @@ test("model and effort suggestions come from catalogs and custom values are esca
   const selection={runtime:"codex",model:'future<model>"',effort:"future&effort"};const html=ui.selectionMarkup("default",selection,catalog);
   assert(html.includes('value="future&lt;model&gt;&quot;"'));assert(html.includes('value="future&amp;effort"'));assert(html.includes('value="native-b"'));
   assert(!html.includes('value="native-a"'));assert(!html.includes("haiku"));assert(html.includes('>原生默认</option>'));
-  assert(!html.includes('<datalist'));assert.equal((html.match(/<select /g)||[]).length,3);assert(html.includes('自定义输入'));
+  assert(!html.includes('<datalist'));assert.equal((html.match(/<select /g)||[]).length,4);assert(html.includes('自定义输入'));
+  assert(html.includes('data-ai-field="speed"'));assert(html.includes('cs-fields-speed'));
   const custom=ui.selectionMarkup("default",selection,catalog,new Set(["default:model"]));
   assert(custom.includes('<input data-ai-key="default" data-ai-field="model"'));assert(custom.includes('返回列表'));
 });
@@ -106,4 +107,26 @@ test("storage opens independently and late model discovery preserves its cleanup
   resolve({ai:config(),runtimes:catalog});for(let i=0;i<12;i++)await Promise.resolve();
   assert.equal(mounts,beforeMounts);assert.equal(cleanups,beforeCleanups);assert.equal(content.preview.id,"reviewed-cleanup");
   settings.hide();assert.equal(cleanups,beforeCleanups+1);
+});
+test("Codex speed is offered from catalog tiers and Claude never carries one",()=>{
+  const fast=[catalog[0],{...catalog[1],models:[{id:"native-b",efforts:["deep"],speeds:[{id:"priority",name:"Fast",description:"2x speed"}]},{id:"native-c",efforts:[],speeds:[{id:"priority",name:"Fast"},{id:"ultrafast",name:"Ultrafast"}]}]}];
+  const html=ui.selectionMarkup("default",{runtime:"codex",model:"native-c",effort:null,speed:"ultrafast"},fast);
+  assert(html.includes('value="ultrafast" selected'));assert(html.includes('value="default"'));assert.equal((html.match(/>原生默认<\/option>/g)||[]).length,3);
+  assert(!ui.selectionMarkup("default",{runtime:"claude",model:null,effort:null,speed:null},fast).includes('data-ai-field="speed"'));
+  const unset=ui.selectionMarkup("default",{runtime:"codex",model:null,effort:null,speed:null},fast);assert(unset.includes('value="priority"'));assert(!unset.includes('value="ultrafast"'));
+  assert(ui.selectionMarkup("default",{runtime:"codex",model:"native-b",effort:null,speed:"ultrafast"},fast).includes('当前 · ultrafast'));
+  const ai=config();ai.default={runtime:"codex",model:"native-b",effort:null,speed:"ultrafast"};assert.throws(()=>ui.validate(ai,fast),/不支持所选速度/);
+  ai.default.speed="priority";assert.equal(ui.validate(ai,fast).default.speed,"priority");
+  ai.default={runtime:"claude",model:null,effort:null,speed:"priority"};assert.throws(()=>ui.validate(ai,fast),/只适用于 Codex/);
+  assert.equal(ui.speedName(fast[1],"priority"),"Fast");assert.equal(ui.speedName(fast[1],"default"),"标准");
+});
+
+test("a LAN host connection labels host settings and offers no LAN access card or local backend wording",()=>{
+  const {root,content}=panelHarness();
+  ui.create({host:root,remote:true,read:()=>new Promise(()=>{}),save:()=>{},panels:{}}).open("backend");
+  assert.match(root.innerHTML,/Crew · 所连主机/);assert.match(root.innerHTML,/所连主机的设置 · 所有工作区共用/);
+  assert.doesNotMatch(root.innerHTML,/data-settings-category="remote"/);
+  const local=panelHarness();
+  ui.create({host:local.root,read:()=>new Promise(()=>{}),save:()=>{},panels:{remote(){}}}).open("remote");
+  assert.match(local.root.innerHTML,/Crew · 本机偏好/);assert.match(local.root.innerHTML,/data-settings-category="remote"/);
 });

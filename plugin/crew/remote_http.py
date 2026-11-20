@@ -1,13 +1,26 @@
 """An independently owned HTTP listener; it never starts or stops Crew's service."""
+import os
 import socket
+import socketserver
 import threading
 import time
 from http.server import ThreadingHTTPServer
 
 
+def bind_without_fqdn(server):
+    """Bind like HTTPServer.server_bind, minus its socket.getfqdn(host) reverse lookup.
+
+    On macOS that lookup of 127.0.0.1 stalled for 35 s on the macos-15 runner (2026-11-20),
+    longer than the desktop's startup deadline. Crew never reads server_name.
+    """
+    socketserver.TCPServer.server_bind(server)
+    host, port = server.server_address[:2]
+    server.server_name, server.server_port = host, port
+
+
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = False
+    allow_reuse_address = os.name != 'nt'
 
     def __init__(self, address, handler, controller, stop_event):
         self.remote_controller = controller
@@ -16,6 +29,9 @@ class _Server(ThreadingHTTPServer):
         self._handlers = set()
         self._connection_lock = threading.Lock()
         super().__init__(address, handler)
+
+    def server_bind(self):
+        bind_without_fqdn(self)
 
     def get_request(self):
         connection, address = super().get_request()

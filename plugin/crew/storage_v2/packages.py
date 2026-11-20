@@ -317,7 +317,10 @@ def _verified_package(path, limits, *, extract_blobs=False):
                 _stream(source, output, expected_size=database['bytes'], expected_sha256=database['sha256'])
             with closing(sqlite3.connect(incoming_path.as_uri() + '?mode=ro&immutable=1', uri=True)) as incoming, \
                     closing(sqlite3.connect(clean_path, isolation_level=None)) as clean:
-                incoming.enable_load_extension(False)
+                # CPython built without loadable-extension support (the GitHub macOS image) has no
+                # such method and can load no extension at all, so there is nothing left to disable.
+                if hasattr(incoming, 'enable_load_extension'):
+                    incoming.enable_load_extension(False)
                 incoming.execute('PRAGMA query_only=ON'); incoming.execute('PRAGMA trusted_schema=OFF')
                 incoming.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, limits.max_value_bytes)
                 deadline = time.monotonic() + limits.sql_timeout_seconds

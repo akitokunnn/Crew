@@ -82,9 +82,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
     def test_state_exact_shape_and_empty_limits(self):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
                     "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
-                    "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant", "git_branches"}
+                    "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant", "git_branches",
+                    "domains"}
         state = self.state()
         self.assertEqual(set(state), expected)
+        self.assertEqual(state["domains"], {"version": 0, "paths": {}})
 
         self.assertEqual(set(state["project"]), {"name", "display_name", "root", "theme"})
         self.assertEqual(state["projects"], [{"name": "demo", "display_name": None, "theme": "celadon"}])
@@ -97,7 +99,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "applied", "activity", "context", "where", "codex", "codex_older", "pinned", "runtime", "native_handoff", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults", "color", "avatar_version"})
+            "model", "effort", "speed", "applied", "activity", "context", "where", "codex", "codex_older", "pinned", "runtime", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults", "color", "avatar_version"})
         self.assertIsNone(leader['member_defaults'])
         self.assertIsNone(leader['active_goal_id']); self.assertIsNone(leader['active_execution_id'])
         self.assertEqual(set(leader['runtime_switch']), {'allowed', 'reason', 'pending_handoff', 'last_switch_at'})
@@ -252,8 +254,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         goal = response['goal']
         self.assertEqual(set(goal),{'id','project','leader_session_id','title','original_request','status',
             'requirement_version','current_round','priority','manual_pause','reason','version','created_at','updated_at',
-            'dependencies','requirements','assignments','rounds','request','acceptance','constraints','report_available','acceptance_brief','native_handoffs','work_summary','decision_mode','supplements_after_report',
-            'now_doing','pending_decision','working_count','finish_pending','transfer_pending','observing','last_activity_at'})
+            'dependencies','requirements','assignments','rounds','request','acceptance','constraints','report_available','acceptance_brief','work_summary','decision_mode','supplements_after_report',
+            'now_doing','pending_decision','working_count','finish_pending','transfer_pending','observing','last_activity_at','ended_at'})
         self.assertEqual((goal['decision_mode']['mode'], goal['decision_mode']['source'], goal['decision_mode']['version']),
                          ('human','task-default',1))
         self.assertEqual((goal['project'],goal['leader_session_id'],goal['title'],goal['status']),('demo','s3','验证交付','queued'))
@@ -261,7 +263,6 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual((goal['current_round'],goal['requirement_version'],goal['version']),(1,1,1))
         self.assertEqual(goal['acceptance'],[{'id':'a1','title':'具体 example 达标'}])
         self.assertFalse(goal['report_available']);self.assertFalse(goal['manual_pause'])
-        self.assertEqual(goal['native_handoffs'], [])
         self.assertIsNone(goal['acceptance_brief'])
         self.assertEqual(goal['supplements_after_report'], [])
         self.assertEqual(goal['work_summary'], {'total':0,'done':0,'doing':0,'blocked':0,'revision':0})
@@ -328,8 +329,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         member = members["s1"]
         self.assertEqual(set(member), {"session_id", "name", "title", "leader_session_id", "group", "status",
             "status_note", "where", "task", "scope", "done_when", "branch", "worktree", "cwd", "cc_name",
-            "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "effort", "applied", "activity",
-            "context", "busy", "running", "runtime", "native_handoff", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
+            "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "effort", "speed", "applied", "activity",
+            "context", "busy", "running", "runtime", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
         "execution_records", "general_has_output"})
         self.assertEqual((member["name"], member["leader_session_id"], member["group"], member["scope"], member["done_when"]),
                          ("one", "s3", "lead", "Backend", "Tests pass"))
@@ -555,6 +556,9 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         code, report, _ = self.request("/api/usage", project="demo")
         self.assertEqual(code, 200, report)
         self.assertEqual(report["summary"]["claude_limits"]["seven_day"]["crew"], crew)
+        [week] = report["claude_weeks"]
+        self.assertEqual((week["since"], week["used_percent"], week["current"]), ("2026-10-15T08:00:00.000Z", 25, True))
+        self.assertAlmostEqual(week["crew"]["cost_usd"], 0.01275)
 
     def test_claude_crew_reuses_cache_until_next_usage_scan(self):
         self.week_limit((self.clock + dt.timedelta(days=1)).isoformat())

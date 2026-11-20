@@ -95,3 +95,20 @@ footer{margin-top:auto;padding:15px 34px 19px;font-size:10.5px;line-height:1.7;c
 .workspace-recovery h2{margin:0 0 12px;font-size:20px}.workspace-recovery p{font-size:13px;line-height:1.8}.workspace-recovery .recovery-path{overflow-wrap:anywhere;color:var(--muted,#777)}
 .workspace-recovery label{display:grid;gap:8px;font-size:12px}.workspace-recovery select{width:100%;padding:10px;border:1px solid var(--line,#ddd);border-radius:8px;background:var(--surface,#fff);color:inherit}
 .recovery-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;margin-top:24px}
+.remote-banner{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:14px 16px;margin:0 0 18px;border:1px solid #c7d3de;border-left-width:3px;border-radius:10px;background:#f7fafc;color:#2b2b2b;font-size:12px;line-height:1.75}
+.remote-banner[data-tone=warning]{border-color:#d9b46a;background:#fffaf0}
+.remote-banner[data-tone=error]{border-color:#e2c3c3;background:#fff6f6}
+.remote-banner-text{flex:1;min-width:240px}
+.remote-banner-text strong{display:block;font-size:13px;font-weight:500;line-height:1.6;overflow-wrap:anywhere}
+.remote-banner-text p{margin:3px 0 0;color:#666;overflow-wrap:anywhere}
+.remote-banner-text .remote-banner-note{color:#4f4f4f}
+.remote-banner-text .remote-banner-note.is-error{color:#a33d3d}
+.remote-banner-actions{display:flex;gap:8px;flex:none;flex-wrap:wrap}
+.remote-repair{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:end;gap:10px;width:100%}
+.remote-repair label{display:grid;gap:6px;min-width:0;font-size:12px;color:#555}
+.remote-repair input[name=code]{font-family:"Cascadia Code",Consolas,"Microsoft YaHei",monospace;letter-spacing:.5px}
+.remote-repair-actions{display:flex;gap:8px}
+.remote-banner button{font:inherit;cursor:pointer}
+.remote-banner button:focus-visible{outline:2px solid #777;outline-offset:2px}
+.remote-banner button:disabled{opacity:.45;cursor:wait}
+@media(max-width:850px){.remote-banner{align-items:stretch;flex-direction:column}.remote-banner-text{min-width:0}.remote-repair{grid-template-columns:1fr}.remote-repair-actions .button,.remote-banner-actions .button{flex:1}}

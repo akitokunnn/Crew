@@ -50,6 +50,7 @@ class RemoteAccessTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory(prefix='crew-remote-access-')
         self.home = Path(self.directory.name)
         self.now = time.time()
+        self.monotonic = 0
         self.controllers = []
         self.controller = self.make(self.home)
         self.controller.action({'action': 'start', 'bind': '127.0.0.1', 'port': 0})
@@ -64,16 +65,17 @@ class RemoteAccessTests(unittest.TestCase):
             listener = remote_http.Listener(bind, port, BrowserHandler, controller)
             listener.server.business = []
             return listener
-        controller = remote_access.Controller(home, factory or create, clock=lambda: self.now)
+        controller = remote_access.Controller(home, factory or create, clock=lambda: self.now,
+                                              monotonic=lambda: self.monotonic)
         controller.set_static_paths({'/', '/app.js', '/assistant.html', '/api/admin/config'})
         self.controllers.append(controller)
         return controller
 
-    def request(self, path, data=None, *, cookie=None, controller=None, headers=None, raw=None):
+    def request(self, path, data=None, *, cookie=None, controller=None, headers=None, raw=None, origin=True):
         controller = controller or self.controller
         port = controller.listener.port
         connection = http.client.HTTPConnection('127.0.0.1', port, timeout=3)
-        values = {'Origin': 'http://127.0.0.1:%s' % port}
+        values = {'Origin': 'http://127.0.0.1:%s' % port} if origin else {}
         if cookie:
             values['Cookie'] = cookie
         if data is not None or raw is not None:
@@ -91,8 +93,10 @@ class RemoteAccessTests(unittest.TestCase):
     def login(self, controller=None, **fields):
         controller = controller or self.controller
         pair = controller.action({'action': 'pair'})
-        status, value, headers = self.request('/remote/login', {'code': pair['code'], **fields}, controller=controller)
+        status, value, headers = self.request('/remote/login', {'code': pair['code'], 'kind': 'browser', **fields},
+                                              controller=controller)
         self.assertEqual(200, status, value)
+        self.assertIn(f'Max-Age={400 * 24 * 60 * 60}', headers['Set-Cookie'])
         return headers['Set-Cookie'].split(';')[0], pair
 
     def test_unauthenticated_get_post_sse_files_and_reports_never_reach_business(self):
@@ -115,7 +119,7 @@ class RemoteAccessTests(unittest.TestCase):
         self.assertIn(hashlib.sha256(token.encode()).hexdigest(), saved)
         self.assertNotIn('token_hash', json.dumps(self.controller.snapshot()))
         self.assertFalse(self.controller.snapshot()['pair_pending'])
-        self.assertEqual(400, self.request('/remote/login', {'code': pair['code']})[0])
+        self.assertEqual(400, self.request('/remote/login', {'code': pair['code'], 'kind': 'browser'})[0])
         self.assertEqual(200, self.request('/api/chat/send', {'text': 'one input'}, cookie=cookie)[0])
         self.assertEqual(1, len(self.controller.listener.server.business))
         self.controller.shutdown()
@@ -169,14 +173,14 @@ class RemoteAccessTests(unittest.TestCase):
     def test_pair_expiry_rate_limit_and_concurrent_single_use(self):
         pair = self.controller.action({'action': 'pair'})
         self.now += remote_access.PAIR_SECONDS + 1
-        self.assertEqual(400, self.request('/remote/login', {'code': pair['code']})[0])
+        self.assertEqual(400, self.request('/remote/login', {'code': pair['code'], 'kind': 'browser'})[0])
         pair = self.controller.action({'action': 'pair'})
         for _ in range(5):
-            self.assertEqual(400, self.request('/remote/login', {'code': 'not-code'})[0])
-        self.assertEqual(429, self.request('/remote/login', {'code': pair['code']})[0])
+            self.assertEqual(400, self.request('/remote/login', {'code': 'not-code', 'kind': 'browser'})[0])
+        self.assertEqual(429, self.request('/remote/login', {'code': pair['code'], 'kind': 'browser'})[0])
         pair = self.controller.action({'action': 'pair'})
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(lambda _: self.request('/remote/login', {'code': pair['code']})[0], range(2)))
+            results = list(pool.map(lambda _: self.request('/remote/login', {'code': pair['code'], 'kind': 'browser'})[0], range(2)))
         self.assertEqual([200, 400], sorted(results))
         self.assertEqual(1, len(self.controller.snapshot()['devices']))
 
@@ -189,7 +193,7 @@ class RemoteAccessTests(unittest.TestCase):
     def test_remote_human_actions_and_local_only_routes(self):
         cookie, _ = self.login()
         for path in ('/api/admin/config', '/api/storage/clean', '/api/assistant/native-action',
-                     '/api/session/native-handoff', '/api/files/open', '/api/files/reveal'):
+                     '/api/files/open', '/api/files/reveal'):
             self.assertEqual(403, self.request(path, {}, cookie=cookie)[0])
         for data in ({'action': 'assign'}, {'action': 'mode.set', 'actor_session_id': 'leader'},
                      {'action': 'mode.set', 'execution_id': 'execution'}):
@@ -217,7 +221,7 @@ class RemoteAccessTests(unittest.TestCase):
                 if operation == 'revoke':
                     self.controller.action({'action': 'revoke', 'device_id': self.controller.snapshot()['devices'][0]['id']})
                 elif operation == 'expiry':
-                    self.now += remote_access.SESSION_SECONDS + 1
+                    self.now += remote_access.IDLE_SECONDS + 1
                 else:
                     listener = self.controller.listener
                     self.controller.action({'action': 'stop'})
@@ -257,7 +261,129 @@ class RemoteAccessTests(unittest.TestCase):
     def test_failed_persistence_does_not_consume_pair_or_authenticate_device(self):
         pair = self.controller.action({'action': 'pair'})
         with patch.object(self.controller, '_save', side_effect=OSError('disk full')):
-            self.assertEqual(503, self.request('/remote/login', {'code': pair['code']})[0])
+            self.assertEqual(503, self.request('/remote/login', {'code': pair['code'], 'kind': 'browser'})[0])
         self.assertTrue(self.controller.snapshot()['pair_pending'])
         self.assertEqual([], self.controller.snapshot()['devices'])
-        self.assertEqual(200, self.request('/remote/login', {'code': pair['code']})[0])
+        self.assertEqual(200, self.request('/remote/login', {'code': pair['code'], 'kind': 'browser'})[0])
+
+    def test_version_one_migrates_on_next_save_and_unknown_version_is_preserved(self):
+        cookie, _ = self.login()
+        self.controller.shutdown()
+        path = self.controller.path
+        saved = json.loads(path.read_bytes())
+        saved['version'] = 1
+        device = saved['devices'][0]
+        del device['kind']
+        device['expires_at'] = self.now - 1
+        original = json.dumps(saved).encode()
+        path.write_bytes(original)
+        migrated = self.make(self.home)
+        self.assertEqual(original, path.read_bytes())
+        self.assertEqual('browser', migrated.snapshot()['devices'][0]['kind'])
+        self.assertTrue(migrated.start_saved()['enabled'])
+        persisted = json.loads(path.read_bytes())
+        self.assertEqual(2, persisted['version'])
+        self.assertEqual('browser', persisted['devices'][0]['kind'])
+        self.assertEqual(device['last_seen_at'] + 30 * 24 * 60 * 60, persisted['devices'][0]['expires_at'])
+        self.assertEqual(200, self.request('/api/state', cookie=cookie, controller=migrated)[0])
+        migrated.shutdown()
+        for invalid in ({**persisted, 'version': 3},
+                        {**persisted, 'devices': [{**persisted['devices'][0], 'kind': 'unknown'}]}):
+            with self.subTest(invalid=invalid):
+                original = json.dumps(invalid).encode()
+                path.write_bytes(original)
+                snapshot = self.make(self.home).snapshot()
+                self.assertTrue(snapshot['configuration_invalid'])
+                self.assertIn('无效', snapshot['last_error'])
+                self.assertIn('原文件已保留', snapshot['last_error'])
+                self.assertEqual(original, path.read_bytes())
+
+    def test_idle_expiry_slides_and_recent_requests_do_not_write(self):
+        cookie, _ = self.login()
+        path = self.controller.path
+        original = path.read_bytes()
+        original_mtime = path.stat().st_mtime_ns
+        self.now += 59
+        self.assertEqual(200, self.request('/api/state', cookie=cookie)[0])
+        self.assertEqual(original, path.read_bytes())
+        self.assertEqual(original_mtime, path.stat().st_mtime_ns)
+        self.now += 1
+        self.assertEqual(200, self.request('/api/state', cookie=cookie)[0])
+        device = json.loads(path.read_bytes())['devices'][0]
+        self.assertEqual(self.now, device['last_seen_at'])
+        self.assertEqual(self.now + 30 * 24 * 60 * 60, device['expires_at'])
+        self.now = device['expires_at'] + 1
+        self.assertEqual(401, self.request('/api/state', cookie=cookie)[0])
+        self.assertEqual([], self.controller.snapshot()['devices'])
+        self.assertFalse(self.controller.request_active({'device_id': device['id']}))
+
+    def test_online_uses_each_authentication_and_counts_open_streams(self):
+        cookie, _ = self.login()
+        device = self.controller.snapshot()['devices'][0]['id']
+        self.monotonic = 80
+        self.assertEqual(200, self.request('/api/state', cookie=cookie)[0])
+        self.monotonic = 169
+        self.assertTrue(self.controller.snapshot()['devices'][0]['online'])
+        self.monotonic = 170
+        self.assertFalse(self.controller.snapshot()['devices'][0]['online'])
+        self.controller.stream_opened(device)
+        self.controller.stream_opened(device)
+        self.controller.stream_closed(device)
+        self.assertTrue(self.controller.snapshot()['devices'][0]['online'])
+        self.controller.stream_closed(device)
+        self.assertFalse(self.controller.snapshot()['devices'][0]['online'])
+
+    def test_login_requires_kind_and_strict_fields_and_checks_origin(self):
+        pair = self.controller.action({'action': 'pair'})
+        for fields in ({}, {'kind': []}, {'kind': 'other'}, {'kind': 'browser', 'extra': True},
+                       {'kind': 'desktop', 'next': '/'}):
+            with self.subTest(fields=fields):
+                self.assertEqual(400, self.request('/remote/login', {'code': pair['code'], **fields})[0])
+        browser = {'code': pair['code'], 'kind': 'browser', 'next': '/?project=demo'}
+        self.assertEqual(403, self.request('/remote/login', browser, origin=False)[0])
+        desktop = {'code': pair['code'], 'kind': 'desktop', 'device_name': 'mac'}
+        self.assertEqual(403, self.request('/remote/login', desktop, headers={'Origin': 'http://wrong'})[0])
+        status, value, headers = self.request('/remote/login', desktop, origin=False)
+        self.assertEqual(200, status)
+        self.assertEqual({'ok', 'token', 'device_id'}, set(value))
+        self.assertTrue(value['ok'])
+        self.assertRegex(value['token'], r'^[A-Za-z0-9_-]{43}$')
+        self.assertNotIn('Set-Cookie', headers)
+        self.assertEqual(value['device_id'], self.controller.snapshot()['devices'][0]['id'])
+        self.assertNotIn(value['token'], self.controller.path.read_text('utf-8'))
+
+    def test_bearer_is_desktop_only_and_takes_precedence_over_cookie(self):
+        browser, _ = self.login()
+        code = self.controller.action({'action': 'pair'})['code']
+        desktop = self.request('/remote/login', {'code': code, 'kind': 'desktop'}, origin=False)[1]
+        bearer = {'Authorization': 'Bearer ' + desktop['token']}
+        self.assertEqual(200, self.request('/api/state', headers=bearer, origin=False)[0])
+        self.assertEqual(200, self.request('/api/chat/send', {'text': 'test'}, headers=bearer, origin=False)[0])
+        self.assertEqual(403, self.request('/api/chat/send', {}, headers={**bearer, 'Origin': 'http://wrong'})[0])
+        self.assertEqual(401, self.request('/api/state', cookie=self.controller.cookie_name + '=' + desktop['token'])[0])
+        for authorization in ('Bearer ' + browser.split('=', 1)[1], 'Bearer ' + 'x' * 43, 'Basic whatever',
+                              'Bearer ' + desktop['token'] + ', ' + desktop['token']):
+            with self.subTest(authorization=authorization):
+                status, payload, headers = self.request('/', cookie=browser, headers={'Authorization': authorization})
+                self.assertEqual(401, status)
+                self.assertEqual({'error': '设备授权已失效，请在主机上重新生成配对码', 'login_url': '/remote/login'}, payload)
+                self.assertNotIn('Location', headers)
+        connection = http.client.HTTPConnection('127.0.0.1', self.controller.listener.port, timeout=3)
+        try:
+            connection.putrequest('GET', '/')
+            connection.putheader('Authorization', bearer['Authorization'])
+            connection.putheader('Authorization', bearer['Authorization'])
+            connection.putheader('Cookie', browser)
+            connection.endheaders()
+            response = connection.getresponse()
+            self.assertEqual(401, response.status)
+            response.read()
+        finally:
+            connection.close()
+        context = self.request('/api/access/context', cookie=browser, headers=bearer)[1]
+        self.assertEqual(desktop['device_id'], context['device_id'])
+        status, _, headers = self.request('/remote/logout', {}, cookie=browser, headers=bearer, origin=False)
+        self.assertEqual(200, status)
+        self.assertNotIn('Set-Cookie', headers)
+        self.assertEqual(401, self.request('/api/state', headers=bearer)[0])
+        self.assertEqual(200, self.request('/api/state', cookie=browser)[0])

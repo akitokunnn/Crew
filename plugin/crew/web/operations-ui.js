@@ -29,10 +29,13 @@
   function create(options) {
     const api = options.api, root = document.createElement("section");
     root.className = "co-workspace";
-    const tabs = [["chat","对话"],["status","状态"],["config","自动修复"], ...(api.launch ? [["launch","连接与目录"]] : [])];
-    root.innerHTML = `<div class="co-toolbar"><div class="co-tabs" role="tablist" aria-label="后台与运维">${tabs.map(([id,label]) => `<button type="button" role="tab" data-operations-tab="${id}" aria-controls="co-operations-panel" aria-selected="${id === "chat"}" tabindex="${id === "chat" ? 0 : -1}">${label}</button>`).join("")}</div><button type="button" class="co-brain" data-operations-action="brain">运维 AI 大脑 <span aria-hidden="true">↗</span></button></div><div class="co-panel" id="co-operations-panel" role="tabpanel"></div>`;
+    // A LAN host keeps its operations chat and repair policy on the host; only status and connection remain.
+    const chatAvailable = typeof api.snapshot === "function", configAvailable = typeof api.configGet === "function";
+    const tabs = [...(chatAvailable ? [["chat","对话"]] : []),["status","状态"],...(configAvailable ? [["config","自动修复"]] : []), ...(api.launch ? [["launch","连接与目录"]] : [])];
+    const first = tabs[0][0];
+    root.innerHTML = `<div class="co-toolbar"><div class="co-tabs" role="tablist" aria-label="后台与运维">${tabs.map(([id,label]) => `<button type="button" role="tab" data-operations-tab="${id}" aria-controls="co-operations-panel" aria-selected="${id === first}" tabindex="${id === first ? 0 : -1}">${label}</button>`).join("")}</div>${chatAvailable ? '<button type="button" class="co-brain" data-operations-action="brain">运维 AI 大脑 <span aria-hidden="true">↗</span></button>' : ""}</div><div class="co-panel" id="co-operations-panel" role="tabpanel"></div>`;
     const panel = root.querySelector(".co-panel");
-    let tab = "chat", active = false, timer = null, healthCleanup = null, snapshot = null;
+    let tab = first, active = false, timer = null, healthCleanup = null, snapshot = null;
     let chat = null, chatLoaded = false, chatError = "", chatReadError = "", chatRead = 0, chatNote = "", chatDraft = "", pending = null, messageId = null;
     let config = null, configDraft = null, configError = "", configNote = "", configLoading = false, configSaving = false, advanced = false;
     let chatScroll = 0, chatPinned = true, messageSignature = "", launch = null;
@@ -168,8 +171,10 @@
       configControls();
     }
     function renderStatus() {
-      panel.innerHTML = `<section class="cs-card co-status-facts"><h2>当前启动位置</h2><p class="cs-hint">${api.launch ? '需要更换数据目录、后台程序或地址，可在“连接与目录”中调整。' : '需要更换数据目录、后台程序或地址，请打开 Crew 桌面设置。'}工作区路径仍在工作区设置中修改。</p><dl class="cs-paths"><dt>数据目录 · HOME</dt><dd>${esc(snapshot?.home || "尚未从后台读取")}</dd><dt>${api.launch ? "桌面运维程序目录" : "后台程序目录"}</dt><dd>${esc(snapshot?.backend || "尚未从后台读取")}</dd>${options.service ? `<dt>连接地址</dt><dd>${esc(options.service())}</dd>` : ""}</dl>${api.launch ? '<div class="co-actual-service"><p class="cs-hint">正在读取实际后台来源…</p></div><button type="button" class="cs-button co-launch-link" data-operations-action="launch-settings">更改连接与目录</button>' : ""}</section><div class="co-native-health"></div>`;
-      if (api.launch) {
+      const host = options.remote === true;
+      panel.innerHTML = `<section class="cs-card co-status-facts"><h2>${host ? "所连主机" : "当前启动位置"}</h2><p class="cs-hint">${host ? '以下目录都在所连主机上。需要改连其他设备或切回本机，可在“连接与目录”中调整。' : api.launch ? '需要更换数据目录、后台程序或地址，可在“连接与目录”中调整。' : '需要更换数据目录、后台程序或地址，请打开 Crew 桌面设置。'}工作区路径仍在工作区设置中修改。</p><dl class="cs-paths"><dt>${host ? "主机数据目录 · HOME" : "数据目录 · HOME"}</dt><dd>${esc(snapshot?.home || "尚未从后台读取")}</dd><dt>${host ? "主机后台程序目录" : api.launch ? "桌面运维程序目录" : "后台程序目录"}</dt><dd>${esc(snapshot?.backend || "尚未从后台读取")}</dd>${options.service ? `<dt>连接地址</dt><dd>${esc(options.service())}</dd>` : ""}</dl>${api.launch && !host ? '<div class="co-actual-service"><p class="cs-hint">正在读取实际后台来源…</p></div>' : ""}${api.launch ? '<button type="button" class="cs-button co-launch-link" data-operations-action="launch-settings">更改连接与目录</button>' : ""}</section><div class="co-native-health"></div>`;
+      // A LAN host's version and health follow below, read from the host itself.
+      if (api.launch && !host) {
         const actual = panel.querySelector(".co-actual-service");
         api.launch.get().then(value => { const service = value.actual_service; actual.innerHTML = service ? `<dl class="cs-paths"><dt>实际后台程序目录</dt><dd>${esc(service.plugin_root || "后台未报告程序位置")}</dd><dt>实际后台版本</dt><dd>${esc(service.version || "后台未报告版本")}</dd></dl>` : `<p class="cs-hint">实际后台来源未确认：${esc(value.actual_service_error || "已选择的启动配置不代表当前运行版本。")}</p>`; }).catch(error => { actual.textContent = "实际后台来源读取失败：" + (error.message || String(error)); actual.classList.add("co-error"); });
       }

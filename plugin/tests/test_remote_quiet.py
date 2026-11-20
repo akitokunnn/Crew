@@ -97,7 +97,7 @@ class RemoteQuietTests(ShellFixture, unittest.TestCase):
             unresolved=['Not run against the real device'],
             examples=[dict(kind='actual', input='x', expected='y', actual='y', conclusion='measured')],
             investment=dict(elapsed_seconds=None, usage=None, roles=[]),
-            document_html='<html><body>Integration report</body></html>'), now=NOW)
+            document_html='<html><body>Integration report</body></html>', folder='.'), now=NOW)
         goals.request_finish(self.conn, target['id'], report['id'], actor='s3', now=NOW)
         goals.finalize_finish(self.conn, target['id'], now=NOW)
         for channel, inbox in self.inboxes.items():

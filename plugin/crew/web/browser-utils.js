@@ -30,5 +30,8 @@
       if (selection) { selection.removeAllRanges(); for (const range of ranges) selection.addRange(range); }
     }
   }
-  window.CrewBrowser = {requestId, copyText};
+  function keyboardShortcut(key, {shift = false, platform = globalThis.navigator?.userAgentData?.platform || globalThis.navigator?.platform} = {}) {
+    return /^Mac/i.test(platform) ? `${shift ? "⇧" : ""}⌘${key}` : `Ctrl+${shift ? "Shift+" : ""}${key}`;
+  }
+  window.CrewBrowser = {requestId, copyText, keyboardShortcut};
 })();

@@ -129,7 +129,7 @@
       } catch (caught) {
         if (active && input.isConnected) {
           input.focus(); input.select();
-          error = "复制失败：" + caught.message + "。命令已选中，请按 Ctrl+C 复制，再粘贴到机器人私聊中。";
+          error = `复制失败：${caught.message}。命令已选中，请按 ${window.CrewBrowser.keyboardShortcut("C")} 复制，再粘贴到机器人私聊中。`;
           setNote();
         }
       }

@@ -15,8 +15,8 @@ from crew.supervisor import _atomic_json
 from tests import test_operations as fixtures
 
 
-def choice(runtime=None, model=None, effort=None):
-    return {'runtime': runtime, 'model': model, 'effort': effort}
+def choice(runtime=None, model=None, effort=None, speed=None):
+    return {'runtime': runtime, 'model': model, 'effort': effort, 'speed': speed}
 
 
 class OperationsSettingsTests(unittest.TestCase):
@@ -39,6 +39,14 @@ class OperationsSettingsTests(unittest.TestCase):
         self.assertEqual((effort[0], json.loads(effort[1])), ('model_reasoning_effort', 'future-effort'))
         self.assertEqual(runner[-1], '-')
         self.assertNotIn('--yolo', runner)
+
+    def test_codex_selected_speed_is_a_service_tier_override(self):
+        settings.save(self.home, {'default': choice('codex', speed='priority')})
+        with mock.patch.object(operations_worker.codex_client, 'command', return_value=['/fixture/codex', 'app-server']):
+            runner = operations_worker.default_runner(self.home, self.installed)
+        overrides = [runner[index + 1] for index, item in enumerate(runner) if item == '-c']
+        self.assertEqual(overrides, ['service_tier="priority"'])
+        self.assertEqual(runner[-1], '-')
 
     def test_claude_selected_brain_uses_only_workspace_edit_tools_and_chosen_options(self):
         settings.save(self.home, {'default': choice('codex'),

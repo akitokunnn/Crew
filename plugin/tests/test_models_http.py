@@ -84,7 +84,7 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
     def test_leader_options_saved_and_invalid_choices_fail_before_launch(self):
         code, result = self.request("/api/leader", {"name": "option-boss", "model": OPUS, "effort": "xhigh"})
         self.assertEqual(code, 200, result)
-        self.assertEqual(models.get(self.conn, result["session_id"]), {"model": OPUS, "effort": "xhigh"})
+        self.assertEqual(models.get(self.conn, result["session_id"]), {"model": OPUS, "effort": "xhigh", "speed": None})
         command = self.processes[-1].command
         self.assertEqual(command[command.index("--effort") + 1], "xhigh")
         count = len(self.processes)
@@ -109,7 +109,7 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
             with self.subTest(name=name):
                 code, result = self.request("/api/spawn", {"name": name, "task": "work", "group": "lead", **extra})
                 self.assertEqual(code, 200, result)
-                self.assertEqual(models.get(self.conn, result["session_id"]), {"model": model, "effort": effort})
+                self.assertEqual(models.get(self.conn, result["session_id"]), {"model": model, "effort": effort, "speed": None})
                 self.assertEqual("--model" in self.processes[-1].command, model is not None)
                 self.assertEqual("--effort" in self.processes[-1].command, effort is not None)
         code, body = self.request("/api/spawn", {"name": "invalid-haiku", "task": "work", "group": "lead",
@@ -120,7 +120,7 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
     def test_spawn_inherits_default_leader_without_option_flags(self):
         code, result = self.request("/api/spawn", {"name": "default-inherit", "task": "work", "group": "lead"})
         self.assertEqual(code, 200, result)
-        self.assertEqual(models.get(self.conn, result["session_id"]), {"model": None, "effort": None})
+        self.assertEqual(models.get(self.conn, result["session_id"]), {"model": None, "effort": None, "speed": None})
         self.assertNotIn("--model", self.processes[-1].command)
         self.assertNotIn("--effort", self.processes[-1].command)
 
@@ -128,10 +128,10 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         _, result = self.request("/api/leader", {"name": "switcher", "effort": "high"})
         sid = result["session_id"]
         for changes, expected_request, expected in (
-                ({"model": OPUS}, {"subtype": "set_model", "model": OPUS}, {"model": OPUS, "effort": "high"}),
-                ({"effort": "max"}, {"subtype": "apply_flag_settings", "settings": {"effortLevel": "max"}}, {"model": OPUS, "effort": "max"}),
-                ({"model": None}, {"subtype": "set_model"}, {"model": None, "effort": "max"}),
-                ({"model": HAIKU}, {"subtype": "set_model", "model": HAIKU}, {"model": HAIKU, "effort": None})):
+                ({"model": OPUS}, {"subtype": "set_model", "model": OPUS}, {"model": OPUS, "effort": "high", "speed": None}),
+                ({"effort": "max"}, {"subtype": "apply_flag_settings", "settings": {"effortLevel": "max"}}, {"model": OPUS, "effort": "max", "speed": None}),
+                ({"model": None}, {"subtype": "set_model"}, {"model": None, "effort": "max", "speed": None}),
+                ({"model": HAIKU}, {"subtype": "set_model", "model": HAIKU}, {"model": HAIKU, "effort": None, "speed": None})):
             with self.subTest(changes=changes):
                 code, body = self.request("/api/session/options", {"session_id": sid, **changes})
                 self.assertEqual((code, body), (200, {"ok": True, **expected}))
@@ -146,9 +146,9 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         self.assertEqual(self.request("/api/session/options", {"session_id": sid, "model": HAIKU, "effort": "low"})[0], 400)
 
     def test_offline_options_update_only_given_fields_delete_empty_row_and_remove_old_route(self):
-        for changes, expected in (({"model": OPUS, "effort": "high"}, {"model": OPUS, "effort": "high"}),
-                                  ({"effort": None}, {"model": OPUS, "effort": None}),
-                                  ({"model": None}, {"model": None, "effort": None})):
+        for changes, expected in (({"model": OPUS, "effort": "high"}, {"model": OPUS, "effort": "high", "speed": None}),
+                                  ({"effort": None}, {"model": OPUS, "effort": None, "speed": None}),
+                                  ({"model": None}, {"model": None, "effort": None, "speed": None})):
             self.assertEqual(self.request("/api/session/options", {"session_id": "s3", **changes})[0], 200)
             self.assertEqual(models.get(self.conn, "s3"), expected)
         self.assertEqual(self.conn.execute("SELECT count(*) FROM session_options").fetchone()[0], 0)
@@ -160,7 +160,7 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
     def test_haiku_switch_clears_offline_effort_and_explicit_effort_is_invalid(self):
         models.set(self.conn, "s3", OPUS, "xhigh")
         code, body = self.request("/api/session/options", {"session_id": "s3", "model": HAIKU})
-        self.assertEqual((code, body), (200, {"ok": True, "model": HAIKU, "effort": None}))
+        self.assertEqual((code, body), (200, {"ok": True, "model": HAIKU, "effort": None, "speed": None}))
         self.assertEqual(self.request("/api/session/options", {"session_id": "s3", "effort": "high"})[0], 400)
 
     def test_default_actual_haiku_rejects_effort_only_but_allows_explicit_model_switch(self):
@@ -177,10 +177,10 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertIn("Haiku", body["error"])
         self.assertEqual(process.stdin.getvalue(), before)
-        self.assertEqual(models.get(self.conn, sid), {"model": None, "effort": None})
+        self.assertEqual(models.get(self.conn, sid), {"model": None, "effort": None, "speed": None})
         code, body = self.request("/api/session/options", {"session_id": sid, "model": OPUS, "effort": "high"})
-        self.assertEqual((code, body), (200, {"ok": True, "model": OPUS, "effort": "high"}))
-        self.assertEqual(models.get(self.conn, sid), {"model": OPUS, "effort": "high"})
+        self.assertEqual((code, body), (200, {"ok": True, "model": OPUS, "effort": "high", "speed": None}))
+        self.assertEqual(models.get(self.conn, sid), {"model": OPUS, "effort": "high", "speed": None})
         self.assertEqual([control["request"] for control in self.controls(process)[-2:]], [
             {"subtype": "set_model", "model": OPUS},
             {"subtype": "apply_flag_settings", "settings": {"effortLevel": "high"}}])

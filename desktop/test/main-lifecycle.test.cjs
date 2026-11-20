@@ -8,9 +8,14 @@ const vm = require('node:vm');
 const { pathToFileURL } = require('node:url');
 const http = require('node:http');
 const { listen } = require('./fixtures/loopback.cjs');
+const python = require('../src/python.cjs');
+// A native absolute path on every platform, so path.dirname sees real separators.
+const FIXTURE_APP_DATA = process.platform === 'win32' ? 'C:\\fixture\\app-data' : '/fixture/app-data';
 
 const source = fs.readFileSync(process.env.CREW_MAIN_LIFECYCLE_SOURCE || path.join(__dirname, '../src/main.cjs'), 'utf8');
 const tick = async () => { for (let index = 0; index < 80; index++) await Promise.resolve(); };
+// Values created inside the sandboxed main process belong to another realm.
+const plain = value => JSON.parse(JSON.stringify(value));
 function deferred() {
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -23,10 +28,12 @@ function harness(options = {}) {
   const ready = deferred(), windows = [], trays = [], handlers = new Map(), logs = [], shutdownErrors = [];
   const calls = { backendStart:0, backendStop:0, toolsClose:0, updatesClose:0, tabsDispose:0, previewDispose:0, reportClose:0, tabsOpen:0, uiCalls:0, windowShow:0, nativeQuit:0, relaunch:0, dialogs:0, stat:0 };
   let readGate = null, projectGate = null, appMenu = null;
-  const config = { home:'C:\\fixture\\crew-home', userData:'C:\\fixture\\crew-desktop', isolated:true, smoke:false, backendSource:'bundled' };
+  const config = { home:'C:\\fixture\\crew-home', userData:'C:\\fixture\\crew-desktop', isolated:true, smoke:false, backendSource:'bundled',
+    launchSettingsPath:path.join(FIXTURE_APP_DATA,'Crew','launch-settings.json'), ...(options.remote ? { remoteBackend:'saved-host' } : {}) };
+  const webRequests = { headers:null, completed:null };
   class App extends EventEmitter {
     setName() {} setAppUserModelId() {} setPath() {}
-    getPath() { return 'C:\\fixture\\app-data'; }
+    getPath() { return FIXTURE_APP_DATA; }
     getVersion() { return '0.0.0-fixture'; }
     requestSingleInstanceLock() { return true; }
     whenReady() { return ready.promise; }
@@ -72,14 +79,26 @@ function harness(options = {}) {
   const electron = { app, BrowserWindow:Window, WebContentsView:class {}, Tray:FakeTray,
     ipcMain:{ handle:(name,fn) => handlers.set(name,fn), on() {} },
     Menu:{ buildFromTemplate:menu, setApplicationMenu:value => { appMenu = value; }, getApplicationMenu:() => appMenu },
-    nativeImage:{ createFromPath:() => ({}) }, shell:{ openExternal:async () => {}, openPath:async () => {} },
-    dialog:{ showMessageBox:async (...args) => { calls.dialogs++; if (args[0] instanceof Window) args[0].alive(); return { response:options.dialogResponse ?? 1 }; }, showOpenDialog:async () => ({ canceled:true }) } };
+    nativeImage:{ createFromPath:file => { calls.image = file; return {}; } }, shell:{ openExternal:async () => {}, openPath:async () => {} }, safeStorage:{},
+    session:{ defaultSession:{ webRequest:{ onBeforeSendHeaders:(filter, listener) => { webRequests.headers = { filter, listener }; }, onCompleted:(filter, listener) => { webRequests.completed = { filter, listener }; } } } },
+    dialog:{ showMessageBox:async (...args) => { calls.dialogs++; if (args[0] instanceof Window) args[0].alive(); return { response:options.dialogResponse ?? 1 }; }, showOpenDialog:async () => ({ canceled:true }),
+      showSaveDialog:async () => ({ canceled:false, filePath:'C:\\Users\\me\\demo.crewpack' }) } };
   class Backend {
     constructor() { this.url = options.backendUrl || 'http://127.0.0.1:12345'; }
-    async start() { calls.backendStart++; await options.backendStart?.promise; }
+    async start() { calls.backendStart++; calls.backendPath = sandbox.process.env.PATH; await options.backendStart?.promise; if(options.backendError)throw options.backendError; }
     async stop() { calls.backendStop++; await options.backendStop?.promise; }
   }
+  class RemoteBackend {
+    constructor(id, dependencies) { this.id = id; this.dependencies = dependencies; this.remote = true; this.owned = false; this.url = 'http://127.0.0.1:0'; this.startupError = null; }
+    async start() {
+      calls.backendStart++; this.url = 'http://192.168.1.20:47812'; this.name = '书房主机';
+      if (options.remoteStart) await options.remoteStart(this);
+      this.health = { version:'0.3.99', home:'/Users/host/.crew', pid:7, instance_id:'host', warnings:[] };
+    }
+    async stop() { calls.backendStop++; }
+  }
   class Tools {
+    constructor() { calls.tools = (calls.tools || 0) + 1; }
     async initialize() { await options.toolsInitialize?.promise; }
     start() {} async close() { calls.toolsClose++; await options.toolsClose?.promise; }
   }
@@ -99,6 +118,7 @@ function harness(options = {}) {
     hide() {} refresh() {} dispose() { calls.previewDispose++; }
   }
   class ReportPreviewClient {
+    constructor() { calls.reportPreviews = (calls.reportPreviews || 0) + 1; }
     async start() { await options.reportStart?.promise; }
     async close() { calls.reportClose++; await options.reportClose?.promise; }
   }
@@ -124,38 +144,38 @@ function harness(options = {}) {
   const modules = {
     electron,
     'node:fs':{ mkdirSync() {} },
-    'node:fs/promises':{ readFile:async () => readGate ? readGate.promise : '/* fixture asset */', mkdir:async () => {}, writeFile:async () => {}, access:async () => options.accessGate?.promise,
+    'node:fs/promises':{ readFile:async file => readGate ? readGate.promise : String(file).endsWith('plugin.json') ? '{"name":"crew","version":"0.3.17"}' : String(file).endsWith('web.json') ? JSON.stringify(options.recoveryRecord) : '/* fixture asset */', mkdir:async () => {}, writeFile:async () => {}, access:async () => options.accessGate?.promise,
       stat:async () => { calls.stat++; return options.statGate ? options.statGate.promise : {isFile:() => true}; } },
-    './core.cjs':{ options:() => config, Backend, loopback:value => value,
-      projects:async () => projectGate ? projectGate.promise : [{ name:'demo' }],
-      projectLocations:async items => items.map(item => ({ ...item, directory_state:{ status:'ready' } })),
+    './core.cjs':{ options:() => config, Backend, RemoteBackend, loopback:require('../src/core.cjs').loopback, remoteHealth:value => value,
+      projects:async () => projectGate ? projectGate.promise : [{ name:'demo', root:'C:\\demo', directory_state:{ status:'ready' } }],
+      newWorkspace:async (parent,name,base) => { calls.created = { parent, name, base }; return { name }; },
+      hostFolders:async (base,directory) => ({ base, path:directory }),
+      download:async (base,route,destination) => { calls.download = { base, route, destination }; return { path:destination }; },
       request:async (base,route,body,timeoutMs) => options.request ? options.request(base,route,body,timeoutMs) : options.storageWrite&&route.startsWith('/api/workspace-data/')?options.storageWrite.promise:{} },
     './storage.cjs':{ prepare:async (project,base,_choose,_progress,request) => {if(options.storageWrite)await request(base,'/api/workspace-data/open',{});return project;} },
     './chrome.cjs':{ windowOptions:() => ({}) }, './tabs.cjs':{ WorkspaceTabs:Tabs },
+    './menu.cjs':require('../src/menu.cjs'), './login-shell.cjs':{ readLoginShellPath:() => options.loginPath.promise },
+    './python.cjs':python,
     './activity-preview.cjs':{ ActivityPreview:Preview }, './permissions.cjs':{ installPermissions() {} },
     './report-preview.cjs':{ReportPreviewClient, ReportPreviewRenderer:class {}},
     './tool-updates.cjs':{ ToolUpdates:Tools }, './crew-updates.cjs':{ CrewUpdates:Updates },
     './admin.cjs':{ Administrator:class {} }, './operations.cjs':{ OperationsClient:class { close() {} } },
     './product.cjs':require('../src/product.cjs'),
-    './launch-settings.cjs':{ LaunchSettings, relaunchArgs:() => [] }
+    './launch-settings.cjs':{ LaunchSettings, relaunchArgs:() => [] },
+    './remote-backends.cjs':{ RemoteBackends:class { constructor(file) { calls.remoteFile = file; } async credential(id) { return { id, token:'t'.repeat(43) }; } } }
   };
   const sandbox = { require:name => Object.hasOwn(modules,name) ? modules[name] : require(name), __dirname:path.join(__dirname,'../src'),
-    process:{ argv:['fixture','main.cjs'], platform:'win32', env:{...options.env}, versions:{}, resourcesPath:path.resolve('fixture resources') }, URL, URLSearchParams, Buffer,
-    Promise:ObservedPromise, setTimeout, clearTimeout,
+    process:{ argv:['fixture','main.cjs'], platform:options.platform || 'win32', env:{...options.env}, versions:{}, resourcesPath:path.resolve('fixture resources') }, URL, URLSearchParams, Buffer,
+    Promise:ObservedPromise, setTimeout, clearTimeout, setInterval, clearInterval,
     console:{ error:(...args) => logs.push(args), log() {} } };
   // Electron loads main.cjs through the CommonJS function wrapper.
   vm.runInNewContext('(function(){\n'+source+'\n})()',sandbox,{ filename:'main.cjs' });
   const invoke = (channel,...args) => { const contents = windows[0].webContents; return handlers.get(channel)({ sender:contents, senderFrame:contents.mainFrame },...args); };
-  return { app, config, ready, windows, trays, calls, logs, shutdownErrors, handlers, invoke,
+  return { app, config, ready, windows, trays, calls, logs, shutdownErrors, handlers, invoke, webRequests, menu:() => appMenu,
     menuItem:id => appMenu.getMenuItemById(id),
     holdRead:gate => { readGate = gate; }, holdProjects:gate => { projectGate = gate; },
     boot:async () => { ready.resolve(); await tick(); assert.equal(windows.length,1); assert.equal(trays.length,1); } };
 }
-
-test('desktop bridge configuration points outside ASAR in packaged mode and at local assets in development', () => {
-  assert.equal(harness().config.codexDesktopProxy, path.resolve(__dirname, '../assets/CrewCodexBridge.exe'));
-  assert.equal(harness({ packaged:true }).config.codexDesktopProxy, path.resolve('fixture resources', 'app.asar.unpacked', 'assets', 'CrewCodexBridge.exe'));
-});
 
 test('remote access IPC reads and changes the connected backend only from the trusted home', async t => {
   const requests=[];
@@ -205,6 +225,43 @@ test('normal close keeps the shell alive and explicit quit cleans it up exactly 
   assert.equal(h.calls.backendStop,1); assert.equal(h.calls.toolsClose,1); assert.equal(h.calls.updatesClose,1);
   assert.equal(h.calls.nativeQuit,1); assert.equal(h.trays[0].isDestroyed(),true);
   assert.deepEqual(h.logs,[]); assert.deepEqual(h.shutdownErrors,[]);
+});
+
+test('Mac launch waits for the shell PATH and Dock activation restores the hidden window', async () => {
+  const loginPath = deferred(), h = harness({platform:'darwin',loginPath});
+  h.ready.resolve(); await tick();
+  assert.equal(h.calls.backendStart,0);
+  loginPath.resolve('/opt/homebrew/bin:/usr/bin'); await h.boot();
+  assert.equal(h.calls.backendPath,'/opt/homebrew/bin:/usr/bin');
+  assert.equal(h.menu().template[0].role,'appMenu');
+  assert.equal(h.menuItem('window-back').accelerator,'Cmd+[');
+  assert.equal(path.basename(h.calls.image),'crew-trayTemplate.png');
+  assert.equal((await h.invoke('desktop:bootstrap')).platform,'darwin');
+  assert.equal(h.handlers.has('desktop:crew-update-apply'),false);
+  assert.equal(h.handlers.has('desktop:tools-check'),true);
+  h.windows[0].close(); assert.equal(h.windows[0].isDestroyed(),false);
+  h.app.emit('activate'); assert.equal(h.calls.windowShow,1);
+  h.app.quit(); await tick();
+  assert.deepEqual(h.logs,[]);
+});
+
+test('Mac shell failure blocks the backend and displays the real startup error', async () => {
+  const loginPath = deferred(), h = harness({platform:'darwin',loginPath});
+  h.ready.resolve(); await tick(); loginPath.reject(new Error('fixture shell error')); await tick();
+  assert.equal(h.calls.backendStart,0);
+  assert.equal(h.windows.length,0);
+  assert.equal(h.calls.dialogs,1);
+  assert.equal(h.calls.nativeQuit,1);
+  assert.match(h.logs[0][0].message,/fixture shell error/);
+});
+
+test('a stale local service record cannot replace the Python version failure on the home page', async () => {
+  const loginPath = deferred(); loginPath.resolve('/opt/homebrew/bin:/usr/bin');
+  const message = 'Crew 需要 Python 3.11 或更新版本，当前 python3 是 3.10。 可用 Homebrew 安装：brew install python';
+  const h = harness({platform:'darwin',loginPath,backendError:new python.PythonVersionError(message),recoveryRecord:{url:'http://127.0.0.1:12345'}});
+  await h.boot();
+  await assert.rejects(h.invoke('desktop:bootstrap'),{message});
+  h.app.quit(); await tick();
 });
 
 test('quit waits for a workspace data operation before stopping its backend and never reopens disposed tabs',async()=>{
@@ -355,4 +412,78 @@ test('quitting while report preview registration is pending closes it before the
   close.resolve();await tick();
   assert.equal(h.calls.backendStop,1);assert.equal(h.calls.nativeQuit,1);
   assert.deepEqual(h.logs,[]);
+});
+
+test('saved LAN hosts live beside the launch settings, outside every HOME', () => {
+  assert.equal(harness().calls.remoteFile, path.join(FIXTURE_APP_DATA, 'Crew', 'remote-backends.json'));
+});
+
+test('a LAN connection starts no local tools or report worker, and its token reaches only the host origin', async () => {
+  const h = harness({ remote:true }); await h.boot();
+  assert.equal(h.calls.tools, undefined); assert.equal(h.calls.reportPreviews, undefined); assert.equal(h.calls.backendStart, 1);
+  const { listener } = h.webRequests.headers, headers = {};
+  listener({ url:'http://192.168.1.20:47812/api/state?project=demo', requestHeaders:{ Accept:'*/*' } }, value => { headers.host = value.requestHeaders; });
+  listener({ url:'http://192.168.1.21:47812/api/state', requestHeaders:{ Accept:'*/*' } }, value => { headers.other = value.requestHeaders; });
+  listener({ url:'http://192.168.1.20:47813/', requestHeaders:{} }, value => { headers.port = value.requestHeaders; });
+  assert.equal(headers.host.Authorization, 'Bearer ' + 't'.repeat(43));
+  assert.deepEqual(headers.other, { Accept:'*/*' }); assert.deepEqual(headers.port, {});
+  assert.deepEqual(plain(await h.invoke('desktop:connection')), { mode:'remote', id:'saved-host', name:'书房主机', url:'http://192.168.1.20:47812',
+    host_version:'0.3.99', local_version:'0.3.17', auth_expired:false, error:null });
+  h.app.quit(); await tick();
+  assert.equal(h.calls.nativeQuit, 1);
+});
+
+test('a LAN connection hides host-only menu items and refuses this computer\'s backend, tool and update channels', async () => {
+  const h = harness({ remote:true }); await h.boot();
+  const ids = h.menu().template[0].submenu.map(item => item.id);
+  for (const id of ['workspace-import', 'workspace-handoff', 'tools-updates']) assert(!ids.includes(id), id);
+  for (const id of ['workspace-new', 'workspace-open', 'workspace-export', 'system-administrator', 'app-settings']) assert(ids.includes(id), id);
+  for (const channel of ['desktop:admin-check', 'desktop:admin-restart', 'desktop:admin-chat-snapshot', 'desktop:admin-config-get', 'desktop:storage-import', 'desktop:existing',
+    'desktop:parent', 'desktop:workspace-directory', 'desktop:tools-snapshot', 'desktop:crew-update-snapshot', 'desktop:remote-access-read'])
+    await assert.rejects(h.invoke(channel), /只能在主机上的 Crew 中进行/, channel);
+  assert.deepEqual(await h.invoke('desktop:host-folders', 'D:\\'), { base:'http://192.168.1.20:47812', path:'D:\\' });
+  await assert.rejects(h.invoke('desktop:create', '新项目'), /主机上的保存位置/);
+  assert.deepEqual(await h.invoke('desktop:create', '新项目', 'D:\\work'), { name:'新项目' });
+  assert.deepEqual(h.calls.created, { parent:'D:\\work', name:'新项目', base:'http://192.168.1.20:47812' });
+  await assert.rejects(h.invoke('desktop:storage-activate', 'w1'), /主机上的代码目录/);
+  h.app.quit(); await tick();
+});
+
+test('a local window keeps its native folder dialogs and refuses the LAN host picker', async () => {
+  const h = harness(); await h.boot();
+  for (const id of ['workspace-import', 'workspace-handoff', 'tools-updates']) assert(h.menu().template[0].submenu.some(item => item.id === id), id);
+  await assert.rejects(h.invoke('desktop:host-folders', 'C:\\'), /只用于连接局域网主机/);
+  await assert.rejects(h.invoke('desktop:create', 'x', 'C:\\anywhere'), /系统对话框/);
+  await assert.rejects(h.invoke('desktop:storage-activate', 'w1', 'C:\\anywhere'), /系统对话框/);
+  assert.deepEqual(plain(await h.invoke('desktop:connection')), { mode:'local' });
+  h.app.quit(); await tick();
+});
+
+test('LAN settings read and save the host HTTP settings, and export downloads the host package to this computer', async () => {
+  const routes = [], h = harness({ remote:true, request:async (base, route, body) => { routes.push([base, route, body]); return route.endsWith('/export') ? { download_id:'abc123', cached_files:[] } : { ai:{} }; } });
+  await h.boot();
+  await h.invoke('desktop:settings-get'); await h.invoke('desktop:settings-save', { ai:{} });
+  await h.invoke('desktop:storage-export', 'demo');
+  assert.deepEqual(plain(routes), [['http://192.168.1.20:47812', '/api/runtimes?refresh=1', null], ['http://192.168.1.20:47812', '/api/settings', null],
+    ['http://192.168.1.20:47812', '/api/settings', { ai:{} }], ['http://192.168.1.20:47812', '/api/workspace-data/export', { project:'demo' }]]);
+  assert.deepEqual(h.calls.download, { base:'http://192.168.1.20:47812', route:'/api/workspace-data/download?id=abc123', destination:'C:\\Users\\me\\demo.crewpack' });
+  h.app.quit(); await tick();
+});
+
+test('restarting a LAN window never asks the host for its session plan', async () => {
+  const routes = [], h = harness({ remote:true, request:async (_base, route) => { routes.push(route); return {}; } }); await h.boot();
+  h.menuItem('app-restart').click(); await tick();
+  assert.deepEqual(routes, []); assert.equal(h.calls.dialogs, 0); assert.equal(h.calls.relaunch, 1);
+});
+
+test('a revoked device found at startup still opens the window and reports the lost authorization once', async () => {
+  const h = harness({ remote:true, remoteStart:async backend => { backend.dependencies.onUnauthorized(); throw Object.assign(new Error('设备授权已失效，请在主机上重新生成配对码'), { status:401 }); } });
+  await h.boot();
+  const state = await h.invoke('desktop:connection');
+  assert.equal(state.auth_expired, true); assert.equal(state.error, '授权已失效，请在主机上重新生成配对码');
+  await assert.rejects(h.invoke('desktop:bootstrap'), /授权已失效/);
+  await assert.rejects(h.invoke('desktop:admin-status'), /授权已失效/);
+  h.webRequests.completed.listener({ url:'http://192.168.1.20:47812/api/state', statusCode:401 });
+  assert.equal((await h.invoke('desktop:connection')).auth_expired, true);
+  h.app.quit(); await tick();
 });

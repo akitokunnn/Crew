@@ -10,11 +10,12 @@
     "start": "electron .",
     "test": "node --test test/*.test.cjs",
     "check:version": "node --test test/version-sync.test.cjs",
-    "build:codex-bridge": "node scripts/build-codex-bridge.cjs",
-    "prebuild": "npm run check:version && npm run build:codex-bridge",
+    "prebuild": "npm run check:version",
     "build": "node scripts/icon.cjs && electron-builder --win zip portable nsis --x64",
-    "prebuild:dir": "npm run check:version && npm run build:codex-bridge",
-    "build:dir": "node scripts/icon.cjs && electron-builder --win dir --x64"
+    "prebuild:dir": "npm run check:version",
+    "build:dir": "node scripts/icon.cjs && electron-builder --win dir --x64",
+    "prebuild:mac": "npm run check:version",
+    "build:mac": "node scripts/icon.cjs && electron-builder --mac dmg zip --arm64"
   },
   "devDependencies": {
     "electron": "45.0.0",
@@ -24,9 +25,6 @@
     "appId": "local.crew.desktop",
     "productName": "Crew",
     "asar": true,
-    "asarUnpack": [
-      "assets/CrewCodexBridge.exe"
-    ],
     "directories": {
       "output": "dist",
       "buildResources": "assets"
@@ -58,6 +56,22 @@
       ],
       "icon": "assets/crew.ico",
       "signExecutable": false
+    },
+    "mac": {
+      "artifactName": "Crew-${version}-mac-${arch}.${ext}",
+      "target": [
+        { "target": "dmg", "arch": ["arm64"] },
+        { "target": "zip", "arch": ["arm64"] }
+      ],
+      "icon": "assets/crew-1024.png",
+      "category": "public.app-category.developer-tools",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "notarize": false
+    },
+    "dmg": {
+      "artifactName": "Crew-${version}-mac-${arch}.dmg"
     },
     "portable": {
       "artifactName": "Crew-${version}-portable.exe"

@@ -16,7 +16,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import behavior_prompts, guard, native_handoff, runtime_recovery, trust_mode
+from . import behavior_prompts, runtime_recovery, trust_mode
 
 from . import board, channel, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
@@ -518,7 +518,6 @@ class Manager:
         from .goal_runtime import Controller
         self.goal_controller = Controller(self)
         self.runtime_recovery = runtime_recovery.Controller(self)
-        self.native_recovery = native_handoff.recover_interrupted(self.home)
         self.native_binding_cleanup = clear_unstarted_member_bindings(self.home)
 
     @contextlib.contextmanager
@@ -700,15 +699,10 @@ class Manager:
 
     def history(self, session_id):
         journal = self.journal(session_id)
-        control = None
-        if store.db_path(self.home).exists():
-            with closing(guard.readonly(self.home)) as control_conn:
-                control = native_handoff.for_scope(control_conn, session_id)
         with journal.condition:
             running = self.running(session_id)
             return {"session_id": session_id, "events": list(journal.events), "running": running,
-                    "busy": running and journal.status == "working", 'native_handoff': control,
-                    'read_only': bool(control and control['external'])}
+                    "busy": running and journal.status == "working"}
 
     def subagent_tasks(self, session_id):
         if not self.path(session_id).exists():
@@ -923,8 +917,6 @@ class Manager:
     def _launch(self, session, spec, resume=False):
         try:
             with closing(store.connect(self.home)) as conn:
-                native_handoff.assert_control(conn, session['session_id'],
-                                              session.get('_execution', {}).get('id'), spec.get('_native_control_token'))
                 session = workspace_execution.execution_session(conn, session)
                 spec = {**spec, 'cwd': session['cwd'], 'project': session['project'],
                         '_workspace_notice': workspace_execution.migration_notice(conn, session)}
@@ -963,9 +955,6 @@ class Manager:
                 self.goal_controller.sync(conn, execution['goal_id'])
 
     def _launch_native(self, session, spec, resume=False, maintenance=None):
-        with closing(store.connect(self.home)) as control_conn:
-            native_handoff.assert_control(control_conn, session['session_id'],
-                                          session.get('_execution', {}).get('id'), spec.get('_native_control_token'))
         if '_execution' in session:
             if maintenance is not None:
                 return self.goal_controller.launch_maintenance(session, spec, maintenance)
@@ -1053,7 +1042,8 @@ class Manager:
     @_admitted
     def start(self, conn, project_name, name, task=None, group=None, role="member", members=(), cwd=None,
               new_worktree=None, base=None, now=None, member_session_ids=(), model=models.INHERIT, effort=models.INHERIT, agent=None,
-              runtime=models.INHERIT, caller_session_id=None, caller_execution_id=None, goal_id=None, _registered=None):
+              runtime=models.INHERIT, caller_session_id=None, caller_execution_id=None, goal_id=None, _registered=None,
+              speed=models.INHERIT):
         with self.lock:
             bound_goal = None
             if caller_execution_id is not None and caller_session_id is None:
@@ -1085,13 +1075,27 @@ class Manager:
                 if group not in (None, leader['group_name']):
                     raise board.BoardError('成员分组必须属于目标的主责 leader')
                 group = leader['group_name']
+            if role == 'member' and caller_session_id not in (None, board.HUMAN) and bound_goal is None:
+                # Members are executions of one part of a task, not standing teammates.
+                raise board.BoardError('执行只能开在任务里：crew spawn --goal <任务ID> --name <这块活的短名> --task "<任务书>"'
+                                       '（Codex 用 crew_spawn 的 goal_id）；没有任务的零活自己做，或用原生子代理、一次性派工')
+            if (role == 'member' and bound_goal is not None and caller_execution_id is None
+                    and caller_session_id not in (None, board.HUMAN) and conn.execute(
+                        "SELECT 1 FROM goal_executions e JOIN goals g ON g.id=e.goal_id WHERE e.goal_id=? AND e.session_id=? "
+                        "AND e.round=g.current_round AND e.status NOT IN ('completed','failed','cancelled')",
+                        (bound_goal, caller_session_id)).fetchone()):
+                # The task's own execution splits it; a second splitter in the general chat duplicates parts.
+                raise board.Conflict('这个任务已有你自己的任务执行在推进，拆分和开执行由那段执行负责，总对话不再重复开；'
+                                     '要补充要求请发给该任务（goal_id）')
             if role == "leader":
                 plan = spawn.leader_plan(conn, self.home, self.plugin_root, project_name, name, members, task,
                                          cwd=cwd, new_worktree=new_worktree, base=base, now=now,
-                                         member_session_ids=member_session_ids, model=model, effort=effort, group=group, agent=agent, runtime=runtime)
+                                         member_session_ids=member_session_ids, model=model, effort=effort, group=group, agent=agent, runtime=runtime,
+                                         speed=speed)
             else:
                 plan = spawn.prepare(conn, self.home, self.plugin_root, project_name, name, task, group, role,
-                                     cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort, runtime=runtime)
+                                     cwd=cwd, new_worktree=new_worktree, base=base, now=now, model=model, effort=effort, runtime=runtime,
+                                     speed=speed)
             session_id = plan["session_id"]
             spec = plan["spec"]
             goal_receipt = {}
@@ -1109,7 +1113,7 @@ class Manager:
                 # unbound until a native actually reports it.
                 runtimes.set(conn, session_id, chosen_runtime,
                              session_id if chosen_runtime == "claude" and bound_goal is None else None, now=now)
-                models.set(conn, session_id, spec["model"], spec["effort"], now=now)
+                models.set(conn, session_id, spec["model"], spec["effort"], now=now, speed=spec.get("speed"))
                 if _registered is not None:
                     _registered(session_id)
                 try:
@@ -1135,8 +1139,6 @@ class Manager:
               steer=False):
         current = self.processes[session_id]
         logical = current.execution['session_id'] if current.execution is not None else session_id
-        with closing(store.connect(self.home)) as control_conn:
-            native_handoff.assert_control(control_conn, logical, current.execution['id'] if current.execution else None)
         if self.maintenance_held(logical):
             raise board.Conflict(MAINTENANCE_HELD)
         identity = identity or str(uuid.uuid4())
@@ -1233,9 +1235,9 @@ class Manager:
             raise
         return identity
 
-    def prepare_runtime(self,conn,session_id,runtime,catalog,model=None,effort=None,handoff=None,now=None):
+    def prepare_runtime(self,conn,session_id,runtime,catalog,model=None,effort=None,handoff=None,now=None,speed=None):
         with self.lock:
-            return runtime_switch.prepare(conn,board.session(conn,session_id),self,runtime,catalog,model,effort,handoff,now)
+            return runtime_switch.prepare(conn,board.session(conn,session_id),self,runtime,catalog,model,effort,handoff,now,speed=speed)
 
     def switch_runtime(self,conn,session_id,preview_id,confirm,catalog,now=None):
         with self.lock:
@@ -1270,8 +1272,6 @@ class Manager:
                     conn.execute("UPDATE peer_messages SET error=? WHERE id=?", ("目标已归档或移除", message["id"]))
                     continue
                 if messaging.stopped(conn, sid):
-                    continue
-                if native_handoff.blocked(conn, sid):
                     continue
                 # A leader's word reaches its own member mid-turn, like the user's; other mail waits.
                 steer = goal_messages.from_leader(conn, message["sender_session_id"], target)
@@ -1323,7 +1323,6 @@ class Manager:
             if self.maintenance_held(session['session_id']):
                 raise board.Conflict(MAINTENANCE_HELD)
             with closing(store.connect(self.home)) as routing_conn:
-                native_handoff.assert_control(routing_conn, session['session_id'], session.get('_execution', {}).get('id'))
                 session = workspace_execution.execution_session(routing_conn, session)
                 if '_execution' not in session:
                     if messaging.stopped(routing_conn, session['session_id']):
@@ -1401,8 +1400,6 @@ class Manager:
         logical_id = session['session_id']
         execution = session.get('_execution')
         session_id = session.get('_storage_id', logical_id)
-        with closing(store.connect(self.home)) as control_conn:
-            native_handoff.assert_control(control_conn, logical_id, execution['id'] if execution else None)
         self_compact = caller_session_id not in (None, board.HUMAN) and caller_session_id == logical_id
         deferred = self_compact or after_turn and caller_session_id in (None, board.HUMAN)
         with self.lock:
@@ -1726,8 +1723,6 @@ class Manager:
             projects = {project["name"] for project in board.projects(conn)}
             live = {agent["sessionId"] for agent in agents}
             for session_id, started in list(self.auto_candidates.items()):
-                if native_handoff.blocked(conn, session_id):
-                    continue
                 if runtime is not None and runtimes.get(conn, session_id)['runtime'] != runtime:
                     continue
                 row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
@@ -1807,7 +1802,7 @@ class Manager:
     def set_options(self, conn, session_id, changes, now=None):
         with self.lock:
             if not changes:
-                raise ValueError("至少提供 model 或 effort")
+                raise ValueError("至少提供 model、effort 或 speed")
             runtime = runtimes.get(conn, session_id)["runtime"]
             if runtime == "codex":
                 options = {**models.get(conn, session_id), **changes}
@@ -1816,6 +1811,8 @@ class Manager:
                     self.processes[session_id].set_options(options)
                 models.set(conn, session_id, **options, now=now)
                 return options
+            if changes.get("speed") is not None:
+                raise ValueError("Claude Code 不支持速度设置；速度只适用于 Codex 会话")
             if "effort" in changes and changes["effort"] is None and self.running(session_id):
                 raise ValueError("运行中的会话不能将 effort 恢复默认；请选择具体档位，或停止后设为 null 以在下次启动跟随账号设置")
             options = {**models.get(conn, session_id), **changes}
@@ -1899,8 +1896,10 @@ class Manager:
                             continue
                 try:
                     if getattr(current, 'runtime', 'claude') == 'codex':
-                        # Keep the thread unarchived: it is resumed, not finished.
-                        current.close(archive=False)
+                        # A task execution's thread leaves the Codex sidebar while idle;
+                        # resuming restores it (codex_visibility.restore_internal). Person
+                        # threads stay unarchived: only Crew goal bindings are ever restored.
+                        current.close(archive=bool(getattr(current, 'execution', None)))
                     else:
                         try:
                             current.process.wait(timeout=10)
@@ -2022,16 +2021,8 @@ class Manager:
             return {'ok': True, 'session_id': session_id, 'stopped': True, 'running': False,
                     'execution_ids': keys[1:]}
 
-    @_admitted
-    def native_handoff(self, session_id, execution_id=None):
-        return native_handoff.release(self, session_id, execution_id)
-
-    @_admitted
-    def native_return(self, session_id, execution_id=None):
-        return native_handoff.reclaim(self, session_id, execution_id)
-
     def detach(self, session_id):
-        """Release an idle session to VS Code by letting its own process finish."""
+        """Release an idle owned session by letting its own process finish."""
         with self.lock:
             if not self.is_owned(session_id):
                 raise board.BoardError("网页服务没有管理这个会话进程")

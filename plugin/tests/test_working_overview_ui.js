@@ -79,8 +79,8 @@ test("a silent or waiting leader shows its working members in the sidebar and ar
        person("someone-else",{status:"working",leader_session_id:"other"})]);
     const original=JSON.stringify(snapshot),h=harness(snapshot),sidebar=h.sidebar(),node=h.node();
     for(const html of [sidebar,node]){
-      assert(html.includes('class="group-work-avatar"'));assert(html.includes("1 位组员在干活"));
-      assert(!html.includes("本组 2 人在干活"));assert(!html.includes("本人在干活"));
+      assert(html.includes('class="group-work-avatar"'));assert(html.includes("1 个执行在干活"));
+      assert(!html.includes("本人和 1 个执行在干活"));assert(!html.includes("本人在干活"));
     }
     // The architecture node still counts decisions; the sidebar leader row only marks unread replies with a dot.
     assert(node.includes('class="b-pending"'));assert(!sidebar.includes('class="b-pending"'));assert(sidebar.includes('class="leader-unread-dot"'),"unread replies show as one dot");
@@ -94,7 +94,7 @@ test("a silent or waiting leader shows its working members in the sidebar and ar
 test("work halos distinguish self and team work, clear on refresh, and ignore process lifetime, busy waits and past tasks",()=>{
   const snapshot=state([person("leader",{status:"working"})],[person("worker",{status:"working",leader_session_id:"leader"})]);
   const h=harness(snapshot);
-  assert(h.sidebar().includes("本组 2 人在干活"));assert(h.node().includes("本组 2 人在干活"));
+  assert(h.sidebar().includes("本人和 1 个执行在干活"));assert(h.node().includes("本人和 1 个执行在干活"));
   const next=structuredClone(snapshot);next.members[0].status="idle";
   assert(h.sidebar(next).includes('class="group-work-avatar"'));assert(h.node(next).includes("本人在干活"));
   next.leaders[0].status="waiting";next.leaders[0].busy=true;next.leaders[0].running=true;next.leaders[0].active_goal_id="g1";
@@ -141,7 +141,7 @@ test("the sidebar leader row summarises group work, keeps its group during membe
       [person("worker",{status:"working",leader_session_id:"leader"})]);
     snapshot.goals=[{id:"g1",leader_session_id:"leader",status:"running",title:"登录页",pending_decision:null,work_summary:{done:0,total:0}}];
     const h=harness(snapshot),own=h.sidebar();
-    assert(own.includes('<i aria-hidden="true"></i>本组 2 人在干活 · 派工 1</span>'));assert(!own.includes('class="st '));
+    assert(own.includes('<i aria-hidden="true"></i>本人和 1 个执行在干活 · 派工 1</span>'));assert(!own.includes('class="st '));
     assert(own.includes('class="trust-mark" data-act="trust-open" data-id="leader" title="自主推进中：完成登录页改版"'));
     assert(own.includes('class="leader-row session-surface active"'));assert(own.includes('aria-current="page"'));assert(own.includes('class="leader-task"'));
     const inMember=h.sidebar(snapshot,"worker");

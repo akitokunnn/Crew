@@ -97,7 +97,7 @@ class GitCommandTests(CoreCase):
             board.register_session(conn, plan["session_id"], project_name, spec["cwd"], worktree, branch,
                                    name=name, role=spec["role"], group_name=spec["group"], spawn_id=spec["id"], now=NOW)
             runtimes.set(conn, plan['session_id'], spec['runtime'], plan['session_id'] if spec['runtime'] == 'claude' else None)
-            models.set(conn, plan["session_id"], spec["model"], spec["effort"], now=NOW)
+            models.set(conn, plan["session_id"], spec["model"], spec["effort"], now=NOW, speed=spec["speed"])
 
         result = spawn._execute(conn, plan, register)
         return {**result, "session_id": plan["session_id"]}
@@ -127,7 +127,7 @@ class GitCommandTests(CoreCase):
         self.assertNotEqual(administrator["worktree"], store.norm_path(self.root))
         self.assertTrue(administrator["branch"].startswith("crew/git-admin-"))
         self.assertEqual(plan["worktree_command"][-1], "develop")
-        self.assertEqual(models.get(self.conn, administrator["session_id"]), {"model": None, "effort": None})
+        self.assertEqual(models.get(self.conn, administrator["session_id"]), {"model": None, "effort": None, "speed": None})
         command = plan["command"]
         self.assertEqual(command[command.index("--agent") + 1], "crew:git")
         self.assertNotIn('--model', command)
@@ -178,13 +178,13 @@ class GitCommandTests(CoreCase):
         self.assertEqual(self.conn.execute('SELECT request_id FROM git_result_handoffs').fetchone()[0], item['id'])
 
     def test_codex_only_git_administrator_reads_both_rules_without_claude_flags(self):
-        settings.save(self.conn, {'default': {'runtime': 'codex', 'model': None, 'effort': None}})
+        settings.save(self.conn, {'default': {'runtime': 'codex', 'model': None, 'effort': None, 'speed': 'priority'}})
         with mock.patch.object(spawn.codex_client, 'command', return_value=['codex.exe', 'app-server']):
             self.assert_cli(['git', 'enable'])
         plan = self.plans[0]
         administrator = board.git_config(self.conn, 'demo')['admin_session_id']
         self.assertEqual(runtimes.get(self.conn, administrator)['runtime'], 'codex')
-        self.assertEqual(models.get(self.conn, administrator), {'model': None, 'effort': None})
+        self.assertEqual(models.get(self.conn, administrator), {'model': None, 'effort': None, 'speed': 'priority'})
         self.assertEqual(plan['command'], ['codex.exe', 'app-server'])
         brief = plan['files'][plan['spec']['md']]
         # Rules arrive through the editable injected configuration, not built-in file paths.

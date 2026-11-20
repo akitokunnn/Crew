@@ -4,11 +4,11 @@ const {app,BrowserWindow}=require('electron');
 const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),http=require('node:http'),assert=require('node:assert/strict');
 const web=path.resolve(__dirname,'../crew/web'),output=path.resolve(__dirname,'../../desktop/smoke-output/members');
 const calls=[],streams=[],errors=[];
-let win,server,origin,failSpawn=true,failRename=true;
+let win,server,origin,failRename=true;
 const brain={runtime:'codex',model:'test-code',effort:'high'};
 const catalog=[{id:'codex',name:'Codex',available:true,models:[{id:'test-code',name:'测试代码模型',efforts:['low','high']}],efforts:['low','high']},{id:'claude',name:'Claude Code',available:true,models:[{id:'test-review',name:'测试审查模型',efforts:['medium','high']}],efforts:['medium','high']}];
-function person(id,name,extra={}){return {session_id:id,name,...brain,status:'offline',where:'offline',busy:false,running:false,web_chat:true,last_seq:0,read_seq:0,last_reply_id:null,unread:0,pending:0,pinned:false,goal:'交互隔离测试',task:'交互隔离测试',context:null,activity:null,scope:null,done_when:null,progress:[],leases:[],claims:[],branch:null,cwd:'C:/fixture/project',codex:[],codex_older:0,member_ids:[],applied:null,trust:{enabled:false},runtime_switch:{allowed:true},...extra};}
-const state={project:{name:'交互验收',root:'C:/fixture/project',theme:'green'},projects:[{name:'交互验收',theme:'green'}],themes:[{id:'green',name:'竹青',light:{'--accent':'#3E7C74','--on-accent':'#F7FBFA'},dark:{'--accent':'#83B9A8','--on-accent':'#182A24'}}],runtimes:catalog,ai:{default:brain,leader:null,member:null,digest:null,git:null,operations:null},leaders:[person('chief','产品体验')],members:[person('member','界面实现',{leader_session_id:'chief',group:'产品体验'})],goals:[],decisions:[],todos:[],attention:[],candidates:{running:[],others:[]},limits:{claude:{seven_day:null,five_hour:null},codex:null},channel:{unread:0,latest_id:0,digesting:false},notification:{manual_away:false,away:false,error:null,channel:{state:'unbound'}},vscode_error:null};
+function person(id,name,extra={}){return {session_id:id,name,...brain,status:'offline',where:'offline',busy:false,running:false,web_chat:true,last_seq:0,read_seq:0,last_reply_id:null,unread:0,pending:0,pinned:false,goal:'交互隔离测试',task:'交互隔离测试',context:null,activity:null,scope:null,done_when:null,progress:[],leases:[],claims:[],branch:null,cwd:'C:/fixture/project',codex:[],codex_older:0,member_ids:[],applied:null,trust:{enabled:false},runtime_switch:{allowed:true},active_goal_ids:[],active_goal_id:null,active_execution_id:null,notices_pending:0,avatar_version:null,color:null,speed:null,execution_records:[],...extra};}
+const state={project:{name:'交互验收',root:'C:/fixture/project',theme:'green'},projects:[{name:'交互验收',theme:'green'}],themes:[{id:'green',name:'竹青',light:{'--accent':'#3E7C74','--on-accent':'#F7FBFA'},dark:{'--accent':'#83B9A8','--on-accent':'#182A24'}}],runtimes:catalog,ai:{default:brain,leader:null,member:null,digest:null,git:null,operations:null},leaders:[person('chief','产品体验')],members:[person('member','界面实现',{leader_session_id:'chief',group:'产品体验'})],goals:[],decisions:[],todos:[],attention:[],candidates:{running:[],others:[]},limits:{claude:{seven_day:null,five_hour:null},codex:null},channel:{unread:0,latest_id:0,digesting:false},notification:{manual_away:false,away:false,error:null,channel:{state:'unbound'},channels:[{id:'qq',state:'unbound'}]},vscode_error:null,native_approvals:[],models:[],efforts:['low','high'],git_branches:null,git_assistant:null,agents_error:null,todo_count:0,now:new Date().toISOString(),sounds:{preferences:null,revision:0,catalog:{presets:{}},events:[]}};
 function json(res,value,status=200){res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));}
 async function route(req,res){
   const url=new URL(req.url,origin),name=url.pathname;let body;
@@ -20,6 +20,7 @@ async function route(req,res){
     catch(error){res.writeHead(404);return res.end();}
   }
   calls.push({name,body});
+  if(name==='/api/access/context')return json(res,{remote:false,client:'local',local_controls:true,local_desktop:true,authenticated:true,host_admin:true});
   if(name==='/api/state')return json(res,state);
   if(name==='/api/runtimes')return json(res,{runtimes:catalog});
   if(name==='/api/chat/history')return json(res,{events:[],busy:false,read_seq:0});
@@ -27,12 +28,6 @@ async function route(req,res){
   if(name==='/api/chat/read')return json(res,{read_seq:body.seq});
   if(name==='/api/comments')return json(res,{comments:[]});
   if(name==='/api/member-defaults'){state.leaders[0].member_defaults=body.selection;return json(res,{selection:body.selection});}
-  if(name==='/api/spawn'){
-    await new Promise(resolve=>setTimeout(resolve,80));
-    if(failSpawn){failSpawn=false;return json(res,{error:'隔离创建失败：请保留任务后重试'},409);}
-    state.members.push(person('created',body.name,{...body,leader_session_id:'chief',group:state.leaders[0].name,session_id:'created'}));
-    return json(res,{session_id:'created'});
-  }
   if(name==='/api/session/rename'){
     await new Promise(resolve=>setTimeout(resolve,80));
     if(failRename){failRename=false;return json(res,{error:'隔离改名失败：名字已被使用'},409);}
@@ -48,7 +43,6 @@ const click=selector=>run(`document.querySelector(${JSON.stringify(selector)}).c
 const fill=(selector,value)=>run(`(()=>{const item=document.querySelector(${JSON.stringify(selector)});item.value=${JSON.stringify(value)};item.dispatchEvent(new Event('input',{bubbles:true}));})()`);
 const choose=(field,value)=>run(`(()=>{const item=document.querySelector('.member-dialog [data-ai-field="${field}"]');item.value=${JSON.stringify(value)};item.dispatchEvent(new Event('change',{bubbles:true}));})()`);
 async function shot(name){await new Promise(resolve=>setTimeout(resolve,120));await fs.writeFile(path.join(output,name),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());}
-async function openMenu(){await click('[data-act=member-add-menu]');await wait('document.querySelector("#menu").textContent.includes("新建组员")');}
 (async()=>{
   const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'crew-members-'));app.setPath('userData',temporary);await app.whenReady();await fs.mkdir(output,{recursive:true});
   server=http.createServer((req,res)=>route(req,res).catch(error=>{errors.push(error.stack);json(res,{error:error.message},500);}));
@@ -59,17 +53,11 @@ async function openMenu(){await click('[data-act=member-add-menu]');await wait('
   await wait('!!document.querySelector("#chat-host textarea")');
   if(await run('!!document.querySelector("[data-act=right-open]")'))await click('[data-act=right-open]');
   await wait('document.querySelector("[data-act=member-defaults]").checkVisibility()');
-  await openMenu();assert(await run('document.querySelector("#menu").textContent.includes("收编已有会话")'));await click('#menu [data-act=member-create]');
-  await wait('document.activeElement.id==="member-name"');assert(await run('document.querySelector(".member-dialog [type=submit]").disabled'));await click('.member-dialog [data-member-action=close]');
+  assert(!(await run('!!document.querySelector("[data-act=member-add-menu],[data-act=member-create]")')),'executions are opened by leaders inside tasks, not from the panel');
   assert(!calls.some(item=>['/api/spawn','/api/member-defaults','/api/chat/send'].includes(item.name)));
   await click('[data-act=member-defaults]');await wait('!!document.querySelector(".member-dialog input[name=inherit]")');await click('.member-dialog input[name=inherit]');await choose('runtime','claude');await choose('model','test-review');await choose('effort','high');await shot('member-defaults.png');
   await click('.member-dialog [type=submit]');await wait('document.querySelector(".member-dialog").parentElement.hidden');
-  assert.deepEqual(state.leaders[0].member_defaults,{runtime:'claude',model:'test-review',effort:'high'});assert(!calls.some(item=>item.name==='/api/spawn'||item.name==='/api/chat/send'));
-  await openMenu();await click('#menu [data-act=member-create]');assert.equal(await run('document.querySelector(".member-dialog [data-ai-field=runtime]").value'),'claude');
-  await fill('#member-name','独立验证');await fill('#member-task','对同一输入做前后对照，给出复现步骤。');await shot('member-create.png');await click('.member-dialog [type=submit]');
-  await wait('document.querySelector("[data-member-error]")?.textContent.includes("隔离创建失败")');assert.equal(await run('document.querySelector("#member-name").value'),'独立验证');assert.equal(await run('document.querySelector("#member-task").value'),'对同一输入做前后对照，给出复现步骤。');
-  await click('.member-dialog [type=submit]');await wait('document.querySelector(".member-dialog").parentElement.hidden && document.querySelector("#chat-head").textContent.includes("独立验证")');
-  const spawns=calls.filter(item=>item.name==='/api/spawn');assert.equal(spawns.length,2);assert.deepEqual(spawns[0].body,spawns[1].body);assert.equal(spawns[1].body.leader_session_id,'chief');assert.equal(spawns[1].body.runtime,'claude');
+  assert.deepEqual(state.leaders[0].member_defaults,{runtime:'claude',model:'test-review',effort:'high',speed:null});assert(!calls.some(item=>item.name==='/api/spawn'||item.name==='/api/chat/send'));
   // Card and context-menu rename use the same styled dialog and preserve failed input.
   await click('[data-act=card][data-id=member]');await wait('document.activeElement.dataset.act==="card-close"');await click('#card [data-act=rename]');
   await wait('document.activeElement.id==="session-new-name"');assert(await run('document.querySelector("#session-rename-form [type=submit]").disabled'));assert.equal(await run('document.querySelector("#rename-title").textContent'),'给组员改名');
@@ -85,8 +73,8 @@ async function openMenu(){await click('[data-act=member-add-menu]');await wait('
   await run('document.querySelector("#sidebar [data-act=leader][data-id=chief]").dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,clientX:210,clientY:200}))');await click('#menu [data-act=session-rename]');
   assert(await run('(()=>{const rect=document.querySelector(".rename-modal").getBoundingClientRect();return rect.left>=0&&rect.right<=innerWidth&&rect.bottom<=innerHeight;})()'));await shot('rename-dark-narrow.png');
   await run('document.querySelector("#session-new-name").dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))');
-  await click('[data-act=right-open]');await openMenu();await click('#menu [data-act=member-create]');
-  assert(await run('(()=>{const rect=document.querySelector(".member-dialog").getBoundingClientRect();return rect.left>=0&&rect.right<=innerWidth&&rect.bottom<=innerHeight;})()'));await shot('member-create-dark-narrow.png');
+  await click('[data-act=right-open]');await click('[data-act=member-defaults]');await wait('!!document.querySelector(".member-dialog input[name=inherit]")');
+  assert(await run('(()=>{const rect=document.querySelector(".member-dialog").getBoundingClientRect();return rect.left>=0&&rect.right<=innerWidth&&rect.bottom<=innerHeight;})()'));await shot('member-defaults-dark-narrow.png');
   await click('.member-dialog [data-member-action=close]');
   assert.deepEqual(errors,[]);await fs.writeFile(path.join(output,'evidence.json'),JSON.stringify({ok:true,bounds,calls,noModels:true,isolatedUserData:temporary},null,2));console.log('Member and rename smoke passed:',output);
   win.destroy();for(const stream of streams)stream.end();server.close();app.exit(0);

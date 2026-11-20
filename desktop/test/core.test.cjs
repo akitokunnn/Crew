@@ -5,23 +5,29 @@ const http = require('node:http'); const { execFile } = require('node:child_proc
 const core = require('../src/core.cjs'); const run = promisify(execFile);
 const {listen}=require('./fixtures/loopback.cjs');
 async function directory(t) { const root = await fs.mkdtemp(path.join(os.tmpdir(), 'crew-desktop-test-')); t.after(() => fs.rm(root, { recursive: true, force: true })); return root; }
-async function fixture(t, known = [], initFailure = null) {
+async function fixture(t, known = []) {
   const calls = []; const server = http.createServer(async (request, response) => {
     calls.push(request.url); response.setHeader('Content-Type', 'application/json');
     if (request.url.split('?')[0] === '/api/projects') { response.end(JSON.stringify({ projects: known })); return; }
-    if (request.url === '/api/project/init') {
-      if (initFailure) { response.writeHead(503); response.end(JSON.stringify({error:initFailure})); return; }
-      let body = ''; for await (const part of request) body += part;
-      const project = JSON.parse(body), removed = known.find(item => item.root === project.root && item.removed_at);
-      if (removed) { removed.removed_at = null; response.end(JSON.stringify(removed)); return; }
-      known.push(project); response.end(JSON.stringify(project)); return;
-    }
     response.writeHead(404); response.end(JSON.stringify({ error: 'missing' }));
   });
   await listen(server);
   t.after(() => new Promise(resolve => server.close(resolve)));
   return { url: `http://127.0.0.1:${server.address().port}`, known, calls };
 }
+// A recording HTTP host: each route answers with a fixed status and JSON body.
+async function host(t, routes) {
+  const requests = []; const server = http.createServer(async (request, response) => {
+    let text = ''; for await (const part of request) text += part;
+    requests.push({ method:request.method, url:request.url, headers:request.headers, body:text ? JSON.parse(text) : null });
+    const [status, body] = routes[request.url.split('?')[0]] || [404, { error:'missing' }];
+    response.writeHead(status, { 'Content-Type':'application/json' }); response.end(JSON.stringify(typeof body === 'function' ? body(request) : body));
+  });
+  await listen(server);
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  return { url:`http://127.0.0.1:${server.address().port}`, requests };
+}
+const TOKEN = 'a'.repeat(43);
 
 test('service URLs reject remote hosts, credentials, redirects paths and untrusted protocols', () => {
   assert.equal(core.loopback('http://127.0.0.1:1234/'), 'http://127.0.0.1:1234');
@@ -86,95 +92,118 @@ test('new workspace name is a filename rather than an arbitrary path', () => {
   for (const name of ['../escape', 'one/two', 'one\\two', '.', '..', 'CON', 'LPT1.txt', 'name.', '', ' x ']) assert.throws(() => core.workspaceName(name));
   assert.equal(core.workspaceName('我的新项目'), '我的新项目');
 });
-test('existing repository and nested folder register canonical git root without altering files', async t => {
-  const root = await directory(t), service = await fixture(t); const repo = path.join(root, '已有项目');
-  await fs.mkdir(repo); await run('git', ['init', repo], { windowsHide: true }); await fs.mkdir(path.join(repo, 'src'));
-  await fs.writeFile(path.join(repo, 'keep.txt'), 'unchanged');
-  const project = await core.existingWorkspace(path.join(repo, 'src'), service.url);
-  assert.equal(project.root, await fs.realpath(repo)); assert.equal(project.name, '已有项目');
-  assert.equal(await fs.readFile(path.join(repo, 'keep.txt'), 'utf8'), 'unchanged');
-  assert.deepEqual(await core.existingWorkspace(repo, service.url), project);
-  assert.equal(service.calls.filter(value => value === '/api/project/init').length, 1);
+test('LAN host addresses accept only private IPv4 hosts with a port and no path', () => {
+  assert.equal(core.lanAddress('192.168.1.20:47812'), 'http://192.168.1.20:47812');
+  assert.equal(core.lanAddress(' http://10.0.0.5:47812/ '), 'http://10.0.0.5:47812');
+  for (const value of ['172.16.0.1:1', '172.31.255.254:1', '127.0.0.1:47812']) assert.equal(core.lanAddress(value), 'http://' + value);
+  for (const value of ['', '192.168.1.20', 'https://192.168.1.20:47812', 'http://8.8.8.8:47812', '172.32.0.1:47812', '192.169.1.1:47812',
+    'localhost:47812', 'crew.local:47812', 'http://user@192.168.1.20:47812', '192.168.1.20:47812/api', '192.168.1.20:47812?x=1', '[::1]:47812', 'not a host'])
+    assert.throws(() => core.lanAddress(value), /主机地址/, value);
 });
-test('an ordinary folder registers without Git metadata and reopens the registered workspace', async t => {
-  const root = await directory(t), service = await fixture(t);
-  await fs.writeFile(path.join(root,'notes.txt'),'普通工作区文件');
-  const project = await core.existingWorkspace(root, service.url);
-  assert.equal(project.root,await fs.realpath(root));assert.equal(project.name,path.basename(root));
-  assert.deepEqual(await core.existingWorkspace(root,service.url),project);assert.equal(service.known.length,1);
-  assert.deepEqual(await fs.readdir(root),['notes.txt']);assert.equal(await fs.readFile(path.join(root,'notes.txt'),'utf8'),'普通工作区文件');
+test('the device token is sent only to the authorized LAN host and a 401 reports the lost authorization', async t => {
+  const lan = await host(t, { '/api/state':[200, { ok:true }], '/api/projects':[401, { error:'设备授权已失效，请在主机上重新生成配对码' }] });
+  const local = await host(t, { '/api/state':[200, { ok:true }] });
+  const other = await host(t, { '/api/state':[200, { ok:true }] });
+  let expired = 0; core.authorizeRemote({ origin:lan.url, token:TOKEN, onUnauthorized:() => { expired++; } });
+  t.after(() => core.authorizeRemote(null));
+  await core.request(lan.url, '/api/state'); await core.request(local.url, '/api/state');
+  assert.equal(lan.requests[0].headers.authorization, 'Bearer ' + TOKEN);
+  assert.equal(local.requests[0].headers.authorization, undefined, 'a loopback service never receives the LAN token');
+  await assert.rejects(core.request(lan.url, '/api/projects'), error => error.status === 401 && /重新生成配对码/.test(error.message));
+  assert.equal(expired, 1);
+  assert.throws(() => core.serviceOrigin('http://192.168.1.21:47812'), /loopback/);
+  core.authorizeRemote(null);
+  await core.request(other.url, '/api/state'); assert.equal(other.requests[0].headers.authorization, undefined);
+  assert.throws(() => core.authorizeRemote({ origin:lan.url, token:'short', onUnauthorized() {} }), TypeError);
 });
-
-test('external folder rename offers relinking before creating a duplicate workspace',async t=>{
-  const base=await directory(t),old=path.join(base,'before'),renamed=path.join(base,'after');await fs.mkdir(old);
-  const original={name:'stable-key',display_name:'My project',root:old};const service=await fixture(t,[original]);
-  await fs.rename(old,renamed);
-  const opened=await core.existingWorkspace(renamed,service.url);
-  assert.equal(opened.relocation.directory,await fs.realpath(renamed));assert.equal(opened.relocation.projects[0].name,'stable-key');
-  assert.equal(service.known.length,1);assert.equal(service.calls.filter(value=>value==='/api/project/init').length,0);
-  const created=await core.existingWorkspace(renamed,service.url,{newProject:true});assert.equal(created.name,'after');assert.equal(service.known.length,2);
+test('workspace folders are checked, resolved and created by the backend for both local and LAN connections', async t => {
+  const project = { name:'demo', root:'D:\\demo', directory_state:{ status:'ready' } };
+  const service = await host(t, { '/api/host/workspace/existing':[200, project], '/api/host/workspace/new':[400, { error:'[WinError 183] 当文件已存在时，无法创建该文件。' }],
+    '/api/host/folders':[200, { path:'D:\\', parent:null, home:'C:\\Users\\x', roots:['C:\\', 'D:\\'], entries:[], truncated:false }] });
+  assert.deepEqual(await core.existingWorkspace('D:\\demo\\src', service.url), project);
+  assert.deepEqual(await core.existingWorkspace('D:\\demo', service.url, { newProject:true }), project);
+  await assert.rejects(core.newWorkspace('D:\\', 'demo', service.url), /当文件已存在时/);
+  assert.equal((await core.hostFolders(service.url, 'D:\\')).path, 'D:\\');
+  assert.deepEqual(service.requests.map(({ method, url, body }) => ({ method, url, body })), [
+    { method:'POST', url:'/api/host/workspace/existing', body:{ directory:'D:\\demo\\src', new_project:false } },
+    { method:'POST', url:'/api/host/workspace/existing', body:{ directory:'D:\\demo', new_project:true } },
+    { method:'POST', url:'/api/host/workspace/new', body:{ parent:'D:\\', name:'demo' } },
+    { method:'GET', url:'/api/host/folders?path=D%3A%5C', body:null }]);
 });
-
-test('reopening a removed exact workspace restores its stable identity before Git ancestor discovery', async t => {
-  const root = await directory(t), selected = path.join(root,'registered child');
-  await run('git',['init',root],{windowsHide:true}); await fs.mkdir(selected);
-  const registered={name:'stable-project-key',display_name:'原显示名称',root:await fs.realpath(selected),removed_at:'2026-10-25T00:00:00Z'};
-  const service=await fixture(t,[registered]);
-  const restored=await core.existingWorkspace(selected,service.url);
-  assert.equal(restored.name,'stable-project-key');assert.equal(restored.root,registered.root);
-  assert.equal(restored.display_name,'原显示名称');assert.equal(restored.removed_at,null);
-  assert.equal(service.known.length,1);assert(service.calls.includes('/api/projects?include_removed=1'));
-  assert.equal(service.calls.filter(value=>value==='/api/project/init').length,1);
+test('the workspace list must carry the backend directory state for every writable workspace', async t => {
+  const ready = { name:'demo', root:'C:\\demo', directory_state:{ status:'missing' } }, history = { name:'storage:w1', root:'已保存的工作区历史', read_only:true };
+  assert.deepEqual(await core.projects((await fixture(t, [ready, history])).url), [ready, history]);
+  for (const item of [{ name:'demo', root:'C:\\demo' }, { name:'demo', root:'C:\\demo', directory_state:{ status:'unknown' } }, { name:'demo', directory_state:{ status:'ready' } }])
+    await assert.rejects(core.projects((await fixture(t, [item])).url), /有效的 Crew 工作区列表/);
 });
-test('new workspace creates only an ordinary folder then registers it', async t => {
-  const root = await directory(t), service = await fixture(t);
-  const project = await core.newWorkspace(root, 'new-project', service.url);
-  assert.equal(project.name, 'new-project');
-  assert.equal(project.root,path.join(await fs.realpath(root),'new-project'));
-  assert.deepEqual(await fs.readdir(project.root),[]);
-  await assert.rejects(core.newWorkspace(root, 'new-project', service.url), /EEXIST/);
-  assert.equal(service.known.length, 1);
+test('a host download streams into the chosen file and a failed download leaves no file behind', async t => {
+  const root = await directory(t), destination = path.join(root, '导出.crewpack');
+  const server = http.createServer((request, response) => {
+    if (request.url === '/api/workspace-data/download?id=ok') { assert.equal(request.headers.authorization, 'Bearer ' + TOKEN); response.writeHead(200, { 'Content-Type':'application/zip' }); response.end(Buffer.alloc(300000, 7)); }
+    else { response.writeHead(400, { 'Content-Type':'application/json' }); response.end(JSON.stringify({ error:'导出文件已失效，请重新导出' })); }
+  });
+  await listen(server); t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  core.authorizeRemote({ origin:url, token:TOKEN, onUnauthorized() {} }); t.after(() => core.authorizeRemote(null));
+  assert.deepEqual(await core.download(url, '/api/workspace-data/download?id=ok', destination), { path:destination, bytes:300000 });
+  assert.deepEqual(await fs.readFile(destination), Buffer.alloc(300000, 7));
+  const failed = path.join(root, 'failed.crewpack');
+  await assert.rejects(core.download(url, '/api/workspace-data/download?id=gone', failed), /导出文件已失效/);
+  assert.deepEqual((await fs.readdir(root)).sort(), ['导出.crewpack']);
 });
-
-test('ordinary existing and new workspaces do not require an executable Git command',async t=>{
-  const root=await directory(t),service=await fixture(t),original=process.env.PATH;
-  process.env.PATH=path.join(root,'no-executables');
-  try { const existing=await core.existingWorkspace(root,service.url),created=await core.newWorkspace(root,'plain-child',service.url);assert.equal(existing.root,await fs.realpath(root));assert.deepEqual(await fs.readdir(created.root),[]);assert.equal(service.known.length,2); }
-  finally { if(original===undefined)delete process.env.PATH;else process.env.PATH=original; }
+test('a large host package survives the host closing its connection, and a cut-off body is refused', async t => {
+  // Like the Python host: headers with Content-Length, the body in 1 MiB writes, then the socket closes.
+  const root = await directory(t), net = require('node:net'), size = 6 * 1024 * 1024;
+  const server = net.createServer(socket => {
+    socket.once('data', request => {
+      const full = request.toString().startsWith('GET /api/workspace-data/download?id=full ');
+      socket.write('HTTP/1.0 200 OK\r\nContent-Type: application/zip\r\nContent-Length: ' + size + '\r\nConnection: close\r\n\r\n');
+      for (let index = 0; index < (full ? 6 : 2); index++) socket.write(Buffer.alloc(1024 * 1024, index));
+      socket.end();
+    });
+  });
+  await listen(server); t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  core.authorizeRemote({ origin:url, token:TOKEN, onUnauthorized() {} }); t.after(() => core.authorizeRemote(null));
+  const destination = path.join(root, 'large.crewpack');
+  assert.equal((await core.download(url, '/api/workspace-data/download?id=full', destination)).bytes, size);
+  assert.equal((await fs.readFile(destination)).subarray(5 * 1024 * 1024)[0], 5);
+  await assert.rejects(core.download(url, '/api/workspace-data/download?id=cut', path.join(root, 'cut.crewpack')), /主机在下载完成前断开了连接/);
+  assert.deepEqual(await fs.readdir(root), ['large.crewpack']);
 });
-
-test('an explicitly registered ordinary subfolder stays independent inside a Git parent',async t=>{
-  const root=await directory(t),service=await fixture(t);await run('git',['init',root],{windowsHide:true});
-  const created=await core.newWorkspace(root,'plain-child',service.url);assert.deepEqual(await fs.readdir(created.root),[]);
-  const original=process.env.PATH;process.env.PATH=path.join(root,'no-executables');
-  try { assert.deepEqual(await core.existingWorkspace(created.root,service.url),created); }
-  finally { if(original===undefined)delete process.env.PATH;else process.env.PATH=original; }
-  assert.equal(service.known.length,1);
+test('desktop pairing asks for a device token without a cookie or page origin', async t => {
+  const service = await host(t, { '/remote/login':[200, { ok:true, token:TOKEN, device_id:'device-1' }] });
+  assert.deepEqual(await core.pairDesktop(service.url.replace('http://', ''), { code:'12345678', device_name:'书房电脑' }), { url:service.url, device_id:'device-1', token:TOKEN });
+  const [login] = service.requests;
+  assert.deepEqual(login.body, { code:'12345678', device_name:'书房电脑', kind:'desktop' });
+  assert.equal(login.headers['x-crew'], '1'); assert.equal(login.headers.origin, undefined); assert.equal(login.headers.cookie, undefined);
+  const refused = await host(t, { '/remote/login':[400, { error:'配对码无效或已过期，请在电脑上重新生成' }] });
+  await assert.rejects(core.pairDesktop(refused.url, { code:'00000000', device_name:'x' }), /配对码无效或已过期/);
+  const invalid = await host(t, { '/remote/login':[200, { ok:true, token:'short', device_id:'device-1' }] });
+  await assert.rejects(core.pairDesktop(invalid.url, { code:'12345678', device_name:'x' }), /配对结果无效/);
 });
-
-test('existing workspace validates missing paths and files before any registration request',async t=>{
-  const root=await directory(t),service=await fixture(t),file=path.join(root,'file.txt');await fs.writeFile(file,'keep');
-  await assert.rejects(core.existingWorkspace(path.join(root,'missing'),service.url),{code:'ENOENT'});
-  await assert.rejects(core.existingWorkspace(file,service.url),{code:'ENOTDIR'});assert.equal(service.calls.length,0);
-  await assert.rejects(core.newWorkspace(file,'child',service.url),{code:'ENOTDIR'});
-  await assert.rejects(core.newWorkspace(path.join(root,'missing-parent'),'child',service.url),{code:'ENOENT'});assert.equal(service.calls.length,0);assert.equal(await fs.readFile(file,'utf8'),'keep');
+test('a saved LAN host connects only as a desktop device, and an expired token reports the lost authorization', async t => {
+  const health = { ok:true, service:'crew', version:'0.3.17', home:'/Users/host/.crew', instance_id:'host-instance', host_name:'书房的 Mac', pid:9, warnings:[] };
+  const good = await host(t, { '/api/access/context':[200, { client:'desktop', remote:true }], '/api/admin/health':[200, health] });
+  const credentials = url => ({ credential:async id => ({ id, name:'书房主机', url, token:TOKEN }) });
+  t.after(() => core.authorizeRemote(null));
+  const backend = new core.RemoteBackend('saved-1', { credentials:credentials(good.url), onUnauthorized() {} });
+  assert.deepEqual(await backend.start(), { url:good.url, owned:false });
+  assert.equal(backend.name, '书房主机'); assert.equal(backend.health.home, '/Users/host/.crew'); assert.equal(backend.owned, false);
+  assert(good.requests.every(request => request.headers.authorization === 'Bearer ' + TOKEN));
+  const browser = await host(t, { '/api/access/context':[200, { client:'browser', remote:true }] });
+  await assert.rejects(new core.RemoteBackend('saved-2', { credentials:credentials(browser.url), onUnauthorized() {} }).start(), /重新配对/);
+  let expired = 0; const revoked = await host(t, { '/api/access/context':[401, { error:'设备授权已失效，请在主机上重新生成配对码' }] });
+  await assert.rejects(new core.RemoteBackend('saved-3', { credentials:credentials(revoked.url), onUnauthorized:() => { expired++; } }).start(), /重新生成配对码/);
+  assert.equal(expired, 1);
 });
-
-test('a damaged Git marker preserves its real Git error instead of registering as an ordinary folder',async t=>{
-  const root=await directory(t),service=await fixture(t);await fs.writeFile(path.join(root,'.git'),'gitdir: missing-metadata\n');
-  const original = await run('git',['-C',root,'rev-parse','--show-toplevel']).then(()=>assert.fail('damaged marker must fail'),error=>error);
-  await assert.rejects(core.existingWorkspace(root,service.url),error=>Boolean(error.stderr&&error.stderr===original.stderr&&error.code===original.code));assert(!service.calls.includes('/api/project/init'));
-});
-
-test('Git file markers still canonicalize a nested folder to the existing worktree root',async t=>{
-  const root=await directory(t),service=await fixture(t),worktree=path.join(root,'worktree'),metadata=path.join(root,'metadata');
-  await run('git',['init','--separate-git-dir',metadata,worktree],{windowsHide:true});await fs.mkdir(path.join(worktree,'src'));
-  assert((await fs.stat(path.join(worktree,'.git'))).isFile());const project=await core.existingWorkspace(path.join(worktree,'src'),service.url);assert.equal(project.root,await fs.realpath(worktree));
-});
-
-test('registration failure retains the new ordinary folder and does not initialize Git',async t=>{
-  const root=await directory(t),service=await fixture(t,[],'registration unavailable');
-  await assert.rejects(core.newWorkspace(root,'retry-me',service.url),/registration unavailable/);assert.deepEqual(await fs.readdir(path.join(root,'retry-me')),[]);assert.equal(service.known.length,0);
+test('saved LAN launch settings select the host, while explicit local launch arguments start this computer', async t => {
+  const root = await directory(t), file = path.join(root, 'launch-settings.json');
+  await fs.writeFile(file, JSON.stringify({ mode:'remote', home:root, source:'bundled', backend_directory:root, service_url:'', port:0, python:'python', remote_backend:'saved-1' }));
+  const remote = core.options([], { launchSettingsPath:file });
+  assert.equal(remote.remoteBackend, 'saved-1'); assert.equal(remote.serviceUrl, undefined); assert.equal(remote.home, root);
+  for (const args of [['--home', root], ['--port', '0'], ['--backend-dir', root], ['--service-url', 'http://127.0.0.1:12345']]) assert.equal(core.options(args, { launchSettingsPath:file }).remoteBackend, undefined, args.join(' '));
+  assert.equal(core.options(['--python', 'other-python'], { launchSettingsPath:file }).remoteBackend, 'saved-1');
 });
 test('healthy registry service is reused and never spawned or stopped by the desktop', async t => {
   const root = await directory(t), service = await fixture(t);
@@ -282,23 +311,6 @@ test('a supervised startup timeout reaches recovery without killing or waiting f
   child.stdout.destroy();child.stderr.destroy();child.stdin.destroy();
 });
 
-test('legacy service project roots are hydrated from matching per-project state', async t => {
-  const root=await directory(t), requests=[];
-  const server=http.createServer((request,response)=>{
-    requests.push(request.url); response.setHeader('Content-Type','application/json');
-    if(request.url==='/api/projects'){response.writeHead(404);response.end('{"error":"old service"}');}
-    else if(request.url==='/api/state')response.end(JSON.stringify({projects:[{name:'old project',theme:'gray'}],leaders:[],members:[]}));
-    else if(request.url==='/api/state?project=old%20project')response.end(JSON.stringify({project:{name:'old project',root,theme:'gray'}}));
-    else{response.writeHead(404);response.end('{}');}
-  });
-  await listen(server); t.after(()=>new Promise(resolve=>server.close(resolve)));
-  const url=`http://127.0.0.1:${server.address().port}`; await fs.writeFile(path.join(root,'web.json'),JSON.stringify({url}));
-  const backend=new core.Backend({home:root},{spawn:()=>{throw new Error('must not spawn');}});
-  assert.deepEqual(await backend.start(),{url,owned:false});
-  assert.deepEqual(await core.projects(url),[{name:'old project',root,theme:'gray'}]);
-  assert(requests.includes('/api/state?project=old%20project')); await backend.stop();
-});
-
 test('owned Python diagnostics survive exit in a bounded local log', async t => {
   const root=await directory(t), service=await fixture(t), backendDir=path.join(root,'backend');
   await fs.mkdir(backendDir);
@@ -307,25 +319,6 @@ test('owned Python diagnostics survive exit in a bounded local log', async t => 
   t.after(()=>backend.stop()); await backend.start(); await backend.stop();
   const text=await fs.readFile(backend.logPath,'utf8'); assert(text.includes('diagnostic marker')); assert(text.length<6200);
   assert.equal(backend.child.exitCode,0);
-});
-test('owned backends receive the configured Codex bridge and preserve an inherited test bridge without config', async t => {
-  const original = process.env.CREW_CODEX_DESKTOP_PROXY;
-  process.env.CREW_CODEX_DESKTOP_PROXY = 'inherited test bridge';
-  t.after(() => { if (original === undefined) delete process.env.CREW_CODEX_DESKTOP_PROXY; else process.env.CREW_CODEX_DESKTOP_PROXY = original; });
-  for (const supervised of [false, true]) for (const configured of [false, true]) {
-    const root = await directory(t), service = await fixture(t), backendDir = path.join(root, 'backend');
-    const receipt = path.join(root, 'environment.json'), proxy = path.join(root, 'assets with spaces', '桥接.exe');
-    await fs.mkdir(backendDir);
-    await fs.writeFile(path.join(backendDir, supervised ? 'crew_supervisor.py' : 'crew_desktop.py'),
-      'import os, sys, json\nfrom pathlib import Path\nPath(' + JSON.stringify(receipt) + ').write_text(json.dumps(os.environ.get("CREW_CODEX_DESKTOP_PROXY")), encoding="utf-8")\nprint(' + JSON.stringify(service.url) + ', flush=True)\nsys.stdin.readline()\n');
-    const backend = new core.Backend({ home:path.join(root, 'home'), backendDir, python:'python', port:0, isolated:true,
-      ...(configured ? { codexDesktopProxy:proxy } : {}) });
-    t.after(() => backend.stop());
-    await backend.start();
-    assert.equal(JSON.parse(await fs.readFile(receipt, 'utf8')), configured ? proxy : 'inherited test bridge');
-    await backend.stop();
-    assert.equal(backend.child.exitCode, 0);
-  }
 });
 test('portable backend is retained by content identity after extraction disappears', async t => {
   const root = await directory(t), source = path.join(root, 'extracted'), home = path.join(root, 'home');

@@ -266,7 +266,7 @@ class DocumentHTTPTests(DocumentFixture,unittest.TestCase):
         self.assertEqual(info['session_id'],'s1');self.assertEqual(info['document_id'],docid)
         code,content=self.request('/api/files/content',project='demo',document_id=docid)
         self.assertEqual(code,200,content);self.assertEqual(content['content'],'# report')
-        with mock.patch('crew.web.os.startfile') as opener:
+        with mock.patch('crew.web.sys.platform', 'win32'), mock.patch('crew.web.os.startfile', create=True) as opener:
             self.assertEqual(self.request('/api/files/open',{'project':'demo','document_id':docid})[0],200)
             opener.assert_called_once_with(str(file))
         self.assertEqual(self.request('/api/documents/refresh',{'project':'demo'})[0],200)

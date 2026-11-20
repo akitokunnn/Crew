@@ -3,8 +3,13 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const http = require('node:http');
+const { createWriteStream } = require('node:fs');
+const { pipeline } = require('node:stream/promises');
 const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { defaultPython, checkPythonVersion } = require('./python.cjs');
+const { samePath } = require('./paths.cjs');
 const run = promisify(execFile);
 
 function loopback(value) {
@@ -16,7 +21,38 @@ function loopback(value) {
   return url.origin;
 }
 
-function options(args, {launchSettingsPath} = {}) {
+// A LAN host is addressed as shown in its settings: "192.168.1.20:47812" or
+// "http://192.168.1.20:47812". Only private IPv4 hosts with an explicit port.
+function lanAddress(value) {
+  if (typeof value !== 'string' || !value.trim()) throw new Error('请填写主机地址，例如 192.168.1.20:47812');
+  const text = value.trim();
+  let url;
+  try { url = new URL(text.includes('://') ? text : 'http://' + text); }
+  catch (error) { if (error instanceof TypeError) throw new Error('主机地址格式不正确：' + text); throw error; }
+  const parts = url.hostname.split('.').map(Number);
+  const privateHost = /^\d{1,3}(\.\d{1,3}){3}$/.test(url.hostname) && parts.every(part => part <= 255) &&
+    (parts[0] === 10 || parts[0] === 127 || parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31 || parts[0] === 192 && parts[1] === 168);
+  if (url.protocol !== 'http:' || url.username || url.password || !url.port || url.pathname !== '/' || url.search || url.hash || !privateHost) {
+    throw new Error('主机地址必须是局域网 IPv4 地址加端口，例如 192.168.1.20:47812');
+  }
+  return url.origin;
+}
+
+const DEVICE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+// The one LAN host this window is connected to. Its device token is attached
+// only to requests for exactly this origin.
+let remote = null;
+function authorizeRemote(value) {
+  if (value === null) { remote = null; return; }
+  if (!value || !DEVICE_TOKEN.test(value.token || '') || typeof value.onUnauthorized !== 'function') throw new TypeError('局域网主机连接需要设备令牌和失效处理');
+  remote = { origin:lanAddress(value.origin), token:value.token, onUnauthorized:value.onUnauthorized };
+}
+function serviceOrigin(base) {
+  if (remote && base === remote.origin) return remote.origin;
+  return loopback(base);
+}
+
+function options(args, {launchSettingsPath, platform = process.platform} = {}) {
   const explicit = {};
   const fields = { '--home': 'home', '--python': 'python', '--port': 'port', '--backend-dir': 'backendDir', '--smoke-output': 'smokeOutput', '--service-url': 'serviceUrl', '--profile': 'profile', '--launch-settings':'launchSettingsPath' };
   for (let index = 0; index < args.length; index++) {
@@ -31,12 +67,15 @@ function options(args, {launchSettingsPath} = {}) {
     explicit[fields[key]] = key === '--port' ? Number(value) : value;
   }
   const product=require('./product.cjs');
-  const defaults={home:path.join(os.homedir(),product.homeDirectory),python:'python',port:0};
+  const defaults={home:path.join(os.homedir(),product.homeDirectory),python:defaultPython(platform),port:0};
   const file=explicit.launchSettingsPath || (explicit.isolated || explicit.smoke ? path.join(path.resolve(explicit.home || defaults.home),'desktop','launch-settings.json') : launchSettingsPath);
   const saved=require('./launch-settings.cjs').readSync(file);
   const stored=saved ? {home:saved.home,python:saved.python,port:saved.port,backendSource:saved.source,
-    ...(saved.source==='custom'?{backendDir:saved.backend_directory}:{}),...(saved.mode==='existing'?{serviceUrl:saved.service_url}:{})} : {};
+    ...(saved.source==='custom'?{backendDir:saved.backend_directory}:{}),...(saved.mode==='existing'?{serviceUrl:saved.service_url}:{}),
+    ...(saved.mode==='remote'?{remoteBackend:saved.remote_backend}:{})} : {};
   const result={...defaults,...stored,...explicit,...(file?{launchSettingsPath:path.resolve(file)}:{})};
+  // Explicit local launch arguments start this computer's backend instead of a saved connection.
+  if (['home','backendDir','port','serviceUrl'].some(key=>key in explicit)) delete result.remoteBackend;
   if (!('serviceUrl' in explicit) && ['home','backendDir','port'].some(key=>key in explicit)) delete result.serviceUrl;
   result.backendSource=explicit.backendDir ? 'custom' : stored.backendSource || 'bundled';
   if (!Number.isInteger(result.port) || result.port < 0 || result.port > 65535) throw new Error('端口必须在 0 到 65535 之间');
@@ -44,7 +83,7 @@ function options(args, {launchSettingsPath} = {}) {
   if (result.smokeVisual && !result.smoke) throw new Error('视觉验收只允许使用隔离 smoke 模式');
   result.home = path.resolve(result.home);
   const normalHome = path.resolve(os.homedir(), product.homeDirectory);
-  const sameHome = process.platform === 'win32' ? result.home.toLowerCase() === normalHome.toLowerCase() : result.home === normalHome;
+  const sameHome = samePath(result.home, normalHome, platform);
   result.instanceName = result.isolated || result.smoke ? product.name+' · 隔离测试' : sameHome ? product.name : product.name+' · 独立数据';
   if (result.smoke && (sameHome || result.port === 47811)) throw new Error('smoke 必须使用隔离 home 和测试端口');
   if (result.serviceUrl) {
@@ -56,14 +95,14 @@ function options(args, {launchSettingsPath} = {}) {
   return result;
 }
 
-async function request(base, route, body, timeoutMs = 5000, signal) {
-  const origin = loopback(base);
+async function send(origin, token, route, body, timeoutMs, signal) {
   if (!route.startsWith('/api/')) throw new Error('不支持的 Crew API');
   const deadline=AbortSignal.timeout(timeoutMs),requestSignal=signal?AbortSignal.any([signal,deadline]):deadline;
   const response = await fetch(origin + route, { method: body === undefined ? 'GET' : 'POST',
-    headers: { 'X-Crew': '1', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+    headers: { 'X-Crew': '1', ...(token ? { Authorization:'Bearer ' + token } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error',
     signal: requestSignal });
+  if (token && remote?.token === token && response.status === 401) remote.onUnauthorized();
   let payload;
   try { payload = await response.json(); }
   catch (_) {
@@ -79,23 +118,74 @@ async function request(base, route, body, timeoutMs = 5000, signal) {
   return payload;
 }
 
-async function projects(base, includeRemoved = false) {
-  let data;
-  try { data = await request(base, '/api/projects' + (includeRemoved ? '?include_removed=1' : '')); }
-  catch (error) {
-    if (![404,405].includes(error.status)) throw error;
-    data = await request(base, '/api/state');
-    if (!Array.isArray(data.leaders) || !Array.isArray(data.members)) throw error;
+async function request(base, route, body, timeoutMs = 5000, signal) {
+  const origin = serviceOrigin(base);
+  return send(origin, remote?.origin === origin ? remote.token : null, route, body, timeoutMs, signal);
+}
+
+// Checks a saved LAN host before it becomes this window's connection.
+function remoteRequest(credential, route, body, timeoutMs = 8000) {
+  if (!DEVICE_TOKEN.test(credential?.token || '')) throw new TypeError('局域网主机请求需要设备令牌');
+  return send(lanAddress(credential.url), credential.token, route, body, timeoutMs);
+}
+
+// Streams a host download to a local file; a failed transfer never leaves a partial file at the destination.
+// node:http rather than fetch: undici asserts (uncaught, in the main process) when the host closes
+// its connection while a large body is paused by disk backpressure.
+async function download(base, route, destination, idleTimeoutMs = 60000) {
+  const origin = serviceOrigin(base), token = remote?.origin === origin ? remote.token : null;
+  if (!route.startsWith('/api/')) throw new Error('不支持的 Crew API');
+  const response = await new Promise((resolve, reject) => {
+    const request = http.get(origin + route, { headers:{ 'X-Crew':'1', ...(token ? { Authorization:'Bearer ' + token } : {}) }, timeout:idleTimeoutMs }, resolve);
+    request.on('timeout', () => request.destroy(new Error('主机在 ' + idleTimeoutMs / 1000 + ' 秒内没有继续发送下载内容')));
+    request.on('error', reject);
+  });
+  if (token && response.statusCode === 401) remote.onUnauthorized();
+  if (response.statusCode !== 200) {
+    const chunks = []; for await (const chunk of response) chunks.push(chunk);
+    let payload;
+    try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+    catch (_) { const error = new Error(`Crew 服务返回了无效内容 (${response.statusCode})`); error.status = response.statusCode; throw error; }
+    const error = new Error(payload.error || `Crew 服务返回 ${response.statusCode}`); error.status = response.statusCode; throw error;
   }
-  if (!Array.isArray(data.projects) || data.projects.some(item => !item || typeof item.name !== 'string' || !item.name)) {
+  const temporary = destination + '.' + crypto.randomUUID() + '.download';
+  try {
+    try { await pipeline(response, createWriteStream(temporary, { flags:'wx' })); }
+    catch (error) { if (error.code === 'ECONNRESET') throw new Error('主机在下载完成前断开了连接，请重新导出', { cause:error }); throw error; }
+    if (response.headers['content-length'] !== undefined && (await fs.stat(temporary)).size !== Number(response.headers['content-length'])) throw new Error('下载内容不完整，请重新导出');
+    await fs.rename(temporary, destination);
+  } finally { await fs.rm(temporary, { force:true }); }
+  return { path:destination, bytes:(await fs.stat(destination)).size };
+}
+
+// Desktop pairing: the host returns a device token in JSON and never sets a cookie.
+async function pairDesktop(address, { code, device_name }) {
+  const origin = lanAddress(address);
+  const response = await fetch(origin + '/remote/login', { method:'POST', redirect:'error', signal:AbortSignal.timeout(10000),
+    headers:{ 'X-Crew':'1', 'Content-Type':'application/json' }, body:JSON.stringify({ code, device_name, kind:'desktop' }) });
+  let payload;
+  try { payload = await response.json(); }
+  catch (_) { throw new Error(`此地址没有返回 Crew 配对结果 (${response.status})，请确认填写的是主机设置里显示的地址`); }
+  if (!response.ok) { const error = new Error(payload.error || `主机返回 ${response.status}`); error.status = response.status; throw error; }
+  if (payload.ok !== true || typeof payload.device_id !== 'string' || !payload.device_id || !DEVICE_TOKEN.test(payload.token || '')) throw new Error('主机返回的配对结果无效，请确认地址是 Crew 主机');
+  return { url:origin, device_id:payload.device_id, token:payload.token };
+}
+
+function remoteHealth(value) {
+  if (value?.ok !== true || value.service !== 'crew' || typeof value.version !== 'string' || !value.version ||
+      typeof value.home !== 'string' || !value.home || !value.instance_id || typeof value.host_name !== 'string' || !value.host_name.trim()) throw new Error('此地址没有返回有效的 Crew 主机信息，请确认地址和主机版本');
+  return value;
+}
+
+const DIRECTORY_STATES = ['ready', 'missing', 'error'];
+async function projects(base, includeRemoved = false) {
+  const data = await request(base, '/api/projects' + (includeRemoved ? '?include_removed=1' : ''));
+  // Directory state comes from the backend that owns the folders (this computer or a LAN host).
+  if (!Array.isArray(data.projects) || data.projects.some(item => !item || typeof item.name !== 'string' || !item.name ||
+      typeof item.root !== 'string' || !item.root || (item.read_only !== true && !DIRECTORY_STATES.includes(item.directory_state?.status)))) {
     throw new Error('此地址没有返回有效的 Crew 工作区列表');
   }
-  return Promise.all(data.projects.map(async item => {
-    if (typeof item.root === 'string' && item.root) return item;
-    const state = await request(base, '/api/state?project=' + encodeURIComponent(item.name));
-    if (state.project?.name !== item.name || typeof state.project?.root !== 'string' || !state.project.root) throw new Error('Crew 工作区没有有效的目录信息');
-    return { ...item, ...state.project };
-  }));
+  return data.projects;
 }
 
 function connectionRefused(error) {
@@ -109,7 +199,7 @@ async function confirmedStopped(config, candidate) {
   const script = path.join(config.backendDir, 'crew_supervisor.py');
   try {
     await fs.access(script);
-    const {stdout} = await run(config.python || 'python', [script, '--home', config.home, '--probe'],
+    const {stdout} = await run(config.python || defaultPython(), [script, '--home', config.home, '--probe'],
       {windowsHide:true,timeout:10000,maxBuffer:131072,env:{...process.env,PYTHONIOENCODING:'utf-8'}});
     const probe = JSON.parse(stdout);
     return probe.can_start === true && probe.url === candidate;
@@ -169,6 +259,7 @@ class Backend {
         if (!connectionRefused(error) && !await confirmedStopped(this.config,candidate)) throw new Error('现有 Crew 服务暂时不可用，请稍后重试：' + error.message);
       }
     }
+    await checkPythonVersion(this.config.python);
     let script = path.join(this.config.backendDir, 'crew_supervisor.py');
     try { await fs.access(script); this.supervised = true; }
     catch (error) {
@@ -188,7 +279,6 @@ class Backend {
     const args = [script, '--home', this.config.home, '--port', String(this.config.port)];
     if (this.config.isolated || this.config.smoke) args.push('--isolated-sources');
     const env = { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' };
-    if (this.config.codexDesktopProxy) env.CREW_CODEX_DESKTOP_PROXY = this.config.codexDesktopProxy;
     this.child = this.spawn(this.config.python, args, { cwd: this.config.backendDir, windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'], env });
     this.owned = true;
@@ -286,61 +376,40 @@ function workspaceName(value) {
   return value.trim();
 }
 
-async function workspaceDirectory(directory) {
-  const selected = await fs.realpath(directory);
-  if (!(await fs.stat(selected)).isDirectory()) {
-    const error = new Error('工作区路径不是文件夹：' + selected); error.code = 'ENOTDIR'; throw error;
+// Folder checks, Git root resolution and folder creation run in the backend
+// that owns the folders, so this computer and a LAN host share one implementation.
+function existingWorkspace(directory, base, {newProject=false} = {}) {
+  return request(base, '/api/host/workspace/existing', { directory, new_project:newProject }, 30000);
+}
+
+function newWorkspace(parent, name, base) {
+  return request(base, '/api/host/workspace/new', { parent, name }, 30000);
+}
+
+function hostFolders(base, directory) {
+  if (typeof directory !== 'string') throw new TypeError('文件夹路径必须是文本');
+  return request(base, '/api/host/folders?' + new URLSearchParams({ path:directory }), undefined, 15000);
+}
+
+// A saved LAN host. Nothing runs or is stopped on this computer.
+class RemoteBackend {
+  constructor(id, { credentials, onUnauthorized }) {
+    this.id = id; this.credentials = credentials; this.onUnauthorized = onUnauthorized;
+    this.remote = true; this.owned = false; this.child = null; this.url = 'http://127.0.0.1:0';
+    this.name = null; this.health = null; this.startupError = null;
   }
-  return selected;
-}
-
-async function optionalGitRoot(selected) {
-  let directory = selected;
-  while (true) {
-    try { await fs.lstat(path.join(directory, '.git')); break; }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
-    const parent = path.dirname(directory);
-    if (parent === directory) return selected;
-    directory = parent;
+  async start() {
+    const credential = await this.credentials.credential(this.id);
+    this.name = credential.name;
+    authorizeRemote({ origin:credential.url, token:credential.token, onUnauthorized:this.onUnauthorized });
+    this.url = credential.url;
+    const context = await request(this.url, '/api/access/context', undefined, 8000);
+    if (context?.client !== 'desktop') throw new Error('主机没有把这台电脑识别为 Crew 桌面客户端，请重新配对');
+    this.health = remoteHealth(await request(this.url, '/api/admin/health', undefined, 8000));
+    return { url:this.url, owned:false };
   }
-  // A Git marker is explicit metadata. Corrupt repositories must keep their real Git error.
-  const { stdout } = await run('git', ['-C', selected, 'rev-parse', '--show-toplevel'], { windowsHide: true, timeout: 10000 });
-  return fs.realpath(stdout.trim());
+  async stop() {}
 }
 
-async function projectLocations(items) {
-  return Promise.all(items.map(async item=>{
-    if (item.read_only) return item;
-    try { return {...item,directory_state:{status:(await fs.stat(item.root)).isDirectory()?'ready':'missing'}}; }
-    catch(error) { return {...item,directory_state:['ENOENT','ENOTDIR'].includes(error.code)?{status:'missing'}:{status:'error',error:error.message}}; }
-  }));
-}
-
-async function existingWorkspace(directory, base, {newProject=false} = {}) {
-  const selected = await workspaceDirectory(directory);
-  const registered = (await projects(base, true)).filter(item=>!item.read_only);
-  const normalize = value => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
-  const exact = registered.find(item => !item.removed_at && normalize(item.root) === normalize(selected)) || registered.find(item => normalize(item.root) === normalize(selected));
-  if (exact) return exact.removed_at ? request(base, '/api/project/init', {name:exact.name, root:exact.root}) : exact;
-  const root = await optionalGitRoot(selected);
-  const present = registered.find(item => !item.removed_at && normalize(item.root) === normalize(root)) || registered.find(item => normalize(item.root) === normalize(root));
-  if (present) return present.removed_at ? request(base, '/api/project/init', {name:present.name, root:present.root}) : present;
-  if (!newProject) {
-    const missing = (await projectLocations(registered.filter(item=>!item.removed_at))).filter(item=>item.directory_state.status==='missing');
-    if (missing.length) return {relocation:{directory:root,projects:missing}};
-  }
-  const stem = path.basename(root);
-  let name = stem, number = 2;
-  while (registered.some(item => item.name === name)) name = `${stem} ${number++}`;
-  return request(base, '/api/project/init', { name, root });
-}
-
-async function newWorkspace(parent, name, base) {
-  name = workspaceName(name);
-  const root = path.join(await workspaceDirectory(parent), name);
-  await fs.mkdir(root); // Refuse an existing path; never overwrite someone else's files.
-  // A registration failure retains the new folder for retry, never deletes it.
-  return request(base, '/api/project/init', { name, root });
-}
-
-module.exports = { loopback, options, request, projects, projectLocations, Backend, workspaceName, existingWorkspace, newWorkspace, materializeBackend, connectionRefused };
+module.exports = { loopback, lanAddress, authorizeRemote, serviceOrigin, options, request, remoteRequest, download, pairDesktop, remoteHealth,
+  projects, hostFolders, Backend, RemoteBackend, workspaceName, existingWorkspace, newWorkspace, materializeBackend, connectionRefused };

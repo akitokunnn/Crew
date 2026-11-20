@@ -157,7 +157,7 @@ def ensure_assistant(conn, home, *, context_project=None, selection=None):
         raise board.BoardError('助手 HOME 与数据库不一致')
     choice = settings.validate({'default': _configuration(conn) if selection is None else selection})['default']
     if choice['runtime'] is not None:
-        models.validate_options(choice['model'], choice['effort'], runtime=choice['runtime'])
+        models.validate_options(choice['model'], choice['effort'], runtime=choice['runtime'], speed=choice['speed'])
     ensure_schema(conn)
     with (nullcontext() if conn.in_transaction else board.transaction(conn)):
         row = conn.execute('SELECT session_id FROM personal_assistant WHERE singleton=1').fetchone()
@@ -184,7 +184,7 @@ def ensure_assistant(conn, home, *, context_project=None, selection=None):
             native_id = None
             conn.execute('INSERT INTO session_runtimes(session_id,runtime,native_id,updated_at) VALUES(?,?,?,?)',
                          (identity, choice['runtime'], native_id, now))
-            models.set(conn, identity, choice['model'], choice['effort'], runtime=choice['runtime'])
+            models.set(conn, identity, choice['model'], choice['effort'], runtime=choice['runtime'], speed=choice['speed'])
         directory.mkdir(parents=True, exist_ok=True)
     binding = conn.execute('SELECT runtime,native_id FROM session_runtimes WHERE session_id=?', (identity,)).fetchone()
     runtime = dict(binding) if binding is not None else {'runtime': None, 'native_id': None}

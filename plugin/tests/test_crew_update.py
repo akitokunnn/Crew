@@ -3,6 +3,7 @@ import tests  # Install the production-service connection guard.
 import json
 import os
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -170,8 +171,6 @@ class UpdateGateTests(ShellFixture, unittest.TestCase):
             self.service.chat.send(board.session(self.conn, sid), "new work")
         with self.assertRaises(chat.UpdatePaused):
             self.service.post("/api/spawn", {"name": "late", "task": "late task"}, "demo")
-        with self.assertRaises(chat.UpdatePaused):
-            self.service.post("/api/open/continue", {"session_id": "s1"}, "demo")
         # Background workers leave queued work untouched while the gate holds.
         self.service.chat.deliver_messages()
         self.service.chat.auto_resume(self.conn, [], now=NOW)
@@ -335,6 +334,17 @@ class HelperTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("停止超时", value["error"])
         self.assertIn("后台锁仍被占用", value["error"])
+
+    def test_port_probe_uses_exclusive_bind_on_windows_and_reuse_on_posix(self):
+        for platform, option in (("nt", mock.sentinel.exclusive), ("posix", socket.SO_REUSEADDR)):
+            with self.subTest(platform=platform), mock.patch.object(os, "name", platform), \
+                 mock.patch.object(socket, "SO_EXCLUSIVEADDRUSE", mock.sentinel.exclusive, create=True), \
+                 mock.patch.object(socket, "socket") as constructor:
+                self.assertTrue(updater._port_free(12345))
+                constructor.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
+                probe = constructor.return_value.__enter__.return_value
+                self.assertEqual(probe.method_calls, [mock.call.setsockopt(socket.SOL_SOCKET, option, 1),
+                                                      mock.call.bind(("127.0.0.1", 12345))])
 
     def test_explicit_switch_points_cli_at_the_validated_target(self):
         # The production switch runs after the service and its SQLite handles

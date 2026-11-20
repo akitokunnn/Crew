@@ -760,11 +760,11 @@ class RuleTextTests(unittest.TestCase):
         leader, member = [content for _, content in self.roles()]
         for content in (leader,):
             self.assertRegex(content, r"直接写业务代码|直接实施")
-            self.assertRegex(content, r"不逐个叫醒成员查进度|状态查询读取已有事实，不叫醒成员")
+            self.assertRegex(content, r"不逐个叫醒(?:成员|执行)查进度|状态查询读取已有事实，不叫醒成员")
             self.assertNotIn("你不写业务代码", content)
         self.assertIn("跨组协助也由你统一验收", leader)
         self.assertIn("一份最终答复", leader)
-        self.assertIn("用户验收通过后", leader)
+        self.assertIn("用户点“通过”后任务完成", leader)
         self.assertIn("归档本组已无其他未完成任务的成员", leader)
         self.assertIn("用户新指令优先于 leader 旧安排", member)
 
@@ -895,11 +895,27 @@ class InstallAndCliTests(CoreCase):
         self.assertTrue((self.home / "crew.py").is_file())
         python = str(Path(sys.executable).resolve()).replace('%', '%%')
         self.assertEqual((self.home / "bin" / "crew.cmd").read_text(encoding="utf-8"), '@"' + python + '" "%~dp0..\\crew.py" %*\n')
+        self.assertEqual((self.home / "bin" / "python").exists(), os.name != "nt",
+                         "Windows keeps the system python; POSIX gets Crew's interpreter")
         for name in ("blacklist.txt", "prices.json"):
             (self.home / name).write_text("custom", encoding="utf-8")
         install.install(self.home, self.fake_plugin, now="2026-10-22T00:00:00.000Z")
         for name in ("blacklist.txt", "prices.json"):
             self.assertEqual((self.home / name).read_text(encoding="utf-8"), "custom")
+
+    def test_posix_install_puts_crews_python_first_for_hooks_and_sessions(self):
+        # macOS has no `python`; plugin hooks and the crew skill call it through HOME/bin.
+        import shlex
+        home = self.base / "posix-home"
+        home.mkdir()
+        install._launchers(home, only_missing=False, windows=False)
+        python = shlex.quote(Path(sys.executable).resolve().as_posix())
+        shim = home / "bin" / "python"
+        self.assertEqual(shim.read_text(encoding="utf-8"), '#!/bin/sh\nexec ' + python + ' "$@"\n')
+        self.assertFalse((home / "bin" / "crew.exe").exists())
+        shim.unlink()
+        install._launchers(home, only_missing=True, windows=False)
+        self.assertTrue(shim.is_file(), "existing homes gain the shim on the next session launch")
 
     def test_install_missing_prices_fails_before_writing(self):
         fresh = self.base / "fresh"

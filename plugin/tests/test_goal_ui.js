@@ -28,7 +28,7 @@ function harness(api,{fetch:fetcher}={}){
   const client=sandbox.window.CrewGoals.create({project:"fixture",state:()=>state,avatar:(name)=>`<i>${name}</i>`,ago:()=>"刚刚",api:async(url,data)=>{calls.push({url,data});const result=api?await api(url,data):{goal:state.goals.find(item=>url.includes(`id=${item.id}`)),context:{items:[],manifest:{}},reports:[]};if(result.goal)result.goal={supplements_after_report:[],...result.goal};return url.startsWith("/api/documents?")?{documents:result.documents||[]}:result;},renderDocuments:items=>items.map(item=>`<span>${item.title}</span>`).join(""),toast(){},onChange(){},onNavigate(id){navigations.push(id);client.sync("leader",id);},onGeneral(){},refreshState:async()=>{}});
   async function click(act,extra={}){const button={disabled:false,closest:()=>null,dataset:{goalAct:act,...extra}};for(const handler of handlers.click||[])await handler({target:{closest:()=>button}});await tick();}
   async function submit(form){for(const handler of handlers.submit||[])await handler({target:form,preventDefault(){}});await tick();}
-  return {module:sandbox.window.CrewGoals,client,main,state,calls,network,navigations,click,submit,reader};
+  return {module:sandbox.window.CrewGoals,client,main,state,calls,network,navigations,click,submit,reader,window:sandbox.window};
 }
 
 const surfaces=h=>h.client.detailMarkup("leader");
@@ -198,6 +198,22 @@ test("a reopened round says it has no new delivery instead of presenting the old
   h.client.sync("leader","b");await settle();markup=surfaces(h);assert(!markup.includes("goal-delivery"));assert(!markup.includes("暂无新交付"));assert.equal(h.network.length,0);
 });
 
+test("every report offers 打开文件夹 on this computer only, naming the folder it opens",async()=>{
+  const folder={path:"C:\work\<out>",declared:true};
+  const h=harness(async url=>url==="/api/goals/report/folder"?{ok:true,...folder}:deliveryDetail(h,"a",{status:"awaiting_acceptance"},[report("r1",1,{current:true,status:"awaiting_acceptance",folder})]));
+  h.client.sync("leader","a");await settle();
+  let markup=surfaces(h);
+  assert(markup.includes('data-goal-act="open-folder" data-goal-id="a" data-report-id="r1" title="打开交付文件夹：C:\work\&lt;out&gt;">打开文件夹</button>'),"task delivery names the declared folder");
+  await h.click("delivery",{goalId:"a"});await settle();
+  assert(readerText(h.main.appended).includes('data-goal-act="open-folder" data-goal-id="a" data-report-id="r1"'),"the report reader offers it too");
+  await h.click("open-folder",{goalId:"a",reportId:"r1"});
+  assert.equal(JSON.stringify(h.calls.at(-1)),JSON.stringify({url:"/api/goals/report/folder",data:{goal_id:"a",report_id:"r1"}}));
+  assert(h.module.folderButton("a","r0",{path:"C:\work",declared:false}).includes('title="报告没有登记交付文件夹，打开工作区：C:\work"'),"an older report says it opens the workspace");
+  h.window.CrewAccess={local_desktop:false};h.client.sync("leader","a");await settle();
+  assert(!surfaces(h).includes("open-folder"),"a phone never shows a button for a folder on this computer");
+  assert.equal(h.module.folderButton("a","r1",folder),"");
+});
+
 test("one delivery click from the list opens the selected goal's current report in the isolated reader and returns to the task",async()=>{
   const h=harness(async()=>deliveryDetail(h,"a",{status:"awaiting_acceptance",current_round:2,requirement_version:2},[report("ra2",2,{current:true,status:"awaiting_acceptance"}),report("ra1",1)]));
   h.client.sync("leader",null);assert(h.client.listMarkup("leader").includes("任务"));
@@ -320,14 +336,15 @@ test("task cards use status-specific summaries, actual checklist progress and co
  html=card({pending_decision:{id:1,question:"选择验收范围"},now_doing:[{title:"不应抢占拍板",session_id:"m"}]});assert(html.includes("选择验收范围"));assert(html.includes('is-decision'));assert(!html.includes("不应抢占拍板"));
  html=card({status:"running",now_doing:[{title:"核对交互",session_id:"m"}],current_round:2,working_count:2,work_summary:{total:4,done:1},assignments:people.map(person=>({session_id:person.session_id}))});assert(html.includes("正在：界面成员 核对交互"));assert(html.includes("清单 1/4"));assert(!html.includes("pathLength"),"running cards draw no progress ring that looks like the context ring");
  const runningMark=h.module.leaderTasks([{...base,status:"running",pending_decision:null,work_summary:{total:4,done:1}}],null).match(/<svg class="i"[^>]*>(.*?)<\/svg>/)[1];assert(html.includes(`task-state-icon running" viewBox="0 0 24 24" aria-hidden="true">${runningMark}</svg>`),"cards reuse the sidebar running mark");
- assert(!card({status:"running",work_summary:{total:0,done:0}}).includes("pathLength"));assert(html.includes("第 2 轮"));assert(html.includes("2 人在干活"));assert(html.includes("+1"));assert(html.includes("3 分钟前"));
+ assert(!card({status:"running",work_summary:{total:0,done:0}}).includes("pathLength"));assert(html.includes("第 2 轮"));assert(html.includes("2 个在干活"));assert(html.includes("+1"));assert(html.includes("3 分钟前"));
  html=card({status:"paused"});assert(!html.includes("task-card-summary"));
  html=card({status:"completed",now_doing:[],assignments:[{session_id:"m"},{session_id:"closed-member"}]});assert(html.includes("<i>界面成员</i>"));assert.equal((html.match(/<i>/g)||[]).length,1);
  html=card({status:"running",now_doing:[{title:"收尾",session_id:"closed-member"}]});assert(html.includes("正在：收尾"));assert(!html.includes("undefined"));
 });
 test("task list groups review, active and expanded ended goals and omits empty groups",async()=>{
- const h=harness();h.client.sync("leader",null);h.state.goals[0].status="awaiting_acceptance";h.state.goals[0].acceptance_brief={summary:"完成摘要"};h.state.goals.push({...h.state.goals[1],id:"c",status:"completed"});
- let html=h.client.listMarkup("leader");assert(html.indexOf("待你验收")<html.indexOf("进行中<span>"));assert(!html.includes('id="task-ended-items" hidden'));assert(html.includes("已结束 1"));await h.click("ended-toggle");html=h.client.listMarkup("leader");assert(html.includes('id="task-ended-items" hidden'));
+ const h=harness();h.client.sync("leader",null);h.state.goals[0].status="awaiting_acceptance";h.state.goals[0].acceptance_brief={summary:"完成摘要"};h.state.goals.push({...h.state.goals[1],id:"c",status:"completed",ended_at:"2026-11-18T09:00:00Z"},{...h.state.goals[1],id:"d",status:"cancelled",ended_at:"2026-11-19T09:00:00Z"},{...h.state.goals[1],id:"e",status:"failed",ended_at:"2026-11-17T09:00:00Z"});
+ let html=h.client.listMarkup("leader");assert(html.indexOf("待你验收")<html.indexOf("进行中<span>"));assert(!html.includes('id="task-ended-items" hidden'));assert(html.includes("已结束 3"));
+ const endedOrder=html.slice(html.indexOf('id="task-ended-items"')).match(/data-goal-id="[^"]+"/g).filter((id,i,all)=>all.indexOf(id)===i);assert.deepEqual(endedOrder,['data-goal-id="d"','data-goal-id="c"','data-goal-id="e"']);await h.click("ended-toggle");html=h.client.listMarkup("leader");assert(html.includes('id="task-ended-items" hidden'));
  h.state.goals=[];html=h.client.listMarkup("leader");assert(!html.includes("task-list-group"));assert(html.includes("还没有任务"));assert(html.includes('data-goal-act="create"'));
 });
 

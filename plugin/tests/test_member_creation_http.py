@@ -3,7 +3,7 @@ import tests
 import threading
 import unittest
 
-from crew import board, member_defaults, models, runtimes, store, web
+from crew import board, goals, member_defaults, models, runtimes, store, web
 import test_chat_http
 from test_shell import NOW, PLUGIN, ShellFixture
 
@@ -21,7 +21,7 @@ class MemberCreationHttpTests(ShellFixture, unittest.TestCase):
         self.thread.start()
         self.addCleanup(self.close_server)
         self.url = self.server.url
-        self.choice = {'runtime':'claude','model':'claude-sonnet-5-5','effort':'high'}
+        self.choice = {'runtime':'claude','model':'claude-sonnet-5-5','effort':'high','speed':None}
 
     def test_owner_can_save_defaults_and_create_a_member_by_stable_leader_id_after_rename(self):
         code, value, _ = self.request('/api/member-defaults?project=demo', {'leader_session_id':'s3','selection':self.choice})
@@ -37,7 +37,7 @@ class MemberCreationHttpTests(ShellFixture, unittest.TestCase):
         sid=value['session_id']
         self.assertEqual(board.session(self.conn,sid)['group_name'],'renamed leader')
         self.assertEqual(runtimes.get(self.conn,sid)['runtime'],'claude')
-        self.assertEqual(models.get(self.conn,sid),{'model':'claude-sonnet-5-5','effort':'high'})
+        self.assertEqual(models.get(self.conn,sid),{'model':'claude-sonnet-5-5','effort':'high','speed':None})
         self.assertEqual(len(self.processes),1)
         self.assertFalse(self.server.service.chat.running('s3'))
 
@@ -75,9 +75,15 @@ class MemberCreationHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(board.session(self.conn, value['session_id'])['role'], 'leader')
         self.assertEqual(len(self.processes), 1)
 
-    def test_leader_can_create_member_but_cannot_create_another_leader(self):
+    def test_leader_opens_members_only_inside_a_task_and_cannot_create_another_leader(self):
         code, value, _ = self.request('/api/spawn?project=demo', {
-            'caller_session_id': 's3', 'name': 'direct member', 'task': 'Finite task'})
+            'caller_session_id': 's3', 'name': 'loose member', 'task': 'Finite task'})
+        self.assertEqual(code, 400, value)
+        self.assertIn('执行只能开在任务里', value['error'])
+        self.assertEqual(self.processes, [])
+        goal = goals.transition(self.conn, goals.create(self.conn, 'demo', 's3', 'Split work', 'Request', ['Done'])['id'], 'running')
+        code, value, _ = self.request('/api/spawn?project=demo', {
+            'caller_session_id': 's3', 'name': 'direct member', 'task': 'Finite task', 'goal_id': goal['id']})
         self.assertEqual(code, 200, value)
         self.assertEqual(board.session(self.conn, value['session_id'])['group_name'], 'lead')
         code, value, _ = self.request('/api/leader?project=demo', {

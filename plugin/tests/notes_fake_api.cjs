@@ -139,7 +139,7 @@ function createNotesApi({now = () => Date.now()} = {}) {
   }
 
   const assistant = {session_id: 'assistant', crew_name: '助手', name: '助手', runtime: 'claude', model: null, effort: null, running: true, busy: false, activity: null,
-    applied: null, context: null, last_seq: 0, web_chat: true, native_handoff: null, where: 'bg', status: 'idle', source: 'crew', chat_unread: 0,
+    applied: null, context: null, last_seq: 0, web_chat: true, where: 'bg', status: 'idle', source: 'crew', chat_unread: 0,
     goals: [], active_goal_id: null, active_goal_ids: [], delegation: [], subagents: [], configured: true};
   function idempotent(body, run) {
     const key = JSON.stringify([body.action, body.data]);
@@ -157,7 +157,7 @@ function createNotesApi({now = () => Date.now()} = {}) {
     const name = url.pathname;
     calls.push({method, name, query: Object.fromEntries(url.searchParams), body});
     if (failNext && failNext.path === name) { const failure = failNext; failNext = null; return {status: failure.status, body: {error: failure.error}}; }
-    if (name === '/api/access/context') return {status: 200, body: {remote: false, local_controls: true, local_desktop: true, authenticated: true}};
+    if (name === '/api/access/context') return {status: 200, body: {remote: false, client: 'local', local_controls: true, local_desktop: true, authenticated: true, host_admin: true}};
     if (name === '/api/projects') return {status: 200, body: {projects}};
     if (name === '/api/personal/notes' && method === 'GET') {
       const archived = url.searchParams.get('include_archived') === '1', project = url.searchParams.get('project');

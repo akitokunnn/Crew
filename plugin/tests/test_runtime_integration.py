@@ -12,7 +12,7 @@ from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import behavior_prompts, board, chat, hooks, messaging, runtimes, store, todo, web
+from crew import behavior_prompts, board, chat, hooks, messaging, models, runtimes, store, todo, web
 from test_shell import NOW, PLUGIN, ShellFixture
 
 
@@ -207,6 +207,35 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
             self.assertEqual(runtimes.get(self.conn, member['session_id'])['runtime'], 'codex')
             self.assertEqual(self.processes, [])  # No Claude process was launched.
 
+    def test_codex_speed_reaches_new_leader_inherited_members_and_running_options(self):
+        from crew import settings
+        settings.save(self.conn, {'default': {'runtime': 'codex', 'model': None, 'effort': None, 'speed': 'priority'}})
+        with mock.patch.object(runtimes.shutil, 'which', side_effect=lambda name: name + '.exe'), \
+                mock.patch('crew.codex_runtime.CodexRunning', FakeCodex), \
+                mock.patch('crew.codex_client.command', return_value=['codex.exe', 'app-server']):
+            code, leader = self.request('/api/leader', {'name': 'fast-chief', 'task': 'one finite task'})
+            self.assertEqual(code, 200, leader)
+            self.assertEqual(models.get(self.conn, leader['session_id'])['speed'], 'priority')
+            code, member = self.request('/api/spawn', {'name': 'fast-member', 'task': 'check', 'group': 'fast-chief'})
+            self.assertEqual(code, 200, member)
+            self.assertEqual(models.get(self.conn, member['session_id'])['speed'], 'priority')
+            code, chosen = self.request('/api/spawn', {'name': 'standard-member', 'task': 'check', 'group': 'fast-chief',
+                                                       'speed': 'default'})
+            self.assertEqual(code, 200, chosen)
+            self.assertEqual(models.get(self.conn, chosen['session_id'])['speed'], 'default')
+            code, result = self.request('/api/session/options', {'session_id': chosen['session_id'], 'speed': 'priority'})
+            self.assertEqual((code, result.get('speed')), (200, 'priority'), result)
+            self.assertEqual(self.server.service.chat.processes[chosen['session_id']].applied['speed'], 'priority')
+            code, claude_member = self.request('/api/spawn', {'name': 'claude-member', 'task': 'check', 'group': 'fast-chief',
+                                                              'runtime': 'claude'})
+            self.assertEqual(code, 200, claude_member)
+            self.assertEqual(models.get(self.conn, claude_member['session_id'])['speed'], None)
+            for path, body in (('/api/leader', {'name': 'claude-chief', 'task': 't', 'runtime': 'claude', 'speed': 'priority'}),
+                               ('/api/spawn', {'name': 'bad-speed', 'task': 't', 'group': 'fast-chief', 'speed': 'bad speed'}),
+                               ('/api/session/options', {'session_id': claude_member['session_id'], 'speed': 'priority'})):
+                with self.subTest(path=path, body=body):
+                    self.assertEqual(self.request(path, body)[0], 400)
+
     def test_missing_carriers_reject_leader_before_creating_a_group(self):
         from crew import settings
         settings.save(self.conn, {'default': {'runtime': None, 'model': None, 'effort': None}})
@@ -224,12 +253,12 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         request = Request(self.server.url + '/api/settings', json.dumps(payload).encode(), {'X-Crew': '1'})
         with self.opener.open(request, timeout=5) as response:
             result = json.load(response)
-        self.assertEqual(result['ai'], {**payload['ai'], 'assistant': None})
+        self.assertEqual(result['ai'], {**payload['ai'], 'default': {**payload['ai']['default'], 'speed': None}, 'assistant': None})
         self.assertEqual(result['home'], str(self.home.resolve()))
         self.assertEqual(runtimes.get(self.conn, 's3'), original)
         self.assertEqual(self.processes, [])
         with self.opener.open(self.server.url + '/api/settings', timeout=5) as response:
-            self.assertEqual(json.load(response)['ai'], {**payload['ai'], 'assistant': None})
+            self.assertEqual(json.load(response)['ai'], {**payload['ai'], 'default': {**payload['ai']['default'], 'speed': None}, 'assistant': None})
         self.assertEqual(self.request('/api/settings', {'ai': {'default': {'runtime': 'codex'}}})[0], 400)
         self.assertEqual(self.request('/api/settings', {'ai': payload['ai'], 'unknown': True})[0], 400)
 
@@ -241,7 +270,7 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
             code, result = self.request('/api/leader', {'name': 'configured-chief', 'task': 'finite task'})
         self.assertEqual(code, 200, result)
         current = self.server.service.chat.processes[result['session_id']]
-        self.assertEqual(current.applied, {'model': 'gpt-fixture-default', 'effort': 'high'})
+        self.assertEqual(current.applied, {'model': 'gpt-fixture-default', 'effort': 'high', 'speed': None})
 
     def test_settings_and_execution_permissions_save_atomically_without_starting_models(self):
         from crew import settings

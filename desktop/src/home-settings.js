@@ -42,9 +42,13 @@
   }
   async function ensure(){
     if(ui)return ui;if(creating)return creating;
-    creating=(async()=>{await bridge.settingsUI();ui=window.CrewSettings.create({host:root,read:()=>bridge.settingsGet(),save:body=>bridge.settingsSave(body),operations:{snapshot:()=>bridge.adminChatSnapshot(),send:body=>bridge.adminChatSend(body),interrupt:()=>bridge.adminChatInterrupt(),configGet:()=>bridge.adminConfigGet(),configSave:body=>bridge.adminConfigSave(body),launch:{get:()=>bridge.launchSettingsGet(),validate:body=>bridge.launchSettingsValidate(body),apply:body=>bridge.launchSettingsApply(body),pick:body=>bridge.launchSettingsPick(body)}},panels:{
+    // Connected to a LAN host: its operations chat, repair policy, LAN access card and tool updates stay on the host.
+    const launch={get:()=>bridge.launchSettingsGet(),validate:body=>bridge.launchSettingsValidate(body),apply:body=>bridge.launchSettingsApply(body),pick:body=>bridge.launchSettingsPick(body),pair:body=>bridge.remoteBackendPair(body)};
+    const operations=bridge.remote?{launch}:{snapshot:()=>bridge.adminChatSnapshot(),send:body=>bridge.adminChatSend(body),interrupt:()=>bridge.adminChatInterrupt(),configGet:()=>bridge.adminConfigGet(),configSave:body=>bridge.adminConfigSave(body),launch};
+    creating=(async()=>{await bridge.settingsUI();ui=window.CrewSettings.create({host:root,remote:bridge.remote,read:()=>bridge.settingsGet(),save:body=>bridge.settingsSave(body),operations,panels:{
       sounds:host=>window.CrewSoundSettings.mount(host,{read:()=>bridge.settingsGet(),save:body=>bridge.settingsSave(body)}),
-      prompts:host=>window.CrewBehaviorPrompts.mount(host,{read:query=>bridge.promptsGet(query),save:body=>bridge.promptsSave(body)}),appearance,connections,remote,storage,tools:host=>window.CrewHomeTools?.mount(host),backend}});return ui;})();
+      prompts:host=>window.CrewBehaviorPrompts.mount(host,{read:query=>bridge.promptsGet(query),save:body=>bridge.promptsSave(body)}),appearance,connections,storage,backend,
+      ...(bridge.remote?{}:{remote,tools:host=>window.CrewHomeTools?.mount(host)})}});return ui;})();
     try{return await creating;}finally{creating=null;}
   }
   async function show(category='ai'){

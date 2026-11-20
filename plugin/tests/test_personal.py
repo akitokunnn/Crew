@@ -239,7 +239,7 @@ class PersonalTests(unittest.TestCase):
         ai = {**settings.DEFAULT, 'default': {'runtime': 'codex', 'model': 'custom-native', 'effort': 'high'}}
         result = self.action('settings.save', {'ai': ai}, create_leader=port, send_message=port, stop_session=port)
         self.assertFalse(result['result']['started_by_operation'])
-        self.assertEqual(settings.get(self.conn)['default'], ai['default'])
+        self.assertEqual(settings.get(self.conn)['default'], {**ai['default'], 'speed': None})
 
     def test_todo_resolve_uses_original_manual_todo_owner(self):
         leader = self.leader(self.project('mib'), 'leader')
