@@ -1,6 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
-if (window.crewDesktop.platform === 'darwin') $('home-shortcut').textContent = '⌘T';
+// macOS keeps Crew in the menu bar (status item) rather than a Windows tray.
+if (window.crewDesktop.platform === 'darwin') { $('home-shortcut').textContent = '⌘T'; $('home-footer').textContent = '关闭窗口后，Crew 会继续在菜单栏运行。'; }
 let busy = false;
 let homeReady = false;
 let dispatching = false;

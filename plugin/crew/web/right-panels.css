@@ -11,8 +11,10 @@
 .chat-sidepanels .rp>.head{height:auto;min-height:58px;padding:12px 14px;align-items:flex-start;gap:5px}.chat-sidepanels .rp>.head>div:first-child{flex:1;min-width:0}.chat-sidepanels .rp>.head .right{gap:2px}.chat-sidepanels .tree{padding:16px 13px 20px;flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.chat-sidepanels .tree>.leader-unit{margin-bottom:4px}
 .rp-toggle,.rp-close{display:grid}
 #chat-host{margin-right:var(--chat-side-space,0px)}
-/* While the task list is open, shift the 760px chat column left into free space so it sits beside the list; overlap only what cannot fit. */
-main:has(.task-list[data-open=true]:not([hidden])) #chat-host{margin-right:max(var(--chat-side-space,0px),min(calc(var(--task-list-right,0px) + 432px),calc(100% - 808px)))}
+/* While the task list is open, shift the chat column left into free space so it sits beside the list; the column may
+   narrow to 480px (messages wrap) before the list overlaps it, so the default 1220px window shows both in full
+   even with the leader list open. */
+main:has(.task-list[data-open=true]:not([hidden])) #chat-host{margin-right:max(var(--chat-side-space,0px),min(calc(var(--task-list-right,0px) + 432px),calc(100% - 480px)))}
 #chat-host{animation:crew-content-enter .22s var(--ease)}
 :is(.chat-sidepanels,#chat-head,#task-list) :is(.btn,.icon-btn,.attention-trigger){transition:background-color .16s ease,color .16s ease,border-color .16s ease,transform .12s ease}
 :is(.chat-sidepanels,#chat-head,#task-list) :is(.btn,.icon-btn,.attention-trigger):active:not(:disabled){transform:translateY(1px)}

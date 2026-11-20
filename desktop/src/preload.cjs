@@ -87,6 +87,9 @@ const remote=settings?.remote===true;
 const local=methods=>remote?{}:methods, lan=methods=>remote?methods:{};
 if(isHome&&process.isMainFrame)contextBridge.exposeInMainWorld('crewDesktop',Object.freeze({
  platform,remote,connection:()=>ipcRenderer.invoke('desktop:connection'),
+ // One desktop-wide display mode shared with every workspace page and the window chrome.
+ theme:()=>ipcRenderer.invoke('desktop:theme'),setTheme:mode=>ipcRenderer.invoke('desktop:theme-set',mode),
+ onTheme:callback=>{if(typeof callback!=='function')throw new TypeError('需要显示模式回调');const listener=(_event,state)=>callback(state);ipcRenderer.on('desktop:theme',listener);return()=>ipcRenderer.removeListener('desktop:theme',listener);},
  onConnection:callback=>{if(typeof callback!=='function')throw new TypeError('需要连接状态回调');const listener=(_event,state)=>callback(state);ipcRenderer.on('desktop:connection',listener);return()=>ipcRenderer.removeListener('desktop:connection',listener);},
  homeReady:()=>ipcRenderer.invoke('desktop:home-ready'),bootstrap:()=>ipcRenderer.invoke('desktop:bootstrap'),registerExisting:directory=>ipcRenderer.invoke('desktop:existing-new',directory),openProject:name=>ipcRenderer.invoke('desktop:open',name),
  ...local({chooseExisting:()=>ipcRenderer.invoke('desktop:existing'),chooseParent:()=>ipcRenderer.invoke('desktop:parent'),createWorkspace:name=>ipcRenderer.invoke('desktop:create',name),storageActivate:workspaceId=>ipcRenderer.invoke('desktop:storage-activate',workspaceId),storageImport:()=>ipcRenderer.invoke('desktop:storage-import')}),

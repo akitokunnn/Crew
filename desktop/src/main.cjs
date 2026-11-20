@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, View, WebContentsView, ipcMain, dialog, Menu, Tray, nativeImage, nativeTheme, shell, clipboard, systemPreferences, safeStorage, session } = require('electron');
+const { app, BrowserWindow, View, WebContentsView, ipcMain, dialog, Menu, Tray, nativeImage, nativeTheme, shell, clipboard, systemPreferences, safeStorage, session, webContents } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -41,6 +41,8 @@ const errorPage = pathToFileURL(path.join(__dirname, 'error.html')).href;
 let lastPublishedTab=null;
 let window, tray, backend, tabs, activityPreview, reportPreviews, tools, crewUpdates, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
 let startupWork = null, cleanupPromise = null, remoteHeartbeat = null, localVersion = null;
+const { Appearance } = require('./appearance.cjs');
+const appearance = new Appearance(config.userData, { nativeTheme });
 
 function liveWindow(target = window) {
   return !quitting && target === window && !!target && !target.isDestroyed() && !target.webContents.isDestroyed();
@@ -597,6 +599,30 @@ function settingsRequest(route, body, timeoutMs) {
   if (!backend?.url || new URL(backend.url).port === '0') throw Error(backend?.startupError || '后台尚未连接，请查看后台信息。');
   return core.request(backend.url, route, body, timeoutMs);
 }
+// The display mode is desktop-wide and harmless: the home page and workspace pages (this backend or a LAN host) may read and change it.
+function themeSender(event){
+  if(!liveWindow()||event.senderFrame!==event.sender.mainFrame)throw new Error('显示模式只接受 Crew 窗口内的页面');
+  if(event.sender===window.webContents&&[homePage,errorPage].includes(event.senderFrame.url))return;
+  let origin=null;try{origin=new URL(event.senderFrame.url).origin;}catch(_){}
+  if(!tabs||origin!==tabs.origin)throw new Error('显示模式只接受 Crew 窗口内的页面');
+}
+ipcMain.handle('desktop:theme',event=>{themeSender(event);return appearance.state();});
+ipcMain.handle('desktop:theme-set',(event,mode)=>{themeSender(event);return appearance.set(mode);});
+function applyTheme(){
+  const dark=nativeTheme.shouldUseDarkColors,frame=chrome.colors(dark);
+  if(liveWindow()){
+    window.setBackgroundColor(frame.color);
+    if(platform!=='darwin')window.setTitleBarOverlay?.({color:frame.color,symbolColor:frame.symbolColor,height:chrome.HEIGHT});
+  }
+  const state=appearance.state();
+  for(const contents of webContents.getAllWebContents()){
+    if(contents.isDestroyed())continue;
+    let origin=null;try{origin=new URL(contents.getURL()).origin;}catch(_){}
+    if(liveWindow()&&contents===window.webContents||tabs&&origin===tabs.origin)contents.send('desktop:theme',state);
+  }
+  tabs?.setBackground?.(dark?'#1E1E1C':'#F6F5F1');
+}
+nativeTheme.on('updated',applyTheme);
 handle('desktop:prompts-get',query=>settingsRequest('/api/behavior-prompts?'+new URLSearchParams(query || {})));
 handle('desktop:prompts-save',body=>settingsRequest('/api/behavior-prompts',body));
 // A LAN host's settings live in its HOME and are read and saved through its HTTP settings API.
@@ -793,13 +819,14 @@ else {
         if (quitting) return;
         if(!config.smoke&&!config.isolated&&!backend.startupError)tools.start();
       }
+      await appearance.load();
       window = new BrowserWindow({ width: 1220, height: 850, minWidth: 820, minHeight: 600,
-        show: false, title: config.instanceName, icon: path.join(__dirname, '../assets/crew.png'), ...chrome.windowOptions(),
+        show: false, title: config.instanceName, icon: path.join(__dirname, '../assets/crew.png'), ...chrome.windowOptions(platform, nativeTheme.shouldUseDarkColors),
         webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
           additionalArguments: ['--crew-desktop-config=' + encodeURIComponent(JSON.stringify({ home: homePage, origin: backend.url, error:errorPage, instanceName:config.instanceName, remote:remoteMode }))] } });
       tabs=new WorkspaceTabs(window,{origin:backend.url,
         createView:()=>{
-          const view=new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}});
+          const view=new WebContentsView({webPreferences:{preload:path.join(__dirname,'workspace-preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}});
           // Match the page's own first paint (system theme) so a loading page slides in without a white flash.
           view.setBackgroundColor(nativeTheme.shouldUseDarkColors?'#1E1E1C':'#F6F5F1');return view;
         },

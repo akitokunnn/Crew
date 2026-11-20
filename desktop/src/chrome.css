@@ -77,3 +77,32 @@ html.crew-desktop-shell body {
 #crew-tab-recovery button {border:1px solid #d9d9d9;background:#fff;border-radius:7px;font:inherit;padding:7px 14px;margin:0 5px;color:#333;}
 .crew-desktop-maximized #crew-desktop-content {inset:36px 0 0;border-radius:0;border-width:1px 0 0;box-shadow:none;}
 @media(prefers-reduced-motion:reduce) {#crew-desktop-titlebar *{transition:none!important;}}
+/* Dark display mode: the desktop's themeSource drives this query, so the frame, title bar and
+   tabs switch together with the home page and every workspace (same warm palette, #1E1E1C content).
+   The frame colour must match chrome.cjs DARK_COLOR. */
+@media (prefers-color-scheme: dark) {
+  html.crew-desktop-shell {background:#171716;color-scheme:dark;}
+  html.crew-desktop-shell body {background:#171716!important;}
+  #crew-desktop-titlebar {background:#171716;color:#a9a59b;}
+  #crew-desktop-titlebar button:hover {background:#2a2a27;color:#e7e4db;}
+  #crew-desktop-titlebar button:focus-visible,#crew-desktop-tabs button:focus-visible {outline-color:#8fa9c8;}
+  #crew-desktop-titlebar .crew-chrome-divider {background:#34332f;}
+  #crew-desktop-titlebar .crew-chrome-title {color:#8c897f;}
+  .crew-desktop-inactive #crew-desktop-titlebar {color:#6f6c64;}
+  #crew-desktop-content {border-color:#2c2b28;background:#1e1e1c;box-shadow:none;}
+  #crew-desktop-tabs {background:#1b1b19;border-bottom-color:#2c2b28;}
+  .crew-tab {color:#9d998f;}
+  .crew-tab[data-active="true"] {background:#1e1e1c;border-color:#2f2e2a;color:#e7e4db;}
+  .crew-tab:not([data-active="true"]):hover {background:#242422;}
+  .crew-tab-close:hover {background:#2e2d2a;}
+  #crew-desktop-tabs>.crew-tab-add {color:#8c897f;}
+  .crew-tab-add:hover {background:#2a2a27;color:#e7e4db;}
+  .crew-tab-mark {background:#2b3128;color:#a9b89d;}
+  .crew-tab-signal {background:#6b6a63;}
+  .crew-tab-badge {background:#3b3324;color:#d4b47e;}
+  .crew-tab-badge[data-tone="error"] {background:#3a2723;color:#dc9e8e;}
+  .crew-tab-unread {box-shadow:0 0 0 2px #1b1b19;}
+  #crew-tab-recovery {background:#1e1e1c;color:#e7e4db;}
+  #crew-tab-recovery p {color:#a09c92;}
+  #crew-tab-recovery button {background:#262624;border-color:#3a3934;color:#e7e4db;}
+}

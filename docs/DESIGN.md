@@ -111,7 +111,7 @@ Crew/
 
 ## 2. 身份和项目
 
-- **项目主题**：`themes.py` 定义六套主题，state 下发浅 / 深色 token。分配与切换规则见 [WEB_UX.md 的外观](WEB_UX.md#外观)；存储在 `project_themes`，切换记录 `project:theme` 事件。浅 / 深 / 跟随系统是浏览器独立设置。
+- **项目主题**：`themes.py` 定义六套主题，state 下发浅 / 深色 token。分配与切换规则见 [WEB_UX.md 的外观](WEB_UX.md#外观)；存储在 `project_themes`，切换记录 `project:theme` 事件。浅 / 深 / 跟随系统：Crew 桌面里是整个应用共用的一个设置（`desktop/src/appearance.cjs` 存在桌面数据目录并设置 Electron `nativeTheme.themeSource`，首页、所有工作区页、窗口外框和标题栏同时生效，工作区页经 `workspace-preload.cjs` 的 `crewDesktopTheme` 读写）；手机或浏览器直接访问时仍是各自浏览器里的独立设置。
 
 - **会话 ID**：钩子从输入 JSON 的 `session_id` 取；命令行从环境变量 `CLAUDE_CODE_SESSION_ID` 取（Claude Code 会给工具命令设这个变量）。命令行也接受 `--session ID`。需要会话身份的命令拿不到 ID 时报错退出（exit 1），并说明"请在 Claude 会话里运行，或加 --session"。不需要身份的命令（status、decisions、answer 等）在普通终端里也能用，此时操作人记作 `user`。
 - **crew 名**：人起的稳定名字（雷达、视觉）。同一项目里，未离线（status 不是 offline / closed）的会话不能重名，重名时 join 报冲突（exit 3）。
