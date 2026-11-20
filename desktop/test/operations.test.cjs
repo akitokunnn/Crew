@@ -6,6 +6,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const {Writable} = require('node:stream');
 const {OperationsClient} = require('../src/operations.cjs');
+const {defaultPython} = require('../src/python.cjs');
 
 function helper(reply = {busy:false,messages:[]}, failure = null, stderr = '') {
   const calls = [];
@@ -59,7 +60,7 @@ test('operations client uses the materialized backend and whitelisted maintenanc
   for (const action of ['snapshot','interrupt','config-get','config-save']) await client.request(action,{enabled:false});
   assert.equal(calls.length,4);
   assert.ok(calls.every(call => call.options.cwd === 'materialized-backend'));
-  assert.equal(calls[0].file,'python');
+  assert.equal(calls[0].file,defaultPython());
   await assert.rejects(client.request('restart-everything'),/不支持的运维操作/);
   assert.equal(calls.length,4);
 });

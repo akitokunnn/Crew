@@ -9,6 +9,8 @@ const { pathToFileURL } = require('node:url');
 const http = require('node:http');
 const { listen } = require('./fixtures/loopback.cjs');
 const python = require('../src/python.cjs');
+// A native absolute path on every platform, so path.dirname sees real separators.
+const FIXTURE_APP_DATA = process.platform === 'win32' ? 'C:\\fixture\\app-data' : '/fixture/app-data';
 
 const source = fs.readFileSync(process.env.CREW_MAIN_LIFECYCLE_SOURCE || path.join(__dirname, '../src/main.cjs'), 'utf8');
 const tick = async () => { for (let index = 0; index < 80; index++) await Promise.resolve(); };
@@ -27,11 +29,11 @@ function harness(options = {}) {
   const calls = { backendStart:0, backendStop:0, toolsClose:0, updatesClose:0, tabsDispose:0, previewDispose:0, reportClose:0, tabsOpen:0, uiCalls:0, windowShow:0, nativeQuit:0, relaunch:0, dialogs:0, stat:0 };
   let readGate = null, projectGate = null, appMenu = null;
   const config = { home:'C:\\fixture\\crew-home', userData:'C:\\fixture\\crew-desktop', isolated:true, smoke:false, backendSource:'bundled',
-    launchSettingsPath:'C:\\fixture\\app-data\\Crew\\launch-settings.json', ...(options.remote ? { remoteBackend:'saved-host' } : {}) };
+    launchSettingsPath:path.join(FIXTURE_APP_DATA,'Crew','launch-settings.json'), ...(options.remote ? { remoteBackend:'saved-host' } : {}) };
   const webRequests = { headers:null, completed:null };
   class App extends EventEmitter {
     setName() {} setAppUserModelId() {} setPath() {}
-    getPath() { return 'C:\\fixture\\app-data'; }
+    getPath() { return FIXTURE_APP_DATA; }
     getVersion() { return '0.0.0-fixture'; }
     requestSingleInstanceLock() { return true; }
     whenReady() { return ready.promise; }
@@ -413,7 +415,7 @@ test('quitting while report preview registration is pending closes it before the
 });
 
 test('saved LAN hosts live beside the launch settings, outside every HOME', () => {
-  assert.equal(harness().calls.remoteFile, path.join('C:\\fixture\\app-data\\Crew', 'remote-backends.json'));
+  assert.equal(harness().calls.remoteFile, path.join(FIXTURE_APP_DATA, 'Crew', 'remote-backends.json'));
 });
 
 test('a LAN connection starts no local tools or report worker, and its token reaches only the host origin', async () => {
