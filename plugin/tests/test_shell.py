@@ -974,7 +974,7 @@ class WebTests(ShellFixture, unittest.TestCase):
             for period in ("today", "week", "all", "2026-10-21..2026-10-21"):
                 code, result, _ = self.get("/api/usage?scope=machine&period=" + period)
                 self.assertEqual(code, 200)
-                self.assertEqual(set(result), {"summary","sessions","daily","codex","agents","models","tree","scope","project"})
+                self.assertEqual(set(result), {"summary","sessions","daily","codex","agents","models","tree","scope","project","claude_weeks"})
                 self.assertEqual(result["summary"]["claude"]["requests"], 1)
                 self.assertEqual(len(result["codex"]), 1)
                 self.assertEqual(sum(row["tokens"] for row in result["tree"]), result["summary"]["claude"]["total_tokens"])
