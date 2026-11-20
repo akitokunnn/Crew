@@ -1,7 +1,7 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os');
-const {LaunchSettings,readSync,relaunchArgs,save,shape}=require('../src/launch-settings.cjs');
+const {LaunchSettings,readSync,relaunchArgs,save,shape,rememberPort}=require('../src/launch-settings.cjs');
 const core=require('../src/core.cjs');
 const {CrewUpdates}=require('../src/crew-updates.cjs');
 const {OperationsClient}=require('../src/operations.cjs');
@@ -332,4 +332,34 @@ test('re-pairing a saved host passes only the address, code and device name',asy
   const result=await f.manager.pair({url:'192.168.1.20:47812',code:'12345678',device_name:'书房电脑'});
   assert.equal(result.backend.id,'saved-host');assert.deepEqual(result.backend.paired,{url:'192.168.1.20:47812',code:'12345678',device_name:'书房电脑'});
   await assert.rejects(f.manager.pair({url:'192.168.1.20:47812',code:'12345678',device_name:'x',token:'injected'}),/只能包含/);
+});
+
+test('an automatically chosen local port is remembered once and only for normal local launches', async t => {
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'crew-remember-port-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const config=()=>({home:path.join(root,'home'),backendDir:path.join(root,'backend'),bundledBackendDir:path.join(root,'backend'),backendSource:'bundled',python:'python3',port:0,launchSettingsPath:path.join(root,'prefs','launch-settings.json')});
+  const first=config();
+  assert.equal(await rememberPort(first,'http://127.0.0.1:53538'),true);
+  assert.equal(first.port,53538);
+  assert.deepEqual({mode:readSync(first.launchSettingsPath).mode,port:readSync(first.launchSettingsPath).port,python:readSync(first.launchSettingsPath).python},{mode:'local',port:53538,python:'python3'});
+  // Already fixed: a later automatic port never overwrites it.
+  assert.equal(await rememberPort(config(),'http://127.0.0.1:60000'),false);
+  assert.equal(readSync(first.launchSettingsPath).port,53538);
+  // An existing local file on automatic keeps its other fields and only gains the port.
+  await save(first.launchSettingsPath,shape({...readSync(first.launchSettingsPath),port:0,python:'/opt/homebrew/bin/python3'}));
+  assert.equal(await rememberPort(config(),'http://127.0.0.1:61000'),true);
+  assert.deepEqual({port:readSync(first.launchSettingsPath).port,python:readSync(first.launchSettingsPath).python},{port:61000,python:'/opt/homebrew/bin/python3'});
+  for (const changes of [{isolated:true},{smoke:true},{remoteBackend:'saved-host'},{serviceUrl:'http://127.0.0.1:47811'},{port:47811},{launchSettingsPath:''}]) {
+    const other=config(); other.launchSettingsPath=path.join(root,'other-'+Object.keys(changes)[0],'launch-settings.json'); Object.assign(other,changes);
+    assert.equal(await rememberPort(other,'http://127.0.0.1:62000'),false,JSON.stringify(changes));
+    if (other.launchSettingsPath) assert.equal(readSync(other.launchSettingsPath),null);
+  }
+});
+
+test('a configured port held by another program fails with a clear instruction before Python starts', async t => {
+  const blocker=net.createServer();await new Promise(resolve=>blocker.listen({host:'127.0.0.1',port:0},resolve));t.after(()=>blocker.close());
+  const port=blocker.address().port;let spawned=false;
+  const backend=new core.Backend({home:await fs.mkdtemp(path.join(os.tmpdir(),'crew-port-busy-')),backendDir:__dirname,python:'python3',port});
+  backend.spawn=()=>{spawned=true;throw Error('must not start');};
+  await assert.rejects(backend.start(),error=>error.message.includes(`端口 ${port} 已被其他程序占用`)&&error.message.includes('连接与目录'));
+  assert.equal(spawned,false);
 });

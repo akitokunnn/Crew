@@ -17,7 +17,7 @@ const { ToolUpdates } = require('./tool-updates.cjs');
 const { CrewUpdates } = require('./crew-updates.cjs');
 const { Administrator } = require('./admin.cjs');
 const { OperationsClient } = require('./operations.cjs');
-const { LaunchSettings, relaunchArgs } = require('./launch-settings.cjs');
+const { LaunchSettings, relaunchArgs, rememberPort } = require('./launch-settings.cjs');
 const { RemoteBackends } = require('./remote-backends.cjs');
 const product = require('./product.cjs');
 const platform = process.platform;
@@ -749,7 +749,10 @@ else {
         }
       } else {
         backend = new core.Backend(config);
-        try { await startupStep(backend.start()); }
+        try {
+          await startupStep(backend.start());
+          await rememberPort(config, backend.url).catch(error => console.error('Crew 无法记住后台端口：', error.message));
+        }
         catch (error) {
           if (quitting) return;
           if(config.smoke)throw error;
