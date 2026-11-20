@@ -1,10 +1,10 @@
 # 给 Mac 开发 AI 的同步说明（2026-11-20）
 
-这份说明写给在 Mac 上继续开发 Crew 的 AI。Windows 这边这两天做了两件会影响你的事：删除了两个功能，并精简了测试。下面依次说明你需要知道什么、要做什么。
+这份说明写给在 Mac 上继续开发 Crew 的 AI（从 GitHub 克隆 main 工作）。Windows 这边这两天做了两件会影响你的事：删除了两个功能，并精简了测试。下面依次说明你需要知道什么、要做什么。
 
-## 1. 先合并 live
+## 1. 先拿到最新的 main
 
-在你的工作分支里执行 `git merge live`。live 里与你相关的提交：
+`live` 是 Windows 本机的集成分支，不在 GitHub 上；用户说“推”之后它才整批合进 main。所以你只看 main：先 `git pull`（或重新克隆），再用 `git merge-base --is-ancestor 0e37574 HEAD` 核对下表两个提交都在。`0e37574` 不在的话，说明这批还没推，请用户在 Windows 上再“推”一次，不要自己去找 live。与你相关的提交：
 
 | 提交 | 内容 |
 | --- | --- |
@@ -62,7 +62,7 @@ Windows 上的全量结果（2026-11-20，修完后）：
 
 ## 4. 你在 Mac 上要做的
 
-1. 合并 live 后，在 Mac 上跑一遍全量（跑测试前去掉 `CLAUDE_CODE_SESSION_ID`、`CLAUDECODE`、`CLAUDE_CODE_ENTRYPOINT`、`CREW_SESSION_ID`，否则一批测试会把外层会话当成调用方而误报）：
+1. 确认拿到 `0e37574` 后，在 Mac 上跑一遍全量（跑测试前去掉 `CLAUDE_CODE_SESSION_ID`、`CLAUDECODE`、`CLAUDE_CODE_ENTRYPOINT`、`CREW_SESSION_ID`，否则一批测试会把外层会话当成调用方而误报）：
 
    ```bash
    cd plugin && python -m unittest discover -s tests && cd ..
@@ -72,7 +72,7 @@ Windows 上的全量结果（2026-11-20，修完后）：
    node desktop/scripts/smoke-remote-backend.cjs
    ```
 
-2. Mac 特有的失败，修好后照常走 `scripts/live.ps1 merge`（或你那边等价的流程）合入 live；确实只能在 Mac 上暂时跳过的，像 `test_workspace_settings.py` 那样用 `skipIf` 写清原因并记为已知问题。
+2. Mac 特有的失败修好后，按用户给你的流程提交（Windows 这边用 `scripts/live.ps1` 合入本机 live，Mac 上没有 live）；确实只能在 Mac 上暂时跳过的，像 `test_workspace_settings.py` 那样用 `skipIf` 写清原因并记为已知问题。
 3. 写测试时注意：
    - 快捷键提示用 `window.CrewBrowser.keyboardShortcut()`（Mac 显示 ⌘，Windows 显示 Ctrl），断言不要写死 `Ctrl+`。
    - 窗口尺寸断言容忍 ±1 像素，高分屏会有取整误差。
