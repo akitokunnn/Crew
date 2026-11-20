@@ -389,7 +389,8 @@ class Supervisor:
             warnings = [*warnings, *(name for name, alive in workers.items() if not alive)]
             return ("degraded" if warnings else "healthy"), value, "; ".join(dict.fromkeys(warnings)) or None
         except urllib.error.HTTPError as exc:
-            return "incompatible", None, "健康端点不可兼容：HTTP " + str(exc.code)
+            with exc:
+                return "incompatible", None, "健康端点不可兼容：HTTP " + str(exc.code)
         except urllib.error.URLError as exc:
             reason = exc.reason
             if isinstance(reason, ConnectionRefusedError) or getattr(reason, "errno", None) in (errno.ECONNREFUSED, 10061):
