@@ -418,6 +418,8 @@ class SupervisorTests(unittest.TestCase):
         listener = socket.socket()
         if os.name == "nt":
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:  # 崩溃后端留下的 TIME_WAIT 连接在 POSIX 上会挡住普通 bind；与产品探测同样处理。
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", supervisor._url(first["url"])[1]))
         listener.listen()
         try:

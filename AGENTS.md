@@ -32,12 +32,12 @@ git log -3 --oneline
 - 文档与交付资料按任务查看，使用任务内的“交付与文档”入口；不新增或恢复侧栏的项目资料、交付资料、文档中心等总览入口。整合历史改动时也须保留这条用户要求。
 - 普通文件夹可作为工作区，不强制 Git，也不自动 `git init`。Git 相关能力才需要仓库。
 - CC 与 Codex 都是 AI 载体，现有功能需考虑两者。模型与 effort 使用原生发现及用户设置，不把某台机器的清单写死。
-- **举一反三，按能力补齐同类入口。** 用户指出一处问题时，主动横向核对 CC / Codex、leader / 成员、总会话 / 目标执行及前台 / 后台路径；适用的同类场景一并修复和验证，不能只补用户当时提到的工具名或载体。共用的数据、状态和界面优先复用；确有原生能力差异时保留真实差异并明确说明。交付前逐项确认覆盖范围，不能把“只完成其中一边”概括成全部完成。
+- **举一反三，按能力补齐同类入口。** 用户指出一处问题时，主动横向核对 CC / Codex、leader / 成员、总会话 / 目标执行、前台 / 后台及 Windows / Mac 路径；适用的同类场景一并修复和验证，不能只补用户当时提到的工具名或载体。共用的数据、状态和界面优先复用；确有原生能力差异时保留真实差异并明确说明。交付前逐项确认覆盖范围，不能把“只完成其中一边”概括成全部完成。
 - **新做的显示和交互同步适配手机与窄屏。** 新增或重做的页面、面板、卡片、弹窗、按钮组等可见内容，在同一次改动里一并处理窄屏和手机：沿用现有断点（`style.css` 的 1023px / 760px / 620px，手机聊天另见 `mobile-chat.css`），内容不横向溢出，按钮和操作在触屏上点得到，不能只靠悬停才出现，长文本能换行或截断。不能留到“以后再适配”。
 - **多流程任务里死板的部分派给 Codex。** 主控（Claude）接到要分多步、多处改动的任务时，先拆分：规格能写死、照做不需要判断的部分，用 `codex-dispatch` skill 写任务书，开子代理交给 Codex 执行。这类部分包括按确定文案改字、按精确 CSS 规格改样式、照现成模式批量改同类入口、补指定测试、大面积只读盘点。需要设计取舍、根因排查、产品判断的部分由主控自己做，或交给 Claude 子代理。互不依赖的部分并行派出。主控负责拆分、记录用户裁决和最终验收：自己看 diff、复跑相关测试并实测界面，不把 Codex 的自述当作完成证据。Codex 环境跑不了的浏览器或桌面验收由主控补做。
 - leader 自主分配并协调成员推进多个任务，负责验收和最终交付，需要时可直接实施。总对话与各任务独立；启动任务不暂停其他任务，不把总对话输入猜送进某个任务。减少无效汇报、重复上下文和模型唤醒。普通交流直接说话，用户要求的最终目标交付再生成报告。
 - 错误保留真实原因和用户输入；不静默换路径、吞错或自动重做已经成功的操作。别为假想风险堆兼容分支。
-- 测试只使用隔离 home、临时目录和假载体。未经用户明确安排，不停止或重启正式 Crew、不唤醒真实 AI、不写正式数据库。正式 Crew 运行 `C:\Tools\Crew-live` 的源码，只能通过“本地试用与推送”合入 live 来更新，不在 live 里直接改。
+- 测试只使用隔离 home、临时目录和假载体。未经用户明确安排，不停止或重启正式 Crew、不唤醒真实 AI、不写正式数据库。正式 Crew 运行本机 live 工作目录（Windows `C:\Tools\Crew-live`，Mac `~/Tools/Crew-live`）的源码，只能通过“本地试用与推送”合入 live 来更新，不在 live 里直接改。
 - **看效果的原型用完即删。** 只为比较方案、看效果而做的原型、演示页和对照稿，在方向选定或功能完成后，删除被淘汰的版本及其脚本、测试、截图和预览包，只保留仍在使用的一版。仍然需要的结论写进 README 或正式文档，不保留旧版本作“历史对照”。
 - 多个 AI 可能共用机器和目录。开工先看 Git 状态；已有冲突或他人改动不得 reset、clean、覆盖或擅自解决。优先复用自己的干净 worktree，协调同一文件的编辑。
 - 提交前看 diff，只提交本任务文件；提交信息用中文说明改了什么、为什么，不加署名行。PR、批准和合并遵循仓库规则及用户授权；不能为赶进度绕过分支保护。
@@ -55,19 +55,23 @@ git log -3 --oneline
 
 ## 本地试用与推送
 
-用户于 2026-11-07 改定日常流程：**修好的改动先合进本地 live 直接试用，攒一批再合进 main；不再每个分支各开 PR、各跑 CI，也不为修 bug 打包重装。** 合入 live 不用等用户点头。
+用户于 2026-11-07 改定日常流程：**修好的改动先合进 live 直接试用，攒一批再合进 main；不再每个分支各开 PR、各跑 CI，也不为修 bug 打包重装。** 合入 live 不用等用户点头。2026-11-21 起 Windows 和 Mac 同时开发：**live 放在 GitHub 上两台电脑共用**，每台电脑各有自己的 live 工作目录和正式 Crew，合入后推上去，另一台 `sync` 即可试用。脚本是 `scripts/live.py`，两边命令相同（Windows 上旧的 `scripts\live.ps1` 只是转发）。
 
-| 目录 | 分支 | 用途 |
-| --- | --- | --- |
-| `C:\Tools\Crew` | `main` | 主目录：读代码、开会话的起点，不在里面直接改 |
-| `C:\Tools\Crew-live` | `live` | 集成区：正式 Crew 的“后台程序来源”指向其中的 `plugin`；只接收合并 |
-| `C:\Tools\Crew-fixes\<任务>` | `claude/<任务>` 等 | 每个需求一个分支一个工作目录，从 live 拉出：`git worktree add C:\Tools\Crew-fixes\<任务> -b claude/<任务> live` |
+| 用途 | Windows | Mac | 分支 |
+| --- | --- | --- | --- |
+| 主目录：读代码、开会话的起点，不在里面直接改 | `C:\Tools\Crew` | 克隆所在目录（如 `~/Documents/Crew`） | `main` |
+| 集成区：正式 Crew 的“后台程序来源”指向其中的 `plugin`；只接收合并 | `C:\Tools\Crew-live` | `~/Tools/Crew-live` | `live` |
+| 每个需求一个分支一个工作目录，从 live 拉出 | `C:\Tools\Crew-fixes\<任务>` | `~/Tools/Crew-fixes/<任务>` | `claude/<任务>` 等 |
 
-- **修完合入 live：** 跑与改动相关的验证 → 检查 diff → 提交 → 在分支里 `git merge live`（有冲突就在分支里解决并复验）→ `powershell -ExecutionPolicy Bypass -File scripts\live.ps1 merge <分支>`。不开 PR、不 push。把脚本给出的生效方式（Ctrl+R 刷新、退出并重开 Crew，或要等打包）原样告诉用户。合入 live 即本次交付完成，随后清理该任务的工作目录和本地分支；不动其他 AI 正在使用的工作树或未提交改动。
-- **用户说“推”时：** 先在 live 跑一遍下文“验证与交付”里的全量测试，失败先修复并合入 live 再继续；然后 `scripts\live.ps1 ship` 把 live 推上去开一个批次 PR，CI 通过后合进 main，live 与主目录随之对齐。用户说跳过 CI 时加 `-SkipCI`。main 要求走 PR、禁止强推和删除，不强制人工 review；不伪造检查，不用管理员旁路。
-- **别人直接合进 main 的改动**用 `scripts\live.ps1 sync` 并进 live。`scripts\live.ps1 status` 查看 live 里待推送的提交。
+- **第一次在一台电脑上开发：** `python scripts/live.py setup` 建 live 工作目录，再在 Crew“设置 → 连接与目录”里把后台程序来源指向其中的 `plugin`。
+- **开工：** 先 `python scripts/live.py sync` 拉另一台电脑推的改动，再 `git worktree add <Crew-fixes>/<任务> -b claude/<任务> live`。
+- **修完合入 live：** 跑与改动相关的验证 → 检查 diff → 提交 → 在分支里 `git fetch origin && git merge origin/live`（有冲突就在分支里解决并复验）→ `python scripts/live.py merge <分支>`。脚本会先拉远端 live，再快进合入并推上去；分支没包含最新 live 时会停下说明。另一台电脑推上来的分支写成 `origin/<分支>`。不开 PR。把脚本给出的生效方式（刷新、退出并重开 Crew，或要等打包）原样告诉用户，并提醒另一台电脑 `sync` 后才有。合入 live 即本次交付完成，随后清理该任务的工作目录和本地分支；不动其他 AI 正在使用的工作树或未提交改动。
+- **两台电脑改到同一处：** 脚本发现远端 live 和本地 live 冲突时会停下并给出步骤：建 `claude/sync-live` 工作目录，在里面合并 `origin/live`、解决并验证后再 `merge` 回 live。不在 live 里直接解冲突，不强推。
+- **验证另一个系统：** 改了路径、进程、shell、文件锁、换行、权限、快捷键这类有平台差异的代码，合入前在本机跑相关测试，再 `gh workflow run tests.yml --ref <分支>` 让 CI 在 Windows 和 macOS 上各跑一遍核心测试，通过后再合入。纯页面、文案和与平台无关的逻辑不必。
+- **用户说“推”时：** 先在 live 跑一遍下文“验证与交付”里的全量测试，失败先修复并合入 live 再继续；然后 `python scripts/live.py ship` 开一个批次 PR，CI 在 Windows 和 macOS 都通过后合进 main，live 与主目录随之对齐。哪台电脑推都行，但要装好并登录 GitHub CLI（`gh`）。用户说跳过 CI 时加 `--skip-ci`。main 要求走 PR、禁止强推和删除，不强制人工 review；不伪造检查，不用管理员旁路。
+- **别人直接合进 main 的改动**也由 `sync` 并进 live。`python scripts/live.py status` 查看 live 里待推送的提交，以及本机和远端 live 的差异。
 - live 只前进不回退：不在里面直接改、不 reset、不强推。合入后发现问题，用新的修复提交或 `git revert` 走同样流程。
-- **打包**只在攒了桌面外壳改动或要发版时做，从与 main 对齐后的 live 打，步骤见 [Crew 桌面更新](docs/DESKTOP_UPDATES.md)。
+- **打包**只在攒了桌面外壳改动或要发版时做，从与 main 对齐后的 live 打，步骤见 [Crew 桌面更新](docs/DESKTOP_UPDATES.md)；Mac 安装包由 `mac-build.yml` 构建。
 - 外部贡献不按此流程自动接收，仍需核对来源、需求范围和实际改动。只有缺少必要权限、检查持续失败等确实无法自行解决的阻碍，才告知用户具体原因和已完成工作；测试失败先修复，不带着已知问题合入。
 
 ## 代码入口
@@ -107,7 +111,19 @@ node --test plugin/tests/test_*.js
 npm --prefix desktop test
 ```
 
-CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`python tests/ci_core.py`，在 `plugin` 下执行），不含边缘载体和计时敏感的测试，只在批次 PR 上跑一次（也可手动触发）。合入 live 前只跑改动相关的模块，改动跨模块也一样（存储、`web.py`、`chat.py`、运行时启动或 `test_shell` 这类共用测试基类，都只挑直接相关的测试）。上面的全量只在用户说“推”、把 live 整批合进 main 时跑。新增核心流程的测试模块时加进清单。
+Mac 上 Python 命令是 `python3`：
+
+```bash
+(cd plugin && python3 -m unittest discover -s tests)
+node --test plugin/tests/test_*.js
+npm --prefix desktop test
+```
+
+测试引导会在 macOS 上把临时目录换成真实路径（默认的 `/var` 是符号链接，Crew 拒绝符号链接的 HOME），并让 Git 报错保持英文，不用手动设环境变量。新测试模块开头保留 `import tests`。
+
+CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`python tests/ci_core.py`，在 `plugin` 下执行），不含边缘载体和计时敏感的测试，只在批次 PR 上跑一次（也可手动触发）。合入 live 前只跑改动相关的模块，改动跨模块也一样（存储、`web.py`、`chat.py`、运行时启动或 `test_shell` 这类共用测试基类，都只挑直接相关的测试）。上面的全量只在用户说“推”、把 live 整批合进 main 时跑。新增核心流程的测试模块时加进清单。CI 的核心清单和桌面、网页测试在 Windows 和 macOS 上都跑；只能在一个系统上跑的用例用 `skipIf` 写清原因，不能让另一个系统长期红着。
+
+写测试时照顾两个系统：路径用 `pathlib` 或按平台给夹具，不写死 `C:\`；快捷键提示用 `window.CrewBrowser.keyboardShortcut()`（Mac 显示 ⌘，Windows 显示 Ctrl），断言不写死 `Ctrl+`；窗口尺寸断言容忍 ±1 像素（高分屏取整）。
 
 冒烟脚本只保留 4 个：`node desktop/scripts/smoke-workspaces.cjs`（桌面工作区交互，CI 跑；本地需设 `CREW_TEST_SHOW_WINDOW=1` 让窗口可见才能截图）、`node plugin/tests/smoke_conversation_routing.cjs`（对话路由，CI 跑）、`node desktop/scripts/smoke.cjs`（源码或安装包启动，发版和 Mac 构建跑）、`node desktop/scripts/smoke-remote-backend.cjs`（桌面客户端连局域网主机）。都在仓库根目录执行，使用隔离 HOME 和假载体。其余验证靠单元测试和 `prove-it` 走查，不再为单个改动新增一次性冒烟脚本。需要构建或交付安装包时，验收与图标检查见 [desktop/README.md](desktop/README.md)；使用方式见 [README.md](README.md)。
 

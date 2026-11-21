@@ -7,11 +7,15 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 from urllib.error import HTTPError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import quote, urlencode
+from urllib.request import Request, build_opener
 
 from crew import web
 from test_shell import PLUGIN, ShellFixture
+
+# 在任何 sys.platform 打桩之前建好连接器：urlopen 首次调用时才加载系统证书，
+# 若此时平台被模拟成 win32，非 Windows 上会去读 Windows 证书库而报错。
+OPENER = build_opener()
 
 
 class VscodeStatePathTests(unittest.TestCase):
@@ -67,7 +71,7 @@ class FileLinksTests(ShellFixture, unittest.TestCase):
         req = Request(url + ('' if post else '?' + urlencode(data)),
                       json.dumps(data).encode() if post else None, headers)
         try:
-            response = urlopen(req, timeout=3)
+            response = OPENER.open(req, timeout=3)
         except HTTPError as exc:
             response = exc
         with response:
@@ -187,7 +191,8 @@ class FileLinksTests(ShellFixture, unittest.TestCase):
                 info = self.request('resolve', file)[1]
                 self.assertEqual(info['open_with'], 'vscode')
                 self.assertEqual(info['kind'], 'text')
-                expected = 'vscode://file/' + self.worktree.as_posix() + '/%E4%BB%A3%E7%A0%81%20%23100%25.' + ext
+                # 目录部分按产品同样规则编码：用户目录可能含 @ 等字符（如 Mac 的 name@domain 账户）。
+                expected = 'vscode://file/' + quote(self.worktree.as_posix(), safe='/:') + '/%E4%BB%A3%E7%A0%81%20%23100%25.' + ext
                 with mock.patch('crew.web.os.startfile', create=True) as opener, mock.patch('crew.web.subprocess.Popen') as explorer:
                     self.assertEqual(self.request('open', file)[0], 200)
                     opener.assert_called_once_with(expected)

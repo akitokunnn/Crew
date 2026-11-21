@@ -1,4 +1,5 @@
 """Workspace operations with isolated real directories, Git and SQLite."""
+import tests  # Install the production-service connection guard.
 import os
 from pathlib import Path
 import tempfile

@@ -162,7 +162,7 @@ class VscodeSessionParserTests(unittest.TestCase):
         (self.bucket / (SID + ".jsonl")).write_text("", encoding="utf-8")
         self.transcript([self.user()], sid="not-a-uuid")
         self.assertEqual(vscode_sessions.list_sessions(self.projects, [self.project]), [])
-        self.transcript([self.user(entrypoint="crew-web")])
+        self.transcript([self.user(entrypoint="cli")])
         self.assertEqual(vscode_sessions.list_sessions(self.projects, [self.project])[0]["title"], "first prompt")
 
     def test_title_priority_tail_custom_sidecar_head_custom_ai_and_prompt(self):
