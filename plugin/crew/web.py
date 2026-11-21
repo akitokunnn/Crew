@@ -2147,7 +2147,9 @@ class Handler(BaseHTTPRequestHandler):
             if sandbox:
                 self.send_header('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:")
             if attachment:
-                self.send_header('Content-Disposition', 'attachment; filename="'+attachment+'"')
+                # RFC 6266: an ASCII fallback plus the exact UTF-8 name (Chinese file names survive the download).
+                fallback = ''.join(c if 32 <= ord(c) < 127 and c not in '"\\' else '_' for c in attachment)
+                self.send_header('Content-Disposition', "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (fallback, quote(attachment, safe='')))
             self.end_headers()
             while chunk := source.read(1024 * 1024):
                 self.wfile.write(chunk)
@@ -2210,7 +2212,7 @@ class Handler(BaseHTTPRequestHandler):
             if file is None:
                 raise ValueError('导出文件已失效，请重新导出')
             self._stream_storage_file(file, 'application/zip', attachment='workspace.crewpack')
-        elif url.path == "/api/files/content":
+        elif url.path in ("/api/files/content", "/api/files/download"):
             hosts = {"127.0.0.1:%d" % self.server.server_port, "localhost:%d" % self.server.server_port}
             remote = getattr(self.server, 'remote_controller', None)
             remote_files = remote is not None and self._request_active()
@@ -2220,6 +2222,13 @@ class Handler(BaseHTTPRequestHandler):
             document_id=int(query['document_id'][0]) if 'document_id' in query else None
             info = service.resolve_file(query.get("session_id", [None])[0], query.get("path",[None])[0],
                                         query.get("project", [None])[0], query.get("base", [None])[0],document_id)
+            if url.path == "/api/files/download":
+                # Another device cannot open host files with a local program; it saves the original bytes instead.
+                if info["error"] is not None:
+                    raise board.BoardError(info["error"])
+                path = Path(info["path"])
+                self._stream_storage_file(path, "application/octet-stream", attachment=path.name, sandbox=True)
+                return
             content, media_type = service.read_file(info, raw=query.get("raw") == ["1"])
             self.send_file_content(content, media_type)
         elif url.path == '/api/admin/connection/plan':

@@ -138,6 +138,11 @@ function attachDeviceToken(origin, token) {
     callback({requestHeaders:target(details.url) ? {...details.requestHeaders, Authorization:'Bearer ' + token} : details.requestHeaders});
   });
   session.defaultSession.webRequest.onCompleted(filter, details => { if (details.statusCode === 401 && target(details.url)) remoteAuthExpired(); });
+  // Host files a workspace page downloads ask where to save, starting in this computer's Downloads folder.
+  session.defaultSession.on('will-download', (_event, item) => {
+    if (!target(item.getURL())) return;
+    item.setSaveDialogOptions({title:'下载到本机', defaultPath:path.join(app.getPath('downloads'), item.getFilename())});
+  });
 }
 function trustedChrome(event) {
   if (!liveWindow() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame ||

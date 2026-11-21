@@ -42,6 +42,7 @@ async function refresh() {
     const state = await window.crewDesktop.bootstrap();
     $('service').textContent = remote ? '已连接 · ' + (connection.name || '局域网主机') : '已连接'; $('service').classList.remove('failed');
     $('service').title = remote ? '已连接到局域网主机 ' + state.service.url : state.service.owned ? '由桌面管理本机服务' : '已接续正在运行的本机服务';
+    $('connection-switch').textContent = remote ? '切回本机' : '连接其他主机'; $('connection-switch').hidden = false;
     $('project-count').textContent = String(state.projects.length);
     let notice = $('project-locations');
     if (!notice) { notice = document.createElement('section'); notice.id = 'project-locations'; notice.className = 'workspace-location-notice'; notice.setAttribute('role','status'); $('projects').before(notice); }
@@ -200,6 +201,8 @@ $('create-form').addEventListener('submit', event => { event.preventDefault(); a
   await openWorkspace(project.name, true);
 }); });
 $('refresh').addEventListener('click', () => action(refresh));
+// Shortcut into “设置 → 后台与运维 → 连接与目录”: add a LAN host here, or preview switching back from one.
+$('connection-switch').addEventListener('click', () => { void window.CrewHomeSettings.show('backend', {launch:remote ? 'local' : 'pair'}); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('create-panel').hidden && !busy) closeCreate(); });
 async function finishStartup(state) {
   await window.crewDesktop.ready({ projects: state.projects.length, nodeAvailable: typeof require !== 'undefined',
@@ -243,7 +246,7 @@ function repairForm() {
     const wrapper = document.createElement('label'), input = document.createElement('input'); wrapper.textContent = label;
     input.name = name; input.required = true; input.autocomplete = 'off'; Object.assign(input, attributes); wrapper.append(input); return wrapper;
   };
-  form.append(field('主机上的新配对码', 'code', {inputMode:'numeric', maxLength:8, placeholder:'8 位数字'}), field('本机设备名', 'device', {maxLength:80, value:repairing.device_name}));
+  form.append(field('新配对码或连接链接', 'code', {placeholder:'8 位数字，或粘贴主机复制的连接链接'}), field('本机设备名', 'device', {maxLength:80, value:repairing.device_name}));
   const actions = document.createElement('div'); actions.className = 'remote-repair-actions';
   const submit = document.createElement('button'); submit.type = 'submit'; submit.className = 'button primary'; submit.textContent = bannerPending ? '正在配对…' : '重新配对并打开'; submit.disabled = bannerPending;
   actions.append(bannerButton('取消', 'secondary', () => { repairing = false; bannerNote = ''; renderBanner(); }), submit);
@@ -251,7 +254,8 @@ function repairForm() {
   form.elements.device.addEventListener('input', () => { repairing.device_name = form.elements.device.value; });
   form.addEventListener('submit', event => {
     event.preventDefault();
-    const code = form.elements.code.value.trim(), device_name = form.elements.device.value.trim();
+    // A pasted connection link (…/remote/login#code=12345678) carries the code in its fragment.
+    const entered = form.elements.code.value.trim(), code = /#code=(\d{8})$/.exec(entered)?.[1] || entered, device_name = form.elements.device.value.trim();
     void bannerAction('已提交配对，正在连接主机…', async () => {
       await window.crewDesktop.remoteBackendPair({url:connection.url, code, device_name});
       bannerNote = '已重新配对，Crew 正在重新打开…'; renderBanner();

@@ -60,11 +60,11 @@
       ...(bridge.remote?{}:{remote,tools:host=>window.CrewHomeTools?.mount(host)})}});return ui;})();
     try{return await creating;}finally{creating=null;}
   }
-  async function show(category='ai'){
+  async function show(category='ai',intent=null){
     window.CrewHomeTools?.hide();window.CrewHomeHealth?.hide();visible=true;panel.hidden=false;$('workspaces-page').hidden=true;
     for(const id of ['nav-workspaces','nav-tools','nav-admin','nav-settings']){const active=id==='nav-settings';$(id).classList.toggle('active',active);if(active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
-    try{const settings=await ensure();if(visible){settings.open(category);root.querySelector('[data-settings-category="'+category+'"]')?.focus();}}
-    catch(error){root.textContent='设置界面加载失败：'+error.message;const retry=document.createElement('button');retry.className='button secondary';retry.textContent='重试';retry.onclick=()=>{void show(category);};root.append(retry);}
+    try{const settings=await ensure();if(visible){settings.open(category,intent);if(!intent)root.querySelector('[data-settings-category="'+category+'"]')?.focus();}}
+    catch(error){root.textContent='设置界面加载失败：'+error.message;const retry=document.createElement('button');retry.className='button secondary';retry.textContent='重试';retry.onclick=()=>{void show(category,intent);};root.append(retry);}
   }
   function hide(){visible=false;ui?.hide();panel.hidden=true;$('nav-settings').classList.remove('active');$('nav-settings').removeAttribute('aria-current');}
   $('nav-settings').addEventListener('click',()=>{void show();});

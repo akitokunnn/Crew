@@ -201,7 +201,8 @@
         error = ""; note = ""; controls();
       }
     });
-    return {open(next = "ai") { category = next; root.hidden = false; if (!snapshot && !ownsData(category)) void load(); else render(); }, hide() { root.hidden = true; release(); }, reload:load, save, getDraft:() => clone(draft)};
+    // intent {launch:"pair"|"local"} opens "后台与运维 → 连接与目录" ready for that connection change.
+    return {open(next = "ai", intent = null) { category = next; root.hidden = false; if (intent?.launch && category === "backend") operations?.openLaunch(intent.launch); if (!snapshot && !ownsData(category)) void load(); else render(); }, hide() { root.hidden = true; release(); }, reload:load, save, getDraft:() => clone(draft)};
   }
   window.CrewSettings = {create, defaultRuntime, initialAI, validate, selectionMarkup, initialExecution, validateExecution, executionMarkup, speedsFor, speedName};
 })();

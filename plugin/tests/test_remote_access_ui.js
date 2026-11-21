@@ -7,10 +7,11 @@ const initial=()=>({enabled:false,bind:'0.0.0.0',port:47812,urls:[],devices:[],p
 async function panel(value=initial(),effect=null){
   let state=clone(value),tick,readError=null;const calls=[],host={innerHTML:'',contains:()=>false};
   const window={},read=async()=>{if(readError)throw Error(readError);return clone(state);};
-  vm.runInNewContext(source,{window,document:{activeElement:null},setInterval:fn=>(tick=fn,1),clearInterval(){}});
-  const action=async body=>{calls.push(clone(body));if(effect)await effect(body);if(body.action==='stop')state.enabled=false;if(body.action==='start'){state.enabled=true;state.bind=body.bind;state.urls=['http://'+body.bind+':'+body.port];}return clone(state);};
+  vm.runInNewContext(source,{window,document:{activeElement:null},setInterval:fn=>(tick=fn,1),clearInterval(){},setTimeout:()=>2,clearTimeout(){}});
+  const action=async body=>{calls.push(clone(body));if(effect)await effect(body);if(body.action==='stop')state.enabled=false;if(body.action==='start'){state.enabled=true;state.bind=body.bind;state.urls=['http://'+body.bind+':'+body.port];}
+    if(body.action==='pair'){state.pair_pending=true;return {...clone(state),code:'12345678',expires_at:new Date(Date.now()+300000).toISOString()};}return clone(state);};
   const close=window.CrewRemoteAccess.mount(host,{read,action});await new Promise(setImmediate);
-  return {host,calls,close,setState:next=>{state=next;},setReadError:value=>{readError=value;},refresh:async()=>{tick();await new Promise(setImmediate);},
+  return {host,calls,close,window,setState:next=>{state=next;},setReadError:value=>{readError=value;},refresh:async()=>{tick();await new Promise(setImmediate);},
     select:value=>host.onchange({target:{name:'remote-bind',value}}),
     click:(kind,deviceId)=>host.onclick({target:{closest:()=>({dataset:{remoteAction:kind,deviceId},disabled:false})}})};
 }
@@ -88,4 +89,16 @@ test('devices show type and status and use the revoke actions',async()=>{
   await p.click('revoke_all');
   assert.deepEqual(p.calls,[{action:'revoke',device_id:'mac'},{action:'revoke_all'}]);
   p.close();
+});
+test('a pairing code comes with a copyable connection link per access address',async()=>{
+  const p=await panel({...initial(),enabled:true,bind:'10.8.9.7',urls:['http://10.8.9.7:47812']});const copies=[];
+  p.window.CrewBrowser={copyText:async text=>{copies.push(text);}};
+  await p.click('pair');
+  const link='http://10.8.9.7:47812/remote/login#code=12345678';
+  assert.match(p.host.innerHTML,/<strong>12345678<\/strong>/);
+  assert.ok(p.host.innerHTML.includes(`<code>${link}</code>`));
+  assert.match(p.host.innerHTML,/复制连接链接/);
+  await p.host.onclick({target:{closest:()=>({dataset:{remoteAction:'copy-link',link},disabled:false})}});
+  assert.deepEqual(copies,[link]);assert.match(p.host.innerHTML,/已复制/);assert.doesNotMatch(p.host.innerHTML,/复制失败/);
+  assert.deepEqual(p.calls,[{action:'pair'}]);p.close();
 });

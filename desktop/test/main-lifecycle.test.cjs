@@ -81,7 +81,7 @@ function harness(options = {}) {
     ipcMain:{ handle:(name,fn) => handlers.set(name,fn), on() {} },
     Menu:{ buildFromTemplate:menu, setApplicationMenu:value => { appMenu = value; }, getApplicationMenu:() => appMenu },
     nativeImage:{ createFromPath:file => { calls.image = file; return {}; } }, shell:{ openExternal:async () => {}, openPath:async () => {} }, safeStorage:{},
-    session:{ defaultSession:{ webRequest:{ onBeforeSendHeaders:(filter, listener) => { webRequests.headers = { filter, listener }; }, onCompleted:(filter, listener) => { webRequests.completed = { filter, listener }; } } } },
+    session:{ defaultSession:{ webRequest:{ onBeforeSendHeaders:(filter, listener) => { webRequests.headers = { filter, listener }; }, onCompleted:(filter, listener) => { webRequests.completed = { filter, listener }; } }, on:(name, listener) => { webRequests[name] = listener; } } },
     dialog:{ showMessageBox:async (...args) => { calls.dialogs++; if (args[0] instanceof Window) args[0].alive(); return { response:options.dialogResponse ?? 1 }; }, showOpenDialog:async () => ({ canceled:true }),
       showSaveDialog:async () => ({ canceled:false, filePath:'C:\\Users\\me\\demo.crewpack' }) } };
   class Backend {
@@ -430,6 +430,11 @@ test('a LAN connection starts no local tools or report worker, and its token rea
   listener({ url:'http://192.168.1.20:47813/', requestHeaders:{} }, value => { headers.port = value.requestHeaders; });
   assert.equal(headers.host.Authorization, 'Bearer ' + 't'.repeat(43));
   assert.deepEqual(headers.other, { Accept:'*/*' }); assert.deepEqual(headers.port, {});
+  // Host file downloads ask where to save, starting in Downloads; other origins keep Electron's default.
+  const saves = [], item = url => ({ getURL:() => url, getFilename:() => '方案.docx', setSaveDialogOptions:value => saves.push({ url, ...value }) });
+  h.webRequests['will-download']({}, item('http://192.168.1.20:47812/api/files/download?document_id=3'));
+  h.webRequests['will-download']({}, item('http://192.168.1.21:47812/api/files/download?document_id=3'));
+  assert.deepEqual(saves, [{ url:'http://192.168.1.20:47812/api/files/download?document_id=3', title:'下载到本机', defaultPath:path.join(FIXTURE_APP_DATA, '方案.docx') }]);
   assert.deepEqual(plain(await h.invoke('desktop:connection')), { mode:'remote', id:'saved-host', name:'书房主机', url:'http://192.168.1.20:47812',
     host_version:'0.3.99', local_version:'0.3.17', auth_expired:false, error:null });
   h.app.quit(); await tick();

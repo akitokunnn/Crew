@@ -358,6 +358,13 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         (self.project / 'actual.png').write_bytes(original)
         path = '/api/files/content?' + urlencode({'project': 'demo', 'session_id': 's3', 'path': 'actual.png', 'raw': 1})
         self.assertEqual(self.request(path, remote=True, raw=True)[:2], (200, original))
+        # Formats a phone cannot preview are downloaded as the original file.
+        (self.project / '方案.docx').write_bytes(b'PK\x03\x04docx')
+        path = '/api/files/download?' + urlencode({'project': 'demo', 'session_id': 's3', 'path': '方案.docx'})
+        code, content, headers = self.request(path, remote=True, raw=True)
+        self.assertEqual((code, content, headers['Content-Type']), (200, b'PK\x03\x04docx', 'application/octet-stream'))
+        self.assertIn("filename*=UTF-8''%E6%96%B9%E6%A1%88.docx", headers['Content-Disposition'])
+        self.assertEqual(self.request(path, remote=True, authenticated=False)[0], 401)
 
     def test_event_disconnect_resumes_after_last_id_and_revocation_ends_live_stream(self):
         self.start_remote()

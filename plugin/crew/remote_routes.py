@@ -8,7 +8,7 @@ GET_PATHS = frozenset((
     '/api/access/context', '/api/state', '/api/projects', '/api/workspaces/activity',
     '/api/assistant/state', '/api/personal/notes', '/api/personal/notes/recovery', '/api/personal/tags',
     '/api/goals', '/api/goal', '/api/goals/report', '/api/documents', '/api/comments',
-    '/api/chat/history', '/api/chat/events', '/api/chat/file', '/api/session/avatar', '/api/files/content',
+    '/api/chat/history', '/api/chat/events', '/api/chat/file', '/api/session/avatar', '/api/files/content', '/api/files/download',
     '/api/git', '/api/git/commit', '/api/domains', '/api/sounds/custom/file', '/api/usage', '/api/usage/export', '/api/channel', '/api/todos', '/api/runtimes',
 ))
 POST_PATHS = frozenset((
