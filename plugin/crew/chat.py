@@ -207,8 +207,9 @@ def child_environment(spec, environ=None, persistent_names=None):
            if not name.upper().startswith("CREW_")
            and (not name.upper().startswith("CLAUDE") or name.upper() in persistent_names
                 or name.upper() == 'CLAUDE_CONFIG_DIR')}
-    # VS Code hides sdk-cli transcripts; identify this human-facing host explicitly.
-    env.update(CLAUDE_CODE_ENTRYPOINT="crew-web", CREW_NAME=spec["name"], CREW_ROLE=spec["role"], CREW_SPAWN_ID=spec["id"],
+    # A human-facing session: "cli" keeps it out of the sdk-* programmatic class and on the
+    # user's subscription. Custom values (e.g. the former "crew-web") are billed as API usage.
+    env.update(CLAUDE_CODE_ENTRYPOINT="cli", CREW_NAME=spec["name"], CREW_ROLE=spec["role"], CREW_SPAWN_ID=spec["id"],
                MSYS_NO_PATHCONV="1")
     if spec["group"] is not None:
         env["CREW_GROUP"] = spec["group"]

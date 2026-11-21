@@ -1,6 +1,7 @@
 'use strict';
 const fs=require('node:fs/promises'),path=require('node:path'),assert=require('node:assert/strict'),{spawn}=require('node:child_process');
 const root=path.resolve(__dirname,'../..'),desktop=path.join(root,'desktop'),out=path.join(desktop,'smoke-output/conversation-routing');
+const {defaultPython}=require(path.join(desktop,'src/python.cjs'));
 if(!process.versions.electron){
   (async()=>{
     await fs.mkdir(path.join(desktop,'.cache'),{recursive:true});
@@ -22,7 +23,7 @@ if(!process.versions.electron){
       await fs.mkdir(out,{recursive:true});
       const env={...process.env,PYTHONIOENCODING:'utf-8'};
       for(const key of ['CREW_SESSION_ID','CLAUDE_CODE_SESSION_ID'])delete env[key];
-      fixture=spawn('python',['-u',path.join(root,'plugin/tests/conversation_routing_fixture.py')],{cwd:path.join(root,'plugin'),env,windowsHide:true,stdio:['pipe','pipe','pipe']});
+      fixture=spawn(defaultPython(),['-u',path.join(root,'plugin/tests/conversation_routing_fixture.py')],{cwd:path.join(root,'plugin'),env,windowsHide:true,stdio:['pipe','pipe','pipe']});
       let pending='',bootstrap;fixture.stderr.on('data',chunk=>process.stderr.write(chunk));
       fixture.stdout.on('data',chunk=>{pending+=chunk;let index;while((index=pending.indexOf('\n'))>=0){const line=pending.slice(0,index);pending=pending.slice(index+1);try{const value=JSON.parse(line);messages.push(value);if(value.url)bootstrap=value;if(value.closed)closed=true;}catch(_){}}});
       const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));

@@ -394,7 +394,8 @@ class Manager:
             return
         except OSError as exc:
             # Only a nonempty directory is expected while recoverable files remain.
-            if exc.errno not in (39, 41) and getattr(exc, 'winerror', None) != 145:
+            # ENOTEMPTY differs by platform (Linux 39, Windows 41, macOS 66).
+            if exc.errno != errno.ENOTEMPTY and getattr(exc, 'winerror', None) != 145:
                 raise
 
     def _manifests(self):

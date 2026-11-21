@@ -14,6 +14,10 @@ from unittest.mock import Mock, patch
 from crew import autostart, cli
 
 
+# 这些用例会走到 Windows 计划任务的进程参数（CREATE_NO_WINDOW、STARTUPINFO）；
+# 其他平台上产品入口先由 _windows() 拒绝（Mac 第一版不做开机自启）。
+WINDOWS_ONLY = unittest.skipUnless(sys.platform == "win32", "Windows 登录计划任务专用的进程参数")
+
 class AutostartTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -32,6 +36,21 @@ class AutostartTests(unittest.TestCase):
         self.windows.start()
         self.addCleanup(self.windows.stop)
 
+    @unittest.skipIf(sys.platform == "win32", "其他平台的拒绝路径")
+    def test_other_platforms_refuse_before_starting_any_process(self):
+        self.windows.stop()
+        self.addCleanup(self.windows.start)  # setUp 的清理会再 stop 一次
+        runner, factory = Mock(), Mock()
+        for action in ("install", "status", "uninstall", "start"):
+            with self.subTest(action=action), self.assertRaisesRegex(OSError, "只支持 Windows"):
+                autostart.configure(action, self.home, self.worktree, runner, self.python)
+        with self.assertRaisesRegex(OSError, "只支持 Windows"):
+            autostart.run(self.home, self.root, factory, self.python, probe=lambda: False)
+        runner.assert_not_called()
+        factory.assert_not_called()
+        self.assertFalse(self.home.exists())
+
+    @WINDOWS_ONLY
     def test_registration_targets_main_checkout_and_keeps_paths_as_data(self):
         calls = []
 
@@ -60,6 +79,7 @@ class AutostartTests(unittest.TestCase):
         self.assertNotIn("-WindowStyle", argv)  # The no-console host must not try to style a console window.
         self.assertFalse(self.home.exists())
 
+    @WINDOWS_ONLY
     def test_status_and_uninstall_do_not_require_checkout_or_create_home(self):
         for action in ("status", "uninstall"):
             with self.subTest(action=action):
@@ -69,11 +89,13 @@ class AutostartTests(unittest.TestCase):
                 self.assertEqual({"action": action}, json.loads(runner.call_args.kwargs["input"]))
                 self.assertFalse(self.home.exists())
 
+    @WINDOWS_ONLY
     def test_failed_scheduler_is_an_error_instead_of_reported_success(self):
         runner = Mock(return_value=subprocess.CompletedProcess([], 1, "", "Access denied"))
         with self.assertRaisesRegex(OSError, "Access denied"):
             autostart.configure("status", self.home, self.plugin, runner)
 
+    @WINDOWS_ONLY
     def test_native_failure_without_stderr_still_reports_exit_code_and_available_output(self):
         runner = Mock(return_value=subprocess.CompletedProcess([], 4294967295, "native output", ""))
         with self.assertRaisesRegex(OSError, r"4294967295.*native output"):
@@ -112,6 +134,7 @@ $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
             autostart.configure("install", self.home, self.worktree, runner, self.python)
         self.assertEqual(2, runner.call_count)
 
+    @WINDOWS_ONLY
     def test_runner_waits_for_hidden_cli_in_fixed_directory_and_records_failure(self):
         child = Mock()
         child.wait.return_value = 7
