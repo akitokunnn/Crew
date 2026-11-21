@@ -4,6 +4,12 @@
   const panel = $('tools-page'), workspace = $('workspaces-page');
   let snapshot = null, request = null, setting = false, settingNote = '', globalError = '';
   const supported = typeof bridge?.toolsSnapshot === 'function';
+  // A LAN client manages Claude Code and Codex on the host; its tools page only updates Crew itself.
+  const crewOnly = !supported && typeof bridge?.selfUpdateSnapshot === 'function';
+  if (crewOnly) {
+    for (const id of ['tools-preferences', 'tools-global-error', 'tools-check-status', 'tools-list', 'tools-note']) $(id).hidden = true;
+    $('tools-subtitle').textContent = '更新这台电脑上的 Crew。Claude Code 和 Codex 在主机上管理。';
+  }
   const mac = bridge?.platform === 'darwin';
   if (supported && mac) {
     $('tools-preferences').hidden = true;
@@ -15,7 +21,7 @@
     if (value !== undefined) element.textContent = value; return element;
   }
   function select(tools) {
-    if (tools && !supported) return;
+    if (tools && !supported && !crewOnly) return;
     panel.hidden = !tools; workspace.hidden = tools;
     for (const [id, active] of [['nav-workspaces', !tools], ['nav-tools', tools]]) {
       $(id).classList.toggle('active', active);
@@ -98,12 +104,12 @@
   async function read() { await operation('read', () => bridge.toolsSnapshot()); }
   function show() {
     window.CrewHomeSettings?.hide();
-    select(true); if (!supported) return;
-    $('tools-title').focus(); void read();
+    select(true); if (!supported && !crewOnly) return;
+    $('tools-title').focus(); if (supported) void read();
   }
   $('nav-workspaces').addEventListener('click', () => select(false));
   $('nav-tools').addEventListener('click', show);
-  $('tools-check').addEventListener('click', () => { void operation('check', () => bridge.toolsCheck()); });
+  if (supported) $('tools-check').addEventListener('click', () => { void operation('check', () => bridge.toolsCheck()); });
   if (!mac) $('tools-auto').addEventListener('change', async () => {
     if (setting) return;
     const enabled = $('tools-auto').checked; setting = true; settingNote = ''; globalError = ''; render();
@@ -111,8 +117,9 @@
     catch (error) { globalError = error.message || String(error); }
     finally { setting = false; render(); }
   });
-  function mount(host) { const parent=panel.parentNode; host.append(panel); panel.hidden=false; void read(); return () => { panel.hidden=true; parent.append(panel); }; }
+  function mount(host) { const parent=panel.parentNode; host.append(panel); panel.hidden=false; if (supported) void read(); return () => { panel.hidden=true; parent.append(panel); }; }
   window.CrewHomeTools = Object.freeze({show, hide:() => select(false), mount});
+  if (crewOnly) $('nav-tools').hidden = false;
   if (supported) {
     $('nav-tools').hidden = false;
     if (typeof bridge.onToolUpdates === 'function') bridge.onToolUpdates(value => { try { consume(value); } catch (error) { globalError = error.message; render(); } });
