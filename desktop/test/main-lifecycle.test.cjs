@@ -163,7 +163,7 @@ function harness(options = {}) {
     './tool-updates.cjs':{ ToolUpdates:Tools }, './crew-updates.cjs':{ CrewUpdates:Updates },
     './admin.cjs':{ Administrator:class {} }, './operations.cjs':{ OperationsClient:class { close() {} } },
     './product.cjs':require('../src/product.cjs'),
-    './launch-settings.cjs':{ LaunchSettings, relaunchArgs:() => [] },
+    './launch-settings.cjs':{ LaunchSettings, relaunchArgs:() => [], rememberPort:async () => false },
     './remote-backends.cjs':{ RemoteBackends:class { constructor(file) { calls.remoteFile = file; } async credential(id) { return { id, token:'t'.repeat(43) }; } } }
   };
   const sandbox = { require:name => Object.hasOwn(modules,name) ? modules[name] : require(name), __dirname:path.join(__dirname,'../src'),

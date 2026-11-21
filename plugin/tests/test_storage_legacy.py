@@ -1,4 +1,5 @@
 """Production importer checks against isolated V1 and V2 databases."""
+import tests  # Install the production-service connection guard.
 from contextlib import closing
 import hashlib
 import json

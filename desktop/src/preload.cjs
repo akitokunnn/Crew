@@ -1,5 +1,8 @@
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
+// Electron prefixes errors thrown in the main process with "Error invoking remote method '<channel>': Error: ";
+// every page shows the reason itself, so all bridge calls strip it once here.
+const bridgeInvoke=(channel,...args)=>ipcRenderer.invoke(channel,...args).catch(error=>{throw new Error(String(error?.message||error).replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/,''));});
 const platform=process.platform, mac=platform==='darwin';
 const homeShortcut=mac?'⌘T':'Ctrl+T', backShortcut=mac?'⌘[':'Alt+左方向键';
 let settings;
@@ -19,7 +22,7 @@ function icon(paths){
  for(const value of paths){const line=document.createElementNS('http://www.w3.org/2000/svg','path');line.setAttribute('d',value);element.append(line);}return element;
 }
 function reportError(error){if(!recovery)return;recovery.querySelector('p').textContent=error?.message||'这个操作暂时没有完成，请稍后重试。';recovery.hidden=false;}
-async function invoke(command,value){try{return await ipcRenderer.invoke('desktop:chrome-action',command,value);}catch(error){reportError(error);}}
+async function invoke(command,value){try{return await bridgeInvoke('desktop:chrome-action',command,value);}catch(error){reportError(error);}}
 function button(label,paths,command,className=''){
  const element=document.createElement('button');element.type='button';element.className=className;element.setAttribute('aria-label',label);element.title=label;element.append(icon(paths));
  element.addEventListener('click',async()=>{if(command==='menu')element.setAttribute('aria-expanded','true');try{await invoke(command);}finally{if(command==='menu')element.setAttribute('aria-expanded','false');}});return element;
@@ -78,7 +81,7 @@ async function mountChrome(){
  content.append(tabsBar,homePane,viewArea,recovery);document.body.append(bar,content);
  if(isError){document.getElementById('retry')?.addEventListener('click',()=>{void invoke('retry');});document.getElementById('home')?.addEventListener('click',()=>{void invoke('home');});}
  new ResizeObserver(layoutViews).observe(content);
- try{const state=await ipcRenderer.invoke('desktop:chrome-ready');windowState(state);if(state.tabs)tabsState(state.tabs);document.documentElement.dataset.crewDesktopChromeReady='true';layoutViews();}catch(error){reportError(error);}finally{readyResolve();}
+ try{const state=await bridgeInvoke('desktop:chrome-ready');windowState(state);if(state.tabs)tabsState(state.tabs);document.documentElement.dataset.crewDesktopChromeReady='true';layoutViews();}catch(error){reportError(error);}finally{readyResolve();}
 }
 if(trusted){ipcRenderer.on('desktop:window-state',(_event,state)=>windowState(state));ipcRenderer.on('desktop:tabs-state',(_event,state)=>tabsState(state));window.addEventListener('DOMContentLoaded',()=>{void mountChrome();},{once:true});}else readyResolve();
 // Connected to a LAN host, the home page gets the host folder picker instead of native
@@ -86,30 +89,30 @@ if(trusted){ipcRenderer.on('desktop:window-state',(_event,state)=>windowState(st
 const remote=settings?.remote===true;
 const local=methods=>remote?{}:methods, lan=methods=>remote?methods:{};
 if(isHome&&process.isMainFrame)contextBridge.exposeInMainWorld('crewDesktop',Object.freeze({
- platform,remote,connection:()=>ipcRenderer.invoke('desktop:connection'),
+ platform,remote,connection:()=>bridgeInvoke('desktop:connection'),
  // One desktop-wide display mode shared with every workspace page and the window chrome.
- theme:()=>ipcRenderer.invoke('desktop:theme'),setTheme:mode=>ipcRenderer.invoke('desktop:theme-set',mode),
+ theme:()=>bridgeInvoke('desktop:theme'),setTheme:mode=>bridgeInvoke('desktop:theme-set',mode),
  onTheme:callback=>{if(typeof callback!=='function')throw new TypeError('需要显示模式回调');const listener=(_event,state)=>callback(state);ipcRenderer.on('desktop:theme',listener);return()=>ipcRenderer.removeListener('desktop:theme',listener);},
  onConnection:callback=>{if(typeof callback!=='function')throw new TypeError('需要连接状态回调');const listener=(_event,state)=>callback(state);ipcRenderer.on('desktop:connection',listener);return()=>ipcRenderer.removeListener('desktop:connection',listener);},
- homeReady:()=>ipcRenderer.invoke('desktop:home-ready'),bootstrap:()=>ipcRenderer.invoke('desktop:bootstrap'),registerExisting:directory=>ipcRenderer.invoke('desktop:existing-new',directory),openProject:name=>ipcRenderer.invoke('desktop:open',name),
- ...local({chooseExisting:()=>ipcRenderer.invoke('desktop:existing'),chooseParent:()=>ipcRenderer.invoke('desktop:parent'),createWorkspace:name=>ipcRenderer.invoke('desktop:create',name),storageActivate:workspaceId=>ipcRenderer.invoke('desktop:storage-activate',workspaceId),storageImport:()=>ipcRenderer.invoke('desktop:storage-import')}),
- ...lan({hostFolders:directory=>ipcRenderer.invoke('desktop:host-folders',directory),openExistingDirectory:directory=>ipcRenderer.invoke('desktop:existing-directory',directory),createWorkspace:(name,parent)=>ipcRenderer.invoke('desktop:create',name,parent),storageActivate:(workspaceId,root)=>ipcRenderer.invoke('desktop:storage-activate',workspaceId,root)}),
- storageExport:name=>ipcRenderer.invoke('desktop:storage-export',name),
+ homeReady:()=>bridgeInvoke('desktop:home-ready'),bootstrap:()=>bridgeInvoke('desktop:bootstrap'),registerExisting:directory=>bridgeInvoke('desktop:existing-new',directory),openProject:name=>bridgeInvoke('desktop:open',name),
+ ...local({chooseExisting:()=>bridgeInvoke('desktop:existing'),chooseParent:()=>bridgeInvoke('desktop:parent'),createWorkspace:name=>bridgeInvoke('desktop:create',name),storageActivate:workspaceId=>bridgeInvoke('desktop:storage-activate',workspaceId),storageImport:()=>bridgeInvoke('desktop:storage-import')}),
+ ...lan({hostFolders:directory=>bridgeInvoke('desktop:host-folders',directory),openExistingDirectory:directory=>bridgeInvoke('desktop:existing-directory',directory),createWorkspace:(name,parent)=>bridgeInvoke('desktop:create',name,parent),storageActivate:(workspaceId,root)=>bridgeInvoke('desktop:storage-activate',workspaceId,root)}),
+ storageExport:name=>bridgeInvoke('desktop:storage-export',name),
  onStorageProgress:callback=>{if(typeof callback!=='function')throw new TypeError('需要进度回调');const listener=(_event,message)=>{if(typeof message==='string')callback(message);};ipcRenderer.on('desktop:storage-progress',listener);return()=>ipcRenderer.removeListener('desktop:storage-progress',listener);},
  onAction:callback=>{if(typeof callback!=='function')throw new TypeError('需要工作区操作回调');const listener=(_event,message)=>{if(message&&['home','new','open','tools','admin','settings','workspace-settings'].includes(message.action))callback({action:message.action,...(typeof message.project==='string'?{project:message.project}:{})});};ipcRenderer.on('desktop:home-action',listener);return()=>ipcRenderer.removeListener('desktop:home-action',listener);},
- adminStatus:()=>ipcRenderer.invoke('desktop:admin-status'),
- ...local({adminCheck:()=>ipcRenderer.invoke('desktop:admin-check'),adminRestart:()=>ipcRenderer.invoke('desktop:admin-restart'),
-  adminChatSnapshot:()=>ipcRenderer.invoke('desktop:admin-chat-snapshot'),adminChatSend:body=>ipcRenderer.invoke('desktop:admin-chat-send',body),adminChatInterrupt:()=>ipcRenderer.invoke('desktop:admin-chat-interrupt'),adminConfigGet:()=>ipcRenderer.invoke('desktop:admin-config-get'),adminConfigSave:body=>ipcRenderer.invoke('desktop:admin-config-save',body),
-  toolsSnapshot:()=>ipcRenderer.invoke('desktop:tools-snapshot'),toolsCheck:()=>ipcRenderer.invoke('desktop:tools-check'),toolsUpdate:id=>ipcRenderer.invoke('desktop:tools-update',id),toolsCancel:id=>ipcRenderer.invoke('desktop:tools-cancel',id),toolsSettings:settings=>ipcRenderer.invoke('desktop:tools-settings',settings),
-  remoteAccessRead:()=>ipcRenderer.invoke('desktop:remote-access-read'),remoteAccessAction:body=>ipcRenderer.invoke('desktop:remote-access-action',body)}),
- promptsGet:query=>ipcRenderer.invoke('desktop:prompts-get',query),promptsSave:body=>ipcRenderer.invoke('desktop:prompts-save',body),
- settingsUI:()=>ipcRenderer.invoke('desktop:settings-ui'),settingsGet:()=>ipcRenderer.invoke('desktop:settings-get'),settingsSave:body=>ipcRenderer.invoke('desktop:settings-save',body),settingsConnection:()=>ipcRenderer.invoke('desktop:settings-connection'),settingsConnectionSave:body=>ipcRenderer.invoke('desktop:settings-connection-save',body),settingsConnectionAction:body=>ipcRenderer.invoke('desktop:settings-connection-action',body),settingsConnectionPreferences:body=>ipcRenderer.invoke('desktop:settings-connection-preferences',body),settingsAway:away=>ipcRenderer.invoke('desktop:settings-away',away),
- launchSettingsGet:()=>ipcRenderer.invoke('desktop:launch-settings-get'),launchSettingsValidate:body=>ipcRenderer.invoke('desktop:launch-settings-validate',body),launchSettingsApply:body=>ipcRenderer.invoke('desktop:launch-settings-apply',body),launchSettingsPick:body=>ipcRenderer.invoke('desktop:launch-settings-pick',body),remoteBackendPair:body=>ipcRenderer.invoke('desktop:remote-backend-pair',body),
- storageRead:()=>ipcRenderer.invoke('desktop:storage-read'),storagePreview:body=>ipcRenderer.invoke('desktop:storage-preview',body),storageClean:body=>ipcRenderer.invoke('desktop:storage-clean',body),storageRestore:body=>ipcRenderer.invoke('desktop:storage-restore',body),storageEmptyTrash:body=>ipcRenderer.invoke('desktop:storage-empty-trash',body),storagePolicy:body=>ipcRenderer.invoke('desktop:storage-policy',body),
- workspaceUI:()=>ipcRenderer.invoke('desktop:workspace-ui'),workspaceGet:name=>ipcRenderer.invoke('desktop:workspace-get',name),workspaceUpdate:body=>ipcRenderer.invoke('desktop:workspace-update',body),workspaceRemove:body=>ipcRenderer.invoke('desktop:workspace-remove',body),...local({workspaceDirectory:current=>ipcRenderer.invoke('desktop:workspace-directory',current)}),workspaceMaintenance:(route,body)=>ipcRenderer.invoke('desktop:workspace-maintenance',{route,body}),
+ adminStatus:()=>bridgeInvoke('desktop:admin-status'),
+ ...local({adminCheck:()=>bridgeInvoke('desktop:admin-check'),adminRestart:()=>bridgeInvoke('desktop:admin-restart'),
+  adminChatSnapshot:()=>bridgeInvoke('desktop:admin-chat-snapshot'),adminChatSend:body=>bridgeInvoke('desktop:admin-chat-send',body),adminChatInterrupt:()=>bridgeInvoke('desktop:admin-chat-interrupt'),adminConfigGet:()=>bridgeInvoke('desktop:admin-config-get'),adminConfigSave:body=>bridgeInvoke('desktop:admin-config-save',body),
+  toolsSnapshot:()=>bridgeInvoke('desktop:tools-snapshot'),toolsCheck:()=>bridgeInvoke('desktop:tools-check'),toolsUpdate:id=>bridgeInvoke('desktop:tools-update',id),toolsCancel:id=>bridgeInvoke('desktop:tools-cancel',id),toolsSettings:settings=>bridgeInvoke('desktop:tools-settings',settings),
+  remoteAccessRead:()=>bridgeInvoke('desktop:remote-access-read'),remoteAccessAction:body=>bridgeInvoke('desktop:remote-access-action',body)}),
+ promptsGet:query=>bridgeInvoke('desktop:prompts-get',query),promptsSave:body=>bridgeInvoke('desktop:prompts-save',body),
+ settingsUI:()=>bridgeInvoke('desktop:settings-ui'),settingsGet:()=>bridgeInvoke('desktop:settings-get'),settingsSave:body=>bridgeInvoke('desktop:settings-save',body),settingsConnection:()=>bridgeInvoke('desktop:settings-connection'),settingsConnectionSave:body=>bridgeInvoke('desktop:settings-connection-save',body),settingsConnectionAction:body=>bridgeInvoke('desktop:settings-connection-action',body),settingsConnectionPreferences:body=>bridgeInvoke('desktop:settings-connection-preferences',body),settingsAway:away=>bridgeInvoke('desktop:settings-away',away),
+ launchSettingsGet:()=>bridgeInvoke('desktop:launch-settings-get'),launchSettingsValidate:body=>bridgeInvoke('desktop:launch-settings-validate',body),launchSettingsApply:body=>bridgeInvoke('desktop:launch-settings-apply',body),launchSettingsPick:body=>bridgeInvoke('desktop:launch-settings-pick',body),remoteBackendPair:body=>bridgeInvoke('desktop:remote-backend-pair',body),
+ storageRead:()=>bridgeInvoke('desktop:storage-read'),storagePreview:body=>bridgeInvoke('desktop:storage-preview',body),storageClean:body=>bridgeInvoke('desktop:storage-clean',body),storageRestore:body=>bridgeInvoke('desktop:storage-restore',body),storageEmptyTrash:body=>bridgeInvoke('desktop:storage-empty-trash',body),storagePolicy:body=>bridgeInvoke('desktop:storage-policy',body),
+ workspaceUI:()=>bridgeInvoke('desktop:workspace-ui'),workspaceGet:name=>bridgeInvoke('desktop:workspace-get',name),workspaceUpdate:body=>bridgeInvoke('desktop:workspace-update',body),workspaceRemove:body=>bridgeInvoke('desktop:workspace-remove',body),...local({workspaceDirectory:current=>bridgeInvoke('desktop:workspace-directory',current)}),workspaceMaintenance:(route,body)=>bridgeInvoke('desktop:workspace-maintenance',{route,body}),
  ...local({onToolUpdates:callback=>{if(typeof callback!=='function')throw new TypeError('需要工具更新回调');const listener=(_event,state)=>callback(state);ipcRenderer.on('desktop:tools-state',listener);return()=>ipcRenderer.removeListener('desktop:tools-state',listener);}}),
  ...(mac?{}:local({
-  crewUpdateSnapshot:()=>ipcRenderer.invoke('desktop:crew-update-snapshot'),crewUpdateCheck:()=>ipcRenderer.invoke('desktop:crew-update-check'),crewUpdateApply:()=>ipcRenderer.invoke('desktop:crew-update-apply'),crewUpdateCancel:()=>ipcRenderer.invoke('desktop:crew-update-cancel'),crewUpdateOpen:kind=>ipcRenderer.invoke('desktop:crew-update-open',kind),
+  crewUpdateSnapshot:()=>bridgeInvoke('desktop:crew-update-snapshot'),crewUpdateCheck:()=>bridgeInvoke('desktop:crew-update-check'),crewUpdateApply:()=>bridgeInvoke('desktop:crew-update-apply'),crewUpdateCancel:()=>bridgeInvoke('desktop:crew-update-cancel'),crewUpdateOpen:kind=>bridgeInvoke('desktop:crew-update-open',kind),
   onCrewUpdateState:callback=>{if(typeof callback!=='function')throw new TypeError('需要 Crew 更新回调');const listener=(_event,state)=>callback(state);ipcRenderer.on('desktop:crew-update-state',listener);return()=>ipcRenderer.removeListener('desktop:crew-update-state',listener);}})),
- ready:info=>chromeReady.then(()=>ipcRenderer.invoke('desktop:ready',info))
+ ready:info=>chromeReady.then(()=>bridgeInvoke('desktop:ready',info))
 }));

@@ -14,7 +14,7 @@ function message(error) { return String(error?.message || error).replace(/^Error
 function failure(error) {
   // The LAN banner already explains a lost connection or authorization; other errors still show here.
   if (remote && connection.error && message(error) === connection.error) { $('error').hidden = true; return; }
-  $('error').textContent = error.message || String(error); $('error').hidden = false;
+  $('error').textContent = message(error); $('error').hidden = false;
 }
 function hostFolder(title, confirm, start = '') { return window.CrewHostFolders.pick({title, confirm, start, host:connection.name || ''}); }
 window.crewDesktop.onStorageProgress?.(message=>{const status=$('storage-progress');if(status){status.textContent=message;status.hidden=!message;}});
@@ -86,6 +86,11 @@ async function refresh() {
     return state;
   } catch (error) {
     $('service').textContent = '连接失败'; $('service').classList.add('failed');
+    // Never leave the list on "reading": the reason is shown above it and on the system administrator page.
+    const empty = document.createElement('p'); empty.className = 'empty';
+    const heading = document.createElement('strong'); heading.textContent = '后台未连接，暂时读不到工作区';
+    empty.append(heading, document.createTextNode('原因见上方提示；处理后点击「刷新」，或到「系统管理员」查看后台状态。'));
+    $('projects').replaceChildren(empty);
     throw error;
   } finally { $('projects').setAttribute('aria-busy', 'false'); }
 }

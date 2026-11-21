@@ -1,8 +1,9 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os');
-const {LaunchSettings,readSync,relaunchArgs,save,shape}=require('../src/launch-settings.cjs');
+const {LaunchSettings,readSync,relaunchArgs,save,shape,rememberPort}=require('../src/launch-settings.cjs');
 const core=require('../src/core.cjs');
+const PYTHON=require('../src/python.cjs').defaultPython();
 const {CrewUpdates}=require('../src/crew-updates.cjs');
 const {OperationsClient}=require('../src/operations.cjs');
 const {promisify}=require('node:util'),{execFile}=require('node:child_process');
@@ -253,7 +254,7 @@ test('real isolated HOME migration repairs missing saved source and Python using
   const home=path.join(root,'old HOME'),target=path.join(root,'新 HOME'),helper=path.resolve(__dirname,'../../plugin'),settingsPath=path.join(root,'preferences','launch-settings.json');
   const env={...process.env,PYTHONPATH:helper,PYTHONIOENCODING:'utf-8'};
   for(const name of Object.keys(env))if(name.toUpperCase().startsWith('CREW_')||['CLAUDE_CODE_SESSION_ID','CODEX_THREAD_ID'].includes(name.toUpperCase()))delete env[name];
-  await promisify(execFile)('python',['-c','from crew import install,store;import sys;install.install(sys.argv[1],sys.argv[2]);store.connect(sys.argv[1]).close()',home,helper],{cwd:helper,env,windowsHide:true});
+  await promisify(execFile)(PYTHON,['-c','from crew import install,store;import sys;install.install(sys.argv[1],sys.argv[2]);store.connect(sys.argv[1]).close()',home,helper],{cwd:helper,env,windowsHide:true});
   await fs.writeFile(path.join(home,'important-note.txt'),'原始历史与文档保留');
   const config={home,backendDir:path.join(root,'missing-custom-source'),helperBackendDir:helper,bundledBackendDir:helper,backendSource:'custom',python:'missing-crew-python',port:0,launchSettingsPath:settingsPath};
   const backend={owned:false,url:'http://127.0.0.1:0',child:null};
@@ -261,8 +262,8 @@ test('real isolated HOME migration repairs missing saved source and Python using
   let relaunched=0;
   const manager=new LaunchSettings(config,{backend,updates,operations:new OperationsClient(config),bundledBackend:helper,
     request:()=>{throw Error('No service or model may be started in this fixture');},onApplied:()=>{relaunched++;}});
-  const result=await manager.apply({settings:{mode:'local',home:target,source:'bundled',backend_directory:helper,service_url:'',port:0,python:'python',remote_backend:''},home_action:'copy'});
-  assert.equal(result.ok,true);assert.equal(relaunched,1);assert.equal(readSync(settingsPath).python,'python');assert.equal(readSync(settingsPath).source,'bundled');
+  const result=await manager.apply({settings:{mode:'local',home:target,source:'bundled',backend_directory:helper,service_url:'',port:0,python:PYTHON,remote_backend:''},home_action:'copy'});
+  assert.equal(result.ok,true);assert.equal(relaunched,1);assert.equal(readSync(settingsPath).python,PYTHON);assert.equal(readSync(settingsPath).source,'bundled');
   assert.equal(await fs.readFile(path.join(home,'important-note.txt'),'utf8'),'原始历史与文档保留');assert.equal(await fs.readFile(path.join(target,'important-note.txt'),'utf8'),'原始历史与文档保留');
   assert.equal(await fs.readFile(path.join(home,'crew.db')).then(value=>value.subarray(0,15).toString()),'SQLite format 3');
   assert.equal((await new OperationsClient({home:target,backendDir:helper}).request('snapshot')).busy,false);
@@ -332,4 +333,34 @@ test('re-pairing a saved host passes only the address, code and device name',asy
   const result=await f.manager.pair({url:'192.168.1.20:47812',code:'12345678',device_name:'书房电脑'});
   assert.equal(result.backend.id,'saved-host');assert.deepEqual(result.backend.paired,{url:'192.168.1.20:47812',code:'12345678',device_name:'书房电脑'});
   await assert.rejects(f.manager.pair({url:'192.168.1.20:47812',code:'12345678',device_name:'x',token:'injected'}),/只能包含/);
+});
+
+test('an automatically chosen local port is remembered once and only for normal local launches', async t => {
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'crew-remember-port-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const config=()=>({home:path.join(root,'home'),backendDir:path.join(root,'backend'),bundledBackendDir:path.join(root,'backend'),backendSource:'bundled',python:'python3',port:0,launchSettingsPath:path.join(root,'prefs','launch-settings.json')});
+  const first=config();
+  assert.equal(await rememberPort(first,'http://127.0.0.1:53538'),true);
+  assert.equal(first.port,53538);
+  assert.deepEqual({mode:readSync(first.launchSettingsPath).mode,port:readSync(first.launchSettingsPath).port,python:readSync(first.launchSettingsPath).python},{mode:'local',port:53538,python:'python3'});
+  // Already fixed: a later automatic port never overwrites it.
+  assert.equal(await rememberPort(config(),'http://127.0.0.1:60000'),false);
+  assert.equal(readSync(first.launchSettingsPath).port,53538);
+  // An existing local file on automatic keeps its other fields and only gains the port.
+  await save(first.launchSettingsPath,shape({...readSync(first.launchSettingsPath),port:0,python:'/opt/homebrew/bin/python3'}));
+  assert.equal(await rememberPort(config(),'http://127.0.0.1:61000'),true);
+  assert.deepEqual({port:readSync(first.launchSettingsPath).port,python:readSync(first.launchSettingsPath).python},{port:61000,python:'/opt/homebrew/bin/python3'});
+  for (const changes of [{isolated:true},{smoke:true},{remoteBackend:'saved-host'},{serviceUrl:'http://127.0.0.1:47811'},{port:47811},{launchSettingsPath:''}]) {
+    const other=config(); other.launchSettingsPath=path.join(root,'other-'+Object.keys(changes)[0],'launch-settings.json'); Object.assign(other,changes);
+    assert.equal(await rememberPort(other,'http://127.0.0.1:62000'),false,JSON.stringify(changes));
+    if (other.launchSettingsPath) assert.equal(readSync(other.launchSettingsPath),null);
+  }
+});
+
+test('a configured port held by another program fails with a clear instruction before Python starts', async t => {
+  const blocker=net.createServer();await new Promise(resolve=>blocker.listen({host:'127.0.0.1',port:0},resolve));t.after(()=>blocker.close());
+  const port=blocker.address().port;let spawned=false;
+  const backend=new core.Backend({home:await fs.mkdtemp(path.join(os.tmpdir(),'crew-port-busy-')),backendDir:__dirname,python:'python3',port});
+  backend.spawn=()=>{spawned=true;throw Error('must not start');};
+  await assert.rejects(backend.start(),error=>error.message.includes(`端口 ${port} 已被其他程序占用`)&&error.message.includes('连接与目录'));
+  assert.equal(spawned,false);
 });
