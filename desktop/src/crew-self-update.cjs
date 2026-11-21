@@ -45,18 +45,20 @@ function writable(target) {
 function installKind({ packaged, platform = process.platform, arch = process.arch, execPath = process.execPath,
   env = process.env, exists = fs.existsSync, canWrite = writable } = {}) {
   if (!packaged) return { kind: 'development' };
+  // Paths follow the described platform, not the host running this check.
   if (platform === 'darwin') {
-    const app = path.resolve(execPath, '..', '..', '..');
-    if (path.extname(app) !== '.app') return { kind: 'development' };
+    const posix = path.posix;
+    const app = posix.resolve(execPath, '..', '..', '..');
+    if (posix.extname(app) !== '.app') return { kind: 'development' };
     if (arch !== 'arm64') return { kind: 'unsupported', reason: '目前只发布 Apple 芯片（arm64）的 Mac 包。' };
     // A translocated or read-only copy (for example still inside the dmg) cannot be replaced in place.
-    const replaceable = !app.includes('/AppTranslocation/') && canWrite(path.dirname(app)) && canWrite(app);
+    const replaceable = !app.includes('/AppTranslocation/') && canWrite(posix.dirname(app)) && canWrite(app);
     return { kind: replaceable ? 'mac' : 'mac-manual', app };
   }
   if (platform === 'win32') {
     if (env.PORTABLE_EXECUTABLE_FILE) return { kind: 'portable', file: env.PORTABLE_EXECUTABLE_FILE };
-    const directory = path.dirname(execPath);
-    return { kind: exists(path.join(directory, 'Uninstall Crew.exe')) ? 'installer' : 'zip', directory, executable: execPath };
+    const directory = path.win32.dirname(execPath);
+    return { kind: exists(path.win32.join(directory, 'Uninstall Crew.exe')) ? 'installer' : 'zip', directory, executable: execPath };
   }
   return { kind: 'unsupported', reason: '这个系统没有 Crew 发布包。' };
 }
