@@ -311,10 +311,8 @@ app.once('browser-window-created', (_event, win) => {
       assert.equal(toolFixture.checks, checksBefore + 1);
       evidence.checks.push('double check clicks issue one helper check and display current/latest versions');
       await capture('08-tools-versions');
-      // Mac updates tools through their own installers: versions show, update controls do not.
-      if (process.platform === 'darwin') {
-        await check('Mac shows tool versions without one-click or automatic update controls', '!document.querySelector("[data-tool-update]") && document.querySelector("#tools-preferences").hidden && document.querySelector("#tools-note").textContent.includes("Mac 版暂不支持一键更新")');
-      } else {
+      // Mac and Windows share one-click updates, the update queue and the automatic-update switch.
+      {
         await check('a verified busy tool with can_update false and can_queue true can request an update queue', '!document.querySelector("[data-tool-update=claude]").disabled && document.querySelector("[data-tool-update=claude]").textContent.includes("等待会话结束") && document.querySelector("[data-tool-id=claude] .tool-phase").textContent==="会话使用中"');
         await click('[data-tool-update="claude"]');
         await wait('Boolean(document.querySelector("[data-tool-cancel=claude]"))', 'busy update queues');
