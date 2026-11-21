@@ -1,12 +1,12 @@
 "use strict";
 const assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const {test}=require("node:test");
-function harness(report){
+function harness(report,budget=null){
   const main={innerHTML:""},sandbox={window:{},document:{addEventListener(){},getElementById:()=>main},location:{search:"?project=fixture",href:"http://fixture/",origin:"http://fixture"},URL,URLSearchParams};
   vm.createContext(sandbox);
   const source=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
-  vm.runInContext(source.replace("  setup();\n})();",`window.ui={render(report){state={project:{name:"fixture"}};usage=report;quotas=()=>[];replace=(node,html)=>{node.innerHTML=html;};renderUsage();},collapse(id){usageCollapsed.add(id);renderUsage();},tab(value){usageTab=value;renderUsage();}};\n})();`),sandbox);
-  sandbox.window.ui.render(report);return {ui:sandbox.window.ui,main};
+  vm.runInContext(source.replace("  setup();\n})();",`window.ui={render(report,budget=null){state={project:{name:"fixture"},limits:{claude:{budget},codex:null}};usage=report;quotas=()=>[];replace=(node,html)=>{node.innerHTML=html;};renderUsage();},collapse(id){usageCollapsed.add(id);renderUsage();},tab(value){usageTab=value;renderUsage();}};\n})();`),sandbox);
+  sandbox.window.ui.render(report,budget);return {ui:sandbox.window.ui,main};
 }
 const report=()=>({tree:[{leader_session_id:"leader",name:"协调",tokens:14400,cost:0.051,share:100,codex_runs:3,codex_tokens:8500,
   self:{tokens:3600,cost:0.01275,codex_runs:1,codex_tokens:500},members:[
@@ -34,4 +34,13 @@ test("usage shows member Claude and native Codex totals, including leader self a
   h.ui.collapse("leader");assert(!h.main.innerHTML.includes("Claude组员"));assert(!h.main.innerHTML.includes("leader 本身"));
   assert(h.main.innerHTML.includes("Codex 8.5K · 3 次"));
   h.ui.tab("daily");assert(h.main.innerHTML.includes("Claude组员"));assert(h.main.innerHTML.includes("2026-10-27"));
+});
+test("API dollar budget replaces Claude subscription cards and the weekly tab",()=>{
+  const budget={amount_usd:200,cycle:"monthly",start:null,since:"2026-11-01T00:00:00.000Z",resets_at:"2026-12-01T00:00:00.000Z",
+    spent_usd:172.4,crew_usd:41.25,remaining_usd:27.6,used_percent:86.2,unpriced_tokens:0,captured_at:"2026-11-21T00:00:00.000Z"};
+  const h=harness({...report(),claude_weeks:[]},budget);h.ui.tab("weeks");const html=h.main.innerHTML;
+  for(const value of ["Claude API 额度","$172.40","/ $200.00","剩 $27.60","其中 Crew $41.25","重置","budget-edit","qcards two","以 Console 账单为准"])assert(html.includes(value),value);
+  assert(html.includes("background:var(--warn)"));assert(!html.includes('data-tab="weeks"'));assert(!html.includes("还没采集到 Claude 每周额度"));
+  const broken=harness(report(),{error:"Claude 额度设置无法读取：坏了"}).main.innerHTML;
+  assert(broken.includes("Claude 额度设置无法读取：坏了"));assert(!broken.includes("NaN"));
 });

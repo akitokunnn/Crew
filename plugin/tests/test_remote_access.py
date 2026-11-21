@@ -1,4 +1,5 @@
 """Actual loopback HTTP, cookies, restart and SSE; no business AI or user HOME."""
+import tests  # Install the production-service connection guard.
 import concurrent.futures
 import hashlib
 import http.client
