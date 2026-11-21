@@ -389,7 +389,8 @@ class Supervisor:
             warnings = [*warnings, *(name for name, alive in workers.items() if not alive)]
             return ("degraded" if warnings else "healthy"), value, "; ".join(dict.fromkeys(warnings)) or None
         except urllib.error.HTTPError as exc:
-            return "incompatible", None, "健康端点不可兼容：HTTP " + str(exc.code)
+            with exc:
+                return "incompatible", None, "健康端点不可兼容：HTTP " + str(exc.code)
         except urllib.error.URLError as exc:
             reason = exc.reason
             if isinstance(reason, ConnectionRefusedError) or getattr(reason, "errno", None) in (errno.ECONNREFUSED, 10061):
@@ -901,6 +902,11 @@ class Supervisor:
                     maintenance = self._maintenance()
                     if maintenance:
                         self._restart_due = None
+                        # Reap an owned backend that exited during maintenance: on
+                        # POSIX an unreaped child stays a zombie and still looks
+                        # alive to pid probes (os.kill(pid, 0)) from repair tools.
+                        if self.process is not None:
+                            self.process.poll()
                         self._state("paused", maintenance)
                         self._publish()
                     else:

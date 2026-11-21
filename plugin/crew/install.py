@@ -77,12 +77,27 @@ def _sources(home, plugin_root):
     return missing
 
 
+def _dead_shell_launcher(path):
+    """A shell launcher whose interpreter no longer exists (e.g. removed by `brew upgrade`) can never
+    run again, so even a missing-only refresh replaces it; a working one is never switched."""
+    if path.name not in ('crew', 'python') or path.parent.name != 'bin':
+        return False
+    try:
+        target = shlex.split(path.read_text(encoding='utf-8').splitlines()[1])[1]
+    except (OSError, UnicodeDecodeError, IndexError, ValueError):
+        return False
+    return not Path(target).exists()
+
+
 def _launchers(home, only_missing, windows=os.name == 'nt'):
     (home / "bin").mkdir(exist_ok=True)
     # Preserve the native interpreter and Windows-native paths added in 0.2.x.
     windows_python = str(Path(sys.executable).resolve()).replace('%', '%%')
     command = '@"' + windows_python + '" "%~dp0..\\crew.py" %*\n'
-    python = shlex.quote(Path(sys.executable).resolve().as_posix())
+    # Resolving a Homebrew interpreter lands in a version-numbered Cellar directory that the next
+    # `brew upgrade` deletes; POSIX launchers keep the stable path this Python was started from.
+    target = Path(sys.executable).resolve() if windows else Path(sys.executable).absolute()
+    python = shlex.quote(target.as_posix())
     entrypoint = shlex.quote((home / 'crew.py').as_posix())
     shell = '#!/bin/sh\nexec ' + python + ' ' + entrypoint + ' "$@"\n'
     launchers = [(home / "crew.py", LAUNCHER), (home / "bin" / "crew.cmd", command), (home / "bin" / "crew", shell)]
@@ -94,7 +109,7 @@ def _launchers(home, only_missing, windows=os.name == 'nt'):
         # `python <CREW_HOME>/crew.py` reach this backend's interpreter.
         launchers.append((home / 'bin' / 'python', '#!/bin/sh\nexec ' + python + ' "$@"\n'))
     for path, text in launchers:
-        if only_missing and path.exists():
+        if only_missing and path.exists() and not _dead_shell_launcher(path):
             continue
         _write(path, text)
         if path.name in ("crew", "python"):

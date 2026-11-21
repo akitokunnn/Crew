@@ -1,4 +1,5 @@
 """Opening a workspace chooses history; app startup must never choose it silently."""
+import tests  # Install the production-service connection guard.
 import io
 import tempfile
 import unittest

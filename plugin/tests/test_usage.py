@@ -3,6 +3,7 @@ import contextlib
 import datetime as dt
 import io
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -396,7 +397,9 @@ class TestUsage(UsageFixture, unittest.TestCase):
         child = self.claude / "project" / "session-one" / "subagents" / "agent-child.jsonl"
         self.write(child, [assistant("child-r", 20)])
         child.with_suffix(".meta.json").write_text(json.dumps({"agentType": "Explore"}), encoding="utf-8")
-        for sid, cwd in (("unjoined-nested", "c:\\PROJECT\\nested\\src"),
+        # 只有 Windows 的路径比较忽略大小写（store.norm_path），其他平台用原大小写。
+        nested_cwd = "c:\\PROJECT\\nested\\src" if os.name == "nt" else "C:\\project\\nested\\src"
+        for sid, cwd in (("unjoined-nested", nested_cwd),
                          ("unjoined-other", "C:\\other"), ("prefix-only", "C:\\project-sibling")):
             self.main_file([dict(prompt(sid + "-p"), cwd=cwd), dict(assistant(sid + "-r"), cwd=cwd),
                             {"type": "system", "subtype": "compact_boundary", "uuid": sid + "-c", "timestamp": stamp(25)}], sid)
