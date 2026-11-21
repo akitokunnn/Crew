@@ -133,3 +133,12 @@ test("a LAN host connection labels host settings and offers no LAN access card o
   ui.create({host:local.root,read:()=>new Promise(()=>{}),save:()=>{},panels:{remote(){}}}).open("remote");
   assert.match(local.root.innerHTML,/Crew · 本机偏好/);assert.match(local.root.innerHTML,/data-settings-category="remote"/);
 });
+
+test("the session library is listed only where a page registers its panel",()=>{
+  const home=panelHarness();
+  ui.create({host:home.root,read:()=>new Promise(()=>{}),save:()=>{},panels:{}}).open("ai");
+  assert.doesNotMatch(home.root.innerHTML,/data-settings-category="library"/);
+  const workspace=panelHarness();
+  ui.create({host:workspace.root,read:()=>new Promise(()=>{}),save:()=>{},panels:{library(){}}}).open("library");
+  assert.match(workspace.root.innerHTML,/data-settings-category="library"/);
+});
