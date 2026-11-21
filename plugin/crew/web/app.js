@@ -231,7 +231,20 @@
     }
   }
   async function action(key, fn) { if (operationIds.has(key)) return; operationIds.add(key); try { await fn(); } catch (error) { toast(error.message); } finally { operationIds.delete(key); } }
-  function quotas() { return [["Claude 每周", state.limits.claude.seven_day], ["Claude 5 小时", state.limits.claude.five_hour], ["Codex 每周", state.limits.codex]]; }
+  function quotas() { return state.limits.claude.budget ? [["Codex 每周", state.limits.codex]] : [["Claude 每周", state.limits.claude.seven_day], ["Claude 5 小时", state.limits.claude.five_hour], ["Codex 每周", state.limits.codex]]; }
+  // Claude billed through the API: a dollar budget the user set; spent = this machine's requests at API prices.
+  const usd = value => `$${value >= 1000 ? Math.round(value).toLocaleString("zh-CN") : value.toFixed(2)}`;
+  function budgetCycle(budget) { return budget.cycle === "monthly" ? `${date(budget.resets_at)} 重置` : `自 ${new Date(budget.since).toLocaleDateString("zh-CN", {month:"numeric", day:"numeric"})} 起累计`; }
+  function budgetCard(budget) {
+    const edit = '<button type="button" class="text-link qcard-edit" data-act="budget-edit" data-local-control>设置</button>';
+    if (budget.error) return `<div class="qcard"><div class="lbl"><span>Claude API 额度</span>${edit}</div><p class="error-line">${esc(budget.error)}</p></div>`;
+    const unpriced = budget.unpriced_tokens > 0 ? ` · 另有 ${tokens(budget.unpriced_tokens)} token 未定价` : "";
+    return `<div class="qcard"><div class="lbl"><span>Claude API 额度</span>${edit}</div><div class="big">${usd(budget.spent_usd)}<small>/ ${usd(budget.amount_usd)}</small></div><div class="bar"><i style="width:${Math.min(100, budget.used_percent)}%;${budget.used_percent >= 80 ? "background:var(--warn)" : ""}"></i></div><div class="quota-crew">剩 ${usd(budget.remaining_usd)} · 其中 Crew ${usd(budget.crew_usd)}</div><div class="rs">${budgetCycle(budget)} · 按本机请求的 API 价计算${unpriced}</div></div>`;
+  }
+  function railBudget(budget) {
+    if (budget.error) return '<span class="leader-panel-quota-row"><span><strong>Claude</strong><span>额度设置有误</span></span></span>';
+    return `<span class="leader-panel-quota-row"><span><strong>Claude</strong><span>${usd(budget.spent_usd)} / ${usd(budget.amount_usd)}</span></span><progress max="100" value="${Math.min(100, budget.used_percent)}" aria-label="Claude API 额度已用"></progress><small>剩 ${usd(budget.remaining_usd)} · ${budgetCycle(budget)}</small></span>`;
+  }
   // A window past its reset keeps used_percent null until the next observation.
   function quotaText(limit) { return limit === null ? "未采集" : limit.used_percent === null ? (limit.expired ? "已重置" : "未采集") : `${count(limit.used_percent)}%`; }
   const crewPercent = value => `${value < 1 ? "<1" : Math.round(value)}%`;
@@ -241,7 +254,15 @@
     const title = `按每 1% ≈ $${crew.usd_per_point} 折算（社区实测 $${crew.usd_per_point_range[0]}～${crew.usd_per_point_range[1]}，对应 ${crewPercent(crew.low)}～${crewPercent(crew.high)}）。Crew = 进了组的 leader 和组员，含子 agent；本周 Crew 折合 ${cost}。`;
     return `<div class="quota-crew" title="${esc(title)}">其中 Crew ≈ ${esc(crewPercent(crew.points))}${withCost ? `（折合 ${cost}）` : ""}</div>`;
   }
-  function applyTheme() { CrewTheme.setMode(theme); if (state !== null) CrewTheme.apply(state.themes, state.project === null ? null : state.project.theme, theme); }
+  // Inside the Crew desktop the display mode is desktop-wide: its themeSource drives prefers-color-scheme, so the page
+  // always follows the media query and the selector reads and writes the shared mode. Browsers keep their own choice.
+  const desktopTheme = window.crewDesktopTheme || null;
+  function applyTheme() { const mode = desktopTheme ? "system" : theme; CrewTheme.setMode(mode); if (state !== null) CrewTheme.apply(state.themes, state.project === null ? null : state.project.theme, mode); }
+  async function chooseTheme(mode) {
+    if (desktopTheme) { theme = (await desktopTheme.set(mode)).mode; }
+    else { theme = mode; try { localStorage.setItem("crew.theme", theme); } catch (error) { toast(error.message); } }
+    applyTheme(); renderSettings(); if (state !== null && project !== null) renderSidebar();
+  }
   function applyFontScale() { document.documentElement.style.setProperty("--fs", String(fontScale)); }
   function setFontScale(value) { fontScale = value; applyFontScale(); try { localStorage.setItem("crew.fontScale", String(value)); } catch (error) { toast(error.message); } }
   function renderSettings() {
@@ -340,7 +361,7 @@
     const railButton = (act,label,icon,extra="",active=false) => `<button type="button" class="rail-button ${active ? "active" : ""}" data-act="${act}" title="${label}" aria-label="${label}" ${extra}>${ic(icon)}</button>`;
     replace($("sidebar"), `<a class="rail-brand" href="/" title="${esc(projectDisplay(state.project))}" aria-label="${esc(projectDisplay(state.project))} · 工作区">${CrewTheme.logo()}</a><button type="button" id="leader-entry" class="rail-button leader-entry" data-act="leaders-toggle" title="Leader${unread ? " · 有未读消息" : ""}" aria-label="Leader${unread ? "，有未读消息" : ""}" aria-controls="leader-panel" aria-expanded="${leadersOpen}">${ic("team")}${unread ? '<span class="rail-dot" aria-hidden="true"></span>' : ""}</button><div class="rail-divider"></div><span class="rail-home">${railButton("view","主页","grid",'data-view="all"',view === "all")}${homeAttention ? `<span class="rail-badge" aria-label="${homeAttention} 件待你处理">${homeAttention}</span>` : ""}</span>${railButton("view","架构图","board",'data-view="architecture"',view === "architecture")}<a class="rail-button" href="/notes.html" title="想法墙" aria-label="想法墙">${ic("pencil")}</a><a class="rail-button" href="/assistant.html" title="全局助手" aria-label="全局助手">${ic("msg")}</a><span class="rail-git">${railButton("view","Git","branch",'data-view="git"',view === "git")}${state.git_assistant?.attention > 0 ? `<span class="rail-badge">${state.git_assistant?.attention}</span>` : ""}</span><span class="rail-space"></span>${railButton("theme",`日间 / 夜间 · ${themeName}`,themeIcon)}<button type="button" id="presence-entry" class="rail-button presence-entry ${flash ? "presence-flash" : ""}" data-act="presence-toggle" title="${state.notification.away ? "我已离开" : "我在这里"}" aria-label="在场与消息连接" aria-controls="presence-popover" aria-expanded="${presenceOpen}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 13h12v4H6zM7 17v5m10-5v5M5 7v6m14-6v6"/>${state.notification.away ? '<path d="M8 4h8v9"/>' : '<circle cx="12" cy="4" r="2"/><path d="M9 12V9a3 3 0 0 1 6 0v3"/>'}</svg><i class="presence-dot ${connection}"></i></button>${railButton("settings","设置","settings",'data-local-control')}
       <section id="presence-popover" class="presence-popover" aria-label="在场与消息连接" ${presenceOpen ? "" : "hidden"}><button class="switch ${state.notification.manual_away ? "on" : ""}" data-act="away" role="switch" aria-checked="${state.notification.manual_away}"><span class="track"></span><span>我已离开</span></button>${notificationChannel()}${state.notification.error === null ? "" : `<p class="error-line">${esc(state.notification.error)}</p>`}<button class="text-link" data-local-control data-act="connection-settings">连接设置 ›</button></section>`);
-    replace($("leader-panel"), `<div class="leader-panel-content"><header class="leader-panel-head"><h2>Leader</h2><span>${leaders.length} 位组长</span></header><button class="leader-panel-channel" data-act="view" data-view="channel">${ic("msg")}Leader 交流区 <span>›</span>${state.channel.unread ? `<span class="b-unread">${state.channel.unread}</span>` : ""}</button><div class="leader-panel-leaders"><section class="leader-zone-pinned ${leaders.some(item => item.pinned) ? "" : "empty"}" data-leader-zone="pinned" aria-label="置顶 leader"><div class="leader-zone-label">${pinIcon}<span>置顶</span><em>拖到这里置顶</em></div>${leaders.filter(item => item.pinned).map(sidebarLeader).join("")}</section><section data-leader-zone="normal">${leaders.filter(item => !item.pinned).map(sidebarLeader).join("")}</section><button class="leader-panel-new btn ghost" data-act="modal-leader">＋ 新对话</button></div><button class="leader-panel-quota" data-act="view" data-view="usage" aria-label="查看完整额度和用量">${railQuota("Claude",state.limits.claude.seven_day)}${railQuota("Codex",state.limits.codex)}</button></div>`);
+    replace($("leader-panel"), `<div class="leader-panel-content"><header class="leader-panel-head"><h2>Leader</h2><span>${leaders.length} 位组长</span></header><button class="leader-panel-channel" data-act="view" data-view="channel">${ic("msg")}Leader 交流区 <span>›</span>${state.channel.unread ? `<span class="b-unread">${state.channel.unread}</span>` : ""}</button><div class="leader-panel-leaders"><section class="leader-zone-pinned ${leaders.some(item => item.pinned) ? "" : "empty"}" data-leader-zone="pinned" aria-label="置顶 leader"><div class="leader-zone-label">${pinIcon}<span>置顶</span><em>拖到这里置顶</em></div>${leaders.filter(item => item.pinned).map(sidebarLeader).join("")}</section><section data-leader-zone="normal">${leaders.filter(item => !item.pinned).map(sidebarLeader).join("")}</section><button class="leader-panel-new btn ghost" data-act="modal-leader">＋ 新对话</button></div><button class="leader-panel-quota" data-act="view" data-view="usage" aria-label="查看完整额度和用量">${state.limits.claude.budget ? railBudget(state.limits.claude.budget) : railQuota("Claude",state.limits.claude.seven_day)}${railQuota("Codex",state.limits.codex)}</button></div>`);
     $("leader-panel").dataset.open = String(leadersOpen); $("leader-panel").inert = !leadersOpen;
   }
   function clearLeaderDrop() {
@@ -718,7 +739,8 @@
   }
 
   function quotaCard(label, limit) {
-    return `<div class="qcard"><div class="lbl"><span>${label}</span><span>账户</span></div>${limit === null ? '<div class="big" style="font-size:calc(22px * var(--fs))">未采集</div>' : `${limit.used_percent === null ? `<div class="big" style="font-size:calc(22px * var(--fs))">${quotaText(limit)}</div>` : `<div class="big">${count(limit.used_percent)}%<small>已用</small></div><div class="bar"><i style="width:${limit.used_percent}%;${limit.used_percent >= 80 ? "background:var(--warn)" : ""}"></i></div>`}${crewQuota(limit, true)}<div class="rs">${date(limit.resets_at)} 重置 · ${time(limit.captured_at)} 采集${limit.expired ? " · 采集已过期" : ""}</div>`}</div>`;
+    const switchLink = label === "Claude 每周" ? '<button type="button" class="text-link qcard-switch" data-act="budget-edit" data-local-control>用的是 API 额度？改按美元算 ›</button>' : "";
+    return `<div class="qcard"><div class="lbl"><span>${label}</span><span>账户</span></div>${limit === null ? '<div class="big" style="font-size:calc(22px * var(--fs))">未采集</div>' : `${limit.used_percent === null ? `<div class="big" style="font-size:calc(22px * var(--fs))">${quotaText(limit)}</div>` : `<div class="big">${count(limit.used_percent)}%<small>已用</small></div><div class="bar"><i style="width:${limit.used_percent}%;${limit.used_percent >= 80 ? "background:var(--warn)" : ""}"></i></div>`}${crewQuota(limit, true)}<div class="rs">${date(limit.resets_at)} 重置 · ${time(limit.captured_at)} 采集${limit.expired ? " · 采集已过期" : ""}</div>`}${switchLink}</div>`;
   }
   // Claude weekly windows kept by the backend; weeks before recording began have Crew's estimate only.
   function weeksTable(weeks) {
@@ -738,6 +760,8 @@
   }
   function renderUsage() {
     let table = '<p class="note">正在读取用量…</p>', total = "";
+    const budget = state.limits.claude.budget;
+    if (budget && usageTab === "weeks") usageTab = "tree";
     if (usage !== null) {
       const totalTokens = usage.tree.reduce((sum, row) => sum + row.tokens, 0), totalCost = usage.tree.some(row => row.cost === null) ? null : usage.tree.reduce((sum, row) => sum + row.cost, 0);
       const codexTokens = usage.tree.reduce((sum, row) => sum + (row.codex_tokens || 0), 0);
@@ -753,7 +777,7 @@
       else if (usageTab === "daily") table = `<table class="utable"><thead><tr><th>日期</th><th>会话</th><th class="num">Token</th><th class="num">折合</th></tr></thead><tbody>${usage.daily.map(row => `<tr><td>${esc(row.date)}</td><td>${esc(row.display_name)}</td><td class="num">${tokens(row.total_tokens)}</td><td class="num">${money(row.cost_usd)}</td></tr>`).join("")}</tbody></table>`;
       else table = `<table class="utable"><thead><tr><th>模型</th><th>来源</th><th class="num">输入</th><th class="num">输出</th><th class="num">合计</th></tr></thead><tbody>${usage.models.map(row => `<tr><td>${esc(row.model)}</td><td>${esc(row.source)}</td><td class="num">${tokens(row.input_tokens)}</td><td class="num">${tokens(row.output_tokens)}</td><td class="num">${tokens(row.total_tokens)}</td></tr>`).join("")}</tbody></table>`;
     }
-    replace($("main"), `<div class="head big"><div><div class="title">用量</div><div class="sub">${esc(projectDisplay(state.project))} · ${{today:"今天", week:"本周", all:"全部"}[period]}</div></div><div class="right" style="gap:10px"><div class="seg">${[["today", "今天"], ["week", "本周"], ["all", "全部"]].map(([key, name]) => `<button class="${period === key ? "on" : ""}" data-act="usage-period" data-period="${key}">${name}</button>`).join("")}</div><a class="btn" href="${esc(queryPath(`/api/usage/export?period=${period}&what=${usageTab === "daily" ? "daily" : "sessions"}`))}" download>${ic("download", "sm")}导出</a></div></div><div class="page"><div class="page-in"><div class="qcards">${quotas().map(([label, limit]) => quotaCard(label, limit)).join("")}</div><div class="usage-tabs"><div class="seg">${[["tree", "按结构"], ["daily", "按天"], ["models", "按模型"], ["weeks", "每周额度"]].map(([key, name]) => `<button class="${usageTab === key ? "on" : ""}" data-act="usage-tab" data-tab="${key}">${name}</button>`).join("")}</div><span style="font-size:calc(12.5px * var(--fs));color:var(--text-3)">${total}</span></div>${table}<div class="note">折合金额按 API 价换算，只用于比较；额度是账户级；界面字体 HarmonyOS Sans（华为，按其许可证随附）</div></div></div>`);
+    replace($("main"), `<div class="head big"><div><div class="title">用量</div><div class="sub">${esc(projectDisplay(state.project))} · ${{today:"今天", week:"本周", all:"全部"}[period]}</div></div><div class="right" style="gap:10px"><div class="seg">${[["today", "今天"], ["week", "本周"], ["all", "全部"]].map(([key, name]) => `<button class="${period === key ? "on" : ""}" data-act="usage-period" data-period="${key}">${name}</button>`).join("")}</div><a class="btn" href="${esc(queryPath(`/api/usage/export?period=${period}&what=${usageTab === "daily" ? "daily" : "sessions"}`))}" download>${ic("download", "sm")}导出</a></div></div><div class="page"><div class="page-in"><div class="qcards${budget ? " two" : ""}">${budget ? budgetCard(budget) : ""}${quotas().map(([label, limit]) => quotaCard(label, limit)).join("")}</div><div class="usage-tabs"><div class="seg">${[["tree", "按结构"], ["daily", "按天"], ["models", "按模型"], ...(budget ? [] : [["weeks", "每周额度"]])].map(([key, name]) => `<button class="${usageTab === key ? "on" : ""}" data-act="usage-tab" data-tab="${key}">${name}</button>`).join("")}</div><span style="font-size:calc(12.5px * var(--fs));color:var(--text-3)">${total}</span></div>${table}<div class="note">${budget ? "折合金额按 API 价换算；API 额度只算这台电脑的 Claude 请求，其他电脑或程序用同一账户的花费不在内，以 Console 账单为准；" : "折合金额按 API 价换算，只用于比较；额度是账户级；"}界面字体 HarmonyOS Sans（华为，按其许可证随附）</div></div></div>`);
   }
   async function loadUsage() {
     const sequence = ++usageRequest; usageLoading = true;
@@ -1103,6 +1127,23 @@
     $("backdrop").classList.add("show"); renderLeaderRuntime(); $("leader-task").focus();
     refreshRuntimes();
   }
+  function openBudget() {
+    dialogReturn = focusDescriptor(document.activeElement);
+    const budget = state.limits.claude.budget, saved = budget && !budget.error ? budget : null, cycle = saved?.cycle || "monthly";
+    const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60e3).toISOString().slice(0, 10);
+    $("backdrop").innerHTML = `<form class="modal budget-modal" id="budget-form" role="dialog" aria-modal="true" aria-labelledby="budget-title"><h3 id="budget-title">Claude API 额度</h3><p class="d">用 Claude Platform（Console）按量付费时，没有订阅的每周额度可采集。Anthropic 也没有公开查询余额和上限的接口，所以额度金额需要手填；已花多少由 Crew 按这台电脑上 Claude 请求的 API 价格自动算。</p><div class="field"><label for="budget-amount">额度（美元）</label><input id="budget-amount" name="amount" type="number" inputmode="decimal" min="0.01" step="0.01" value="${saved ? saved.amount_usd : 200}" required></div><div class="field"><span class="field-label" id="budget-cycle-label">怎么算</span><div class="model-options budget-cycles" role="radiogroup" aria-labelledby="budget-cycle-label"><label class="model-option"><input type="radio" name="cycle" value="monthly" ${cycle === "monthly" ? "checked" : ""}>每月上限<small>每月 1 日（UTC）归零</small></label><label class="model-option"><input type="radio" name="cycle" value="once" ${cycle === "once" ? "checked" : ""}>一次性充值<small>从充值日起累计</small></label></div></div><div class="field budget-start"><label for="budget-start">充值日期</label><input id="budget-start" name="start" type="date" value="${esc(saved?.start || today)}"></div><p class="error-line" id="budget-error"></p><div class="acts">${saved || budget?.error ? '<button class="btn ghost budget-clear" type="button" data-act="budget-clear">改回订阅额度</button>' : ""}<button class="btn ghost" type="button" data-act="modal-close">取消</button><button class="btn primary" type="submit">保存</button></div></form>`;
+    $("backdrop").classList.add("show"); $("budget-amount").focus();
+  }
+  async function saveBudget(budget) {
+    const form = $("budget-form");
+    form.dataset.saving = "true"; $("budget-error").textContent = "";
+    try { state.limits.claude.budget = (await api("/api/claude-budget", {budget})).budget; delete form.dataset.saving; closeBackdrop(); render(); }
+    catch (error) { delete form.dataset.saving; $("budget-error").textContent = error.message; }
+  }
+  function submitBudget(form) {
+    const cycle = form.elements.cycle.value;
+    void saveBudget({amount_usd:Number(form.elements.amount.value), cycle, start:cycle === "once" ? form.elements.start.value : null});
+  }
   function syncRoute() {
     const hash = view === "chat" ? (readOnlyId === null ? `leader=${encodeURIComponent(leaderId)}` : `history=${encodeURIComponent(readOnlyId)}${leaderId === null ? "" : `&leader=${encodeURIComponent(leaderId)}`}`) + (goalId == null ? "" : `&goal=${encodeURIComponent(goalId)}`) : view;
     if (location.hash.slice(1) !== hash) history.replaceState(null, "", `${location.pathname}${location.search}#${hash}`);
@@ -1248,7 +1289,10 @@
         library:host => { mountSessionLibrary(host); },
         sounds:host => window.CrewSoundSettings.mount(host,{read:()=>api("/api/settings"),save:body=>api("/api/settings",body),api,toast}),
         ...(hostAdmin() ? {remote:host => window.CrewRemoteAccess.mount(host,{read:()=>api("/api/remote-access"),action:body=>api("/api/remote-access",body)})} : {}),prompts:host => window.CrewBehaviorPrompts.mount(host,{read:query => api("/api/behavior-prompts?"+new URLSearchParams(query)),save:body => api("/api/behavior-prompts",body),project,session:behaviorSession || (view === "chat" ? readOnlyId || leaderId : null),execution:goals?.executionFor(behaviorSession || readOnlyId || leaderId)?.id}),appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections, storage:settingsStorage}});
-    try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
+    if (desktopTheme) {
+      desktopTheme.onChange(value => { if (["system", "light", "dark"].includes(value?.mode)) { theme = value.mode; applyTheme(); renderSettings(); if (state !== null && project !== null) renderSidebar(); } });
+      void desktopTheme.get().then(value => { if (["system", "light", "dark"].includes(value?.mode)) { theme = value.mode; renderSettings(); if (state !== null && project !== null) renderSidebar(); } }).catch(error => toast(error.message));
+    } else try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
     try { const stored = Number(localStorage.getItem("crew.fontScale")); if (stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { toast(error.message); }
     try { leadersOpen = !narrowLayout() && localStorage.getItem("crew.leadersOpen") !== "false"; } catch { leadersOpen = !narrowLayout(); }
     $("leader-panel").dataset.open = String(leadersOpen); $("leader-panel").inert = !leadersOpen;
@@ -1380,8 +1424,8 @@
       });
       else if (act === "answer-option") action(`answer:${id}`, () => answer(Number(id), state.decisions.find(item => item.id === Number(id)).options[Number(button.dataset.option)]));
       else if (act === "away") action("away", async () => { await api("/api/notifications/away", {away:!state.notification.manual_away}); await loadState(true); });
-      else if (act === "theme") { theme = {system:"light", light:"dark", dark:"system"}[theme]; applyTheme(); try { localStorage.setItem("crew.theme", theme); } catch (error) { toast(error.message); } renderSidebar(); }
-      else if (act === "theme-select") { theme = button.dataset.themeMode; applyTheme(); try { localStorage.setItem("crew.theme", theme); } catch (error) { toast(error.message); } renderSettings(); if (state !== null && project !== null) renderSidebar(); }
+      else if (act === "theme") action("theme", () => chooseTheme({system:"light", light:"dark", dark:"system"}[theme]));
+      else if (act === "theme-select") action("theme", () => chooseTheme(button.dataset.themeMode));
       else if (act === "project-theme") action("project-theme", async () => { const result = await api("/api/project/theme", {project:state.project.name, theme:button.dataset.themeId}); state.project.theme = result.theme; state.projects.find(item => item.name === state.project.name).theme = result.theme; applyTheme(); renderSettings(); renderSidebar(); await loadState(true); });
       else if (act === "runtime-switch") runtimeSwitch?.open(id);
       else if (act === "font-reset") { setFontScale(1); renderSettings(); }
@@ -1394,6 +1438,8 @@
       else if (act === "right-close") { rightOpen = false; syncSidecar(); $("main").querySelector('[data-act="right-open"]')?.focus(); }
       else if (act === "side-section-close") { attentionVisible = false; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); }
       else if (act === "modal-leader") openModalLeader();
+      else if (act === "budget-edit") openBudget();
+      else if (act === "budget-clear") void saveBudget(null);
       else if (act === "leader-runtime" || act === "leader-model" || act === "leader-effort" || act === "leader-speed") {
         const form = $("leader-form"), field = {"leader-runtime":"runtime", "leader-model":"model", "leader-effort":"effort", "leader-speed":"speed"}[act];
         selectLeaderOption(form,field,button.dataset[field]);
@@ -1468,6 +1514,7 @@
       else if (form.id === "session-rename-form") { event.preventDefault(); void saveRename(form); }
       else if (form.id === "leader-settings-form") { event.preventDefault(); void saveLeaderSettings(); }
       else if (form.id === "trust-form") { event.preventDefault(); void saveTrust(form); }
+      else if (form.id === "budget-form") { event.preventDefault(); submitBudget(form); }
       else if (form.id === "leader-form") { event.preventDefault(); action("leader", async () => { const button = form.querySelector('[type="submit"]'); button.disabled = true; try { const result = await api("/api/leader", leaderPayload(form)); closeBackdrop(); await loadState(true); navigate("chat", result.session_id); } catch (error) { if ($("leader-error")) $("leader-error").textContent = error.message; } finally { button.disabled = !runtimeInfo(form.elements.runtime.value).available; } }); }
     });
     document.addEventListener("toggle", event => {

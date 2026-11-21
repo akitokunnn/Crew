@@ -107,7 +107,26 @@ class InstallLauncherTests(unittest.TestCase):
         command = (self.home / 'bin' / 'crew').read_bytes()
         self.assertTrue(command.startswith(b'#!/bin/sh\n'))
         self.assertNotIn(b'\r', command)
-        self.assertIn(Path(sys.executable).resolve().as_posix().encode(), command)
+        expected = Path(sys.executable).resolve() if os.name == 'nt' else Path(sys.executable).absolute()
+        self.assertIn(expected.as_posix().encode(), command)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX shell launchers')
+    def test_missing_only_refresh_repairs_launchers_whose_interpreter_was_removed(self):
+        install.install(self.home, PLUGIN)
+        working = (self.home / 'bin' / 'python').read_text(encoding='utf-8')
+        gone = self.root / 'Cellar' / 'python@3.15' / '3.15.2' / 'bin' / 'python3.15'
+        for name in ('python', 'crew'):
+            (self.home / 'bin' / name).write_text('#!/bin/sh\nexec ' + gone.as_posix() + ' "$@"\n', encoding='utf-8')
+        custom = self.root / 'other-python'
+        custom.write_text('#!/bin/sh\n', encoding='utf-8')
+        install.ensure(self.home, PLUGIN)
+        self.assertEqual((self.home / 'bin' / 'python').read_text(encoding='utf-8'), working)
+        self.assertNotIn(gone.as_posix(), (self.home / 'bin' / 'crew').read_text(encoding='utf-8'))
+        # A launcher that still works is never switched by a missing-only refresh.
+        kept = '#!/bin/sh\nexec ' + custom.as_posix() + ' "$@"\n'
+        (self.home / 'bin' / 'python').write_text(kept, encoding='utf-8')
+        install.ensure(self.home, PLUGIN)
+        self.assertEqual((self.home / 'bin' / 'python').read_text(encoding='utf-8'), kept)
 
 
 if __name__ == '__main__':

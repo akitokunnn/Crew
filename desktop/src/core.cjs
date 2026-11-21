@@ -260,6 +260,14 @@ class Backend {
       }
     }
     await checkPythonVersion(this.config.python);
+    if (this.config.port !== 0) {
+      // A remembered or configured port taken by another program would otherwise surface as a raw Python bind error.
+      try { await require('./launch-settings.cjs').availablePort(this.config.port); }
+      catch (error) {
+        if (error.code === 'EADDRINUSE') throw new Error(`端口 ${this.config.port} 已被其他程序占用，Crew 后台无法启动。请在「设置 → 连接与目录」里换一个端口，或填 0 让 Crew 自动选择。`);
+        throw error;
+      }
+    }
     let script = path.join(this.config.backendDir, 'crew_supervisor.py');
     try { await fs.access(script); this.supervised = true; }
     catch (error) {

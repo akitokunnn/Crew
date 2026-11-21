@@ -28,15 +28,13 @@ class ToolUpdates {
   }
   _emit() { if (!this.closed) this.onChange(this.snapshot()); }
   async initialize() {
-    if (this.platform !== 'darwin') {
-      try {
-        const saved = JSON.parse(await fs.readFile(this.file, 'utf8'));
-        this.autoUpdate = saved.autoUpdate === true;
-        if (Array.isArray(saved.queue)) for (const entry of saved.queue) {
-          if (IDS.includes(entry?.id) && ['manual', 'auto'].includes(entry.source) && (entry.source === 'manual' || this.autoUpdate)) this.queue.set(entry.id, entry.source);
-        }
-      } catch (error) { if (error.code !== 'ENOENT') this.lastError = '更新设置读取失败：' + error.message; }
-    }
+    try {
+      const saved = JSON.parse(await fs.readFile(this.file, 'utf8'));
+      this.autoUpdate = saved.autoUpdate === true;
+      if (Array.isArray(saved.queue)) for (const entry of saved.queue) {
+        if (IDS.includes(entry?.id) && ['manual', 'auto'].includes(entry.source) && (entry.source === 'manual' || this.autoUpdate)) this.queue.set(entry.id, entry.source);
+      }
+    } catch (error) { if (error.code !== 'ENOENT') this.lastError = '更新设置读取失败：' + error.message; }
     this._emit();
     return this.snapshot();
   }
@@ -46,7 +44,7 @@ class ToolUpdates {
     const repeat = (fn, ms) => { const timer = setInterval(fn, ms); timer.unref(); this.timers.push(timer); };
     later(() => { void this.check(); }, 5000);
     repeat(() => { void this.check(); }, 6 * 60 * 60 * 1000);
-    if (this.platform !== 'darwin') repeat(() => { void this._drain(); }, 60000);
+    repeat(() => { void this._drain(); }, 60000);
   }
   _save() {
     const contents = JSON.stringify({ autoUpdate:this.autoUpdate, queue:[...this.queue].map(([id, source]) => ({id, source})) }, null, 2);
@@ -85,14 +83,14 @@ class ToolUpdates {
         if (!result.ok || !Array.isArray(result.runtimes) || result.runtimes.length !== 2 ||
           new Set(result.runtimes.map(item => item.id)).size !== 2) throw new Error(result.error || '版本检查结果不完整');
         for (const item of result.runtimes) {
-          this._record(this.platform === 'darwin' ? {...item, can_update:false, can_queue:false, blocked_reason:null, manual_update:null} : item);
+          this._record(item);
           if (!this.queue.has(item.id) && this.records.get(item.id).phase !== 'updating') {
             this.records.set(item.id, { ...this.records.get(item.id), phase:item.error ? 'error' : 'idle', message:null });
           }
         }
         this.checkedAt = result.checked_at || this.clock(); this.lastError = null;
         if (this.autoUpdate) for (const item of result.runtimes) if (item.update_available && (item.can_update || item.can_queue) && !this.queue.has(item.id)) this.queue.set(item.id, 'auto');
-        if (this.platform !== 'darwin') await this._save();
+        await this._save();
       } catch (error) { if (!(this.closed && error.name === 'AbortError')) this.lastError = '检查失败：' + error.message; }
       finally { this._checking = null; this._emit(); }
       if (!this.lastError && this.queue.size) await this._drain();
@@ -172,9 +170,9 @@ class ToolUpdates {
     if (this.autoUpdate) void this.check();
     return this.snapshot();
   }
-  requireUpdates() {
-    if (this.platform === 'darwin') throw new Error('Mac 版暂不支持一键更新，请用原安装方式更新。');
-  }
+  // Both platforms update through the helper: npm / official native installer on Windows and
+  // macOS, Homebrew casks on macOS. Unverified sources stay manual inside the helper.
+  requireUpdates() {}
   async close() {
     this.closed = true;
     for (const timer of this.timers) { clearTimeout(timer); clearInterval(timer); }

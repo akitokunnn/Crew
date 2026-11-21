@@ -14,7 +14,7 @@
   const selected = new Set(), expanded = new Set(), starting = new Map();
 
   const systemTheme = matchMedia("(prefers-color-scheme: dark)");
-  function theme() { let selectedTheme = "system"; try { selectedTheme = localStorage.getItem("crew.theme") || selectedTheme; } catch {} document.documentElement.dataset.theme = selectedTheme === "system" ? (systemTheme.matches ? "dark" : "light") : selectedTheme; }
+  function theme() { let selectedTheme = "system"; if (!window.crewDesktopTheme) try { selectedTheme = localStorage.getItem("crew.theme") || selectedTheme; } catch {} document.documentElement.dataset.theme = selectedTheme === "system" ? (systemTheme.matches ? "dark" : "light") : selectedTheme; }
   theme(); systemTheme.addEventListener("change", theme); window.addEventListener("storage", theme);
 
   async function api(path, body) {

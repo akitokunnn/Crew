@@ -19,8 +19,9 @@
   }
   function render(){
     if(remote){renderRemote();return;}
-    const state=error?'unknown':snapshot?.state||'unknown';
-    $('admin-state').textContent=error?'检测失败':labels[state]||labels.unknown;$('admin-state').dataset.state=state;
+    const startup=!error&&snapshot?.startup_error&&!['healthy','degraded'].includes(snapshot.state)?snapshot.startup_error:'';
+    const state=error||startup?'failed':snapshot?.state||'unknown';
+    $('admin-state').textContent=error?'检测失败':startup?'后台无法启动':labels[state]||labels.unknown;$('admin-state').dataset.state=state;
     $('admin-checked').textContent=snapshot?.checked_at?date(snapshot.checked_at):'尚未检测';
     $('admin-recoveries').textContent=Number.isFinite(snapshot?.recoveries)?String(snapshot.recoveries):'—';
     $('admin-last-recovery').textContent=snapshot?.last_recovery_at?'最近恢复 '+date(snapshot.last_recovery_at):'尚无自动恢复记录';
@@ -28,7 +29,7 @@
     const allowed=snapshot?.restart?.allowed===true&&!error;
     $('admin-restart').disabled=pending!==null||!allowed;$('admin-restart').textContent=pending==='restart'?'正在请求恢复…':'尝试恢复';
     $('admin-restart-reason').textContent=snapshot?.restart?.reason||(!snapshot?'读取状态后确认是否可以安全恢复。':allowed?'仅恢复确认已退出的后台。':'当前不允许安全恢复。');
-    $('admin-error').textContent=error||controlError;$('admin-error').hidden=!error&&!controlError;
+    $('admin-error').textContent=error||controlError||startup;$('admin-error').hidden=!error&&!controlError&&!startup;
     $('admin-note').textContent=pending==='status'?'正在读取本机后台状态…':note;$('admin-note').hidden=!$('admin-note').textContent;
     for(const [id,key]of [['admin-supervisor-pid','supervisor_pid'],['admin-service-pid','service_pid'],['admin-service-url','url'],['admin-instance','instance_id']])$(id).textContent=snapshot?.[key]??'—';
     const incidents=Array.isArray(snapshot?.incidents)?snapshot.incidents:[],key=JSON.stringify([Boolean(snapshot),incidents]);

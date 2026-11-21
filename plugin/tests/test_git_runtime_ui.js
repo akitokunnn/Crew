@@ -45,3 +45,10 @@ test("no available runtime has an empty selection, a clear error and no enable r
 test("an untouched Git setup follows a newly available runtime without manufacturing a Claude fallback",async()=>{
   const h=harness(catalog(false,false));await tick();await h.refresh(catalog(false,true));assert.equal(h.form.elements.runtime.value,"codex");assert.equal(h.button.disabled,false);assert(!h.calls.some(item=>item.body));h.ui.unmount();
 });
+
+test("both installed with nothing chosen yet waits for a choice without an unavailable warning",async()=>{
+  const h=harness(catalog(true,true));await tick();assert.equal(h.form.elements.runtime.value,"");assert.equal(h.button.disabled,true);
+  assert(!h.host.innerHTML.includes("所选执行工具当前不可用"));
+  const none=harness(catalog(false,false));await tick();assert(none.host.innerHTML.includes("没有可用的执行工具"));
+  h.ui.unmount();none.ui.unmount();
+});

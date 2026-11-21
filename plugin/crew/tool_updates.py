@@ -22,6 +22,10 @@ from . import codex_client, store
 PACKAGES = {"claude": "@anthropic-ai/claude-code", "codex": "@openai/codex"}
 REGISTRY = {name: "https://registry.npmjs.org/" + package.replace("/", "%2f") + "/latest"
             for name, package in PACKAGES.items()}
+# Homebrew casks; a cask install updates through `brew upgrade --cask` and is compared with the
+# version Homebrew itself serves (formulae.brew.sh), which can lag npm by a few releases.
+CASKS = {"claude": "claude-code", "codex": "codex"}
+CASK_API = "https://formulae.brew.sh/api/cask/"
 VERSION = re.compile(r"(?<![\w.])v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?(?![\w.])")
 MANUAL = "此安装来源未被验证。请使用原来的安装渠道更新；Crew 不会替换它。"
 
@@ -100,6 +104,48 @@ def latest_version(runtime, timeout=6):
     return selected
 
 
+def homebrew_latest(cask, timeout=6):
+    if cask not in CASKS.values():
+        raise ValueError("未知 Homebrew cask")
+    request = Request(CASK_API + cask + ".json", headers={"Accept": "application/json", "User-Agent": "Crew-Tool-Updates"})
+    with urlopen(request, timeout=timeout) as response:
+        if not response.geturl().startswith(CASK_API):
+            raise ValueError("Homebrew 版本查询跳转到了未允许的地址")
+        data = json.loads(response.read(1024 * 1024).decode("utf-8"))
+    selected = data.get("version")
+    if not isinstance(selected, str) or VERSION.fullmatch(selected) is None:
+        raise ValueError("Homebrew 未返回有效版本")
+    return selected
+
+
+def posix_processes(run=_run):
+    """claude / codex / node processes from ps: the executable path from comm, the argv from args."""
+    env = {**os.environ, "LC_ALL": "C"}
+    paths = run(["/bin/ps", "-axww", "-o", "pid=", "-o", "comm="], timeout=8, env=env)
+    commands = run(["/bin/ps", "-axww", "-o", "pid=", "-o", "args="], timeout=8, env=env)
+    if paths.returncode or commands.returncode:
+        raise OSError("无法读取进程列表")
+
+    def table(text):
+        rows = {}
+        for line in text.splitlines():
+            pid, _, rest = line.strip().partition(" ")
+            if pid.isdecimal() and rest.strip():
+                rows[int(pid)] = rest.strip()
+        return rows
+    arguments = table(commands.stdout)
+    rows = []
+    for pid, executable in table(paths.stdout).items():
+        name = Path(executable).name
+        if name.lower() in ("claude", "codex", "node"):
+            rows.append({"ProcessId": pid, "Name": name, "ExecutablePath": executable, "CommandLine": arguments.get(pid)})
+    return rows
+
+
+def processes(run=_run):
+    return windows_processes(run) if os.name == "nt" else posix_processes(run)
+
+
 def windows_processes(run=_run):
     if os.name != "nt":
         raise OSError("当前只支持 Windows 的应用内安全进程检查；请用原安装渠道更新")
@@ -154,8 +200,13 @@ def _argv(command):
             kernel.LocalFree.argtypes = (wintypes.HLOCAL,)
             kernel.LocalFree.restype = wintypes.HLOCAL
             kernel.LocalFree(parsed)
+    # ps prints argv unquoted, so JSON settings can leave unbalanced quotes; fall back to plain
+    # tokens rather than failing the whole check (running_count also matches roots by substring).
     import shlex
-    return shlex.split(command)
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return [token.strip("'\"") for token in command.split()]
 
 
 def running_count(record, processes):
@@ -170,6 +221,9 @@ def running_count(record, processes):
             raise OSError("有工具相关进程的路径不可读，暂不能确认安装目录空闲")
         paths = [executable, *_argv(command)]
         if any(_under(candidate, root) for candidate in paths for root in roots):
+            found.add(row["ProcessId"])
+        elif os.name != "nt" and command and any(str(Path(root).resolve()) in command for root in roots):
+            # Unquoted ps output splits paths with spaces; the install root still appears verbatim.
             found.add(row["ProcessId"])
     return len(found)
 
@@ -191,9 +245,10 @@ def _npm_entry(selected, root, package):
 
 
 class Inspector:
-    def __init__(self, *, which=shutil.which, run=_run, latest=latest_version,
-                 processes=windows_processes, user_home=None, codex_native=None):
+    def __init__(self, *, which=shutil.which, run=_run, latest=latest_version, homebrew=homebrew_latest,
+                 processes=processes, user_home=None, codex_native=None):
         self.which, self.run, self.latest, self.processes = which, run, latest, processes
+        self.homebrew = homebrew
         self.user_home = Path.home() if user_home is None else Path(user_home)
         self.codex_native = codex_native or (lambda entry: codex_client._npm_executable(Path(entry)))
 
@@ -243,6 +298,18 @@ class Inspector:
             else:
                 record["blocked_reason"] = "未找到可直接执行的 Node.js 和 npm-cli.js，请用原 npm 安装渠道更新"
             return record
+        # A Homebrew cask keeps its binary under <prefix>/Caskroom/<cask>/<version>/ and is
+        # updated only by the brew that owns that prefix.
+        cask = CASKS[runtime]
+        caskroom = next((parent for parent in resolved.parents if parent.name == "Caskroom"), None)
+        if caskroom is not None and _under(resolved, caskroom / cask):
+            brew = caskroom.parent / "bin" / "brew"
+            if not brew.is_file() or not resolved.is_file():
+                raise OSError("已识别 Homebrew 安装，但找不到对应的 brew 或工具文件")
+            record.update(installation="homebrew", native_path=str(resolved), package_root=str((caskroom / cask).resolve()),
+                          prefix=str(caskroom.parent.resolve()), _command=[str(resolved)],
+                          _update=[str(brew), "upgrade", "--cask", cask], _guard_roots=[str((caskroom / cask).resolve())])
+            return record
         record.update(installation="unknown", native_path=str(resolved), manual_update=MANUAL, blocked_reason=MANUAL)
         # A native Claude install is recognized only at its documented per-user
         # launcher plus version directory, not merely from a binary's filename.
@@ -286,7 +353,8 @@ class Inspector:
                 record["error"] = "读取安装版本失败：" + str(exc)
         if fetch_latest:
             try:
-                record["latest_version"] = self.latest(runtime)
+                record["latest_version"] = (self.homebrew(CASKS[runtime]) if record["installation"] == "homebrew"
+                                            else self.latest(runtime))
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 record["error"] = "读取官方最新版本失败：" + str(exc)
         if record["installed_version"] and record["latest_version"]:
@@ -414,6 +482,8 @@ def update(home, runtime, *, inspector=None):
                         if not after["installed_version"]:
                             repair = ("请使用 Claude 官方原生安装器修复，然后检查 claude --version。"
                                       if before["installation"] == "native" else
+                                      "请在终端运行 brew reinstall --cask " + CASKS[runtime] + "，再检查工具版本。"
+                                      if before["installation"] == "homebrew" else
                                       "请在原安装位置重新运行 npm install -g " + PACKAGES[runtime] +
                                       '@latest --prefix "' + str(before["prefix"]) + '"，再检查工具版本。')
                             output["error"] += "；安装可能不完整。" + repair

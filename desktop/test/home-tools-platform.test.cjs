@@ -43,7 +43,7 @@ async function mount(platform,remote=false) {
   return {$,calls,settled};
 }
 
-test('Mac tools page checks versions and offers the Crew self-update without backend unification', async () => {
+test('Mac tools page offers tool updates, the auto-update preference and the Crew self-update', async () => {
   const {$,calls,settled} = await mount('darwin');
   assert.equal($('tools-page').hidden,false);
   assert.equal($('crew-update-card').hidden,true);
@@ -53,15 +53,14 @@ test('Mac tools page checks versions and offers the Crew self-update without bac
   $('crew-self-action').click(); await settled();
   assert.equal($('crew-self-action').textContent,'重启并更新');
   calls.splice(calls.indexOf('self snapshot'),1); calls.splice(calls.indexOf('self download'),1);
-  assert.equal($('tools-preferences').hidden,true);
-  assert.equal($('tools-note').textContent,'Mac 版暂不支持一键更新，请用原安装方式更新。');
+  assert.equal($('tools-preferences').hidden,false);
   $('tools-check').click(); await settled();
   assert.deepEqual(calls.filter(call=>call.startsWith('tools')),['tools snapshot','tools snapshot','tools check']);
   assert.ok(calls.includes('self check'));
   const list = $('tools-list');
-  assert.ok(list.find(el=>el.textContent==='有新版本'));
+  assert.ok(list.find(el=>el.textContent==='有更新'));
   assert.ok(list.find(el=>el.textContent==='1.1.0'));
-  assert.equal(list.find(el=>el.dataset.toolUpdate),undefined);
+  assert.ok(list.find(el=>el.dataset.toolUpdate==='codex'));
 });
 
 test('Windows retains the Crew card, saved auto-update controls and tool update action', async () => {

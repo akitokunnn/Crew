@@ -1,4 +1,5 @@
 """Context and portable handoffs use scoped records and real temporary objects."""
+import tests  # Install the production-service connection guard.
 from contextlib import closing
 import json
 from pathlib import Path

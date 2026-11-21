@@ -1,18 +1,27 @@
 'use strict';
 (() => {
   const $=id=>document.getElementById(id), bridge=window.crewDesktop, panel=$('settings-page'), root=$('native-settings-root');
-  let ui=null, creating=null, visible=false, mode='system';
+  let ui=null, creating=null, visible=false, mode='system', appearanceHost=null;
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
-  try { const saved=localStorage.getItem('crew.desktop.theme'); if(['system','light','dark'].includes(saved))mode=saved; } catch(_) { /* The default follows the OS when storage is unavailable. */ }
   const media=window.matchMedia('(prefers-color-scheme: dark)');
-  function applyTheme(){document.documentElement.dataset.theme=mode==='system'?(media.matches?'dark':'light'):mode;}
+  // The desktop keeps one display mode; its themeSource drives this media query in every page and the chrome.
+  function applyTheme(){document.documentElement.dataset.theme=media.matches?'dark':'light';}
   applyTheme();media.addEventListener('change',applyTheme);
+  function adopt(state){if(!['system','light','dark'].includes(state?.mode))return;mode=state.mode;if(appearanceHost?.isConnected)appearance(appearanceHost);}
+  void bridge.theme().then(async state=>{
+    // First launch with the shared setting: keep the mode chosen earlier on this home page.
+    let legacy=null;try{legacy=localStorage.getItem('crew.desktop.theme');}catch(_){ /* Storage may be unavailable. */ }
+    if(!state.stored&&['light','dark'].includes(legacy))state=await bridge.setTheme(legacy);
+    try{localStorage.removeItem('crew.desktop.theme');}catch(_){ /* Nothing left to migrate. */ }
+    adopt(state);
+  }).catch(error=>console.error('无法读取显示模式：',error));
+  bridge.onTheme(adopt);
   function appearance(host){
-    host.innerHTML=`<section class="cs-card"><h2>显示模式</h2><p class="cs-hint">保存在这台电脑上，立即应用于桌面首页。</p><div class="cs-theme-options">${[['system','跟随系统'],['light','浅色'],['dark','深色']].map(([id,title])=>`<button type="button" data-desktop-theme="${id}" aria-pressed="${mode===id}">${title}</button>`).join('')}</div><p role="status" data-theme-note></p></section>`;
-    for(const button of host.querySelectorAll('[data-desktop-theme]'))button.onclick=()=>{
-      mode=button.dataset.desktopTheme;applyTheme();
-      try { localStorage.setItem('crew.desktop.theme',mode);appearance(host); }
-      catch(error){host.querySelector('[data-theme-note]').textContent=error.message;}
+    appearanceHost=host;
+    host.innerHTML=`<section class="cs-card"><h2>显示模式</h2><p class="cs-hint">这台电脑上的 Crew 共用一个显示模式，首页、所有工作区和窗口边框同时生效。</p><div class="cs-theme-options">${[['system','跟随系统'],['light','浅色'],['dark','深色']].map(([id,title])=>`<button type="button" data-desktop-theme="${id}" aria-pressed="${mode===id}">${title}</button>`).join('')}</div><p role="status" data-theme-note></p></section>`;
+    for(const button of host.querySelectorAll('[data-desktop-theme]'))button.onclick=async()=>{
+      try{adopt(await bridge.setTheme(button.dataset.desktopTheme));}
+      catch(error){host.querySelector('[data-theme-note]').textContent=String(error?.message||error).replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/,'');}
     };
   }
   function connections(host){
