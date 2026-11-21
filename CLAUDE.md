@@ -6,4 +6,4 @@
 
 当前桌面版本读取 `desktop/package.json`，不要从 Claude 插件版本或旧交付报告推测。
 
-日常修复按 AGENTS.md 的“本地试用与推送”：在 `C:\Tools\Crew-fixes\<任务>` 从 `live` 拉分支修改，验证后用 `scripts\live.ps1 merge` 合入本地 live，用户直接在正式 Crew 里试用；不为单个修复开 PR、跑 CI 或打包。合入 live 不用等用户确认；用户说“推”时再用 `scripts\live.ps1 ship` 整批合进 main。AI 仍需自查 diff、按改动规模验证并遵守其余保护规则。
+日常修复按 AGENTS.md 的“本地试用与推送”：Windows 和 Mac 共用 GitHub 上的 `live` 分支。开工先 `python scripts/live.py sync`，在 `Crew-fixes/<任务>` 从 `live` 拉分支修改，验证后用 `python scripts/live.py merge <分支>` 合入并推上去，用户在这台电脑的正式 Crew 里试用，另一台 `sync` 后也能用；不为单个修复开 PR 或打包。有平台差异的改动合入前用 `gh workflow run tests.yml --ref <分支>` 让 CI 在两个系统上验证。合入 live 不用等用户确认；用户说“推”时再用 `python scripts/live.py ship` 整批合进 main。AI 仍需自查 diff、按改动规模验证并遵守其余保护规则。

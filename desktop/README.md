@@ -1,6 +1,6 @@
 # Crew 桌面版
 
-0.3.14 “工具与更新”改为检查 `main` 上的版本（原 `rebuild/v2`）。后台程序来源选“指定后台程序目录”并指向 `C:\Tools\Crew-live\plugin` 时，页面改动按 Ctrl+R 生效，后台改动退出重开生效，只有桌面外壳改动需要重新打包。
+0.3.14 “工具与更新”改为检查 `main` 上的版本（原 `rebuild/v2`）。后台程序来源选“指定后台程序目录”并指向本机 live 工作目录的 `plugin`（Windows `C:\Tools\Crew-live\plugin`，Mac `~/Tools/Crew-live/plugin`）时，页面改动按 Ctrl+R（Mac ⌘R）生效，后台改动退出重开生效，只有桌面外壳改动需要重新打包。
 
 0.3.13 修复工作台反复提示“服务器错误”；后端输出写入日志文件夹的 backend.log，满 1 MB 轮换。数据目录与安装身份沿用。
 

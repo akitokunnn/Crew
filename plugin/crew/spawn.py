@@ -232,7 +232,9 @@ def request_state(home, project_name):
         with urlopen(request, timeout=15) as response:
             return json.load(response)
     except HTTPError as exc:
-        raise board.BoardError(json.load(exc)["error"]) from exc
+        with exc:
+            message = json.load(exc)["error"]
+        raise board.BoardError(message) from exc
     except URLError as exc:
         raise ServiceUnavailable("网页服务没开：" + str(exc.reason)) from exc
     except TimeoutError as exc:
@@ -249,7 +251,8 @@ def request_start(home, project_name, path, body):
         with urlopen(request, timeout=120) as response:
             return json.load(response)
     except HTTPError as exc:
-        message = json.load(exc)["error"]
+        with exc:
+            message = json.load(exc)["error"]
         raise (board.Conflict if exc.code == 409 else board.BoardError)(message) from exc
     except URLError as exc:
         raise board.BoardError("网页服务未运行，请先 crew web --open；" + str(exc.reason)) from exc

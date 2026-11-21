@@ -1,6 +1,16 @@
 """Never let a test connect to the production Crew service."""
+import os
 import sys
+import tempfile
 import unittest
+
+# macOS's default temp dir is under /var, a symlink to /private/var. Crew refuses symlinked HOME paths and
+# resolves real paths, so tests would see two spellings of one directory. CI already uses a resolved TMPDIR;
+# this does the same for local runs, including the processes tests start.
+if sys.platform == 'darwin':
+    tempfile.tempdir = os.environ['TMPDIR'] = os.path.realpath(tempfile.gettempdir())
+# Git localizes its errors by the system language (Chinese on some Macs); tests compare Git's English text.
+os.environ['LC_MESSAGES'] = 'C'
 
 violations = []
 

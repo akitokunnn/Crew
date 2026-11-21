@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import HTTPError, URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_overview, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
+from . import board, channel, channel_digest, chat, claude_budget, claude_limits, codex_runtime, documents, git_admin, git_ci, git_overview, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
 from . import appearance, codex_client, member_defaults, operations_chat, operations_settings
 from . import connections, session_delete, session_presence, storage_cleanup, workspace_activity
@@ -92,6 +92,7 @@ class Service:
         self.agents_error = "\u6b63\u5728\u83b7\u53d6\u8fdb\u7a0b\u72b6\u6001"
         self.scanned_at = None
         self.crew_usage = (None, None)
+        self.claude_budget = None
         self.title_cache = {}
         self.vscode_state_db = _vscode_state_db() if vscode_state_db is None else Path(vscode_state_db)
         self.vscode_session_caches = {}
@@ -863,7 +864,15 @@ class Service:
         if (seven_day is not None and seven_day['used_percent'] is not None
                 and crew is not None and seven_day['resets_at'] == reset):
             seven_day['crew'] = crew
+        limits['budget'] = self.claude_budget
         return limits
+
+    def _budget(self, conn, now):
+        """The API dollar budget for display; a broken settings file shows its error instead of failing the page."""
+        try:
+            return claude_budget.read(self.home, conn, now)
+        except (ValueError, OSError) as exc:
+            return {'error': f'Claude 额度设置无法读取：{exc}'}
 
     def decision_participants(self, conn, decision):
         asker = board.session(conn, decision['session_id'])
@@ -1178,6 +1187,13 @@ class Service:
                 raise board.BoardError('删除自定义音效只需要 id')
             with self.write_lock, closing(store.connect(self.home)) as conn:
                 return event_sounds.delete_custom(conn, self.home, data['id'])
+        if path == '/api/claude-budget':
+            if set(data) != {'budget'}:
+                raise ValueError('Claude 额度设置只能包含 budget')
+            claude_budget.save(self.home, data['budget'])
+            with self.scan_lock, closing(store.connect(self.home)) as conn:
+                self.claude_budget = self._budget(conn, self.now())
+            return {'budget': self.claude_budget}
         if path == '/api/settings':
             if not data or not set(data) <= {'ai', 'execution', 'sounds'}:
                 raise ValueError('设置请求只能包含 ai、execution 和 sounds 配置')
@@ -1891,6 +1907,7 @@ class Service:
                 if seven_day is not None and seven_day['used_percent'] is not None and seven_day['resets_at'] is not None:
                     crew = usage.crew_weekly(conn, seven_day, usage.load_prices(self.home / 'prices.json'), now)
                 self.crew_usage = (seven_day['resets_at'] if seven_day is not None else None, crew)
+                self.claude_budget = self._budget(conn, now)
                 self.scanned_at = now
 
     def notification_status(self):
@@ -1946,6 +1963,7 @@ POST_PATHS.update(('/api/workspace-data/discover','/api/workspace-data/open','/a
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch', '/api/git/adopt', '/api/git/settings'))
 POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
 POST_PATHS.add('/api/settings')
+POST_PATHS.add('/api/claude-budget')
 POST_PATHS.update(('/api/sounds/custom', '/api/sounds/custom/delete'))
 POST_PATHS.update(('/api/storage/preview', '/api/storage/clean', '/api/storage/restore',
                    '/api/storage/trash/empty', '/api/storage/policy'))
