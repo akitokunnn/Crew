@@ -196,6 +196,35 @@ class CrewUpdates {
     }
     return this.snapshot();
   }
+  // Used before Crew quits to install a new version: holds the update lock,
+  // closes new-task admission once everything is idle and backs up the data.
+  // Busy work is reported, never interrupted. On success the gate and lock stay
+  // held until this process exits; cancel() reopens admission if the quit is abandoned.
+  async drainForRestart() {
+    if (this.pending) throw new Error('正在统一后台与入口，请等它完成后再更新 Crew。');
+    if (this.checking) await this.checking;
+    this.cancel();
+    const lock = await this._lock();
+    let health, prepared, kept = false;
+    const reopen = async () => {
+      if (prepared?.gate_id) await this.request(this.backend.url, '/api/admin/update/cancel', { instance_id: health.instance_id, gate_id: prepared.gate_id });
+    };
+    try {
+      health = await this._health();
+      prepared = await this.request(this.backend.url, '/api/admin/update/prepare', { instance_id: health.instance_id }, 15000);
+      lock.assert();
+      if (prepared.status === 'busy') return { ok: false, reasons: prepared.reasons || [] };
+      if (!prepared.ok || prepared.instance_id !== health.instance_id || prepared.pid !== health.pid || !prepared.gate_id) throw new Error('后台更新准备结果无效，请重新检查。');
+      const backup = await this._helper('backup'); lock.assert();
+      kept = true;
+      return { ok: true, backup, cancel: async () => { try { await reopen(); } finally { await lock.release(); } } };
+    } finally {
+      if (!kept) {
+        try { await reopen(); } catch (_) { /* The backend stops on quit or reopens on the next check. */ }
+        await lock.release();
+      }
+    }
+  }
   cancel() {
     this.queued = false; clearInterval(this.timer); this.timer = null;
     if (this.state.phase === 'queued') this._phase('idle', '已取消等待更新。');

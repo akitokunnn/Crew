@@ -173,3 +173,18 @@ test('quit waits for an active HOME switch and its complete update transaction w
   assert.equal(f.phases.length,before);assert.equal(stops,0);
   console.log('active Crew installer preserved for '+(performance.now()-time).toFixed(1)+'ms through completion');
 });
+
+test('restart for a Crew self-update reports busy work without backup and keeps the gate only when ready', async t => {
+  const busy = fixture(t, { busy: true });
+  assert.deepEqual(await busy.manager.drainForRestart(), { ok: false, reasons: ['leader 正在回复'] });
+  assert.deepEqual(busy.calls, ['lock', 'health', 'prepare', 'unlock']);
+  const ready = fixture(t);
+  const drained = await ready.manager.drainForRestart();
+  assert.equal(drained.ok, true); assert.equal(drained.backup.integrity, 'ok');
+  assert.deepEqual(ready.calls, ['lock', 'health', 'prepare', 'backup']);
+  await drained.cancel();
+  assert.deepEqual(ready.calls.slice(-2), ['cancel-gate', 'unlock']);
+  const failed = fixture(t, { fail: 'backup' });
+  await assert.rejects(failed.manager.drainForRestart(), /fixture backup failed/);
+  assert.deepEqual(failed.calls.slice(-2), ['cancel-gate', 'unlock']);
+});

@@ -7,6 +7,7 @@
   <title>Crew · 工作区</title>
   <link rel="stylesheet" href="home.css">
   <link rel="stylesheet" href="home-tools.css">
+  <link rel="stylesheet" href="home-self-update.css">
   <link rel="stylesheet" href="home-health.css">
   <link rel="stylesheet" href="home-settings.css">
   <link rel="stylesheet" href="home-folders.css">
@@ -60,15 +61,22 @@
     <section id="tools-page" class="home-page tools-page" aria-labelledby="tools-title" hidden>
       <header class="tools-header"><div><h1 id="tools-title" tabindex="-1">工具与更新</h1><p>管理 Crew、Claude Code 和 Codex 的版本。</p></div><button id="tools-check" class="button secondary" type="button">检查更新</button></header>
       <div class="tools-content">
-        <article id="crew-mac-update-card" class="tool-card" hidden><div class="tool-card-header"><h2>Crew</h2></div><p class="tool-message">Mac 版请下载新的 dmg 安装更新。</p></article>
+        <article id="crew-self-update-card" class="tool-card crew-self-update-card" hidden aria-live="polite">
+          <div class="tool-card-header"><h2>Crew</h2><span id="crew-self-phase" class="tool-phase">待检查</span></div>
+          <dl class="tool-versions"><div><dt>当前版本</dt><dd id="crew-self-current">—</dd></div><div><dt>最新正式版</dt><dd id="crew-self-latest">尚未检查</dd></div></dl>
+          <div id="crew-self-download" class="crew-self-download" hidden><progress id="crew-self-progress" max="1" value="0"></progress><span id="crew-self-progress-text"></span></div>
+          <details id="crew-self-notes" class="crew-self-notes" hidden><summary>更新说明</summary><p id="crew-self-notes-body"></p></details>
+          <div class="tool-card-footer"><div class="tool-messages"><p id="crew-self-updated" class="tool-message crew-self-updated" hidden></p><p id="crew-self-message" class="tool-message"></p><ul id="crew-self-blocked" class="crew-self-blocked" hidden></ul><p id="crew-self-file" class="tool-message" hidden></p><p id="crew-self-error" class="tool-message error" role="alert" hidden></p></div><div class="tool-card-actions"><button id="crew-self-release" type="button" class="button secondary" hidden>查看发布页</button><button id="crew-self-check" type="button" class="button secondary">检查</button><button id="crew-self-action" type="button" class="button" hidden>下载更新</button></div></div>
+          <div class="crew-self-footer"><label class="tools-auto-label"><input id="crew-self-auto" type="checkbox">有新版本时自动下载</label><p id="crew-self-trust">只从 GitHub 上 Crew 的正式发布下载，并用同一发布里的 SHA-256 清单校验；安装包没有 Apple 或微软的开发者签名。安装前会等所有会话空闲并先备份数据。</p><p id="crew-self-custom" hidden>后台来源是「自定义」：自定义后台不随 Crew 更新。</p></div>
+        </article>
         <article id="crew-update-card" class="tool-card crew-update-card" hidden aria-live="polite">
-          <div class="tool-card-header"><h2>Crew</h2><span id="crew-update-phase" class="tool-phase">待检查</span></div>
+          <div class="tool-card-header"><h2>后台与插件</h2><span id="crew-update-phase" class="tool-phase">待检查</span></div>
           <p class="tool-message">线上版本会单独查询；统一后台与入口时等待任务空闲并自动备份。</p>
           <dl class="tool-versions crew-update-versions"><div><dt>当前桌面</dt><dd id="crew-desktop-version">—</dd></div><div><dt>运行中后台</dt><dd id="crew-backend-version">—</dd></div><div><dt>Claude 插件</dt><dd id="crew-plugin-version">—</dd></div><div><dt>本机可应用版本</dt><dd id="crew-target-version">—</dd></div></dl>
           <section class="crew-online-versions" aria-label="线上版本">
-            <dl class="tool-versions"><div><dt>正式发布</dt><dd id="crew-release-version">尚未检查</dd></div><div><dt>开发分支版本</dt><dd id="crew-main-version">尚未检查</dd></div></dl>
+            <dl class="tool-versions"><div><dt>开发分支版本</dt><dd id="crew-main-version">尚未检查</dd></div></dl>
             <p id="crew-online-status" class="tool-message" role="status">点击检查 Crew 查询线上版本。</p><p id="crew-online-error" class="tool-message error" role="alert" hidden></p>
-            <div class="crew-online-links"><button id="crew-release-open" class="button secondary" type="button">查看正式发布</button><button id="crew-main-open" class="button secondary" type="button">查看开发分支</button></div>
+            <div class="crew-online-links"><button id="crew-main-open" class="button secondary" type="button">查看开发分支</button></div>
           </section>
           <details class="crew-update-details"><summary>安装来源</summary><div id="crew-update-sources"></div></details>
           <div class="tool-card-footer"><div class="tool-messages"><p id="crew-update-message" class="tool-message">点击检查查看版本。</p><p id="crew-update-error" class="tool-message error" role="alert" hidden></p><p id="crew-update-backup" class="tool-message"></p></div><div class="tool-card-actions"><button id="crew-update-check" type="button" class="button secondary">检查 Crew</button><button id="crew-update-apply" type="button" class="button" disabled>统一后台与入口</button><button id="crew-update-cancel" type="button" class="button secondary" hidden>取消等待</button></div></div>
@@ -86,6 +94,7 @@
   </main>
   <script src="home-tools.js"></script>
   <script src="home-crew-updates.js"></script>
+  <script src="home-self-update.js"></script>
   <script src="home-health.js"></script>
   <script src="home-settings.js"></script>
   <script src="home-folders.js"></script>

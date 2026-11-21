@@ -159,6 +159,7 @@ function harness(options = {}) {
     './activity-preview.cjs':{ ActivityPreview:Preview }, './permissions.cjs':{ installPermissions() {} },
     './report-preview.cjs':{ReportPreviewClient, ReportPreviewRenderer:class {}},
     './tool-updates.cjs':{ ToolUpdates:Tools }, './crew-updates.cjs':{ CrewUpdates:Updates },
+    './crew-self-update.cjs':{ CrewSelfUpdate:class { async initialize() {} async confirmReady() {} start() {} async close() {} }, installKind:() => ({ kind:'development' }) },
     './admin.cjs':{ Administrator:class {} }, './operations.cjs':{ OperationsClient:class { close() {} } },
     './product.cjs':require('../src/product.cjs'),
     './launch-settings.cjs':{ LaunchSettings, relaunchArgs:() => [] },

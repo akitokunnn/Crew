@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   push:
     branches: ['mac-build/**']
+  # A formal release built on Windows gets its Mac packages here; see docs/DESKTOP_UPDATES.md.
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -39,6 +42,12 @@ jobs:
               for name in ('TMPDIR', 'TEMP', 'TMP'):
                   print(f'{name}={directory}', file=output)
           PY
+      - name: Release tag matches the desktop version
+        if: github.event_name == 'release'
+        working-directory: desktop
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: test "v$(node -p "require('./package.json').version")" = "$TAG"
       - name: Core backend tests with isolated homes and fake carriers
         working-directory: plugin
         run: |
@@ -75,3 +84,35 @@ jobs:
             desktop/smoke-output/
           if-no-files-found: error
           retention-days: 7
+
+  # Only this job may write: it adds the Mac packages to the release and
+  # regenerates SHA256SUMS.txt over every package, which Crew's self-update checks.
+  publish:
+    if: github.event_name == 'release'
+    needs: mac-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: Crew-mac-arm64
+          path: mac
+      - name: Upload Mac packages and refresh SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          dmg="mac/dist/Crew-${version}-mac-arm64.dmg"
+          zip="mac/dist/Crew-${version}-mac-arm64.zip"
+          test -f "$dmg" && test -f "$zip"
+          gh release upload "$TAG" "$dmg" "$zip" --clobber --repo "$REPO"
+          mkdir sums && cd sums
+          gh release download "$TAG" --repo "$REPO" --pattern 'Crew-*'
+          sha256sum Crew-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$TAG" SHA256SUMS.txt --clobber --repo "$REPO"

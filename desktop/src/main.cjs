@@ -15,6 +15,7 @@ const { ReportPreviewRenderer, ReportPreviewClient } = require('./report-preview
 const { installPermissions } = require('./permissions.cjs');
 const { ToolUpdates } = require('./tool-updates.cjs');
 const { CrewUpdates } = require('./crew-updates.cjs');
+const { CrewSelfUpdate, installKind } = require('./crew-self-update.cjs');
 const { Administrator } = require('./admin.cjs');
 const { OperationsClient } = require('./operations.cjs');
 const { LaunchSettings, relaunchArgs } = require('./launch-settings.cjs');
@@ -39,7 +40,7 @@ app.setPath('userData', config.userData);
 const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;
 const errorPage = pathToFileURL(path.join(__dirname, 'error.html')).href;
 let lastPublishedTab=null;
-let window, tray, backend, tabs, activityPreview, reportPreviews, tools, crewUpdates, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
+let window, tray, backend, tabs, activityPreview, reportPreviews, tools, crewUpdates, selfUpdate, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
 let startupWork = null, cleanupPromise = null, remoteHeartbeat = null, localVersion = null;
 
 function liveWindow(target = window) {
@@ -68,6 +69,7 @@ async function cleanupResources() {
     await Promise.all([
       finish('connection change', () => launchSettings?.pending),
       finish('Crew update', () => crewUpdates?.close()),
+      finish('Crew self-update', () => selfUpdate?.close()),
       finish('tool updates', () => tools?.close())
     ]);
     await Promise.all([...workspaceDataJobs].map(job=>finish('workspace data',()=>job)));
@@ -593,6 +595,24 @@ if (platform !== 'darwin') {
     await shell.openExternal(url.href);return {ok:true};
   });
 }
+// A LAN client updates only itself, so these stay available in both modes.
+handle('desktop:self-update-snapshot',()=>selfUpdate.snapshot());
+handle('desktop:self-update-check',()=>selfUpdate.check());
+handle('desktop:self-update-download',()=>selfUpdate.fetchUpdate());
+handle('desktop:self-update-cancel',()=>selfUpdate.cancel());
+handle('desktop:self-update-install',()=>{if(launchSettings?.pending)throw Error('正在切换后台连接，请等待完成。');return selfUpdate.installUpdate();});
+handle('desktop:self-update-settings',value=>selfUpdate.settings(value));
+handle('desktop:self-update-open',async()=>{
+  const url=new URL(selfUpdate.snapshot().latest?.url||'https://github.com/akitokunnn/Crew/releases');
+  if(url.protocol!=='https:'||url.hostname!=='github.com'||!url.pathname.startsWith('/akitokunnn/Crew/releases'))throw new Error('发布链接不属于 Crew 官方仓库');
+  await shell.openExternal(url.href);return {ok:true};
+});
+// Installing a new version quits Crew: only when every session is idle, never by interrupting one.
+async function prepareSelfUpdateQuit() {
+  if (remoteMode || !backend || backend.startupError) return {ok:true};
+  if (!backend.owned) throw new Error('当前连接的是其他窗口启动的后台。请先退出那个 Crew，再更新。');
+  return crewUpdates.drainForRestart();
+}
 function settingsRequest(route, body, timeoutMs) {
   if (!backend?.url || new URL(backend.url).port === '0') throw Error(backend?.startupError || '后台尚未连接，请查看后台信息。');
   return core.request(backend.url, route, body, timeoutMs);
@@ -719,6 +739,13 @@ else {
   app.whenReady().then(async () => {
     if (quitting) return;
     try {
+      selfUpdate=new CrewSelfUpdate({home:config.home,version:app.getVersion(),install:installKind({packaged:app.isPackaged}),
+        customBackend:config.backendSource==='custom',relaunchArgs:process.argv.slice(1),prepareQuit:prepareSelfUpdateQuit,
+        quit:()=>setTimeout(()=>app.quit(),250),openPath:file=>shell.openPath(file),showItem:file=>shell.showItemInFolder(file),
+        onChange:state=>{if(liveWindow())window.webContents.send('desktop:self-update-state',state);}});
+      // Before the backend starts, so a just-installed Mac version can still be rolled back by the helper.
+      await startupStep(selfUpdate.initialize().catch(error=>console.error('Crew self-update state unreadable:',error)));
+      if (quitting) return;
       if (platform === 'darwin') {
         process.env.PATH = await startupStep(readLoginShellPath());
         if (quitting) return;
@@ -859,6 +886,9 @@ else {
         tray.on('double-click', showWindow);
       }
       await window.loadURL(homePage);
+      if (quitting) return;
+      await selfUpdate.confirmReady(remoteMode || !backend.startupError).catch(error=>console.error('Crew self-update confirmation failed:',error));
+      if(!config.smoke&&!config.isolated)selfUpdate.start();
     } catch (error) {
       if (quitting) return;
       console.error(error);
