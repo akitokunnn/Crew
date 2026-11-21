@@ -212,8 +212,14 @@ test('the Mac helper swaps the bundle, keeps the old one until ready, and rolls 
   assert.deepEqual(success.opened, [success.app + '|--args|--home|/tmp/h|new']);
   assert.match(success.journal, /"event":"swapped"/); assert.match(success.journal, /"event":"done"/);
 
-  const rollback = run('rollback');
+  // The new version reported its pid but never became ready: it is stopped before the old one returns.
+  const { spawn } = require('node:child_process');
+  const hung = spawn('sleep', ['30'], { stdio: 'ignore' });
+  t.after(() => hung.kill('SIGKILL'));
+  const exitedHung = new Promise(resolve => hung.once('exit', resolve));
+  const rollback = run('rollback', work => fs.writeFileSync(path.join(work, 'started'), String(hung.pid)));
   assert.equal(rollback.result.status, 1);
+  assert.equal(await exitedHung, null);
   assert.equal(fs.readFileSync(path.join(rollback.app, 'version'), 'utf8'), 'old');
   assert.equal(fs.existsSync(rollback.app + '.previous'), false);
   assert.deepEqual(rollback.opened.map(line => line.split('|').at(-1)), ['new', 'old']);

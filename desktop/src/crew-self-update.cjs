@@ -158,13 +158,16 @@ waited=0
 while [ ! -f "$work/ready" ]; do
   waited=$((waited+1))
   if [ "$waited" -ge $((timeout*10)) ]; then
-    started=$(cat "$work/started" 2>/dev/null)
-    case "$started" in
-      ''|*[!0-9]*) ;;
-      *) kill "$started" 2>/dev/null
-         n=0; while kill -0 "$started" 2>/dev/null && [ "$n" -lt 300 ]; do n=$((n+1)); sleep 0.1; done
-         kill -9 "$started" 2>/dev/null ;;
-    esac
+    # The new version reports its pid early; one that hung before that is found by its executable path.
+    pids=$(cat "$work/started" 2>/dev/null; pgrep -f -- "$app/Contents/MacOS/" 2>/dev/null)
+    for started in $pids; do
+      case "$started" in
+        ''|*[!0-9]*) ;;
+        *) kill "$started" 2>/dev/null
+           n=0; while kill -0 "$started" 2>/dev/null && [ "$n" -lt 300 ]; do n=$((n+1)); sleep 0.1; done
+           kill -9 "$started" 2>/dev/null ;;
+      esac
+    done
     rm -rf "$app" && mv "$app.previous" "$app"
     log rolled-back new-version-not-ready
     launch "$@"; exit 1
