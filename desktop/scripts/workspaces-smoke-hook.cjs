@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { defaultPython } = require('../src/python.cjs');
 const { app, ipcMain, dialog, Menu, webContents, nativeTheme, nativeImage } = require('electron');
 const desktop = path.resolve(__dirname, '..');
 const core = require(path.join(desktop, 'src/core.cjs'));
@@ -36,7 +37,7 @@ async function bounded(promise, label) {
 function seedLeaders(home, projects) {
   // board.join and empty journals only: no notice, message, working status or launcher.
   const source = `import json,sys\nfrom pathlib import Path\nfrom contextlib import closing\nsys.path.insert(0,sys.argv[1])\nfrom crew import board,store\nhome=Path(sys.argv[2])\nwith closing(store.connect(home)) as conn:\n for i,p in enumerate(json.loads(sys.argv[3])):\n  sid='tab-qa-leader-'+str(i)\n  board.join(conn,sid,p['name'],'标签验收 '+str(i+1),p['root'],p['root'],'main',role='leader')\n  (home/'chat').mkdir(exist_ok=True)\n  (home/'chat'/(sid+'.jsonl')).touch()\n`;
-  const result = spawnSync('python', ['-', path.join(desktop, '../plugin'), home, JSON.stringify(projects)], { input:source, encoding:'utf8', windowsHide:true });
+  const result = spawnSync(defaultPython(), ['-', path.join(desktop, '../plugin'), home, JSON.stringify(projects)], { input:source, encoding:'utf8', windowsHide:true });
   assert.equal(result.status, 0, result.stderr || result.error?.message);
 }
 
@@ -310,39 +311,44 @@ app.once('browser-window-created', (_event, win) => {
       assert.equal(toolFixture.checks, checksBefore + 1);
       evidence.checks.push('double check clicks issue one helper check and display current/latest versions');
       await capture('08-tools-versions');
-      await check('a verified busy tool with can_update false and can_queue true can request an update queue', '!document.querySelector("[data-tool-update=claude]").disabled && document.querySelector("[data-tool-update=claude]").textContent.includes("等待会话结束") && document.querySelector("[data-tool-id=claude] .tool-phase").textContent==="会话使用中"');
-      await click('[data-tool-update="claude"]');
-      await wait('Boolean(document.querySelector("[data-tool-cancel=claude]"))', 'busy update queues');
-      await check('a busy update shows its queue and readable running-session reason', 'document.querySelector("[data-tool-id=claude]").textContent.includes("2 个会话正在运行") && document.querySelector("[data-tool-update=claude]").disabled');
-      await capture('09-tools-queued');
-      await click('[data-tool-cancel="claude"]');
-      await wait('!document.querySelector("[data-tool-cancel=claude]") && document.querySelector("[data-tool-id=claude]").textContent.includes("已取消")', 'cancel update queue');
-      evidence.checks.push('cancel waiting removes the actual controller queue and displays cancellation');
-      await click('[data-tool-update="codex"]');
-      await wait('document.querySelector("[data-tool-id=codex] .tool-phase").textContent==="正在更新"', 'update progress');
-      await check('an ongoing update reports progress and prevents duplicate update requests', 'document.querySelector("[data-tool-update=codex]").disabled');
-      await wait('document.querySelector("[data-tool-id=codex]").textContent.includes("模拟：安装器暂时不可用") && !document.querySelector("[data-tool-update=codex]").disabled', 'simulated installer failure');
-      await capture('10-tools-update-failed');
-      await click('[data-tool-update="codex"]');
-      await wait('document.querySelector("[data-tool-id=codex] .tool-phase").textContent==="已更新"', 'simulated installer retry');
-      await check('an installer failure remains visible and can be retried to a verified new version', 'document.querySelector("[data-tool-id=codex] .tool-versions").textContent.includes("9.9.2") && document.querySelector("[data-tool-update=codex]").disabled');
-      toolFixture.current = true;
-      await click('#tools-auto');
-      await wait('document.querySelector("#tools-auto").checked && !document.querySelector("#tools-auto").disabled && !document.querySelector("#tools-check").disabled', 'enable automatic updates');
-      let settings = JSON.parse(await fs.readFile(path.join(homeDirectory, 'desktop/tool-update-settings.json'), 'utf8')); assert.equal(settings.autoUpdate, true);
-      await click('#tools-auto');
-      await wait('!document.querySelector("#tools-auto").checked && !document.querySelector("#tools-auto").disabled', 'disable automatic updates');
-      settings = JSON.parse(await fs.readFile(path.join(homeDirectory, 'desktop/tool-update-settings.json'), 'utf8')); assert.equal(settings.autoUpdate, false);
-      evidence.checks.push('the automatic-update switch persists explicit opt-in and can be switched off');
-      toolFixture.checkFailure = true;
-      await click('#tools-check');
-      await wait('!document.querySelector("#tools-global-error").hidden && !document.querySelector("#tools-check").disabled', 'version check error');
-      await check('a failed version check keeps known versions and gives a readable retryable error', 'document.querySelector("#tools-global-error").textContent.includes("版本源暂时不可用") && document.querySelectorAll("#tools-list .tool-card").length===2');
-      await capture('11-tools-check-failed');
-      toolFixture.checkFailure = false; toolFixture.unsupported = true;
-      await click('#tools-check');
-      await wait('document.querySelector("[data-tool-id=codex]").textContent.includes("安装来源未识别") && !document.querySelector("#tools-check").disabled', 'unknown installation source');
-      await check('an unknown installation source disables update and shows its manual recovery instructions', 'document.querySelector("[data-tool-update=codex]").disabled && document.querySelector("[data-tool-id=codex]").textContent.includes("原来的安装器")');
+      // Mac updates tools through their own installers: versions show, update controls do not.
+      if (process.platform === 'darwin') {
+        await check('Mac shows tool versions without one-click or automatic update controls', '!document.querySelector("[data-tool-update]") && document.querySelector("#tools-preferences").hidden && document.querySelector("#tools-note").textContent.includes("Mac 版暂不支持一键更新")');
+      } else {
+        await check('a verified busy tool with can_update false and can_queue true can request an update queue', '!document.querySelector("[data-tool-update=claude]").disabled && document.querySelector("[data-tool-update=claude]").textContent.includes("等待会话结束") && document.querySelector("[data-tool-id=claude] .tool-phase").textContent==="会话使用中"');
+        await click('[data-tool-update="claude"]');
+        await wait('Boolean(document.querySelector("[data-tool-cancel=claude]"))', 'busy update queues');
+        await check('a busy update shows its queue and readable running-session reason', 'document.querySelector("[data-tool-id=claude]").textContent.includes("2 个会话正在运行") && document.querySelector("[data-tool-update=claude]").disabled');
+        await capture('09-tools-queued');
+        await click('[data-tool-cancel="claude"]');
+        await wait('!document.querySelector("[data-tool-cancel=claude]") && document.querySelector("[data-tool-id=claude]").textContent.includes("已取消")', 'cancel update queue');
+        evidence.checks.push('cancel waiting removes the actual controller queue and displays cancellation');
+        await click('[data-tool-update="codex"]');
+        await wait('document.querySelector("[data-tool-id=codex] .tool-phase").textContent==="正在更新"', 'update progress');
+        await check('an ongoing update reports progress and prevents duplicate update requests', 'document.querySelector("[data-tool-update=codex]").disabled');
+        await wait('document.querySelector("[data-tool-id=codex]").textContent.includes("模拟：安装器暂时不可用") && !document.querySelector("[data-tool-update=codex]").disabled', 'simulated installer failure');
+        await capture('10-tools-update-failed');
+        await click('[data-tool-update="codex"]');
+        await wait('document.querySelector("[data-tool-id=codex] .tool-phase").textContent==="已更新"', 'simulated installer retry');
+        await check('an installer failure remains visible and can be retried to a verified new version', 'document.querySelector("[data-tool-id=codex] .tool-versions").textContent.includes("9.9.2") && document.querySelector("[data-tool-update=codex]").disabled');
+        toolFixture.current = true;
+        await click('#tools-auto');
+        await wait('document.querySelector("#tools-auto").checked && !document.querySelector("#tools-auto").disabled && !document.querySelector("#tools-check").disabled', 'enable automatic updates');
+        let settings = JSON.parse(await fs.readFile(path.join(homeDirectory, 'desktop/tool-update-settings.json'), 'utf8')); assert.equal(settings.autoUpdate, true);
+        await click('#tools-auto');
+        await wait('!document.querySelector("#tools-auto").checked && !document.querySelector("#tools-auto").disabled', 'disable automatic updates');
+        settings = JSON.parse(await fs.readFile(path.join(homeDirectory, 'desktop/tool-update-settings.json'), 'utf8')); assert.equal(settings.autoUpdate, false);
+        evidence.checks.push('the automatic-update switch persists explicit opt-in and can be switched off');
+        toolFixture.checkFailure = true;
+        await click('#tools-check');
+        await wait('!document.querySelector("#tools-global-error").hidden && !document.querySelector("#tools-check").disabled', 'version check error');
+        await check('a failed version check keeps known versions and gives a readable retryable error', 'document.querySelector("#tools-global-error").textContent.includes("版本源暂时不可用") && document.querySelectorAll("#tools-list .tool-card").length===2');
+        await capture('11-tools-check-failed');
+        toolFixture.checkFailure = false; toolFixture.unsupported = true;
+        await click('#tools-check');
+        await wait('document.querySelector("[data-tool-id=codex]").textContent.includes("安装来源未识别") && !document.querySelector("#tools-check").disabled', 'unknown installation source');
+        await check('an unknown installation source disables update and shows its manual recovery instructions', 'document.querySelector("[data-tool-update=codex]").disabled && document.querySelector("[data-tool-id=codex]").textContent.includes("原来的安装器")');
+      }
       win.setSize(win.getMinimumSize()[0], 700); await capture('12-tools-narrow-manual');
       await check('tools controls and failure instructions fit the minimum window width', 'document.documentElement.scrollWidth<=innerWidth && document.querySelector(".tools-content").getBoundingClientRect().right<=innerWidth');
       win.setSize(1220, 850);
@@ -353,7 +359,7 @@ app.once('browser-window-created', (_event, win) => {
       await fs.mkdir(path.join(managed.root,'src'),{recursive:true});await fs.mkdir(path.join(destination,'src'),{recursive:true});
       await fs.writeFile(path.join(managed.root,'retained.txt'),'keep the original files');
       const memberSource=`import sys\nfrom contextlib import closing\nsys.path.insert(0,sys.argv[1])\nfrom crew import board,store\nwith closing(store.connect(sys.argv[2])) as conn:\n board.join(conn,'workspace-settings-member',sys.argv[3],'迁移成员',sys.argv[4],sys.argv[5],'main',role='member',group_name='标签验收 1')\n`;
-      const memberSeed=spawnSync('python',['-',path.join(desktop,'../plugin'),homeDirectory,managed.name,path.join(managed.root,'src'),managed.root],{input:memberSource,encoding:'utf8',windowsHide:true});
+      const memberSeed=spawnSync(defaultPython(),['-',path.join(desktop,'../plugin'),homeDirectory,managed.name,path.join(managed.root,'src'),managed.root],{input:memberSource,encoding:'utf8',windowsHide:true});
       assert.equal(memberSeed.status,0,memberSeed.stderr);
       await js(`window.crewDesktop.openProject(${JSON.stringify(managed.name)})`);const managedView=await opened(managed.name),managedTab=await tabFor(managed.name);
       await until(()=>managedView.executeJavaScript('Boolean(document.querySelector(\'[data-act="leader"][data-id="tab-qa-leader-0"]\'))'),'managed leader ready');

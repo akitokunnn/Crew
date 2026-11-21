@@ -1,4 +1,5 @@
 """Actual storage HTTP roundtrip, with a process factory that may never run."""
+import tests  # Install the production-service connection guard.
 from contextlib import closing
 from http.server import ThreadingHTTPServer
 import json

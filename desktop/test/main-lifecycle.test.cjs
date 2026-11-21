@@ -77,6 +77,7 @@ function harness(options = {}) {
   }
   const menu = template => ({ template, getMenuItemById(id) { return template.flatMap(item => item.submenu || [item]).find(item => item.id === id); }, popup({ callback }) { callback?.(); } });
   const electron = { app, BrowserWindow:Window, WebContentsView:class {}, Tray:FakeTray,
+    nativeTheme:{ themeSource:'system', shouldUseDarkColors:false, on() {} }, webContents:{ getAllWebContents:() => [] },
     ipcMain:{ handle:(name,fn) => handlers.set(name,fn), on() {} },
     Menu:{ buildFromTemplate:menu, setApplicationMenu:value => { appMenu = value; }, getApplicationMenu:() => appMenu },
     nativeImage:{ createFromPath:file => { calls.image = file; return {}; } }, shell:{ openExternal:async () => {}, openPath:async () => {} }, safeStorage:{},
@@ -154,6 +155,7 @@ function harness(options = {}) {
       request:async (base,route,body,timeoutMs) => options.request ? options.request(base,route,body,timeoutMs) : options.storageWrite&&route.startsWith('/api/workspace-data/')?options.storageWrite.promise:{} },
     './storage.cjs':{ prepare:async (project,base,_choose,_progress,request) => {if(options.storageWrite)await request(base,'/api/workspace-data/open',{});return project;} },
     './chrome.cjs':{ windowOptions:() => ({}) }, './tabs.cjs':{ WorkspaceTabs:Tabs },
+    './appearance.cjs':{ Appearance:class { async load() { return this.state(); } state() { return { mode:'system', dark:false, stored:false }; } async set(mode) { return { mode, dark:mode === 'dark', stored:true }; } } },
     './menu.cjs':require('../src/menu.cjs'), './login-shell.cjs':{ readLoginShellPath:() => options.loginPath.promise },
     './python.cjs':python,
     './activity-preview.cjs':{ ActivityPreview:Preview }, './permissions.cjs':{ installPermissions() {} },
@@ -161,7 +163,7 @@ function harness(options = {}) {
     './tool-updates.cjs':{ ToolUpdates:Tools }, './crew-updates.cjs':{ CrewUpdates:Updates },
     './admin.cjs':{ Administrator:class {} }, './operations.cjs':{ OperationsClient:class { close() {} } },
     './product.cjs':require('../src/product.cjs'),
-    './launch-settings.cjs':{ LaunchSettings, relaunchArgs:() => [] },
+    './launch-settings.cjs':{ LaunchSettings, relaunchArgs:() => [], rememberPort:async () => false },
     './remote-backends.cjs':{ RemoteBackends:class { constructor(file) { calls.remoteFile = file; } async credential(id) { return { id, token:'t'.repeat(43) }; } } }
   };
   const sandbox = { require:name => Object.hasOwn(modules,name) ? modules[name] : require(name), __dirname:path.join(__dirname,'../src'),

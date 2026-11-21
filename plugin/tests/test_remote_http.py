@@ -1,3 +1,4 @@
+import tests  # Install the production-service connection guard.
 import http.client
 from http.server import BaseHTTPRequestHandler
 import os

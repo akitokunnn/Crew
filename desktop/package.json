@@ -1,6 +1,6 @@
 {
   "name": "crew-desktop",
-  "version": "0.3.17",
+  "version": "0.3.18",
   "description": "Native Crew workspace launcher",
   "author": "Crew contributors",
   "license": "UNLICENSED",
@@ -8,7 +8,7 @@
   "main": "src/main.cjs",
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/*.test.cjs",
+    "test": "node --require ./test/fixtures/canonical-tmp.cjs --test test/*.test.cjs",
     "check:version": "node --test test/version-sync.test.cjs",
     "prebuild": "npm run check:version",
     "build": "node scripts/icon.cjs && electron-builder --win zip portable nsis --x64",
