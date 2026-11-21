@@ -909,7 +909,8 @@ class InstallAndCliTests(CoreCase):
         home = self.base / "posix-home"
         home.mkdir()
         install._launchers(home, only_missing=False, windows=False)
-        python = shlex.quote(Path(sys.executable).resolve().as_posix())
+        # The stable path Python started from, not a Homebrew Cellar path that `brew upgrade` deletes.
+        python = shlex.quote(Path(sys.executable).absolute().as_posix())
         shim = home / "bin" / "python"
         self.assertEqual(shim.read_text(encoding="utf-8"), '#!/bin/sh\nexec ' + python + ' "$@"\n')
         self.assertFalse((home / "bin" / "crew.exe").exists())

@@ -118,7 +118,7 @@ for line in sys.stdin:
         send({'method':'turn/completed','params':{'threadId':'thread-fixture','turn':{'id':target,'status':'completed','items':[]}}})
     elif method == 'initialize':
         send({'id':message['id'],'result':{}})
-    elif method == 'skills/extraRoots/set':
+    elif method in ('skills/extraRoots/set', 'thread/name/set'):
         send({'id':message['id'],'result':{}})
     elif method == 'thread/start':
         cwd = params['cwd']
@@ -231,13 +231,19 @@ for line in sys.stdin:
         self.assertTrue(any('Crew未接通此类请求，未得到用户授权' in e.get('text', '') for e in running.journal.events))
         self.assertEqual(running.pending_approvals(), [])
 
-    def start_http(self, running):
-        server = web.create_server(self.home, self.plugin, port=0, cwd=self.root, agents_provider=lambda: [],
-            claude_root=self.base / 'claude', codex_root=self.base / 'codex', runs_file=self.base / 'runs.json')
+    def start_http(self, running, key='worker'):
+        # 轮询线程在 create_server 内就启动，第一轮会拍“重启遗留”快照；先登记本服务已持有的
+        # 会话，否则快的机器（如 Mac）上它会被当成被打断的工作去续接，并在写锁内等待其输出排空。
+        start = web.Service.start
+        def registered_start(service):
+            service.chat.processes[key] = running
+            start(service)
+        with mock.patch.object(web.Service, 'start', registered_start):
+            server = web.create_server(self.home, self.plugin, port=0, cwd=self.root, agents_provider=lambda: [],
+                claude_root=self.base / 'claude', codex_root=self.base / 'codex', runs_file=self.base / 'runs.json')
         thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .02})
         thread.start()
         self.assertTrue(server.service.agents_ready.wait(5))
-        server.service.chat.processes['worker'] = running
         def close():
             server.shutdown()
             server.server_close()
@@ -300,9 +306,7 @@ for line in sys.stdin:
         self.addCleanup(running.close)
         client = self.clients[-1]
         running.send('One bounded task', 'initial')
-        server, request = self.start_http(running)
-        server.service.chat.processes.clear()
-        server.service.chat.processes[execution['id']] = running
+        server, request = self.start_http(running, key=execution['id'])
         result, done = self.pending(running, client)
         identity = running.pending_approvals()[0]['id']
         with closing(store.connect(self.home)) as conn:

@@ -9,6 +9,7 @@
 const fs = require('node:fs/promises'), path = require('node:path'), assert = require('node:assert/strict');
 const { spawn } = require('node:child_process'), http = require('node:http');
 const desktop = path.resolve(__dirname, '..'), root = path.dirname(desktop);
+const { defaultPython } = require('../src/python.cjs');
 const output = process.env.CREW_REMOTE_BACKEND_OUTPUT || path.join(root, 'Temp', 'remote-backend');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(test, label, timeout = 30000) { const end = Date.now() + timeout; while (Date.now() < end) { const value = await test(); if (value) return value; await pause(80); } throw Error('Timed out: ' + label); }
@@ -66,7 +67,7 @@ finally:
     let fixture, info, buffer = '', fixtureError = '';
     const records = [], phases = [];
     try {
-      fixture = spawn('python', ['-u', '-c', fixtureSource], { cwd:root, env, windowsHide:true, stdio:['pipe', 'pipe', 'pipe'] });
+      fixture = spawn(defaultPython(), ['-u', '-c', fixtureSource], { cwd:root, env, windowsHide:true, stdio:['pipe', 'pipe', 'pipe'] });
       fixture.stderr.on('data', data => { fixtureError += data; process.stderr.write(data); });
       fixture.stdout.on('data', data => { buffer += data; let end; while ((end = buffer.indexOf('\n')) >= 0) { const line = buffer.slice(0, end); buffer = buffer.slice(end + 1); try { const item = JSON.parse(line); records.push(item); if (item.url) info = item; } catch { /* Python diagnostics */ } } });
       await until(() => { if (fixture.exitCode !== null) throw Error('Fixture exited: ' + fixtureError); return info; }, 'isolated host Service');

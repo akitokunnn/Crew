@@ -1,4 +1,5 @@
 """Storage V2 primitives use temporary homes and never open the legacy database."""
+import tests  # Install the production-service connection guard.
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import hashlib

@@ -93,7 +93,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(state["project"]["theme"], "celadon")
         self.assertEqual(state["themes"], themes.THEMES)
         self.assertEqual(state["channel"], {"unread": 0, "latest_id": 0, "digesting": False, "digest_error": None, "digest_id": None})
-        self.assertEqual(state["limits"], {"claude": {"five_hour": None, "seven_day": None}, "codex": None})
+        self.assertEqual(state["limits"], {"claude": {"five_hour": None, "seven_day": None, "budget": None}, "codex": None})
         self.assertEqual(state['goals'], [])
         self.assertEqual(state['native_approvals'], [])
         leader = state["leaders"][0]
@@ -120,6 +120,18 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(landing["channel"], {"unread": 0, "latest_id": 0, "digesting": False, "digest_error": None, "digest_id": None})
         for key in ("leaders", "members", "decisions", "attention", "goals"):
             self.assertEqual(landing[key], [])
+
+    def test_claude_api_budget_replaces_subscription_quota_until_cleared(self):
+        code, error, _ = self.request("/api/claude-budget", {"budget": {"amount_usd": -1, "cycle": "monthly", "start": None}})
+        self.assertEqual(code, 400, error)
+        code, saved, _ = self.request("/api/claude-budget", {"budget": {"amount_usd": 200, "cycle": "monthly", "start": None}})
+        self.assertEqual(code, 200, saved)
+        budget = self.state()["limits"]["claude"]["budget"]
+        self.assertEqual(budget, saved["budget"])
+        self.assertEqual((budget["amount_usd"], budget["spent_usd"], budget["remaining_usd"]), (200.0, 0.0, 200.0))
+        code, cleared, _ = self.request("/api/claude-budget", {"budget": None})
+        self.assertEqual((code, cleared), (200, {"budget": None}))
+        self.assertIsNone(self.state()["limits"]["claude"]["budget"])
 
     def test_archive_http_authorizes_caller_before_changing_or_stopping_identity(self):
         board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])

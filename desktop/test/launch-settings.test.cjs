@@ -3,6 +3,7 @@ const {test}=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os');
 const {LaunchSettings,readSync,relaunchArgs,save,shape,rememberPort}=require('../src/launch-settings.cjs');
 const core=require('../src/core.cjs');
+const PYTHON=require('../src/python.cjs').defaultPython();
 const {CrewUpdates}=require('../src/crew-updates.cjs');
 const {OperationsClient}=require('../src/operations.cjs');
 const {promisify}=require('node:util'),{execFile}=require('node:child_process');
@@ -253,7 +254,7 @@ test('real isolated HOME migration repairs missing saved source and Python using
   const home=path.join(root,'old HOME'),target=path.join(root,'新 HOME'),helper=path.resolve(__dirname,'../../plugin'),settingsPath=path.join(root,'preferences','launch-settings.json');
   const env={...process.env,PYTHONPATH:helper,PYTHONIOENCODING:'utf-8'};
   for(const name of Object.keys(env))if(name.toUpperCase().startsWith('CREW_')||['CLAUDE_CODE_SESSION_ID','CODEX_THREAD_ID'].includes(name.toUpperCase()))delete env[name];
-  await promisify(execFile)('python',['-c','from crew import install,store;import sys;install.install(sys.argv[1],sys.argv[2]);store.connect(sys.argv[1]).close()',home,helper],{cwd:helper,env,windowsHide:true});
+  await promisify(execFile)(PYTHON,['-c','from crew import install,store;import sys;install.install(sys.argv[1],sys.argv[2]);store.connect(sys.argv[1]).close()',home,helper],{cwd:helper,env,windowsHide:true});
   await fs.writeFile(path.join(home,'important-note.txt'),'原始历史与文档保留');
   const config={home,backendDir:path.join(root,'missing-custom-source'),helperBackendDir:helper,bundledBackendDir:helper,backendSource:'custom',python:'missing-crew-python',port:0,launchSettingsPath:settingsPath};
   const backend={owned:false,url:'http://127.0.0.1:0',child:null};
@@ -261,8 +262,8 @@ test('real isolated HOME migration repairs missing saved source and Python using
   let relaunched=0;
   const manager=new LaunchSettings(config,{backend,updates,operations:new OperationsClient(config),bundledBackend:helper,
     request:()=>{throw Error('No service or model may be started in this fixture');},onApplied:()=>{relaunched++;}});
-  const result=await manager.apply({settings:{mode:'local',home:target,source:'bundled',backend_directory:helper,service_url:'',port:0,python:'python',remote_backend:''},home_action:'copy'});
-  assert.equal(result.ok,true);assert.equal(relaunched,1);assert.equal(readSync(settingsPath).python,'python');assert.equal(readSync(settingsPath).source,'bundled');
+  const result=await manager.apply({settings:{mode:'local',home:target,source:'bundled',backend_directory:helper,service_url:'',port:0,python:PYTHON,remote_backend:''},home_action:'copy'});
+  assert.equal(result.ok,true);assert.equal(relaunched,1);assert.equal(readSync(settingsPath).python,PYTHON);assert.equal(readSync(settingsPath).source,'bundled');
   assert.equal(await fs.readFile(path.join(home,'important-note.txt'),'utf8'),'原始历史与文档保留');assert.equal(await fs.readFile(path.join(target,'important-note.txt'),'utf8'),'原始历史与文档保留');
   assert.equal(await fs.readFile(path.join(home,'crew.db')).then(value=>value.subarray(0,15).toString()),'SQLite format 3');
   assert.equal((await new OperationsClient({home:target,backendDir:helper}).request('snapshot')).busy,false);

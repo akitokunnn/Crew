@@ -1,4 +1,5 @@
 """Interface facts, stale addresses and the portable fallback, without OS changes."""
+import tests  # Install the production-service connection guard.
 import ctypes
 import os
 import socket

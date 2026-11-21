@@ -1,4 +1,5 @@
 """Real complete-package round trips and hostile inputs use isolated repositories."""
+import tests  # Install the production-service connection guard.
 from contextlib import closing
 import hashlib
 import json
