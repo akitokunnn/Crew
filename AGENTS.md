@@ -55,7 +55,7 @@ git log -3 --oneline
 
 ## 本地试用与推送
 
-用户于 2026-11-07 改定日常流程：**修好的改动先合进 live 直接试用，攒一批再合进 main；不再每个分支各开 PR、各跑 CI，也不为修 bug 打包重装。** 合入 live 不用等用户点头。2026-11-21 起 Windows 和 Mac 同时开发：live 在 GitHub 上有一份两台电脑共用，每台电脑各有自己的 live 工作目录和正式 Crew。2026-11-23 用户改定：**平时只合进本机 live 先看效果，不推送；用户说“推live”才推到 GitHub；用户说“合并main”“出包”才合进 main、打包。** 脚本是 `scripts/live.py`，两边命令相同（Windows 上旧的 `scripts\live.ps1` 只是转发）。
+用户于 2026-11-07 改定日常流程：**修好的改动先合进 live 直接试用，攒一批再合进 main；不再每个分支各开 PR、各跑 CI，也不为修 bug 打包重装。** 合入 live 不用等用户点头。2026-11-21 起 Windows 和 Mac 同时开发：live 在 GitHub 上有一份两台电脑共用，每台电脑各有自己的 live 工作目录和正式 Crew。2026-11-23 用户改定：**用户说“同步一下云端改动”才拉远端；平时只合进本机 live 先看效果，不推送；用户说“推live”才推到 GitHub；用户说“合并main”“出包”才合进 main、打包。** 脚本是 `scripts/live.py`，两边命令相同（Windows 上旧的 `scripts\live.ps1` 只是转发）。
 
 | 用途 | Windows | Mac | 分支 |
 | --- | --- | --- | --- |
@@ -64,7 +64,8 @@ git log -3 --oneline
 | 每个需求一个分支一个工作目录，从 live 拉出 | `C:\Tools\Crew-fixes\<任务>` | `~/Tools/Crew-fixes/<任务>` | `claude/<任务>` 等 |
 
 - **第一次在一台电脑上开发：** `python scripts/live.py setup` 建 live 工作目录，再在 Crew“设置 → 连接与目录”里把后台程序来源指向其中的 `plugin`。
-- **开工：** `git worktree add <Crew-fixes>/<任务> -b claude/<任务> live`。要用另一台电脑推上来的改动时先 `python scripts/live.py sync`（只拉不推）。
+- **用户说“同步一下云端改动”时：** `python scripts/live.py sync`（只拉不推），把另一台电脑推的 live 和别人直接合进 main 的提交并进本机 live，没有新提交就直说。用户不说就不同步，开工时也不必每次检查远端。
+- **开工：** `git worktree add <Crew-fixes>/<任务> -b claude/<任务> live`。
 - **修完合入本机 live：** 跑与改动相关的验证 → 检查 diff → 提交 → 在分支里 `git merge live`（有冲突就在分支里解决并复验）→ `python scripts/live.py merge <分支>`。脚本只快进合入本机 live，不推送；分支没包含最新 live 时会停下说明。另一台电脑推上来的分支写成 `origin/<分支>`。不开 PR，合入前不为平台差异跑 CI。把脚本给出的生效方式（刷新、退出并重开 Crew，或要等打包）原样告诉用户。合入 live 即本次交付完成，随后清理该任务的工作目录和本地分支；不动其他 AI 正在使用的工作树或未提交改动。
 - **用户说“推live”时：** `python scripts/live.py push`，先并入另一台电脑推的 live，再把本机 live 推上去，并列出这次推的提交。然后检查这批提交里有没有路径、进程、shell、文件锁、换行、权限、快捷键这类有平台差异的改动；有就 `gh workflow run tests.yml --ref live` 让 CI 在 Windows 和 macOS 上各跑一遍核心测试，把结果告诉用户，失败的用新的修复提交走同样流程。纯页面、文案和与平台无关的逻辑不必跑。推完提醒另一台电脑 `sync` 后才有。
 - **两台电脑改到同一处：** `push` 或 `sync` 发现远端 live 和本机 live 冲突时会停下并给出步骤：建 `claude/sync-live` 工作目录，在里面合并 `origin/live`、解决并验证后再 `merge` 回 live、再 `push`。不在 live 里直接解冲突，不强推。
