@@ -55,7 +55,7 @@ git log -3 --oneline
 
 ## 本地试用与推送
 
-用户于 2026-11-07 改定日常流程：**修好的改动先合进 live 直接试用，攒一批再合进 main；不再每个分支各开 PR、各跑 CI，也不为修 bug 打包重装。** 合入 live 不用等用户点头。2026-11-21 起 Windows 和 Mac 同时开发：**live 放在 GitHub 上两台电脑共用**，每台电脑各有自己的 live 工作目录和正式 Crew，合入后推上去，另一台 `sync` 即可试用。脚本是 `scripts/live.py`，两边命令相同（Windows 上旧的 `scripts\live.ps1` 只是转发）。
+用户于 2026-11-07 改定日常流程：**修好的改动先合进 live 直接试用，攒一批再合进 main；不再每个分支各开 PR、各跑 CI，也不为修 bug 打包重装。** 合入 live 不用等用户点头。2026-11-21 起 Windows 和 Mac 同时开发：live 在 GitHub 上有一份两台电脑共用，每台电脑各有自己的 live 工作目录和正式 Crew。2026-11-23 用户改定：**平时只合进本机 live 先看效果，不推送；用户说“推live”才推到 GitHub；用户说“合并main”“出包”才合进 main、打包。** 脚本是 `scripts/live.py`，两边命令相同（Windows 上旧的 `scripts\live.ps1` 只是转发）。
 
 | 用途 | Windows | Mac | 分支 |
 | --- | --- | --- | --- |
@@ -64,14 +64,14 @@ git log -3 --oneline
 | 每个需求一个分支一个工作目录，从 live 拉出 | `C:\Tools\Crew-fixes\<任务>` | `~/Tools/Crew-fixes/<任务>` | `claude/<任务>` 等 |
 
 - **第一次在一台电脑上开发：** `python scripts/live.py setup` 建 live 工作目录，再在 Crew“设置 → 连接与目录”里把后台程序来源指向其中的 `plugin`。
-- **开工：** 先 `python scripts/live.py sync` 拉另一台电脑推的改动，再 `git worktree add <Crew-fixes>/<任务> -b claude/<任务> live`。
-- **修完合入 live：** 跑与改动相关的验证 → 检查 diff → 提交 → 在分支里 `git fetch origin && git merge origin/live`（有冲突就在分支里解决并复验）→ `python scripts/live.py merge <分支>`。脚本会先拉远端 live，再快进合入并推上去；分支没包含最新 live 时会停下说明。另一台电脑推上来的分支写成 `origin/<分支>`。不开 PR。把脚本给出的生效方式（刷新、退出并重开 Crew，或要等打包）原样告诉用户，并提醒另一台电脑 `sync` 后才有。合入 live 即本次交付完成，随后清理该任务的工作目录和本地分支；不动其他 AI 正在使用的工作树或未提交改动。
-- **两台电脑改到同一处：** 脚本发现远端 live 和本地 live 冲突时会停下并给出步骤：建 `claude/sync-live` 工作目录，在里面合并 `origin/live`、解决并验证后再 `merge` 回 live。不在 live 里直接解冲突，不强推。
-- **验证另一个系统：** 改了路径、进程、shell、文件锁、换行、权限、快捷键这类有平台差异的代码，合入前在本机跑相关测试，再 `gh workflow run tests.yml --ref <分支>` 让 CI 在 Windows 和 macOS 上各跑一遍核心测试，通过后再合入。纯页面、文案和与平台无关的逻辑不必。
-- **用户说“推”时：** 先在 live 跑一遍下文“验证与交付”里的全量测试，失败先修复并合入 live 再继续；然后 `python scripts/live.py ship` 开一个批次 PR，CI 在 Windows 和 macOS 都通过后合进 main，live 与主目录随之对齐。哪台电脑推都行，但要装好并登录 GitHub CLI（`gh`）。用户说跳过 CI 时加 `--skip-ci`。main 要求走 PR、禁止强推和删除，不强制人工 review；不伪造检查，不用管理员旁路。
-- **别人直接合进 main 的改动**也由 `sync` 并进 live。`python scripts/live.py status` 查看 live 里待推送的提交，以及本机和远端 live 的差异。
+- **开工：** `git worktree add <Crew-fixes>/<任务> -b claude/<任务> live`。要用另一台电脑推上来的改动时先 `python scripts/live.py sync`（只拉不推）。
+- **修完合入本机 live：** 跑与改动相关的验证 → 检查 diff → 提交 → 在分支里 `git merge live`（有冲突就在分支里解决并复验）→ `python scripts/live.py merge <分支>`。脚本只快进合入本机 live，不推送；分支没包含最新 live 时会停下说明。另一台电脑推上来的分支写成 `origin/<分支>`。不开 PR，合入前不为平台差异跑 CI。把脚本给出的生效方式（刷新、退出并重开 Crew，或要等打包）原样告诉用户。合入 live 即本次交付完成，随后清理该任务的工作目录和本地分支；不动其他 AI 正在使用的工作树或未提交改动。
+- **用户说“推live”时：** `python scripts/live.py push`，先并入另一台电脑推的 live，再把本机 live 推上去，并列出这次推的提交。然后检查这批提交里有没有路径、进程、shell、文件锁、换行、权限、快捷键这类有平台差异的改动；有就 `gh workflow run tests.yml --ref live` 让 CI 在 Windows 和 macOS 上各跑一遍核心测试，把结果告诉用户，失败的用新的修复提交走同样流程。纯页面、文案和与平台无关的逻辑不必跑。推完提醒另一台电脑 `sync` 后才有。
+- **两台电脑改到同一处：** `push` 或 `sync` 发现远端 live 和本机 live 冲突时会停下并给出步骤：建 `claude/sync-live` 工作目录，在里面合并 `origin/live`、解决并验证后再 `merge` 回 live、再 `push`。不在 live 里直接解冲突，不强推。
+- **用户说“合并main”时：** 先在 live 跑一遍下文“验证与交付”里的全量测试，失败先修复并合入 live 再继续；然后 `python scripts/live.py ship` 推 live、开一个批次 PR，CI 在 Windows 和 macOS 都通过后合进 main，live 与主目录随之对齐。哪台电脑做都行，但要装好并登录 GitHub CLI（`gh`）。用户说跳过 CI 时加 `--skip-ci`。main 要求走 PR、禁止强推和删除，不强制人工 review；不伪造检查，不用管理员旁路。
+- **别人直接合进 main 的改动**也由 `sync` 并进 live。`python scripts/live.py status` 查看 live 里待合进 main 的提交，以及本机和远端 live 的差异。
 - live 只前进不回退：不在里面直接改、不 reset、不强推。合入后发现问题，用新的修复提交或 `git revert` 走同样流程。
-- **打包**只在攒了桌面外壳改动或要发版时做，从与 main 对齐后的 live 打，步骤见 [Crew 桌面更新](docs/DESKTOP_UPDATES.md)；Mac 安装包由 `mac-build.yml` 构建。
+- **用户说“出包”时打包**，平时不打。从与 main 对齐后的 live 打，步骤见 [Crew 桌面更新](docs/DESKTOP_UPDATES.md)；Mac 安装包由 `mac-build.yml` 构建。
 - 外部贡献不按此流程自动接收，仍需核对来源、需求范围和实际改动。只有缺少必要权限、检查持续失败等确实无法自行解决的阻碍，才告知用户具体原因和已完成工作；测试失败先修复，不带着已知问题合入。
 
 ## 代码入口
@@ -97,11 +97,11 @@ git log -3 --oneline
 ## 验证与交付
 
 - **按改动规模验证，默认从简。** 文档、提示词、文案、样式及局部小改动，审阅 diff 并按需直接确认受影响效果即可；不默认新增测试、跑自动化测试、smoke test、全套回归或构建打包，也不反复执行已有充分证据的检查。
-- **较大功能改动才扩大验证。** 只有较大功能改动或用户明确要求时，才按影响范围安排 smoke test 及构建验收；全量测试不在单个修复里跑，只在用户说“推”时跑（见下文）；局部修复如需测试，只选能直接证明修复有效的最小范围。不要为了合入机械追加检查。
+- **较大功能改动才扩大验证。** 只有较大功能改动或用户明确要求时，才按影响范围安排 smoke test 及构建验收；全量测试不在单个修复里跑，只在用户说“合并main”时跑（见下文）；局部修复如需测试，只选能直接证明修复有效的最小范围。不要为了合入机械追加检查。
 - **UI 设计、布局、样式与交互调整走 `prove-it`。** 在真实浏览器或桌面中查看改动后的界面，涉及交互时走一遍受影响流程，保留必要截图并说明实际观察结果；新做的显示和交互还要在约 375px 手机宽度和约 760px 窄屏下各看一遍。能用不算完成：截图后按挑剔的设计眼光再查一遍美观和可见性——和周围组件的设计语言是否一致、用户扫一眼能否注意到、对比度够不够、会不会被面板遮挡，浅色和深色主题都要看；不直接套用不相干组件的现成样式了事。纯视觉调整不强制新增自动化测试；使用该 skill 时仍遵守本节的验证范围。
 - 合入 live 后用户会直接在正式 Crew 里试用；这是对局部验证的补充，不是跳过必要验证的理由。
 
-确需运行测试时，在测试进程中清理继承的 `CREW_SESSION_ID`、`CLAUDE_CODE_SESSION_ID`，避免把外层身份带入临时白板，不改用户的持久环境。以下全量命令只在用户说“推”、把 live 整批合进 main 时跑一次；日常修复和合入 live 都不跑：
+确需运行测试时，在测试进程中清理继承的 `CREW_SESSION_ID`、`CLAUDE_CODE_SESSION_ID`，避免把外层身份带入临时白板，不改用户的持久环境。以下全量命令只在用户说“合并main”、把 live 整批合进 main 时跑一次；日常修复和合入 live 都不跑：
 
 ```powershell
 Push-Location plugin
@@ -121,7 +121,7 @@ npm --prefix desktop test
 
 测试引导会在 macOS 上把临时目录换成真实路径（默认的 `/var` 是符号链接，Crew 拒绝符号链接的 HOME），并让 Git 报错保持英文，不用手动设环境变量。新测试模块开头保留 `import tests`。
 
-CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`python tests/ci_core.py`，在 `plugin` 下执行），不含边缘载体和计时敏感的测试，只在批次 PR 上跑一次（也可手动触发）。合入 live 前只跑改动相关的模块，改动跨模块也一样（存储、`web.py`、`chat.py`、运行时启动或 `test_shell` 这类共用测试基类，都只挑直接相关的测试）。上面的全量只在用户说“推”、把 live 整批合进 main 时跑。新增核心流程的测试模块时加进清单。CI 的核心清单和桌面、网页测试在 Windows 和 macOS 上都跑；只能在一个系统上跑的用例用 `skipIf` 写清原因，不能让另一个系统长期红着。
+CI 只跑核心清单 [plugin/tests/ci_core.txt](plugin/tests/ci_core.txt)（`python tests/ci_core.py`，在 `plugin` 下执行），不含边缘载体和计时敏感的测试，只在批次 PR 上跑一次（也可手动触发）。合入 live 前只跑改动相关的模块，改动跨模块也一样（存储、`web.py`、`chat.py`、运行时启动或 `test_shell` 这类共用测试基类，都只挑直接相关的测试）。上面的全量只在用户说“合并main”、把 live 整批合进 main 时跑。新增核心流程的测试模块时加进清单。CI 的核心清单和桌面、网页测试在 Windows 和 macOS 上都跑；只能在一个系统上跑的用例用 `skipIf` 写清原因，不能让另一个系统长期红着。
 
 写测试时照顾两个系统：路径用 `pathlib` 或按平台给夹具，不写死 `C:\`；快捷键提示用 `window.CrewBrowser.keyboardShortcut()`（Mac 显示 ⌘，Windows 显示 Ctrl），断言不写死 `Ctrl+`；窗口尺寸断言容忍 ±1 像素（高分屏取整）。
 

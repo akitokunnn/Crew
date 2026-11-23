@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Crew 本地试用与推送，Windows 和 Mac 共用。
 
-live 是放在 GitHub 上、两台电脑共用的集成分支。每台电脑各有一个 live 工作目录，
-正式 Crew 的“后台程序来源”指向其中的 plugin。修好的分支合入 live 并推上去，
-另一台电脑 sync 一下就能试用；攒一批再用一个 PR 合进 main。
+live 是两台电脑共用的集成分支，GitHub 上有一份。每台电脑各有一个 live 工作目录，
+正式 Crew 的“后台程序来源”指向其中的 plugin。修好的分支先合入本机 live 直接试用，
+用户说“推live”时再 push 上去，另一台电脑 sync 一下就能试用；用户说“合并main”时用一个 PR 合进 main。
 
 用法（在任意 Crew 工作目录执行）：
   python scripts/live.py setup          第一次在这台电脑上建 live 工作目录
   python scripts/live.py status         live 里还没合进 main 的提交，以及和远端 live 的差异
-  python scripts/live.py merge <分支>    把修好的分支合入 live 并推上去；本地分支或 origin/<分支> 都行
-  python scripts/live.py sync           拉另一台电脑推的 live 和别人直接合进 main 的提交
-  python scripts/live.py ship [--skip-ci]  开批次 PR 合进 main；默认等 CI 通过再合并
+  python scripts/live.py merge <分支>    把修好的分支合入本机 live（不推送）；本地分支或 origin/<分支> 都行
+  python scripts/live.py push           “推live”：并入远端 live 的新提交后把本机 live 推上去
+  python scripts/live.py sync           拉另一台电脑推的 live 和别人直接合进 main 的提交（不推送）
+  python scripts/live.py ship [--skip-ci]  “合并main”：开批次 PR 合进 main；默认等 CI 通过再合并
 
 live 默认在 Windows 的 C:\\Tools\\Crew-live、Mac 的 ~/Tools/Crew-live，可用 CREW_LIVE 改。
 """
@@ -105,7 +106,8 @@ def absorb(live, upstream, label):
         work = fixes_dir(live) / 'sync-live'
         raise Failure(f'{label}的新提交和本地 live 冲突。先开一个工作目录解决：\n'
                       f'  git worktree add "{work}" -b claude/sync-live live\n'
-                      f'在里面 git merge {upstream}，解决冲突并验证后提交，再运行 python scripts/live.py merge claude/sync-live')
+                      f'在里面 git merge {upstream}，解决冲突并验证后提交，再运行 python scripts/live.py merge claude/sync-live；'
+                      f'要推到 GitHub 时再运行 python scripts/live.py push')
     git(live, 'merge', '--no-edit', upstream)
     return True
 
@@ -114,6 +116,13 @@ def pull(live):
     """Bring in what the other computer pushed to live."""
     git(live, 'fetch', '--quiet', REMOTE)
     return absorb(live, f'{REMOTE}/{LIVE}', '远端 live（另一台电脑推的）')
+
+
+def unpushed(live):
+    """Commits on local live that remote live does not have yet."""
+    if not ok(live, 'rev-parse', '--verify', '--quiet', f'{REMOTE}/{LIVE}'):
+        return git(live, 'log', '--oneline', '--no-merges', f'{REMOTE}/{BASE}..HEAD')
+    return git(live, 'log', '--oneline', '--no-merges', f'{REMOTE}/{LIVE}..HEAD')
 
 
 def push(live):
@@ -196,22 +205,40 @@ def setup(repo):
 
 
 def merge(live, branch):
+    """Fast-forward local live to a finished branch; pushing waits for the user's “推live”."""
     assert_live(live)
     before = git(live, 'rev-parse', 'HEAD')
-    git(live, 'fetch', '--quiet', REMOTE)
     ref = f'refs/heads/{branch}' if ok(live, 'rev-parse', '--verify', '--quiet', f'refs/heads/{branch}') else branch
     if not ok(live, 'rev-parse', '--verify', '--quiet', ref + '^{commit}'):
-        raise Failure(f'找不到分支 {branch}；另一台电脑推的分支写成 {REMOTE}/<分支>。')
-    # A branch that already merged remote live (such as a resolved conflict) carries it in itself.
-    if not ok(live, 'merge-base', '--is-ancestor', f'{REMOTE}/{LIVE}', ref):
-        pull(live)
+        if branch.startswith(f'{REMOTE}/'):
+            git(live, 'fetch', '--quiet', REMOTE)
+        if not ok(live, 'rev-parse', '--verify', '--quiet', ref + '^{commit}'):
+            raise Failure(f'找不到分支 {branch}；另一台电脑推的分支写成 {REMOTE}/<分支>。')
     if not ok(live, 'merge-base', '--is-ancestor', 'HEAD', ref):
-        raise Failure(f'{branch} 还没包含 live 的最新内容。在这个分支的工作目录里先执行 '
-                      f'git fetch {REMOTE} && git merge {REMOTE}/{LIVE}，解决冲突、跑相关测试并推送，再重新运行本命令。')
+        raise Failure(f'{branch} 还没包含本机 live 的最新内容。在这个分支的工作目录里先执行 '
+                      f'git merge {LIVE}，解决冲突、跑相关测试并提交，再重新运行本命令。')
     git(live, 'merge', '--ff-only', ref)
-    print(f'已把 {branch} 合入 live。')
-    push(live)
+    print(f'已把 {branch} 合入本机 live（还没推到 GitHub，用户说“推live”时再推）。')
     show_effect(live, before, git(live, 'rev-parse', 'HEAD'))
+
+
+def push_live(live):
+    """“推live”: take in what the other computer pushed, then publish local live."""
+    assert_live(live)
+    before = git(live, 'rev-parse', 'HEAD')
+    if pull(live):
+        print('先并入了另一台电脑推的 live。')
+        show_effect(live, before, git(live, 'rev-parse', 'HEAD'))
+    pending = unpushed(live)
+    if not pending and ok(live, 'rev-parse', '--verify', '--quiet', f'{REMOTE}/{LIVE}') and \
+            git(live, 'rev-parse', 'HEAD') == git(live, 'rev-parse', f'{REMOTE}/{LIVE}'):
+        print('本机 live 与远端 live 一致，没有要推的提交。')
+        return
+    if pending:
+        print(f'推送这些提交（{len(pending.splitlines())} 个）：')
+        for line in pending.splitlines():
+            print('  ' + line)
+    push(live)
 
 
 def sync(live):
@@ -221,8 +248,10 @@ def sync(live):
         print('已拉取另一台电脑推的 live。')
     if absorb(live, f'{REMOTE}/{BASE}', f'远端 {BASE} '):
         print(f'已把远端 {BASE} 的新提交并进 live。')
-    push(live)
     show_effect(live, before, git(live, 'rev-parse', 'HEAD'))
+    pending = unpushed(live)
+    if pending:
+        print(f'本机 live 有 {len(pending.splitlines())} 个提交还没推到 GitHub，用户说“推live”时运行 push。')
 
 
 def status(live):
@@ -235,7 +264,7 @@ def status(live):
         if behind:
             print(f'远端 live 有 {behind} 个这台电脑还没拉的提交，运行 sync。')
         if ahead:
-            print(f'本地 live 有 {ahead} 个还没推上去的提交，运行 sync 推上去。')
+            print(f'本机 live 有 {ahead} 个还没推上去的提交，用户说“推live”时运行 push。')
     if shutil.which('gh'):
         url = gh('pr', 'list', '--head', LIVE, '--base', BASE, '--state', 'open', '--json', 'url', '--jq', '.[0].url',
                  check=False).stdout.strip()
@@ -298,7 +327,7 @@ def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(errors='replace')
     parser = argparse.ArgumentParser(description='Crew 本地试用与推送（Windows 和 Mac 共用）')
-    parser.add_argument('command', nargs='?', default='status', choices=('setup', 'status', 'merge', 'sync', 'ship'))
+    parser.add_argument('command', nargs='?', default='status', choices=('setup', 'status', 'merge', 'push', 'sync', 'ship'))
     parser.add_argument('branch', nargs='?')
     parser.add_argument('--skip-ci', action='store_true')
     args = parser.parse_args(argv)
@@ -312,6 +341,8 @@ def main(argv=None):
             if not args.branch:
                 raise Failure('用法：python scripts/live.py merge <分支>')
             merge(live, args.branch)
+        elif args.command == 'push':
+            push_live(live)
         elif args.command == 'sync':
             sync(live)
         elif args.command == 'status':
