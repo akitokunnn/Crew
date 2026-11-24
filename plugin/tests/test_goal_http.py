@@ -1780,7 +1780,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(folders, {final['id']: {'path': os.path.abspath(os.path.join(root, 'docs')), 'declared': True},
                                    legacy['id']: {'path': os.path.abspath(os.path.join(root, 'deliveries', 'v1')), 'declared': False, 'inferred': True},
                                    stage['id']: {'path': os.path.abspath(root), 'declared': False}})
-        with mock.patch('crew.web.sys.platform', 'win32'), mock.patch('crew.web.os.startfile', create=True) as opener:
+        with mock.patch('crew.web.sys.platform', 'win32'), mock.patch('crew.native_folders.open_windows') as opener:
             for report in (final, legacy, stage):
                 code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': report['id']})
                 self.assertEqual((code, result), (200, {'ok': True, **folders[report['id']]}))
@@ -1793,6 +1793,9 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': final['id']})
             self.assertEqual((code, result.get('error')), (400, '交付文件夹不存在：' + folders[final['id']]['path']))
             self.assertEqual(opener.call_count, 3, 'a missing folder or a foreign report opens nothing')
+            opener.side_effect = OSError('等待资源管理器打开文件夹超时')
+            code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': stage['id']})
+            self.assertEqual((code, result.get('error')), (400, '等待资源管理器打开文件夹超时'))
         with mock.patch('crew.web.sys.platform', 'darwin'), mock.patch('crew.web.subprocess.Popen') as popen:
             code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': stage['id']})
             self.assertEqual((code, result), (200, {'ok': True, **folders[stage['id']]}))

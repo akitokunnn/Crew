@@ -27,7 +27,7 @@ from .service_lock import HomeServiceLock
 from . import appearance, codex_client, member_defaults, operations_chat, operations_settings
 from . import connections, session_delete, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
-from . import codex_binding, personal, native_home, native_skills
+from . import codex_binding, personal, native_folders, native_home, native_skills
 from . import host_workspace, remote_access, remote_http
 from . import report_preview, event_sounds, reading_context
 from . import domains
@@ -1304,7 +1304,10 @@ class Service:
             if sys.platform == "darwin":
                 subprocess.Popen(["open", folder['path']])
             elif sys.platform == "win32":
-                os.startfile(folder['path'])
+                try:
+                    native_folders.open_windows(folder['path'])
+                except OSError as exc:
+                    raise board.BoardError(str(exc)) from exc
             else:
                 raise board.BoardError("当前系统暂不支持从 Crew 打开文件夹")
             return {'ok': True, **folder}
