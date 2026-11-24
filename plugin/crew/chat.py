@@ -787,7 +787,7 @@ class Manager:
                                                      native_missing=current.resumed_native, runtime="claude")
                                 if current.maintenance is None:
                                     current.native_lost = current.resumed_native
-                            if current.pending_compact and current.process.poll() is None:
+                            if current.pending_compact and current.stop_reason is None and current.process.poll() is None:
                                 current.pending_compact = False
                                 self._send(session_id, "/compact")
                         if (current.execution is not None and current.maintenance is None
@@ -1766,6 +1766,8 @@ class Manager:
         identity = str(uuid.uuid4())
         request = {"type": "control_request", "request_id": identity, "request": {"subtype": subtype, **fields}}
         with current.input_lock:
+            if current.stop_reason is not None:
+                return
             current.control_requests[identity] = subtype
             current.process.stdin.write(json.dumps(request) + "\n")
             current.process.stdin.flush()
@@ -2061,31 +2063,32 @@ class Manager:
         with self._close_lock:
             with self.lock:
                 self.closed = True
-                closing_processes = list(self.processes.values())
+                closing_processes = list(self.processes.items())
                 for journal in self.journals.values():
                     with journal.condition:
                         journal.condition.notify_all()
 
-            def close_current(current):
+            def close_current(key, current):
                 if current.process.poll() is None:
-                    if getattr(current, "runtime", "claude") == "codex":
-                        with current.input_lock:
-                            current.stop_reason = 'service_close'
-                        current.close()
-                    else:
-                        with current.input_lock:
-                            current.stop_reason = 'service_close'
+                    is_codex = getattr(current, "runtime", "claude") == "codex"
+                    with current.input_lock:
+                        runtime_recovery.record_service_close(current, key)
+                        current.stop_reason = current.stop_reason or 'service_close'
+                        if not is_codex:
                             try:
                                 current.process.stdin.close()
                             except OSError:
-                                current.stop_reason = None
+                                if current.stop_reason == 'service_close':
+                                    current.stop_reason = None
                                 raise
+                    if is_codex:
+                        current.close()
                 current.reader.join(timeout=1)
 
             errors = []
             if closing_processes:
                 with ThreadPoolExecutor(max_workers=min(8, len(closing_processes)), thread_name_prefix='crew-native-close') as pool:
-                    pending = [(current, pool.submit(close_current, current)) for current in closing_processes]
+                    pending = [(current, pool.submit(close_current, key, current)) for key, current in closing_processes]
                     for current, result in pending:
                         try:
                             result.result()

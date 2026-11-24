@@ -215,6 +215,67 @@ class RuntimeRecoveryTests(ShellFixture, unittest.TestCase):
         self.poll(100)
         self.assertIs(self.manager.processes[key], previous)
 
+    def test_graceful_restart_resumes_working_leaders_and_members_in_place(self):
+        for runtime in ('claude', 'codex'):
+            for role in ('leader', 'member'):
+                for task in (False, True):
+                    with self.subTest(runtime=runtime, role=role, task=task):
+                        key, sid, goal_id = self.start_scope(runtime, role, task)
+                        original = self.native_id(key, sid, goal_id)
+                        for _ in range(4):
+                            previous = self.manager.processes[key]
+                            self.restart_manager()
+                            self.assertTrue(previous.reader_done.wait(3))
+                            self.poll(0)
+                            self.assertTrue(self.manager.busy(key))
+                            self.assertEqual(self.native_id(key, sid, goal_id), original)
+                            if task:
+                                self.assertEqual(self.manager.goal_controller.current(self.conn, goal_id, sid)['id'], key)
+                            self.assertEqual(sum('Crew 服务重启' in text for text in self.native_input_texts(key)), 1)
+                            restarted = self.manager.processes[key]
+                            self.poll(100)
+                            self.assertIs(self.manager.processes[key], restarted)
+                        self.finish_turn(key)
+
+    def test_graceful_restart_skips_work_that_finishes_while_closing(self):
+        for runtime in ('claude', 'codex'):
+            with self.subTest(runtime=runtime):
+                key, _, _ = self.start_scope(runtime, task=True)
+                current = self.manager.processes[key]
+                if runtime == 'codex':
+                    owner, complete = current.client, current.client.finish
+                else:
+                    owner = current.process.stdin
+                    def complete():
+                        current.process.emit({'type': 'result', 'is_error': False})
+                close = owner.close
+
+                def finish_then_close():
+                    complete()
+                    close()
+
+                with mock.patch.object(owner, 'close', side_effect=finish_then_close):
+                    self.restart_manager()
+                self.assertTrue(current.reader_done.wait(3))
+                self.poll(0)
+                self.assertFalse(self.manager.running(key))
+
+    def test_graceful_restart_preserves_waiting_paused_and_uncertain_work(self):
+        for runtime in ('claude', 'codex'):
+            with self.subTest(runtime=runtime):
+                _, _, waiting_goal = self.start_scope(runtime, task=True)
+                _, _, paused_goal = self.start_scope(runtime, task=True)
+                uncertain, _, _ = self.start_scope(runtime)
+                self.manager.journal(uncertain).emit('input_delivery', message_id='uncertain', status='unknown')
+                goals.transition(self.conn, waiting_goal, 'waiting_user')
+                goals.request_pause(self.conn, paused_goal)
+                self.restart_manager()
+                self.poll(0)
+                self.poll(100)
+                self.assertEqual(self.manager.processes, {})
+                self.assertFalse(self.manager.runtime_recovery.pending)
+                self.assertEqual(self.manager.journal(uncertain).inputs['uncertain']['status'], 'unknown')
+
     def test_goal_pause_and_cancel_block_pending_recovery(self):
         for control in ('pause', 'cancel'):
             with self.subTest(control=control):

@@ -14,10 +14,20 @@ def _scope(current, key):
             'native_id': current.thread_id if current.runtime == 'codex' else getattr(current, 'native_id', key)}
 
 
+def _working(current):
+    return (current.journal.status == 'working' and current.stop_reason is None
+            and not current.interrupt_requested and current.maintenance is None)
+
+
+def record_service_close(current, key):
+    if _working(current):
+        current.journal.emit('runtime_recovery', status='restart_pending', scope=_scope(current, key),
+                             reason='service_close')
+
+
 def record_exit(current, key):
     """Persist the interrupted scope before the reader reports its output drained."""
-    interrupted = (current.journal.status == 'working' and current.stop_reason is None
-                   and not current.interrupt_requested and current.maintenance is None)
+    interrupted = _working(current)
     if interrupted:
         current.journal.emit('runtime_recovery', status='interrupted', scope=_scope(current, key))
     current.unexpected_exit = interrupted
@@ -29,14 +39,22 @@ def record_interrupt(current, key):
         current.journal.emit('runtime_recovery', status='cancelled', scope=_scope(current, key), reason='user_interrupt')
 
 
+def _turn_finished(events):
+    return any(event['type'] == 'turn_result' and event.get('status') in ('completed', 'failed') for event in events)
+
+
 def _progress(journal):
-    """Only completed work or new explicit user input resets consecutive failures."""
+    """Keep uncertain inputs across service restarts, with a fresh budget for deliberate resume."""
     attempts, uncertain = 0, False
+    count_attempts = True
     for event in reversed(journal.events):
         if event['type'] == 'turn_result' and event.get('success'):
             break
-        if event['type'] == 'runtime_recovery' and event['status'] == 'attempting':
-            attempts += 1
+        if event['type'] == 'runtime_recovery':
+            if event.get('reason') == 'service_close' and event['status'] in ('restart_pending', 'resumed'):
+                count_attempts = False
+            elif event['status'] == 'attempting' and count_attempts:
+                attempts += 1
         if event['type'] == 'input_delivery':
             latest = journal.inputs.get(event['message_id'], event)
             uncertain |= latest['status'] in ('unknown', 'submitted')
@@ -69,7 +87,8 @@ class Controller:
             raise board.BoardError('会话已停止、归档、移除或工作区已停用')
         if scope['execution_id']:
             execution = goals.get_execution(conn, key)
-            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key, allow_discussion=True)
+            gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key,
+                                        allow_discussion=pending['reason'] != 'service_close')
             if not gate['allowed']:
                 raise board.BoardError(gate['reason'])
             mapping = {'runtime': execution['runtime'], 'native_id': next(
@@ -88,9 +107,12 @@ class Controller:
         receipt = journal.inputs.get(event.get('message_id'))
         identity = (event.get('message_id') if not receipt or receipt['status'] != 'accepted' else None)
         due = event.get('retry_at')
+        reason = event.get('reason') if event['status'] != 'resumed' else None
+        restart = event['status'] == 'restart_pending'
+        deadline = now if restart else now + dt.timedelta(seconds=BACKOFF_SECONDS[min(attempts, 2)])
         pending = {'current': current, 'scope': event['scope'], 'seq': len(journal.events),
-                   'identity': identity or 'crash:' + key + ':' + str(len(journal.events)),
-                   'due': store.parse_iso(due) if due else now + dt.timedelta(seconds=BACKOFF_SECONDS[min(attempts, 2)])}
+                   'identity': identity or ('restart:' if restart else 'crash:') + key + ':' + str(len(journal.events)),
+                   'reason': reason, 'due': store.parse_iso(due) if due else deadline}
         self.pending[key] = pending
         self.startup_exclusions.add(key)
         if self.manager.auto_candidates is not None:
@@ -101,9 +123,10 @@ class Controller:
             self._finish(key, 'exhausted', '载体连续失败，3 次自动续回额度已用完。请检查上方真实错误后手动继续。')
         else:
             journal.emit('runtime_recovery', status='queued', attempt=attempts + 1, scope=pending['scope'],
-                         message_id=pending['identity'], retry_at=pending['due'].isoformat())
-            journal.emit('error', text='原生载体意外退出，将在至少 %s 秒后尝试第 %s/3 次自动续回。' %
-                         (BACKOFF_SECONDS[attempts], attempts + 1))
+                         message_id=pending['identity'], retry_at=pending['due'].isoformat(), reason=reason)
+            if reason != 'service_close':
+                journal.emit('error', text='原生载体意外退出，将在至少 %s 秒后尝试第 %s/3 次自动续回。' %
+                             (BACKOFF_SECONDS[attempts], attempts + 1))
 
     def recover(self, conn, agents, now, runtime=None):
         """Caller holds Manager.lock and its background work admission."""
@@ -124,9 +147,12 @@ class Controller:
                 self.startup_exclusions.add(key)
                 if self.manager.auto_candidates is not None:
                     self.manager.auto_candidates.pop(key, None)
-                if event['status'] not in ('interrupted', 'queued', 'attempting', 'retrying', 'resumed'):
+                if event['status'] not in ('restart_pending', 'interrupted', 'queued', 'attempting', 'retrying', 'resumed'):
                     continue
                 if event['status'] == 'resumed' and journal.status != 'working':
+                    continue
+                if event['status'] in ('restart_pending', 'queued') and event.get('reason') == 'service_close' and (
+                        _turn_finished(journal.events[event['seq']:])):
                     continue
                 self._queue(key, event, None, now)
         for key, current in list(self.manager.processes.items()):
@@ -156,23 +182,31 @@ class Controller:
             if now < pending['due'] or scope['runtime'] == 'claude' and native_id in live:
                 continue
             journal = self.manager.journal(key)
-            if any(event['type'] == 'message' and event['id'] != pending['identity']
-                   for event in journal.events[pending['seq']:]):
+            later = journal.events[pending['seq']:]
+            if any(event['type'] == 'message' and event['id'] != pending['identity'] for event in later):
                 self.pending.pop(key)
+                continue
+            reason = pending['reason']
+            if reason == 'service_close' and _turn_finished(later):
+                self.pending.pop(key)
+                journal.emit('runtime_recovery', status='cancelled', scope=scope, reason='turn_finished')
                 continue
             attempts, uncertain = _progress(journal)
             if uncertain:
                 self._finish(key, 'blocked', '自动续回已停止。原生接收结果未知，请核对会话后明确继续。')
                 continue
             attempt = attempts + 1
-            journal.emit('runtime_recovery', status='attempting', attempt=attempt, message_id=pending['identity'], scope=scope)
+            journal.emit('runtime_recovery', status='attempting', attempt=attempt, message_id=pending['identity'],
+                         scope=scope, reason=reason)
             try:
                 # Keep the exact execution and native binding. Normal goal dispatch
                 # may rotate context and create a generation, which is inappropriate here.
                 authorization = (goal_mode.context(conn, session['_execution']['goal_id']) if scope['execution_id']
                                  else trust_mode.context(conn, scope['session_id']))
+                interruption = ('Crew 服务重启，本轮未完成，继续同一个原生会话' if reason == 'service_close'
+                                else '原生载体意外退出，本轮未完成，继续同一个原生会话')
                 continuation = behavior_prompts.text(conn, 'resume_nudge', session_id=scope['session_id'],
-                                                     values={'reason': '原生载体意外退出，本轮未完成，继续同一个原生会话'})
+                                                     values={'reason': interruption})
                 text = continuation
                 if authorization:
                     text = authorization + '\n\n' + text
@@ -191,9 +225,10 @@ class Controller:
                     pending['current'] = self.manager.processes.get(key)
                     pending['due'] = now + dt.timedelta(seconds=BACKOFF_SECONDS[attempt])
                     journal.emit('runtime_recovery', status='retrying', attempt=attempt, scope=scope,
-                                 message_id=pending['identity'], retry_at=pending['due'].isoformat())
+                                 message_id=pending['identity'], retry_at=pending['due'].isoformat(), reason=reason)
                     journal.emit('error', text='第 %s/3 次自动续回失败（%s），至少 %s 秒后重试。' %
                                  (attempt, detail, BACKOFF_SECONDS[attempt]))
                 continue
-            journal.emit('runtime_recovery', status='resumed', attempt=attempt, message_id=pending['identity'], scope=scope)
+            journal.emit('runtime_recovery', status='resumed', attempt=attempt, message_id=pending['identity'],
+                         scope=scope, reason=reason)
             self.pending.pop(key)
