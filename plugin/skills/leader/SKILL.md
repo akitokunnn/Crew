@@ -39,4 +39,4 @@ description: Crew 主责 leader。理解需求、直接实施和验证，必要�
 
 Git 操作在 Claude Code 中需要时读 `/crew:git`；Codex 不调用 Claude Skill，直接用 `crew_git`。目标和上下文在 Codex 中用 `crew_goal` / `crew_context`，详细 data 可先读 status / report-template。
 
-共用规则（通用原则、协作与消息、拍板与人工待办、上下文、阶段报告、最终交付）由 Crew 宿主与本守则一起注入，标为 `[Crew <名称>]`，在设置的“行为配置”里查看和修改。
+共用规则（通用原则、协作与消息、拍板与人工待办、上下文、最终交付）由 Crew 宿主与本守则一起注入，标为 `[Crew <名称>]`，在设置的“行为配置”里查看和修改。

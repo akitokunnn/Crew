@@ -63,9 +63,7 @@ SPECS = (
          'CC / Codex · 目标执行', '目标执行进程启动时', ('crew_name', 'session_id')),
     Spec('goal_discussion', '交付后讨论', 'delivery', '已交付任务里只回答问题、需要修改时先登记 amend 的约束。',
          'CC / Codex · 交付后讨论执行', '交付后讨论的每轮输入'),
-    Spec('report', '阶段报告', 'delivery', '持续更新的阶段报告、阶段发布和成果版本快照。',
-         'CC / Codex · 全部角色', _BUNDLED),
-    Spec('final_report', '最终交付报告', 'delivery', '最终交付报告页面（含具体案例和帮助理解的可视化）的写法、预览、验收记录和提交，是唯一的最终交付规则。',
+    Spec('final_report', '最终交付报告', 'delivery', '最终交付的报告写法、验证和提交。',
          'CC / Codex · leader、Git 助手', _BUNDLED),
     Spec('finish_reminder', '收尾检查提醒', 'delivery', 'leader 一轮结束但任务仍在推进中、又没有提交收尾时，提醒它 finish 或说明在等什么。',
          'CC / Codex · leader 目标执行', '任务停在推进中且本轮结束后，每轮最多一次', ('title',)),
@@ -109,9 +107,9 @@ LABELS = {spec.key: spec.label for spec in SPECS}
 KEYS = tuple(SPEC)
 ROLE_KEYS = ('leader', 'member', 'assistant', 'git')
 BUNDLES = {
-    'leader': ('common', 'leader', 'collaboration', 'human_input', 'context', 'report', 'final_report', 'language'),
-    'member': ('common', 'member', 'member_boundary', 'collaboration', 'human_input', 'context', 'report', 'language'),
-    'git': ('common', 'git', 'collaboration', 'human_input', 'context', 'report', 'final_report', 'language'),
+    'leader': ('common', 'leader', 'collaboration', 'human_input', 'context', 'final_report', 'language'),
+    'member': ('common', 'member', 'member_boundary', 'collaboration', 'human_input', 'context', 'language'),
+    'git': ('common', 'git', 'collaboration', 'human_input', 'context', 'final_report', 'language'),
     'assistant': ('common', 'assistant', 'context', 'language'),
 }
 _PLACEHOLDER = re.compile(r'\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}')

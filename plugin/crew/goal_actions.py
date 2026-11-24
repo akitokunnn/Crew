@@ -20,29 +20,26 @@ CREATE_HELP = ('create 的 data 字段：title（标题）、request（用户原
 
 def report_template(conn, goal_id):
     goal = goals.get(conn, goal_id)
-    return {'goal_id': goal_id, 'round': goal['current_round'], 'requirement_version': goal['requirement_version'],
-            'outcome': 'awaiting_acceptance', 'summary': '', 'delivered': [], 'unresolved': [],
-            'user_test': [], 'user_todos': [], 'user_decisions': [],
-            'acceptance': [{'criterion_id': item['id'], 'status': 'unverified',
-                            'evidence': [{'label': '', 'reference': ''}]}
-                           for item in goal['requirements']['acceptance']],
-            'examples': [{'kind': 'actual', 'input': '', 'expected': '', 'actual': '', 'conclusion': ''}],
-            'document_html': '', 'folder': '', 'artifacts': [], 'tradeoffs': [], 'follow_up': '',
-            'investment': {'elapsed_seconds': None, 'usage': None, 'roles': [{'role': 'leader', 'contribution': ''}]},
-            '_help': {'outcome': '最终交付用 awaiting_acceptance，用户确认后点「通过」任务才完成，AI 提交 completed 会被拒绝；failed|cancelled 如实结束，progress 发布阶段成果',
-                      'verification': 'awaiting_acceptance/completed 要给出验证证据：AI 实际做了什么验证写在 acceptance[].evidence（结果用 status），没覆盖的边界写进 unresolved；能自己验证的先自己验证，用户验收是最终确认',
-                      'user_test': '可选对象数组 [{step,expected}]：只写需要用户亲自确认的步骤（如只有用户能做的设备、账号或体验检查），没有就留 []',
-                      'user_todos': '可选对象数组 [{title,detail}]；系统收尾成功时自动创建归属 leader 的人工待办，不挂在目标页',
-                      'user_decisions': '可选对象数组 [{question,options:[],recommendation:null,why}]；系统收尾成功时自动创建归属 leader 的非阻塞待拍板',
-                      'document_html': 'awaiting_acceptance/completed 必填：让人方便理解和阅读的自包含 HTML 页面（最多 512 KiB），至少一个具体案例和一处帮助理解的可视化（图表、流程或结构图、对比表、截图等），第一屏先写结论和逐条问题（哪里不行、影响什么、怎么处理），提交前用 report.preview 至少预览一次；写法按 [Crew final_report]。progress/failed/cancelled 可省略，省略时 Crew 按结构化字段生成。CLI 用 finish --html-file <报告.html> 读取正文；Codex 在 report.document_html 传同样内容',
-                      'folder': 'awaiting_acceptance/completed 必填：本轮交付物所在的文件夹，相对工作区根目录或绝对路径，提交时必须已存在；用户在报告上点「打开文件夹」直接打开它。填离交付物最近的那一层，分散时填最近的共同上级；交付只在代码里时填所在仓库或 worktree 的目录；不要图省事填工作区根目录 .',
-                      'acceptance_status': 'passed|failed|unverified|simulated',
-                      'acceptance': 'awaiting_acceptance/completed 必须覆盖全部标准；progress/failed/cancelled 可只列部分或省略，编号仍须合法且不重复',
-                      'evidence': '对象数组 [{label:做了什么验证及结果, reference:在哪回查}]，例如 [{"label":"跑相关测试 12 项全过","reference":"artifacts/test.txt"}]；未验证可用 []，不能填字符串数组',
-                      'examples': '对象数组 [{kind,input,expected,actual,conclusion}]：awaiting_acceptance/completed 至少一个具体案例（输入或操作→期望→实际→结论），与页面里的案例一致；kind 为 actual|illustrative，示意不能冒充实测；其他 outcome 可留 []',
-                      'text_arrays': 'delivered/unresolved/artifacts/tradeoffs 都是文本数组',
-                      'investment': '可省略；提供时校验数值，未知 elapsed_seconds/usage 保留 null，不估作零；角色格式 {role,contribution}；缓存用量单列',
-                      'submit': '最终交付用 crew goal finish --file <报告.json> --html-file <报告.html>；阶段成果把 outcome 改 progress，用 crew goal report.publish --request-id <稳定标识> --file <报告.json>，继续工作；passed/failed 必须有实际证据'}}
+    return {
+        'goal_id': goal_id, 'round': goal['current_round'], 'requirement_version': goal['requirement_version'],
+        'outcome': 'awaiting_acceptance',
+        'summary': '',
+        'document_html': '',
+        'acceptance': [
+            {'criterion_id': item['id'], 'criterion': item['title'], 'status': 'unverified', 'evidence': []}
+            for item in goal['requirements']['acceptance']
+        ],
+        '_help': {
+            'outcome': 'awaiting_acceptance 交给用户验收；failed 或 cancelled 用于如实结束。',
+            'acceptance': '覆盖全部标准。passed / failed 写 evidence [{label, reference}]，说明如何验证及在哪复查。',
+            'unresolved': '有 unverified / simulated 时，用字符串数组说明验证边界。',
+            'document_html': '自包含 HTML，最多 512 KiB。Crew CLI 可用 finish --html-file <报告.html>。',
+            'folder': '有交付文件时填写所在目录（相对工作区或绝对路径）。',
+            'user_test': '需要用户实测时填写 [{step, expected}]。',
+            'human_input': '可选 user_todos [{title, detail}]、user_decisions [{question, options, recommendation, why}]。',
+            'examples': '可选 [{kind: actual|illustrative, input, expected, actual, conclusion}]。',
+        },
+    }
 
 
 def _person(conn, project, value):

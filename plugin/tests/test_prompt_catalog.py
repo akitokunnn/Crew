@@ -79,6 +79,7 @@ class PromptCatalogTests(unittest.TestCase):
         value = prompt_api.get(self.home, {'action': 'list'})
         self.assertEqual([group['id'] for group in value['groups']], list(prompts.GROUPS))
         self.assertEqual([item['key'] for item in value['items']], list(prompts.KEYS))
+        self.assertNotIn('report', {item['key'] for item in value['items']})
         item = next(row for row in value['items'] if row['key'] == 'final_report')
         self.assertEqual(item['group'], 'delivery')
         self.assertEqual(item['file'], 'plugin/prompts/final_report.md')

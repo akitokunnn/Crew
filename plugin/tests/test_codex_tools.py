@@ -481,10 +481,9 @@ class CodexToolsTests(unittest.TestCase):
         self.assertNotIn("binds it to your current task", specs["crew_doc_add"])
         self.assertNotIn("Ordinary Q&A", specs["crew_goal"])
         self.assertIn("follows the injected role rules", specs["crew_goal"])
-        self.assertIn("readable self-contained HTML page in data.report.document_html", specs["crew_goal"])
-        self.assertIn("at least one concrete example", specs["crew_goal"])
-        self.assertIn("final version of the page with report.preview at least once before finish", specs["crew_goal"])
-        self.assertNotIn("optional in data.report.document_html", specs["crew_goal"])
+        self.assertIn("self-contained document_html", specs["crew_goal"])
+        self.assertIn("[Crew final_report] for writing and preview", specs["crew_goal"])
+        self.assertNotIn("report.publish", specs["crew_goal"])
 
     def test_unknown_tools_and_bad_inputs_do_not_mutate_the_board(self):
         for name, args in (("shell", {"command": "anything"}), ("crew_task", {"text": ""}),

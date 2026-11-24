@@ -198,10 +198,12 @@ class GoalActionTests(GoalFixture):
     def test_template_is_self_describing_and_finish_waits_for_real_idle(self):
         goal = self.goal()
         template = self.dispatch('report-template', {'goal_id': goal['id']}, host=False)
-        self.assertEqual(set(template['acceptance'][0]['evidence'][0]), {'label','reference'})
+        self.assertEqual(template['acceptance'][0], {
+            'criterion_id': 'short', 'criterion': 'The new short speaker is identified',
+            'status': 'unverified', 'evidence': [],
+        })
         self.assertEqual(template['outcome'], 'awaiting_acceptance')
         self.assertIn('awaiting_acceptance', template['_help']['outcome'])
-        self.assertIn('role', template['investment']['roles'][0])
         goals.transition(self.conn, goal['id'], 'running')
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
         goals.set_execution_status(self.conn, execution['id'], 'running')

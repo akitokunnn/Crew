@@ -693,9 +693,6 @@ def validate_report(conn, goal_id, data):
     examples = result.get('examples', [])
     if not isinstance(examples, builtins.list):
         raise board.BoardError('examples 必须为对象数组')
-    if final and not examples:
-        raise board.BoardError('最终交付至少需要一个具体 example：{"kind":"actual|illustrative","input":"输入或操作","expected":"期望",'
-                               '"actual":"实际","conclusion":"结论"}，标明实际或示意，与页面里的案例一致')
     result['examples'] = examples
     for example in examples:
         if not isinstance(example, dict) or example.get('kind') not in ('actual', 'illustrative'):
@@ -705,16 +702,8 @@ def validate_report(conn, goal_id, data):
     if outcome == 'completed' and (any(item['status'] != 'passed' for item in entries)
                                    or not any(item['kind'] == 'actual' for item in examples)):
         raise board.BoardError('未验证、模拟或仅示意 example 不能宣称目标达标')
-    # Final delivery (user ruling 2026-11-15) is a readable HTML page with a concrete case and a visualization, plus
-    # the AI's own verification: what was checked, where to recheck it, and what stayed uncovered. The page's
-    # charts are required by the rules and error text only; HTML is not parsed for them. The generated fallback
-    # page cannot carry task-specific cases or charts, so it serves progress/failed/cancelled only.
     if final and not result.get('document_html', '').strip():
-        raise board.BoardError('最终交付需要一个让人方便理解和阅读的 HTML 页面：放在 document_html（CLI 用 finish --html-file），'
-                               '页面里至少一个具体案例和一处帮助理解的可视化（图表、流程或结构图、对比表、截图等），'
-                               '提交前用 report.preview 预览确认可读')
-    if final and not any(item.get('evidence') for item in entries):
-        raise board.BoardError('最终交付需要验证证据：至少一项验收标准在 evidence 写明 AI 实际做了什么验证、结果在哪回查')
+        raise board.BoardError('最终交付需要 HTML 正文 document_html（CLI 用 finish --html-file）')
     if final and any(item['status'] in ('unverified', 'simulated') for item in entries) and not result['unresolved']:
         raise board.BoardError('有未验证或模拟验证的标准时，unresolved 必须写明没覆盖的边界')
     investment = result.get('investment', {})
@@ -788,10 +777,7 @@ def report_folder(root, data):
 def save_report(conn, goal_id, data, *, now=None):
     goal, validated = _row(conn, goal_id), validate_report(conn, goal_id, data)
     # Checked when a delivery is submitted only: saved reports stay valid if the folder later moves.
-    if validated['outcome'] in ('awaiting_acceptance', 'completed'):
-        if not validated.get('folder'):
-            raise board.BoardError('最终交付需要 folder：本轮交付物所在的文件夹（相对工作区根目录或绝对路径），'
-                                   '用户在报告上点「打开文件夹」直接打开它；交付只在代码里时填所在仓库或 worktree 的目录')
+    if validated['outcome'] in ('awaiting_acceptance', 'completed') and validated.get('folder'):
         root = board.project(conn, goal['project'])['root']
         folder = report_folder(root, validated)['path']
         if not os.path.isdir(folder):
