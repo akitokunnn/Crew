@@ -583,10 +583,15 @@
   const sideFits = () => $("main").clientWidth - sideWidth() - 36 >= 430;
   function positionAttention() {
     const host = $("chat-head"); if (!host) return;
-    const panel = $("chat-attention"), main = $("main"), rect = host.getBoundingClientRect();
-    const width = sideWidth(), top = Math.max(12, Math.min(rect.bottom + 10, window.innerHeight - 230));
+    const panel = $("chat-attention"), main = $("main"), width = sideWidth();
+    panel.style.width = `${width}px`;
+    const toolbar = host.querySelector(":scope > .head"), scopeBar = toolbar?.nextElementSibling;
+    // Keep the scope bar visible when it extends into the floating panel's column.
+    const overlapsScope = scopeBar && scopeBar.getBoundingClientRect().right > panel.getBoundingClientRect().left;
+    const anchor = overlapsScope ? host : toolbar ?? host;
+    const top = Math.max(12, Math.min(anchor.getBoundingClientRect().bottom + 10, window.innerHeight - 230));
     const height = Math.max(180, window.innerHeight - top - 14);
-    panel.style.width = `${width}px`; panel.style.top = `${top}px`; panel.style.height = `${height}px`;
+    panel.style.top = `${top}px`; panel.style.height = `${height}px`;
     panel.style.setProperty("--attention-max-height", `${rightOpen ? Math.max(90, Math.min(320, height * .46)) : Math.max(90, height - 66)}px`);
     const slot = $("attention-slot");
     slot.style.height = attentionVisible ? `${$("side-attention-section").getBoundingClientRect().height + 12}px` : "0px";
