@@ -1299,7 +1299,8 @@ class Service:
                     raise board.BoardError('报告不属于此目标')
                 folder = goals.report_folder(board.project(conn, project)['root'], report['data'])
             if not os.path.isdir(folder['path']):
-                raise board.BoardError(('交付文件夹' if folder['declared'] else '工作区文件夹') + '不存在：' + folder['path'])
+                name = '交付文件夹' if folder['declared'] or folder.get('inferred') else '工作区文件夹'
+                raise board.BoardError(name + '不存在：' + folder['path'])
             if sys.platform == "darwin":
                 subprocess.Popen(["open", folder['path']])
             elif sys.platform == "win32":

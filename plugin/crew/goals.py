@@ -766,11 +766,20 @@ def render_report(conn, goal_id, data):
 
 
 def report_folder(root, data):
-    """Where a report's 「打开文件夹」 leads: the delivery folder the AI declared, else the workspace root.
-
-    A relative folder is read against the current workspace root, so it follows a workspace move."""
+    """Resolve a declared folder or the first existing workspace artifact in a saved report."""
+    root = os.path.abspath(root)
     declared = data.get('folder') or ''
-    return {'path': os.path.abspath(os.path.join(root, declared)), 'declared': bool(declared)}
+    if declared:
+        return {'path': os.path.abspath(os.path.join(root, declared)), 'declared': True}
+    for artifact in data.get('artifacts', ()):
+        path = os.path.abspath(os.path.join(root, artifact))
+        if not store.is_under(path, root):
+            continue
+        if os.path.isdir(path):
+            return {'path': path, 'declared': False, 'inferred': True}
+        if os.path.isfile(path):
+            return {'path': os.path.dirname(path), 'declared': False, 'inferred': True}
+    return {'path': root, 'declared': False}
 
 
 @atomic

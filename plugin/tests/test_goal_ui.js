@@ -208,6 +208,7 @@ test("every report offers 打开文件夹 on this computer only, naming the fold
   assert(readerText(h.main.appended).includes('data-goal-act="open-folder" data-goal-id="a" data-report-id="r1"'),"the report reader offers it too");
   await h.click("open-folder",{goalId:"a",reportId:"r1"});
   assert.equal(JSON.stringify(h.calls.at(-1)),JSON.stringify({url:"/api/goals/report/folder",data:{goal_id:"a",report_id:"r1"}}));
+  assert(h.module.folderButton("a","r0",{path:"out",declared:false,inferred:true}).includes('title="打开交付文件夹：out"'),"an older report can open the resolved artifact folder");
   assert(h.module.folderButton("a","r0",{path:"C:\work",declared:false}).includes('title="报告没有登记交付文件夹，打开工作区：C:\work"'),"an older report says it opens the workspace");
   h.window.CrewAccess={local_desktop:false};h.client.sync("leader","a");await settle();
   assert(!surfaces(h).includes("open-folder"),"a phone never shows a button for a folder on this computer");

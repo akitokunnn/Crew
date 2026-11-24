@@ -1764,24 +1764,35 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             goal_ids.append(created['goal']['id'])
         root = board.project(self.conn, 'demo')['root']
         os.makedirs(os.path.join(root, 'deliveries', 'v1'))
-        final = goals.save_report(self.conn, goal_ids[0], {**self.report(), 'folder': 'deliveries/v1'})
-        stage = goals.save_report(self.conn, goal_ids[0], {**{key: value for key, value in self.report().items() if key != 'folder'}, 'outcome': 'progress'})
+        stage_data = {key: value for key, value in self.report().items() if key != 'folder'}
+        stage = goals.save_report(self.conn, goal_ids[0], {**stage_data, 'outcome': 'progress'})
+        artifacts = ['missing/report.html', 'deliveries/v1/report.html', 'docs/notes.md']
+        for artifact in artifacts[1:]:
+            target = os.path.join(root, artifact)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, 'w', encoding='utf-8') as file:
+                file.write('Saved delivery')
+        legacy = goals.save_report(self.conn, goal_ids[0], {**stage_data, 'artifacts': artifacts})
+        final = goals.save_report(self.conn, goal_ids[0], {**stage_data, 'artifacts': artifacts, 'folder': 'docs'})
         code, detail, _ = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal_ids[0]}))
         self.assertEqual(code, 200, detail)
         folders = {item['id']: item['folder'] for item in detail['reports']}
-        self.assertEqual(folders, {final['id']: {'path': os.path.abspath(os.path.join(root, 'deliveries', 'v1')), 'declared': True},
+        self.assertEqual(folders, {final['id']: {'path': os.path.abspath(os.path.join(root, 'docs')), 'declared': True},
+                                   legacy['id']: {'path': os.path.abspath(os.path.join(root, 'deliveries', 'v1')), 'declared': False, 'inferred': True},
                                    stage['id']: {'path': os.path.abspath(root), 'declared': False}})
         with mock.patch('crew.web.sys.platform', 'win32'), mock.patch('crew.web.os.startfile', create=True) as opener:
-            for report in (final, stage):
+            for report in (final, legacy, stage):
                 code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': report['id']})
                 self.assertEqual((code, result), (200, {'ok': True, **folders[report['id']]}))
-            self.assertEqual([call.args for call in opener.call_args_list], [(folders[final['id']]['path'],), (folders[stage['id']]['path'],)])
+            self.assertEqual([call.args for call in opener.call_args_list],
+                             [(folders[report['id']]['path'],) for report in (final, legacy, stage)])
             code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[1], 'report_id': final['id']})
             self.assertEqual((code, result.get('error')), (400, '报告不属于此目标'))
-            os.rmdir(os.path.join(root, 'deliveries', 'v1'))
+            os.remove(os.path.join(root, 'docs', 'notes.md'))
+            os.rmdir(os.path.join(root, 'docs'))
             code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': final['id']})
             self.assertEqual((code, result.get('error')), (400, '交付文件夹不存在：' + folders[final['id']]['path']))
-            self.assertEqual(opener.call_count, 2, 'a missing folder or a foreign report opens nothing')
+            self.assertEqual(opener.call_count, 3, 'a missing folder or a foreign report opens nothing')
         with mock.patch('crew.web.sys.platform', 'darwin'), mock.patch('crew.web.subprocess.Popen') as popen:
             code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': stage['id']})
             self.assertEqual((code, result), (200, {'ok': True, **folders[stage['id']]}))
