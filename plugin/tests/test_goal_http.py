@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 import tests
 from unittest import mock
-from crew import board, chat, codex_runtime, goals, hooks, messaging, personal, report_preview, runtimes, session_ops, store, web
+from crew import board, chat, codex_guard, codex_runtime, goals, hooks, messaging, personal, report_preview, runtimes, session_ops, store, web
 import test_chat_http as chat_helpers
 import test_codex_runtime as codex_helpers
 from test_shell import ShellFixture, PLUGIN, NOW
@@ -353,6 +353,99 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
 
     def test_codex_ai_task_starts_are_independent_and_retry_does_not_repeat_input(self):
         self.finite_agent_starts('codex')
+
+    def check_general_task_handoff(self, runtime):
+        if runtime == 'codex':
+            counter = iter(range(4))
+
+            def client(**options):
+                value = codex_helpers.FakeClient(**options)
+                value.thread_id = 'handoff-' + str(next(counter))
+                return value
+
+            patcher = mock.patch('crew.codex_runtime._ObservedClient', side_effect=client)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            runtimes.set(self.conn, 's3', 'codex', 'general-s3')
+
+        manager = self.server.service.chat
+        chat_url = '/api/chat/send?project=demo'
+        goal_url = '/api/goals/agent?project=demo'
+        code, value, _ = self.request(chat_url, {'session_id': 's3', 'text': 'Start both tasks.'})
+        self.assertEqual(code, 200, value)
+        general = manager.processes['s3']
+
+        def allowed(tool, inputs, execution_id=None):
+            current = manager.processes[execution_id] if execution_id else general
+            payload = {'cwd': str(self.project), 'tool_name': tool, 'tool_input': inputs}
+            if runtime == 'codex':
+                return codex_guard.check(self.home, 's3', {**payload, 'hook_event_name': 'PreToolUse',
+                    'session_id': current.thread_id}, execution_id) is None
+            with mock.patch('sys.stderr'):
+                return hooks.handle('guard', {**payload, 'session_id': getattr(current, 'native_id', 's3')}, self.home, PLUGIN,
+                    {'CREW_SESSION_ID': 's3', **({'CREW_EXECUTION_ID': execution_id} if execution_id else {})})[0] == 0
+
+        def shell(command, execution_id=None):
+            return allowed('Bash', {'command': command}, execution_id)
+
+        def edit(execution_id=None):
+            if runtime == 'codex':
+                patch = '*** Begin Patch\n*** Add File: inspection.txt\n+record\n*** End Patch\n'
+                return allowed('apply_patch', {'command': patch}, execution_id)
+            return allowed('Write', {'file_path': str(self.project / 'inspection.txt')}, execution_id)
+
+        independently_started = self.goal()
+        code, value, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': independently_started['id'], 'action': 'start'})
+        self.assertEqual(code, 200, value)
+        self.assertTrue(shell('python check_assets.py'))
+        self.assertTrue(edit())
+        payload = {'title': 'Audit assets', 'request': 'Check the assets.', 'acceptance': ['Record results'], 'start': True}
+        if runtime == 'codex':
+            result = general.client.kwargs['tool_handler']({'threadId': general.thread_id, 'turnId': general.client.turn_id,
+                'callId': 'start-audit', 'tool': 'crew_goal', 'arguments': {'action': 'create', 'data': payload}})
+            self.assertTrue(result['success'], result)
+            created = json.loads(result['contentItems'][0]['text'])
+        else:
+            code, created, _ = self.request(goal_url, {'actor_session_id': 's3', 'action': 'create', 'data': payload})
+            self.assertEqual(code, 200, created)
+        first = created['receipt']['execution_id']
+        self.assertTrue(manager.busy(first))
+        self.assertFalse(shell('python check_assets.py'))
+        self.assertFalse(edit())
+        self.assertTrue(shell('python check_assets.py', first))
+        self.assertTrue(edit(first))
+        self.assertTrue(shell('crew goal status'))
+        self.assertTrue(shell(f'python "{self.home / "crew.py"}" goal status'))
+        self.assertFalse(shell('crew goal status && python check_assets.py'))
+        self.assertTrue(manager.busy('s3'))
+
+        second = self.goal()
+        code, receipt, _ = self.request(goal_url, {'actor_session_id': 's3', 'action': 'start',
+            'data': {'goal_id': second['id']}})
+        self.assertEqual(code, 200, receipt)
+        self.assertTrue(manager.busy(receipt['execution_id']))
+        self.assertFalse(shell('python check_assets.py'))
+
+        if runtime == 'codex':
+            general.client.finish()
+        else:
+            self.finish_turn('s3', general.process)
+        code, value, _ = self.request(chat_url, {'session_id': 's3', 'text': 'Now do a separate short check.'})
+        self.assertEqual(code, 200, value)
+        self.assertTrue(shell('python check_assets.py'))
+        code, retry, _ = self.request(goal_url, {'actor_session_id': 's3', 'action': 'start',
+            'data': {'goal_id': second['id']}})
+        self.assertEqual(code, 200, retry)
+        self.assertTrue(retry['duplicate'])
+        self.assertTrue(shell('python check_assets.py'))
+        self.assertTrue(manager.busy(first))
+
+    def test_claude_goal_start_leaves_only_coordination_in_the_originating_turn(self):
+        self.check_general_task_handoff('claude')
+
+    def test_codex_goal_start_leaves_only_coordination_in_the_originating_turn(self):
+        self.check_general_task_handoff('codex')
 
     def coordinate_member_tasks(self, runtime):
         if runtime == 'codex':

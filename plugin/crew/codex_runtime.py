@@ -558,7 +558,8 @@ class CodexRunning:
         else:
             for path in approval['paths']:
                 reason = guard.check(self.home, {'session_id': self.session_id, 'cwd': approval['cwd'],
-                    'tool_name': 'Write', 'tool_input': {'file_path': path}})
+                    'tool_name': 'Write', 'tool_input': {'file_path': path}},
+                    execution_id=self.execution['id'] if self.execution else None)
                 if reason:
                     raise board.Conflict(reason)
 
@@ -625,6 +626,8 @@ class CodexRunning:
             self._approval_cancelled_turn = None
             self._started_turn_id = None
             with closing(store.connect(self.home)) as conn:
+                if self.execution is None:
+                    guard.clear_general_handoff(conn, self.session_id)
                 conn.execute("UPDATE sessions SET last_prompt=? WHERE session_id=?", ((text if display_text is None else display_text)[:200], self.session_id))
             self._status("working")
             try:
