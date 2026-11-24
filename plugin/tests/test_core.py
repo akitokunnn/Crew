@@ -725,8 +725,8 @@ class RuleTextTests(unittest.TestCase):
                 self.assertIn("HTML", content)
         leader = self.roles()[0][1]
         self.assertIn("第一次出现时，就在旁边用一句白话解释", leader)
-        self.assertIn("有适合的案例、图表或截图就优先用", leader)
-        self.assertIn("能用一张图讲得更简单、直白、清楚，就用图来讲", leader)
+        self.assertIn("篇幅、章节和排版由你按任务决定", leader)
+        self.assertIn("关键结论旁放最能说明它的证据", leader)
         member = self.roles()[1][1]
         self.assertIn("--kind result|blocker|decision", member)
         self.assertRegex(member, r"不再.*重复 report")
