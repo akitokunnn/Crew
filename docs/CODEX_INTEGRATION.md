@@ -45,6 +45,8 @@
 
 ## 明确边界
 
+- Crew 新开的 Codex leader 总对话使用官方独立 `codex-app-server` 的 `mcp` 会话来源，从 Codex 桌面默认列表中隐藏，继续使用已配置的 `CODEX_HOME`、登录和原生历史。首次创建会下载并校验 [OpenAI 官方发布包](https://github.com/openai/codex/releases/tag/rust-v0.172.0)，缓存在 Crew HOME 的 `runtime-cache/codex-app-server`。恢复已有线程使用已保存的原生 ID，旧线程保留其原来源。知道原生 ID 的客户端仍可读取同一 HOME 下的会话。
+
 - 原生可见性按生命周期管理：人员总会话持久化，`thread/name/set` 明确设为“Crew 名字 · leader/组员”；启动、恢复、正常输入及网页改名同步标题，同步失败保留真实原因。摘要、运维与 `codex-dispatch` 一次性执行使用 ephemeral。独立目标仍持久化，运行期间使用人员简名；停止时归档，已结束目标待原生最终轮次空闲后关闭并归档，不打断最后输出。空闲回收（默认 30 分钟）关闭任务执行时同样归档其线程，人员总会话线程不归档。续跑先查询归档清单，只恢复该执行已绑定的原生 ID。归档保留历史，不能当成删除；原生协议没有单独隐藏活跃持久线程的开关。
 - 临时派工用 `codex exec --ephemeral --json` 的 `turn.completed.usage` 保存用量，不依赖原生 rollout，也不再按时间窗口误配附近的普通会话。任务文件、最终输出、stdout/stderr、退出码和派工记录仍保留；无用量回执保留未知，不把失败改写为成功。原生协议依据见 [非交互模式](https://learn.chatgpt.com/docs/non-interactive-mode) 与 [app-server](https://learn.chatgpt.com/docs/app-server)。
 

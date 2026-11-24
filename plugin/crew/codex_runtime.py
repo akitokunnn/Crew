@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 
-from . import board, codex_binding, codex_client, codex_events, codex_guard, codex_subagents, codex_tools, codex_visibility, goal_messages, goals, guard, install, messaging, native_approvals, native_skills, rules, settings, store, workspace_execution
+from . import board, codex_app_server, codex_binding, codex_client, codex_events, codex_guard, codex_subagents, codex_tools, codex_visibility, goal_messages, goals, guard, install, messaging, native_approvals, native_skills, rules, settings, store, workspace_execution
 
 
 def process_identity(pid):
@@ -304,8 +304,11 @@ class CodexRunning:
             params["model"] = options["model"]
         if options.get("speed") is not None:
             params["serviceTier"] = options["speed"]
+        new_leader = not native_id and not execution and session['role'] == 'leader' and not assistant
         self._lease = RuntimeLease(self.home, execution['id'] if execution else self.session_id).acquire()
         def own_process(command, **kwargs):
+            if new_leader:
+                command = codex_app_server.command(self.home)
             process = process_factory(command, **kwargs)
             self.process = process
             try:
