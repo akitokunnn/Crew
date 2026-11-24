@@ -247,9 +247,11 @@ svg.i.xs{width:12px;height:12px}
 .context-ring.has-failed{box-shadow:inset 0 0 0 1px var(--danger)}
 .context-ring[aria-disabled=true]:active{transform:none}
 .context-ring.is-queued:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-/* Unknown usage: the faint full track only and a dash, never a guessed percent. */
-.context-ring.unknown{color:var(--text-3)}
+/* Unknown usage keeps the compact button visible with a plain track and a dash. */
+.context-ring.unknown{color:var(--text-2)}
+.context-ring.unknown .context-track{opacity:.85}
 .context-ring.unknown .context-pct{font-weight:500}
+@media(pointer:coarse){.context-ring{min-width:32px;min-height:32px}}
 .session-surface{position:relative}
 .session-open{position:absolute;inset:0;width:100%;height:100%;padding:0;border:0;background:transparent;border-radius:inherit;cursor:pointer;z-index:1}
 .session-open:focus-visible{outline-offset:-2px}

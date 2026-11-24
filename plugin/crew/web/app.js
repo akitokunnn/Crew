@@ -167,11 +167,12 @@
   const memberModel = item => item.where === "bg" ? `<span class="member-model">${esc(optionsLabel(item))}</span>` : "";
   const memberActivity = item => item.where === "bg" ? CrewActivity.markup(item, true) : "";
 
-  const contextRing = (item, showUnknown = false) => CrewContext.ring(item.context, {id:item.session_id, name:item.name, busy:item.busy, failed:compactFailures.get(item.session_id) || null, showUnknown,
+  const contextRing = item => CrewContext.ring(item.context, {id:item.session_id, name:item.name, busy:item.busy, failed:compactFailures.get(item.session_id) || null,
+    showUnknown:item.web_chat && item.where !== "vscode",
     external:item.where === "vscode", phase:compactions.get(item.session_id)?.phase || (item.activity?.phase === "compacting" ? "compacting" : null)});
   const compactBusy = item => item.busy || item.status === "working";
-  function contextControls(item, showUnknown = false) {
-    const ring = contextRing(item, showUnknown);
+  function contextControls(item) {
+    const ring = contextRing(item);
     return ring === "" ? "" : `<span class="context-controls">${ring}</span>`;
   }
 
@@ -1352,7 +1353,7 @@
       if (act === "tasks-toggle") { if (goalId !== null) showTaskList(); else setTasksOpen(!tasksOpen); return; }
       if (act === "tasks-back") { showTaskList(); return; }
       if (act === "leaders-toggle") { setLeadersOpen(!leadersOpen); return; }
-      if (narrowLayout() && leadersOpen && button.closest("#leader-panel")) setLeadersOpen(false);
+      if (narrowLayout() && leadersOpen && act !== "context-compact" && button.closest("#leader-panel")) setLeadersOpen(false);
       if (act === "presence-toggle") { setPresenceOpen(!presenceOpen); return; }
       if (act === "connection-settings") { openSettings("connections"); return; }
       if (act === "settings") { openSettings(button.dataset.category || "ai", button.dataset.promptSession || null); return; }
