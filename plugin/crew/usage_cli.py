@@ -70,6 +70,14 @@ def _format(value, key):
     return str(value).replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
 
 
+def write_csv(stream, what, rows):
+    fields = EXPORT_FIELDS[what]
+    writer = csv.writer(stream)
+    writer.writerow(fields)
+    for row in rows:
+        writer.writerow(["" if row.get(key) is None else _format(row[key], key) for key in fields])
+
+
 def _display(value, key):
     """Text-table only: durations as XhYYm, long task names cut. CSV keeps raw values."""
     if value is not None and key in ("work_seconds", "duration_seconds"):
@@ -136,9 +144,7 @@ def main(argv, home):
                 result = function(conn, start, end, prices, args.project)
             if args.command == "export":
                 with Path(args.out).open("w", encoding="utf-8-sig", newline="") as stream:
-                    writer = csv.DictWriter(stream, fieldnames=EXPORT_FIELDS[args.what])
-                    writer.writeheader()
-                    writer.writerows({key: "" if value is None else _format(value, key) for key, value in row.items()} for row in result)
+                    write_csv(stream, args.what, result)
                 result = {"out": str(Path(args.out)), "what": args.what, "rows": len(result)}
         if args.json:
             print(json.dumps(result, ensure_ascii=False, indent=2))

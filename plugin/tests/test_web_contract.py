@@ -99,7 +99,9 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
             "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
-            "model", "effort", "speed", "applied", "activity", "context", "where", "codex", "codex_older", "pinned", "runtime", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id", "member_defaults", "color", "avatar_version"})
+            "model", "effort", "speed", "applied", "activity", "context", "where", "codex", "codex_older", "dispatches",
+            "pinned", "runtime", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
+            "member_defaults", "color", "avatar_version"})
         self.assertIsNone(leader['member_defaults'])
         self.assertIsNone(leader['active_goal_id']); self.assertIsNone(leader['active_execution_id'])
         self.assertEqual(set(leader['runtime_switch']), {'allowed', 'reason', 'pending_handoff', 'last_switch_at'})
@@ -111,6 +113,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual((leader["session_id"], leader["member_ids"], leader["unread"]), ("s3", ["s1"], 0))
         # Leaders dispatch Codex for their own bulk work too (user 10-23), listed like members'.
         self.assertEqual((leader["codex"], leader["codex_older"]), ([], 0))
+        self.assertEqual(leader["dispatches"], [])
         self.assertIsNone(state['git_assistant'])
         self.assertNotIn('is_git_admin', leader)
         landing = self.state(None)
@@ -341,14 +344,15 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         member = members["s1"]
         self.assertEqual(set(member), {"session_id", "name", "title", "leader_session_id", "group", "status",
             "status_note", "where", "task", "scope", "done_when", "branch", "worktree", "cwd", "cc_name",
-            "web_chat", "progress", "codex", "codex_older", "leases", "claims", "model", "effort", "speed", "applied", "activity",
+            "web_chat", "progress", "codex", "codex_older", "dispatches", "leases", "claims", "model", "effort", "speed", "applied", "activity",
             "context", "busy", "running", "runtime", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
-        "execution_records", "general_has_output"})
+            "execution_records", "general_has_output"})
         self.assertEqual((member["name"], member["leader_session_id"], member["group"], member["scope"], member["done_when"]),
                          ("one", "s3", "lead", "Backend", "Tests pass"))
         self.assertEqual([row["text"] for row in member["progress"]], ["progress-" + str(i) for i in (6, 5, 4, 3, 2)])
         self.assertTrue(all(set(row) == {"at", "text"} for row in member["progress"]))
         self.assertEqual({row["id"] for row in member["codex"]}, {"recent", "running"})
+        self.assertEqual({row["id"] for row in member["dispatches"]}, {"recent", "running", "older"})
         self.assertTrue(all(set(row) == {"id", "task_name", "task_description", "status", "started_at", "ended_at", "duration_seconds", "source", "detail", "runtime",
                                         "pid", "cwd", "task_file", "execution_id", "goal_id"}
                             for row in member["codex"]))

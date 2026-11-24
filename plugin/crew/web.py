@@ -1,5 +1,4 @@
 """Local board API, with an independently authenticated LAN transport."""
-import csv
 import datetime as dt
 import hashlib
 import io
@@ -2455,9 +2454,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("\u5bfc\u51fa\u7c7b\u578b\u5fc5\u987b\u662f sessions / daily / codex / requests")
                 rows = service.usage(period, what, query.get('project', [None])[0], query.get('scope', ['workspace'])[0])
                 stream = io.StringIO(newline="")
-                writer = csv.DictWriter(stream, fieldnames=usage_cli.EXPORT_FIELDS[what])
-                writer.writeheader()
-                writer.writerows({key: "" if value is None else usage_cli._format(value, key) for key, value in row.items()} for row in rows)
+                usage_cli.write_csv(stream, what, rows)
                 self._send(200, stream.getvalue().encode("utf-8-sig"), "text/csv; charset=utf-8", "crew-" + what + ".csv")
             else:
                 self._send(200, service.usage(period, project_name=query.get('project', [None])[0], scope=query.get('scope', ['workspace'])[0]))

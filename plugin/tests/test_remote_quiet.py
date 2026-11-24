@@ -356,7 +356,7 @@ class ReportDecisionTests(GoalFixture):
                 self.assertEqual(item['recommendation'], expected.get('recommendation'))
             self.assertTrue(goals.finalize_finish(self.conn, target['id'])['already'])
             self.assertEqual(board.decisions(self.conn, 'demo', all=True), rows)
-        self.assertEqual(goal_actions.report_template(self.conn, target['id'])['user_decisions'], [])
+        self.assertNotIn('user_decisions', goal_actions.report_template(self.conn, target['id']))
 
     def test_failed_decision_registration_rolls_back_todos_and_finish(self):
         target = self.goal()

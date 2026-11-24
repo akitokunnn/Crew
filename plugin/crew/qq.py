@@ -117,12 +117,14 @@ class WS:
                 self.sock.close()
 
     def _watch_stop(self, stop, done):
-        # Only shut down here; the constructor (or the owner's drop) closes. During the
-        # handshake the socket has a timeout, so recv() waits in poll(): closing from this
-        # thread right after shutdown can make it re-poll the closed fd (-1) until timeout (macOS).
         while not done.wait(0.01):
             if stop.is_set():
-                self._shutdown()
+                if os.name == 'nt':
+                    # Winsock may keep a timed recv waiting until the socket closes.
+                    self.drop()
+                else:
+                    # On macOS, let recv observe shutdown while its descriptor is still open.
+                    self._shutdown()
                 return
 
     def _read(self, length):
