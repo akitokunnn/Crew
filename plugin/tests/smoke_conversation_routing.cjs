@@ -104,7 +104,16 @@ if(!process.versions.electron){
       await click('[data-act="right-open"]');
       await check('task conversation displays only its own dispatched agents and speed',
         '(()=>{const p=document.querySelector("#right-panel");return p.textContent.includes("核对分段边界")&&p.textContent.includes("gpt-6.2-sol")&&p.querySelector(".rp-speed.is-fast")?.textContent.includes("快速")&&p.querySelector("[data-act=member-chat][data-id=s1]")?.textContent.includes("claude-haiku-4-5-20251001")&&p.querySelectorAll(".rp-run").length===2})()');
+      await check('the side panel starts below the toolbar beside the task conversation bar',
+        '(()=>{const toolbar=document.querySelector("#chat-head > .head").getBoundingClientRect(),scope=document.querySelector(".exec-chat-bar").getBoundingClientRect(),panel=document.querySelector("#right-panel").getBoundingClientRect();return Math.abs(panel.top-toolbar.bottom-10)<1&&scope.right<panel.left&&scope.bottom>panel.top})()');
       await capture('structure-task-execution');
+      for(const width of [375,760]){
+        window.setSize(width,844);
+        await check('the task conversation bar remains above the side sheet at '+width,
+          `(()=>{const bar=document.querySelector(".exec-chat-bar").getBoundingClientRect(),panel=document.querySelector("#right-panel").getBoundingClientRect();return innerWidth===${width}&&bar.height>0&&panel.top>=bar.bottom&&panel.width>200})()`);
+      }
+      await capture('structure-task-execution-narrow');
+      window.setSize(1280,900);
       await click('#right-panel .rp-architecture');
       await wait('!!document.querySelector("[data-act=architecture-back]")');
       await click('[data-act="architecture-back"]');
