@@ -306,7 +306,7 @@ if __name__ == "__main__":
 
 
 class HomebrewAndPosixTests(unittest.TestCase):
-    """macOS: Homebrew casks, versions served by Homebrew and ps-based process checks (all simulated)."""
+    """Simulated macOS Homebrew cask installations and updates."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent)
@@ -361,6 +361,8 @@ class HomebrewAndPosixTests(unittest.TestCase):
         self.assertEqual((result["status"], result["running_count"]), ("blocked", 1))
         self.assertNotIn("upgrade", sum(self.calls, []))
 
+
+class PosixProcessTests(unittest.TestCase):
     def test_ps_rows_keep_full_paths_and_unquoted_arguments(self):
         outputs = {"comm=": " 41 /opt/homebrew/Caskroom/codex/0.171.0/bin/codex\n 42 /Applications/My App.app/Contents/MacOS/claude\n"
                             " 43 /usr/bin/node\n 44 /bin/zsh\n",
