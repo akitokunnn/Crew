@@ -812,12 +812,14 @@
   }
   const sessionItem = id => state.leaders.concat(state.members).find(item => item.session_id === id);
   let menuAnchor = null;
-  function modelMenu(item) {
+  function modelMenu(item, showInheritedSpeed = false) {
     const id = item.session_id, options = currentOptions(item), runtime = runtimeInfo(item), efforts = modelEfforts(item, item.model ?? options.model), unsupported = efforts.length === 0;
-    const configuredSpeed = item.speed ?? null, speeds = runtime.id === "codex" ? [{id:null, name:"默认", description:"跟随 Codex 自身设置"}, ...modelSpeeds(item, item.model ?? options.model)] : [];
-    const speedGroup = speeds.length === 0 ? "" : `<div role="group" aria-labelledby="menu-speed-label"><div class="mtitle" id="menu-speed-label">速度</div>${speeds.map(speed => `<button role="menuitemradio" aria-checked="${configuredSpeed === speed.id}" data-act="set-speed" data-id="${esc(id)}" data-speed="${speed.id === null ? "" : esc(speed.id)}" ${speed.description ? `title="${esc(speed.description)}"` : ""} ${runtime.available ? "" : "disabled"}><span class="model-check">${configuredSpeed === speed.id ? ic("check", "sm") : ""}</span>${esc(speed.name)}</button>`).join("")}</div>`;
+    const speeds = window.CrewSettings.speedChoices(runtime, item.model ?? options.model);
+    if (showInheritedSpeed && runtime.id === "codex") speeds.unshift(window.CrewSettings.FOLLOW_CODEX_SPEED);
+    const selectedSpeed = item.speed ?? (showInheritedSpeed ? "" : options.speed);
+    const speedGroup = speeds.length === 0 ? "" : `<div role="group" aria-labelledby="menu-speed-label"><div class="mtitle" id="menu-speed-label">速度</div>${speeds.map(speed => `<button role="menuitemradio" aria-checked="${selectedSpeed === speed.id}" data-act="set-speed" data-id="${esc(id)}" data-speed="${esc(speed.id)}" ${speed.description ? `title="${esc(speed.description)}"` : ""} ${runtime.available ? "" : "disabled"}><span class="model-check">${selectedSpeed === speed.id ? ic("check", "sm") : ""}</span>${esc(speed.name)}</button>`).join("")}</div>`;
     const error = !runtime.available ? runtime.error || `${runtime.name} 暂不可用，请检查安装和登录。` : null;
-    return `<div class="menu-runtime">${runtimeBadge(item)}<span>执行工具</span></div>${error ? `<div class="runtime-error" role="status">${esc(error)}</div>` : ""}<div role="group" aria-labelledby="menu-model-label"><div class="mtitle" id="menu-model-label">模型</div>${[{id:null, name:"默认"}].concat(runtime.models || []).map(model => `<button role="menuitemradio" aria-checked="${item.model === model.id}" data-act="set-model" data-id="${esc(id)}" data-model="${model.id === null ? "" : esc(model.id)}" ${runtime.available ? "" : "disabled"}><span class="model-check">${item.model === model.id ? ic("check", "sm") : ""}</span>${esc(model.name)}</button>`).join("")}</div><div role="group" aria-labelledby="menu-effort-label" aria-disabled="${unsupported}"><div class="mtitle" id="menu-effort-label">effort${unsupported ? " · 此模型不支持" : ""}</div>${efforts.map(effort => `<button role="menuitemradio" aria-checked="${options.effort === effort}" data-act="set-effort" data-id="${esc(id)}" data-effort="${esc(effort)}" ${runtime.available ? "" : "disabled"}><span class="model-check">${options.effort === effort ? ic("check", "sm") : ""}</span>${esc(effort)}</button>`).join("")}</div>${speedGroup}${Array.isArray(state.runtimes) ? `<button role="menuitem" class="runtime-refresh" data-act="runtimes-refresh" data-id="${esc(id)}" ${runtimesLoading ? "disabled" : ""}>${runtimesLoading ? "检测中…" : "重新检测执行工具和模型"}</button>` : ""}`;
+    return `<div class="menu-runtime">${runtimeBadge(item)}<span>执行工具</span></div>${error ? `<div class="runtime-error" role="status">${esc(error)}</div>` : ""}${speedGroup}<div role="group" aria-labelledby="menu-model-label"><div class="mtitle" id="menu-model-label">模型</div>${[{id:null, name:"默认"}].concat(runtime.models || []).map(model => `<button role="menuitemradio" aria-checked="${item.model === model.id}" data-act="set-model" data-id="${esc(id)}" data-model="${model.id === null ? "" : esc(model.id)}" ${runtime.available ? "" : "disabled"}><span class="model-check">${item.model === model.id ? ic("check", "sm") : ""}</span>${esc(model.name)}</button>`).join("")}</div><div role="group" aria-labelledby="menu-effort-label" aria-disabled="${unsupported}"><div class="mtitle" id="menu-effort-label">effort${unsupported ? " · 此模型不支持" : ""}</div>${efforts.map(effort => `<button role="menuitemradio" aria-checked="${options.effort === effort}" data-act="set-effort" data-id="${esc(id)}" data-effort="${esc(effort)}" ${runtime.available ? "" : "disabled"}><span class="model-check">${options.effort === effort ? ic("check", "sm") : ""}</span>${esc(effort)}</button>`).join("")}</div>${Array.isArray(state.runtimes) ? `<button role="menuitem" class="runtime-refresh" data-act="runtimes-refresh" data-id="${esc(id)}" data-speed-settings="${showInheritedSpeed}" ${runtimesLoading ? "disabled" : ""}>${runtimesLoading ? "检测中…" : "重新检测执行工具和模型"}</button>` : ""}`;
   }
   function modelControls(item) {
     const id = item.session_id;
@@ -836,7 +838,7 @@
     const btn = (act, label, reason = "", danger = false, extra = "") => menuButton(item, act, label, reason, danger, extra);
     let html = isLeader ? btn("leader", "打开对话") + btn("leader-pin", item.pinned ? "取消置顶" : "置顶") + btn("dispatch-history", "临时协作记录") : btn("member-history", "进入本人对话") + btn("card", "资料与操作");
     if (runtimeSwitch) html += btn("runtime-switch", "更换执行工具…", runtimeSwitch.reason(item));
-    html += btn("stop", "停下这一轮", stopReason) + btn("compact", "压缩上下文", compactReason) + submenu(item, runtimeId(item) === "codex" ? "模型、effort 和速度" : "模型和 effort", modelMenu(item)) + btn("session-rename", "改名");
+    html += btn("stop", "停下这一轮", stopReason) + btn("compact", "压缩上下文", compactReason) + submenu(item, runtimeId(item) === "codex" ? "模型、effort 和速度" : "模型和 effort", modelMenu(item, true)) + btn("session-rename", "改名");
     if (isLeader) {
       html += btn("leader-settings", "Leader 设置…") + btn("member-defaults", "执行默认大脑");
       html += submenu(item, "leader 决策方式", [["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `<button type="button" role="menuitemradio" aria-checked="${Boolean(item.trust?.enabled) === (mode === "autonomous")}" data-act="leader-mode" data-id="${esc(item.session_id)}" data-mode="${mode}">${label}</button>`).join(""));
@@ -1100,8 +1102,9 @@
     const shownEfforts = ["", ...efforts]; if (form.elements.effort.value && !shownEfforts.includes(form.elements.effort.value)) shownEfforts.push(form.elements.effort.value);
     $("leader-effort-options").innerHTML = shownEfforts.map(effort => `<button type="button" class="model-option ${form.elements.effort.value === effort ? "on" : ""}" data-act="leader-effort" data-effort="${esc(effort)}" aria-pressed="${form.elements.effort.value === effort}" ${!runtime.available ? "disabled" : ""}>${effort === "" ? "原生默认" : esc(effort)}</button>`).join("");
     $("leader-speed-field").hidden = runtime.id !== "codex";
-    const shownSpeeds = [{id:"", name:"原生默认", description:"跟随 Codex 自身设置"}, ...modelSpeeds(runtime.id, form.elements.model.value || null)];
-    if (form.elements.speed.value && !shownSpeeds.some(speed => speed.id === form.elements.speed.value)) shownSpeeds.push({id:form.elements.speed.value, name:form.elements.speed.value, description:"当前选择，所选模型未列出"});
+    const shownSpeeds = [window.CrewSettings.FOLLOW_CODEX_SPEED, ...window.CrewSettings.speedChoices(runtime, form.elements.model.value || null)];
+    const savedSpeed = form.elements.speed.value;
+    if (savedSpeed && !shownSpeeds.some(speed => speed.id === savedSpeed)) shownSpeeds.push({id:savedSpeed, name:`当前 · ${speedName(runtime.id, savedSpeed)}`});
     $("leader-speed-options").innerHTML = runtime.id !== "codex" ? "" : shownSpeeds.map(speed => `<button type="button" class="model-option ${form.elements.speed.value === speed.id ? "on" : ""}" data-act="leader-speed" data-speed="${esc(speed.id)}" aria-pressed="${form.elements.speed.value === speed.id}" ${speed.description ? `title="${esc(speed.description)}"` : ""} ${!runtime.available ? "disabled" : ""}>${esc(speed.name)}</button>`).join("");
     form.querySelector('[type="submit"]').disabled = !runtime.available || operationIds.has("leader");
   }
@@ -1356,6 +1359,19 @@
       if (act === "workspace-settings") { openWorkspaceSettings(); return; }
       if (act === "confirm-stop-person") { const resolve = stopConfirmation; stopConfirmation = null; closeBackdrop(); resolve?.(true); return; }
       if (act === "submenu") { openSubmenu(button); return; }
+      if (act === "runtimes-refresh") {
+        const anchor = menuAnchor, speedSettings = button.dataset.speedSettings === "true";
+        if (anchor) hideMenu();
+        action("runtimes", async () => {
+          await refreshRuntimes();
+          if (id && anchor?.isConnected && menuAnchor === anchor && !$("menu").classList.contains("show")) {
+            const item = sessionItem(id);
+            if (item) showMenu(anchor, speedSettings ? modelMenu(item, true) : modelControls(item));
+          }
+          if (runtimesError !== null && $("leader-form") === null) toast(runtimesError);
+        });
+        return;
+      }
       if (button.closest("#menu")) hideMenu(["member-defaults", "session-rename", "leader-mode", "leader-settings"].includes(act));
       if (act === "session-menu") { openSessionMenu(button, id); }
       else if (act === "member-defaults") { hideMenu(); memberUI.openDefaults(id); }
@@ -1448,11 +1464,6 @@
         renderLeaderRuntime();
         form.querySelector(`[data-act="${act}"][data-${field}="${CSS.escape(form.elements[field].value)}"]`)?.focus();
       }
-      else if (act === "runtimes-refresh") action("runtimes", async () => {
-        await refreshRuntimes();
-        if ($("leader-form") === null && id) showMenu(menuAnchor || button, modelMenu(sessionItem(id)));
-        if (runtimesError !== null && $("leader-form") === null) toast(runtimesError);
-      });
       else if (act === "model-menu") {
         const refreshing = refreshRuntimes();
         showMenu(button, modelControls(sessionItem(id)));

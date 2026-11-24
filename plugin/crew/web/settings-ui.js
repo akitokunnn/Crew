@@ -5,6 +5,8 @@
   const empty = () => ({runtime:null, model:null, effort:null, speed:null});
   // Codex speed is its service tier: "default" is standard speed, null leaves it to Codex's own setting.
   const STANDARD_SPEED = {id:"default", name:"标准", description:""};
+  const FOLLOW_CODEX_SPEED = {id:"", name:"跟随 Codex 设置", description:"沿用 Codex 自身配置"};
+  const FAST_SPEEDS = new Set(["priority", "fast"]);
   function speedsFor(runtime, modelId) {
     if (runtime?.id !== "codex") return [];
     const listed = (runtime.models || []).filter(item => Array.isArray(item.speeds));
@@ -15,17 +17,27 @@
   }
   function speedName(runtime, id) {
     if (id === STANDARD_SPEED.id) return STANDARD_SPEED.name;
+    if (FAST_SPEEDS.has(id)) return "快速";
+    if (id === "ultrafast") return "超快";
     for (const model of runtime?.models || []) { const tier = (model.speeds || []).find(item => item.id === id); if (tier) return tier.name || id; }
     return id;
   }
-  function speedOptions(value, choices) {
-    return `<option value="">原生默认</option>${choices.map(item => `<option value="${esc(item.id)}" ${item.id === value ? "selected" : ""}>${esc(item.name)}</option>`).join("")}${value && !choices.some(item => item.id === value) ? `<option value="${esc(value)}" selected>当前 · ${esc(value)}</option>` : ""}`;
+  function speedChoices(runtime, modelId) {
+    const tiers = speedsFor(runtime, modelId);
+    const fast = tiers.find(tier => FAST_SPEEDS.has(tier.id));
+    return fast ? [STANDARD_SPEED, {...fast, name:speedName(runtime, fast.id)}] : tiers.slice(0, 1);
+  }
+  function speedOptions(runtime, modelId, value) {
+    const choices = [FOLLOW_CODEX_SPEED, ...speedChoices(runtime, modelId)];
+    if (value && !choices.some(item => item.id === value)) choices.push({id:value, name:`当前 · ${speedName(runtime, value)}`, disabled:true});
+    return choices.map(item => `<option value="${esc(item.id)}" ${item.id === (value ?? "") ? "selected" : ""} ${item.disabled ? "disabled" : ""} ${item.description ? `title="${esc(item.description)}"` : ""}>${esc(item.name)}</option>`).join("");
   }
   // The tier's own description (cost and speed) under the picker; option labels stay short.
   function speedNote(runtime, modelId, value) {
-    if (!value) return "沿用 Codex 自身配置";
+    if (!value) return FOLLOW_CODEX_SPEED.description;
     if (value === STANDARD_SPEED.id) return "标准速度与用量";
-    return speedsFor(runtime, modelId).find(item => item.id === value)?.description || "所选模型未列出这个速度";
+    const tier = speedsFor(runtime, modelId).find(item => item.id === value);
+    return tier ? tier.description || (FAST_SPEEDS.has(value) ? "生成更快，消耗更多用量" : "") : "所选模型未列出这个速度";
   }
   const tasks = [["assistant", "全局助手", "所有工作区共用一个助手；首次发送时使用此选择"], ["leader", "新建 leader", "新建 leader 时的载体、模型与思考强度；创建时仍可临时调整"], ["member", "leader 开执行", "任务里新开的执行默认使用的大脑；每个 leader 也能单独覆盖，开执行时也可单独指定。已在跑的不受影响"], ["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "运维 AI", "后台聊天与事故处理共用此选择；自动修复另按已保存策略执行"]];
   const categories = [["library", "会话库", "查找、接入与管理已有会话"], ["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["prompts", "行为配置", "提示内容、覆盖范围与使用记录"], ["appearance", "外观", "让工作区更顺手"], ["sounds", "音效", "回复完成与任务交付的提示音"], ["remote", "局域网访问", "连接同一网络中的手机和电脑"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["storage", "存储与清理", "空间占用、回收与保留"], ["backend", "后台与运维", "运维对话、状态与配置"]];
@@ -93,7 +105,7 @@
     const efforts = model && Array.isArray(model.efforts) ? model.efforts : runtime?.efforts || [];
     const saved = selection.runtime && !runtime ? `<option value="${esc(selection.runtime)}" selected>${esc(selection.runtime)} · 未检测到</option>` : "";
     const codex = runtime?.id === "codex";
-    const speed = codex ? `<label>速度<select data-ai-key="${key}" data-ai-field="speed">${speedOptions(selection.speed ?? null, speedsFor(runtime, selection.model))}</select><span class="cs-speed-note" data-ai-speed-note="${key}">${esc(speedNote(runtime, selection.model, selection.speed ?? null))}</span></label>` : "";
+    const speed = codex ? `<label>速度<select data-ai-key="${key}" data-ai-field="speed">${speedOptions(runtime, selection.model, selection.speed)}</select><span class="cs-speed-note" data-ai-speed-note="${key}">${esc(speedNote(runtime, selection.model, selection.speed))}</span></label>` : "";
     return `<div class="cs-fields${codex ? " cs-fields-speed" : ""}"><label>执行载体<select data-ai-key="${key}" data-ai-field="runtime"><option value="">${catalog.filter(item => item.available).length === 1 ? "自动使用唯一可用载体" : "请选择载体"}</option>${catalog.map(item => `<option value="${esc(item.id)}" ${item.id === selection.runtime ? "selected" : ""} ${item.available ? "" : "disabled"}>${esc(item.name || item.id)}${item.available ? "" : " · 未就绪"}</option>`).join("")}${saved}</select></label><label>模型${choiceMarkup(key, "model", selection.model, runtime?.models || [], customFields.has(key+":model"))}</label><label>思考强度 · effort${choiceMarkup(key, "effort", selection.effort, efforts.map(id => ({id})), customFields.has(key+":effort"))}</label>${speed}</div>${runtime && !runtime.available ? `<p class="cs-warning">${esc(runtime.error || "该载体暂不可用，请检查安装与登录。已保存的选择会保留。")}</p>` : ""}`;
   }
   function create(options) {
@@ -192,7 +204,7 @@
           if (picker.tagName === "SELECT") picker.innerHTML = choiceOptions(draft[key].effort, efforts.map(id => ({id})));
           // Like effort, an explicit speed is kept; saving reports a tier the new model lacks.
           const speedPicker = content.querySelector(`[data-ai-key="${key}"][data-ai-field="speed"]`);
-          if (speedPicker) speedPicker.innerHTML = speedOptions(draft[key].speed ?? null, speedsFor(runtime, draft[key].model));
+          if (speedPicker) speedPicker.innerHTML = speedOptions(runtime, draft[key].model, draft[key].speed);
         }
         if (field === "model" || field === "speed") {
           const speedLabel = content.querySelector(`[data-ai-speed-note="${key}"]`);
@@ -204,5 +216,5 @@
     // intent {launch:"pair"|"local"} opens "后台与运维 → 连接与目录" ready for that connection change.
     return {open(next = "ai", intent = null) { category = next; root.hidden = false; if (intent?.launch && category === "backend") operations?.openLaunch(intent.launch); if (!snapshot && !ownsData(category)) void load(); else render(); }, hide() { root.hidden = true; release(); }, reload:load, save, getDraft:() => clone(draft)};
   }
-  window.CrewSettings = {create, defaultRuntime, initialAI, validate, selectionMarkup, initialExecution, validateExecution, executionMarkup, speedsFor, speedName};
+  window.CrewSettings = {create, defaultRuntime, initialAI, validate, selectionMarkup, initialExecution, validateExecution, executionMarkup, speedsFor, speedName, speedChoices, speedOptions, FOLLOW_CODEX_SPEED};
 })();
