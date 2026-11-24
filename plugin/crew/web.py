@@ -675,13 +675,36 @@ class Service:
         """A member's task executions for its own page: current ones first, then the most recent."""
         order = {item['id']: index for index, item in enumerate(active)}
         rows = conn.execute(
-            'SELECT e.id,e.goal_id,g.title,e.status FROM goal_executions e JOIN goals g ON g.id=e.goal_id '
+            'SELECT e.id,e.goal_id,g.title,e.status,e.runtime,e.model,e.effort,e.speed,b.native_id '
+            'FROM goal_executions e JOIN goals g ON g.id=e.goal_id '
+            'LEFT JOIN goal_execution_bindings b ON b.execution_id=e.id AND b.runtime=e.runtime '
             'WHERE e.session_id=? AND e.round=g.current_round AND e.generation=(SELECT MAX(x.generation) '
             'FROM goal_executions x WHERE x.goal_id=e.goal_id AND x.round=e.round AND x.session_id=e.session_id) '
             'ORDER BY e.updated_at DESC,e.id', (session_id,)).fetchall()
-        records = [{'goal_id': row['goal_id'], 'title': row['title'], 'execution_id': row['id'],
-                    'status': row['status'], 'active': row['id'] in order} for row in rows]
-        return sorted(records, key=lambda item: order.get(item['execution_id'], len(order)))[:8]
+        return [
+            {'goal_id': row['goal_id'], 'title': row['title'], 'execution_id': row['id'],
+             'status': row['status'], 'active': row['id'] in order,
+             'runtime': row['runtime'],
+             'settings': self._execution_dispatch_settings(conn, row['id'], row['runtime'], row['native_id'], dict(row))}
+            for row in sorted(rows, key=lambda item: order.get(item['id'], len(order)))[:8]
+        ]
+
+    def _execution_dispatch_settings(self, conn, execution_id, runtime, native_id, requested):
+        observed = usage.agent_settings(conn, runtime, native_id)
+        applied = self.chat.applied(execution_id) or {}
+        return usage.displayed_settings({**observed, **{key: value for key, value in applied.items() if value}}, requested)
+
+    def _conversation_dispatch(self, conn, task, goal_id):
+        runtime = task.get('runtime', 'codex')
+        if task.get('source') == 'skill_dispatch':
+            observed = usage.agent_settings(conn, runtime, task.get('native_id'))
+        elif runtime == 'codex':
+            observed = {**usage.agent_settings(conn, runtime, task['agent_id']), **task.get('applied', {})}
+        else:
+            observed = usage.agent_settings(conn, runtime, task['root_thread_id'], task['native_task_id']) if task.get('native_task_id') else {}
+        return {'id': task.get('id') or task['run_id'], 'goal_id': goal_id, 'runtime': runtime,
+                'task_name': task['task_name'], 'status': task['status'], 'started_at': task['started_at'],
+                **usage.displayed_settings(observed, task.get('requested', {}))}
 
     def _project_conversations(self, conn, name, agents, error):
         general_present = board.live_sessions(agents)
@@ -733,10 +756,15 @@ class Service:
                     'asker': asker['crew_name'], 'leader_session_id': leader_id,
                     'goal_id': links.get(('decision', decision['id']))})
         tasks = usage.dispatch_tasks(conn, None, None, project=name)
-        subagent_keys = {}
-        for row in conn.execute('SELECT e.id,e.session_id FROM goal_executions e '
-                                'JOIN goals g ON g.id=e.goal_id WHERE g.project=?', (name,)):
+        subagent_keys, conversation_keys = {}, {}
+        for row in conn.execute('SELECT e.id,e.session_id,e.goal_id,e.round,g.current_round FROM goal_executions e '
+                                'JOIN goals g ON g.id=e.goal_id WHERE g.project=? ORDER BY e.generation DESC', (name,)):
             subagent_keys.setdefault(row['session_id'], []).append(row['id'])
+            if row['round'] == row['current_round']:
+                conversation_keys.setdefault(row['session_id'], {}).setdefault(row['goal_id'], row['id'])
+        tasks_by_session = {}
+        for task in tasks:
+            tasks_by_session.setdefault(task['session_id'], []).append(task)
         reports, leases, claims = board.reports(conn, name), board.leases(conn, name), board.claims(conn, name)
         member_leaders = {s['session_id']: board.leader_of(conn, s['session_id'])
                           for s in sessions if s['role'] != 'leader'}
@@ -744,9 +772,17 @@ class Service:
             sid = session['session_id']
             key = sid
             context = self.chat.context(key) if self.chat.running(key) else contexts.get(sid)
-            own_tasks = [t for t in tasks if t['session_id'] == sid]
+            own_tasks = list(tasks_by_session.get(sid, []))
+            scope = {identity: goal_id for goal_id, identity in conversation_keys.get(sid, {}).items()}
+            scope[None] = None
+            dispatches = [self._conversation_dispatch(conn, task, scope[task.get('execution_id')])
+                          for task in own_tasks if task.get('source') == 'skill_dispatch' and task.get('execution_id') in scope]
             for task_key in [sid, *subagent_keys.get(sid, [])]:
-                own_tasks.extend(self.chat.subagent_tasks(task_key))
+                children = self.chat.subagent_tasks(task_key)
+                own_tasks.extend(children)
+                execution_id = None if task_key == sid else task_key
+                if execution_id in scope:
+                    dispatches.extend(self._conversation_dispatch(conn, task, scope[execution_id]) for task in children)
             own_tasks.sort(key=lambda task: task['started_at'])
             recent_tasks = [t for t in own_tasks if t['status'] == 'running' or
                             store.parse_iso(t.get('updated_at') or t['ended_at'] or t['started_at']) >=
@@ -759,7 +795,7 @@ class Service:
                                 **({key: t.get(key) for key in ('pid', 'cwd', 'task_file', 'execution_id', 'goal_id')}
                                    if t.get('source') == 'skill_dispatch' else {})}
                                for t in recent_tasks],
-                         codex_older=len(own_tasks) - len(recent_tasks))
+                         codex_older=len(own_tasks) - len(recent_tasks), dispatches=dispatches)
             if session['role'] == 'leader':
                 events = histories[sid]['events'] if sid in histories else []
                 journal = self.chat.journal(sid)

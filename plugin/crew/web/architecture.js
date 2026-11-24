@@ -96,20 +96,21 @@ const CrewArchitecture = (() => {
   function render() {
     if (host === null) return;
     if (board === null) {
-      const head = $(".arch-head"); if (head) head.innerHTML = `<div><div class="title">架构图</div><div class="sub">${errorText ? "" : "正在读取…"}</div></div>`;
+      const head = $(".arch-head"); if (head) head.innerHTML = `<div><div class="title">架构图</div><div class="sub">${errorText ? "" : "正在读取…"}</div></div><div class="right">${backToChat()}</div>`;
       const empty = $(".arch-empty");
       if (empty) { empty.hidden = !errorText; empty.innerHTML = errorText ? `<p class="arch-error" role="alert">${esc(errorText)}</p><button type="button" class="btn" data-arch-act="reload">重新读取</button>` : ""; }
       return;
     }
     renderHead(); renderWorld(); applyCamera();
   }
+  const backToChat = () => options.canReturn ? '<button type="button" class="btn ghost" data-act="architecture-back">返回会话</button>' : "";
   function renderHead() {
     const head = $(".arch-head"); if (!head || board === null) return;
     const m = model(), edit = editable(), dir = direction();
     const picked = edit && selection.size > 1 ? ` · 已选 ${selection.size} 个 part` : "";
     const toggle = `<div class="arch-dir" role="radiogroup" aria-label="架构图方向">${["TB", "LR"].map(value => `<button type="button" role="radio" aria-checked="${dir === value}" data-arch-act="direction" data-direction="${value}" title="${value === "TB" ? "架构树：从上到下" : "蓝图：从左到右"}">${icon(ICON[value.toLowerCase()])}<span>${DIRECTION[value]}</span></button>`).join("")}</div>`;
     const tools = edit ? `${toggle}<span class="arch-tool-gap" aria-hidden="true"></span><button type="button" class="btn primary arch-new" data-arch-act="new">${icon(ICON.plus)}新 part</button><button type="button" class="icon-btn" data-arch-act="undo" title="撤销${undoStack.length ? `：${esc(undoStack.at(-1).label)}` : ""} (${window.CrewBrowser.keyboardShortcut("Z")})" aria-label="撤销" ${undoStack.length ? "" : "disabled"}>${icon(ICON.undo)}</button><button type="button" class="icon-btn" data-arch-act="redo" title="重做${redoStack.length ? `：${esc(redoStack.at(-1).label)}` : ""} (${window.CrewBrowser.keyboardShortcut("Z", {shift:true})})" aria-label="重做" ${redoStack.length ? "" : "disabled"}>${icon(ICON.redo)}</button><button type="button" class="btn ghost" data-arch-act="tidy" title="按当前方向自动排列（可撤销）">${icon(ICON.tidy)}<span class="arch-tidy-label">自动排列</span></button>` : "";
-    const markup = `<div class="arch-heading"><div class="title">${icon(ICON.tb)}架构图${busy ? '<span class="arch-saving">保存中…</span>' : ""}</div><div class="sub">${board.parts.length} 个 part · ${m.leaders.size} 位 leader${m.loose.length ? ` · ${m.loose.length} 位未归属` : ""}${picked}${edit ? "" : ' · <span title="在电脑上打开 Crew 可以编辑">只读</span>'}</div></div><div class="right">${tools}</div>`;
+    const markup = `<div class="arch-heading"><div class="title">${icon(ICON.tb)}架构图${busy ? '<span class="arch-saving">保存中…</span>' : ""}</div><div class="sub">${board.parts.length} 个 part · ${m.leaders.size} 位 leader${m.loose.length ? ` · ${m.loose.length} 位未归属` : ""}${picked}${edit ? "" : ' · <span title="在电脑上打开 Crew 可以编辑">只读</span>'}</div></div><div class="right">${backToChat()}${tools}</div>`;
     if (head.dataset.render !== markup) { head.innerHTML = markup; head.dataset.render = markup; }
     const hint = $(".arch-hint");
     const text = edit ? "把 leader 拖进 part 归入 · 拖 part 到 part 上或从圆点拉线改挂 · 右键 leader 设负责人 · 右键 / 空格拖动平移 · 滚轮缩放" : "拖动平移 · 双指缩放 · 点 leader 进入对话 · 在电脑上可以编辑";

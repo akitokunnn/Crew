@@ -626,6 +626,7 @@ CREATE TABLE IF NOT EXISTS codex_sessions (
     cli_version         TEXT,
     model               TEXT,
     effort              TEXT,
+    speed               TEXT,
     sandbox             TEXT,
     input_tokens        INTEGER NOT NULL DEFAULT 0,  -- latest total_token_usage
     cached_input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -644,6 +645,7 @@ CREATE TABLE IF NOT EXISTS codex_runs (
     sandbox            TEXT,
     model              TEXT,
     effort             TEXT,
+    speed              TEXT,
     started_at         TEXT NOT NULL,
     ended_at           TEXT,
     exit_code          INTEGER,

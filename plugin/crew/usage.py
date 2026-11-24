@@ -271,7 +271,7 @@ def _codex_line(conn, record, path, counts, is_header):
     values = {"rollout_id": session["rollout_id"], "ended_at": _timestamp(record["timestamp"])}
     if kind == "turn_context" and session["model"] is None:
         values.update(model=payload["model"], effort=payload["collaboration_mode"]["settings"]["reasoning_effort"],
-                      sandbox=payload["sandbox_policy"]["type"])
+                      sandbox=payload["sandbox_policy"]["type"], speed=payload.get("service_tier"))
     elif kind == "response_item" and payload["type"] == "message" and payload["role"] == "user":
         if session["first_user_text"] is None:
             # Codex injects AGENTS.md and <environment_context> as user messages before the real task.
@@ -305,7 +305,7 @@ def _codex_line(conn, record, path, counts, is_header):
 
 def _run_line(conn, record, counts, runtime='codex'):
     values = {key: record[key] for key in ('run_id', 'task_file', 'workdir', 'model', 'effort', 'exit_code')}
-    values.update(runtime=runtime, sandbox=record.get('sandbox'),
+    values.update(runtime=runtime, sandbox=record.get('sandbox'), speed=record.get('speed'),
                   claude_session_id=record.get('claude_session_id') if runtime == 'codex' else record.get('codex_thread_id'),
                   native_id=record.get('native_id') if runtime == 'codex' else record['claude_session_id'])
     values.update({key: record.get(key) for key in ('crew_session_id', 'crew_execution_id', 'pid', 'pid_created')})
@@ -821,7 +821,7 @@ def dispatch_tasks(conn, start, end, project=None):
     query = (
         "SELECT r.run_id, r.claude_session_id, r.task_file, r.workdir, r.started_at AS run_start, "
         "r.ended_at AS run_end, r.exit_code, r.model AS requested_model, r.effort AS requested_effort, "
-        "r.sandbox AS requested_sandbox, r.ephemeral, r.usage_json, r.runtime, r.crew_session_id, "
+        "r.speed AS requested_speed, r.sandbox AS requested_sandbox, r.ephemeral, r.usage_json, r.runtime, r.crew_session_id, "
         "r.crew_execution_id, r.pid, r.pid_created, r.native_id, c.* FROM codex_runs r "
         "LEFT JOIN codex_sessions c ON c.rollout_id = r.rollout_id"
     )
@@ -852,6 +852,7 @@ def dispatch_tasks(conn, start, end, project=None):
                     project=task_project, cwd=cwd, last_event_at=row["ended_at"],
                     model=row["model"] if row["rollout_id"] else row["requested_model"],
                     effort=row["effort"] if row["rollout_id"] else row["requested_effort"],
+                    requested={key: row["requested_" + key] for key in ("model", "effort", "speed")},
                     sandbox=row["sandbox"] if row["rollout_id"] else row["requested_sandbox"])
         if status == 'running' and row['pid'] is not None and row['pid_created'] is not None:
             from .codex_runtime import process_identity
@@ -886,6 +887,30 @@ def dispatch_tasks(conn, start, end, project=None):
     for item in result:
         item["duration_seconds"] = (store.parse_iso(item["ended_at"]) - store.parse_iso(item["started_at"])).total_seconds() if item["ended_at"] else None
     return sorted(result, key=lambda item: (item["started_at"], item["run_id"] or item["rollout_id"]))
+
+
+def agent_settings(conn, runtime, native_id, agent_id=None):
+    """Observed settings from the exact native thread or Claude agent transcript."""
+    if not native_id:
+        return {}
+    if runtime == 'codex':
+        row = conn.execute('SELECT model,effort,speed FROM codex_sessions WHERE rollout_id=?', (native_id,)).fetchone()
+    else:
+        row = conn.execute('SELECT model,effort,speed FROM claude_requests WHERE session_id=? AND agent_id IS ? '
+                           'ORDER BY ts DESC,request_key DESC LIMIT 1', (native_id, agent_id)).fetchone()
+    return dict(row) if row else {}
+
+
+def displayed_settings(observed, requested):
+    values = {}
+    specified = []
+    for key in ('model', 'effort', 'speed'):
+        if isinstance(observed.get(key), str) and observed[key]:
+            values[key] = observed[key]
+        elif isinstance(requested.get(key), str) and requested[key]:
+            values[key] = requested[key]
+            specified.append(key)
+    return {**values, 'specified': specified}
 
 
 def codex_tasks(conn, start, end, project=None):

@@ -52,7 +52,31 @@ if(!process.versions.electron){
       await wait('Boolean(document.querySelector("#chat-head [data-act=tasks-toggle]"))');
       await check('real HTTP serves every stylesheet and script declared by the entry page',`(async()=>{const paths=[...document.querySelectorAll('link[rel=stylesheet],script[src]')].map(el=>el.href||el.src);return (await Promise.all(paths.map(url=>fetch(url).then(r=>r.status)))).every(status=>status===200)})()`);
       await click('[data-act="right-open"]');await pause(450);
-      await check('real backend positions the original architecture in the visible right column','(()=>{const root=document.querySelector("#chat-attention"),p=root.getBoundingClientRect(),r=document.querySelector("#right-panel").getBoundingClientRect();return getComputedStyle(root).position==="fixed"&&r.width>200&&r.height>300&&r.right<=innerWidth&&Math.abs(p.top-r.top)<1&&!!document.querySelector("#right-panel .node")})()');
+      await check('real backend positions the conversation structure in the visible right column','(()=>{const root=document.querySelector("#chat-attention"),p=root.getBoundingClientRect(),r=document.querySelector("#right-panel").getBoundingClientRect();return getComputedStyle(root).position==="fixed"&&r.width>200&&r.height>300&&r.right<=innerWidth&&Math.abs(p.top-r.top)<1&&!!document.querySelector("#right-panel .rp-leader")})()');
+      await check('conversation structure shows the leader branch and only runs of the active conversation',
+        '(()=>{const p=document.querySelector("#right-panel");return p.querySelector(".rp-branch")?.textContent.includes("语音评测")&&p.textContent.includes("盘点语音样本")&&p.textContent.includes("gpt-6-luna")&&p.textContent.includes("强度")&&p.querySelector(".rp-speed")?.textContent.includes("标准")&&p.querySelectorAll(".rp-run").length===1})()');
+      for(const width of [375,760]){
+        window.setSize(width,844);
+        await pause(180);
+        if(await js('document.querySelector("#leader-panel").dataset.open==="true"')){
+          await click('#leader-panel [data-act="leader"][data-id="coordinator"]');
+        }
+        for(const theme of ['light','dark']){
+          nativeTheme.themeSource=theme;
+          await check('conversation structure fits at '+width+' in '+theme,
+            '(()=>{const p=document.querySelector("#right-panel"),r=p.getBoundingClientRect();return r.width>200&&r.right<=innerWidth+1&&p.scrollWidth<=p.clientWidth+1&&p.contains(document.elementFromPoint(r.left+r.width/2,r.top+25))})()');
+          await capture('structure-'+width+'-'+theme);
+        }
+      }
+      nativeTheme.themeSource='light';window.setSize(1280,900);
+      await click('#right-panel .rp-architecture');
+      await check('architecture focuses the current leader in the existing diagram',
+        '!!document.querySelector(".arch-part[data-part=voice-part] .arch-member[data-leader=coordinator].flash")');
+      await capture('structure-architecture');
+      await click('[data-act="architecture-back"]');
+      await check('return from architecture reopens the same conversation structure',
+        '!document.querySelector("#right-panel").hidden&&document.querySelector("#right-panel").textContent.includes("盘点语音样本")');
+      await pause(400);
       await js('window.architectureTop=document.querySelector("#right-panel").getBoundingClientRect().top');
       await click('[data-act="attention"]');await pause(450);
       await check('real backend opens pending actions beneath the button and pushes architecture down','(()=>{const a=document.querySelector("#side-attention-section").getBoundingClientRect(),r=document.querySelector("#right-panel").getBoundingClientRect();return a.width>200&&a.height>100&&a.top>0&&a.right<=innerWidth&&a.bottom<innerHeight&&r.top>architectureTop&&r.top>=a.bottom&&!!document.querySelector("#side-attention-section .todo-card")})()');
@@ -75,6 +99,19 @@ if(!process.versions.electron){
       await wait(`!!document.querySelector('[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]')`);
       await click(`[data-goal-act="open"][data-goal-id="${bootstrap.goals[0]}"]`);
       await wait('!!document.querySelector("#task-list [data-goal-tools]")');await check("opening a task keeps the idle general conversation and its draft",'document.querySelector("#chat-host textarea").value==="主对话草稿"&&!document.querySelector("#chat-host .chat-activity")');
+      await wait('!!document.querySelector("[data-goal-act=exec-chat]")');
+      await click('[data-goal-act="exec-chat"]');
+      await click('[data-act="right-open"]');
+      await check('task conversation displays only its own dispatched agents and speed',
+        '(()=>{const p=document.querySelector("#right-panel");return p.textContent.includes("核对分段边界")&&p.textContent.includes("gpt-6.2-sol")&&p.querySelector(".rp-speed.is-fast")?.textContent.includes("快速")&&p.querySelector("[data-act=member-chat][data-id=s1]")?.textContent.includes("claude-haiku-4-5-20251001")&&p.querySelectorAll(".rp-run").length===2})()');
+      await capture('structure-task-execution');
+      await click('#right-panel .rp-architecture');
+      await wait('!!document.querySelector("[data-act=architecture-back]")');
+      await click('[data-act="architecture-back"]');
+      await check('return from architecture keeps the task conversation and its dispatch scope',
+        '!!document.querySelector(".exec-chat-bar")&&!document.querySelector("#right-panel").hidden&&document.querySelector("#right-panel").textContent.includes("核对分段边界")');
+      await click('[data-act="right-close"]');
+      await click('[data-act="leader-general"]');
       await wait('!document.querySelector("[data-goal-act=mode][data-mode=autonomous]").disabled');await click('[data-goal-act="mode"][data-mode="autonomous"]');
       await check('task decision mode updates only the selected goal without starting another turn','document.querySelector("[data-goal-act=mode][data-mode=autonomous]").getAttribute("aria-pressed")==="true"');
       await check('AI work appears separately with its real blocker and exact acceptance constraint','document.querySelector(".goal-work").textContent.includes("400ms")&&document.querySelector(".goal-work").textContent.includes("尚未证明效果达标")&&document.querySelector(".goal-work").textContent.includes("0 / 1")');
@@ -113,6 +150,12 @@ if(!process.versions.electron){
       await check('archiving a leader removes its ongoing tasks from the real workbench',
         `!!document.querySelector('.wh-page')&&!document.querySelector('.wh-page [data-goal-id="${bootstrap.goals[0]}"]')&&!document.querySelector('.wh-page [data-goal-id="${bootstrap.goals[1]}"]')`);
       await capture('04-archived-leader-workbench');
+      await click('#leader-panel [data-act="leader"][data-id="s3"]');
+      await click('[data-act="right-open"]');
+      await check('a leader without a related architecture starts directly at the Leader row',
+        '(()=>{const p=document.querySelector("#right-panel");return !p.hidden&&!!p.querySelector(".rp-leader")&&!p.querySelector(".rp-branch,.rp-architecture")})()');
+      await capture('structure-no-architecture');
+      assert.equal(evidence.errors.length,0,JSON.stringify(evidence.errors));
       fixture.stdin.end('shutdown\n');await until(()=>closed,'fixture shutdown');evidence.ok=true;
       await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));app.quit();
     }catch(error){evidence.errors.push(error.stack||String(error));fixture?.stdin.end('shutdown\n');await fs.mkdir(out,{recursive:true});await fs.writeFile(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));console.error(error);process.exitCode=1;app.quit();}

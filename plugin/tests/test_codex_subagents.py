@@ -148,6 +148,14 @@ class NativeChildHttpTests(unittest.TestCase):
         self.assertEqual((len(leader['codex']), len(value['members'])), (3, 0))
         self.assertTrue(all(task['status'] == 'running' and task['source'] == 'native_subagent' for task in leader['codex']))
         self.assertTrue(all(task['task_description'] == collab()['prompt'] for task in leader['codex']))
+        client.emit('thread/settings/updated', threadId='child-1',
+                    settings={'model': 'gpt-6-luna', 'effort': 'low', 'serviceTier': 'priority'})
+        with running.journal.condition:
+            self.assertTrue(running.journal.condition.wait_for(
+                lambda: running.journal.subagents['child-1'].get('applied'), timeout=3))
+        dispatch = next(row for row in state()['leaders'][0]['dispatches'] if row['id'].endswith(':child-1'))
+        self.assertEqual((dispatch['goal_id'], dispatch['model'], dispatch['effort'], dispatch['speed'], dispatch['specified']),
+                         (None, 'gpt-6-luna', 'low', 'priority', []))
         client.finish()
         client.emit('turn/completed', threadId='child-1', turn={'id': 'child-turn', 'status': 'completed'})
         client.emit('turn/completed', threadId='child-2', turn={'id': 'child-turn', 'status': 'failed', 'error': {'message': '隔离验收失败'}})
