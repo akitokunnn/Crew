@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 
-from . import board, codex_binding, codex_client, codex_events, codex_guard, codex_subagents, codex_tools, codex_visibility, goal_messages, goals, guard, install, messaging, native_approvals, native_skills, rules, settings, store, workspace_execution
+from . import board, codex_app_server, codex_binding, codex_client, codex_events, codex_guard, codex_subagents, codex_tools, codex_visibility, goal_messages, goals, guard, install, messaging, native_approvals, native_skills, rules, settings, store, workspace_execution
 
 
 def process_identity(pid):
@@ -304,8 +304,11 @@ class CodexRunning:
             params["model"] = options["model"]
         if options.get("speed") is not None:
             params["serviceTier"] = options["speed"]
+        new_leader = not native_id and not execution and session['role'] == 'leader' and not assistant
         self._lease = RuntimeLease(self.home, execution['id'] if execution else self.session_id).acquire()
         def own_process(command, **kwargs):
+            if new_leader:
+                command = codex_app_server.command(self.home)
             process = process_factory(command, **kwargs)
             self.process = process
             try:
@@ -454,6 +457,7 @@ class CodexRunning:
                         self.trust_context = None
                     if kind == "context":
                         self.context = event
+                        self.journal.remember_context(self.runtime, self.thread_id, self.context)
                     elif kind == "activity":
                         with self.journal.condition:
                             if self.journal.progress is not None:
@@ -558,7 +562,8 @@ class CodexRunning:
         else:
             for path in approval['paths']:
                 reason = guard.check(self.home, {'session_id': self.session_id, 'cwd': approval['cwd'],
-                    'tool_name': 'Write', 'tool_input': {'file_path': path}})
+                    'tool_name': 'Write', 'tool_input': {'file_path': path}},
+                    execution_id=self.execution['id'] if self.execution else None)
                 if reason:
                     raise board.Conflict(reason)
 
@@ -625,6 +630,8 @@ class CodexRunning:
             self._approval_cancelled_turn = None
             self._started_turn_id = None
             with closing(store.connect(self.home)) as conn:
+                if self.execution is None:
+                    guard.clear_general_handoff(conn, self.session_id)
                 conn.execute("UPDATE sessions SET last_prompt=? WHERE session_id=?", ((text if display_text is None else display_text)[:200], self.session_id))
             self._status("working")
             try:

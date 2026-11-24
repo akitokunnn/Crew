@@ -80,7 +80,7 @@ def _goal_hook(event, data, home, plugin_root, environ, now):
             gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=execution_id, allow_discussion=True)
             reason = None if gate['allowed'] else 'BLOCKED by Crew: ' + gate['reason']
             reason = reason or guard.discussion_write_reason(conn, execution_id, logical.get('tool_name'))
-            reason = reason or guard.check(home, logical, now=now)
+            reason = reason or guard.check(home, logical, now=now, execution_id=execution_id)
             if not reason and data.get('tool_name') in guard.SHELLS:
                 reason = branch_claims.task_branch_reason(home, data['cwd'], (data.get('tool_input') or {}).get('command', ''),
                                                           execution_id)
@@ -158,6 +158,8 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
                 identity["task"] = _spawn_task(home, identity["spawn_id"])
     with contextlib.closing(store.connect(home)) as conn:
         deliveries = board.apply_hook(conn, event, data, p["name"], identity=identity, git_info=git_info, now=now)
+        if event == 'user-prompt-submit' and not environ.get('CREW_SESSION_ID'):
+            guard.clear_general_handoff(conn, data['session_id'])
         lines = _deliveries_text(deliveries)
         if event in ("session-start", "user-prompt-submit"):
             session = board.session(conn, data["session_id"])

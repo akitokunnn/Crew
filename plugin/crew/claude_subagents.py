@@ -71,6 +71,9 @@ class Events:
                 args = block['input']
                 identity = self._bind(call=block['id'])
                 fields = {'task_description': args.get('prompt')}
+                requested = {key: args[key] for key in ('model', 'effort') if isinstance(args.get(key), str)}
+                if requested:
+                    fields['requested'] = requested
                 if title(args.get('description')):
                     fields['task_name'] = title(args['description'])
                 events.extend(self._update(identity, tool_use_id=block['id'], **fields,

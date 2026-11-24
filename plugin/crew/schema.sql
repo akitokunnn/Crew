@@ -626,6 +626,7 @@ CREATE TABLE IF NOT EXISTS codex_sessions (
     cli_version         TEXT,
     model               TEXT,
     effort              TEXT,
+    speed               TEXT,
     sandbox             TEXT,
     input_tokens        INTEGER NOT NULL DEFAULT 0,  -- latest total_token_usage
     cached_input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -644,6 +645,7 @@ CREATE TABLE IF NOT EXISTS codex_runs (
     sandbox            TEXT,
     model              TEXT,
     effort             TEXT,
+    speed              TEXT,
     started_at         TEXT NOT NULL,
     ended_at           TEXT,
     exit_code          INTEGER,
@@ -757,6 +759,10 @@ CREATE TABLE IF NOT EXISTS goal_assignments (
  goal_id TEXT NOT NULL REFERENCES goals(id), session_id TEXT NOT NULL REFERENCES sessions(session_id),
  task TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('assigned','released')),
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(goal_id,session_id)
+);
+CREATE TABLE IF NOT EXISTS general_goal_handoffs (
+ session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+ goal_id TEXT NOT NULL REFERENCES goals(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS goal_executions (
  id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, round INTEGER NOT NULL,

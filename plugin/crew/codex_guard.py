@@ -156,14 +156,14 @@ def check(home, session_id, payload, execution_id=None):
         if reason is not None:
             return str(reason)
         if tool == "Bash":
-            return guard.check(home, data) or branch_claims.task_branch_reason(home, cwd, command, execution_id)
+            return guard.check(home, data, execution_id=execution_id) or branch_claims.task_branch_reason(home, cwd, command, execution_id)
         paths = patch_paths(command)
         for path in paths:
             absolute = store.norm_path(path if os.path.isabs(path) else Path(cwd) / path)
             for alias in ("apply_patch", "Edit", "Write"):
                 normalized = {**data, "tool_name": alias,
                               "tool_input": {**inputs, "file_path": absolute}}
-                reason = guard.check(home, normalized)
+                reason = guard.check(home, normalized, execution_id=execution_id)
                 if reason is not None:
                     return reason
         return None

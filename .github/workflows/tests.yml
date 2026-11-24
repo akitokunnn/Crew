@@ -1,7 +1,8 @@
 name: Crew tests
 
-# 日常修复先合入本地 live 集成分支试用，攒一批再通过一个 PR 合进 main。
-# CI 只在这个批次 PR 上跑一次；合进 main 后不再重复跑。需要时也可手动触发。
+# 日常修复先合入两台电脑共用的 live 分支试用，攒一批再通过一个 PR 合进 main。
+# CI 在这个批次 PR 上跑一次，Windows 和 macOS 都跑；合进 main 后不再重复跑。
+# 在任一台电脑上验证另一个系统：gh workflow run tests.yml --ref <分支>
 on:
   pull_request:
   workflow_dispatch:
@@ -15,7 +16,13 @@ concurrency:
 
 jobs:
   backend:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15]
+    # Windows keeps the original check name, which branch protection may require.
+    name: ${{ matrix.os == 'windows-latest' && 'backend' || 'backend (macOS)' }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     defaults:
       run:
@@ -40,7 +47,7 @@ jobs:
           directory = Path(os.environ['RUNNER_TEMP']).resolve() / 'crew-tests'
           directory.mkdir(parents=True, exist_ok=True)
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
-              for name in ('TEMP', 'TMP'):
+              for name in ('TMPDIR', 'TEMP', 'TMP'):
                   print(f'{name}={directory}', file=output)
           '@ | python -
       # CI only runs the core list in plugin/tests/ci_core.txt; run the full suite locally before merging.
@@ -53,7 +60,13 @@ jobs:
           python tests/ci_core.py -v
 
   desktop:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15]
+    # Windows keeps the original check name, which branch protection may require.
+    name: ${{ matrix.os == 'windows-latest' && 'desktop' || 'desktop (macOS)' }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     defaults:
       run:
@@ -78,7 +91,7 @@ jobs:
           directory = Path(os.environ['RUNNER_TEMP']).resolve() / 'crew-tests'
           directory.mkdir(parents=True, exist_ok=True)
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
-              for name in ('TEMP', 'TMP'):
+              for name in ('TMPDIR', 'TEMP', 'TMP'):
                   print(f'{name}={directory}', file=output)
           '@ | python -
       - name: Browser unit tests

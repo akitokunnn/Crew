@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import behavior_prompts, runtime_recovery, trust_mode
 
-from . import board, channel, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
+from . import board, channel, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, guard, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
@@ -207,8 +207,9 @@ def child_environment(spec, environ=None, persistent_names=None):
            if not name.upper().startswith("CREW_")
            and (not name.upper().startswith("CLAUDE") or name.upper() in persistent_names
                 or name.upper() == 'CLAUDE_CONFIG_DIR')}
-    # VS Code hides sdk-cli transcripts; identify this human-facing host explicitly.
-    env.update(CLAUDE_CODE_ENTRYPOINT="crew-web", CREW_NAME=spec["name"], CREW_ROLE=spec["role"], CREW_SPAWN_ID=spec["id"],
+    # A human-facing session: "cli" keeps it out of the sdk-* programmatic class and on the
+    # user's subscription. Custom values (e.g. the former "crew-web") are billed as API usage.
+    env.update(CLAUDE_CODE_ENTRYPOINT="cli", CREW_NAME=spec["name"], CREW_ROLE=spec["role"], CREW_SPAWN_ID=spec["id"],
                MSYS_NO_PATHCONV="1")
     if spec["group"] is not None:
         env["CREW_GROUP"] = spec["group"]
@@ -221,6 +222,7 @@ class Journal:
         self.condition = threading.Condition(threading.RLock())
         self.events = []
         self.signature = None
+        self.last_context = None
         self.reset_runtime()
         self._index()
         self.refresh()
@@ -289,6 +291,10 @@ class Journal:
             self.progress = None
             self._calls, self._tools = {}, {}
             self._call_id, self._thinking_index = None, None
+
+    def remember_context(self, runtime, native_id, context):
+        with self.condition:
+            self.last_context = (runtime, native_id, dict(context, source="last_observed"))
 
     def bind_claude_subagents(self, native_id):
         with self.condition:
@@ -506,6 +512,7 @@ class Manager:
         self.home, self.plugin_root = Path(home), Path(plugin_root)
         self.agents_provider, self.process_factory = agents_provider, process_factory
         self.journals, self.processes = {}, {}
+        self.context_history = None
         self.lock = threading.RLock()
         self._close_lock = threading.Lock()
         self.closed = False
@@ -684,7 +691,35 @@ class Manager:
             with current.input_lock:
                 return dict(current.context) if current.context is not None else None
 
-    def context_state(self, session_id):
+    def display_context(self, session_id, conn=None, *, binding=None):
+        """Keep the last reading for display while the bound conversation is offline."""
+        live = self.context(session_id)
+        if live is not None:
+            return live
+        if conn is None:
+            with closing(store.connect(self.home)) as conn:
+                return self.display_context(session_id, conn, binding=binding)
+        if binding is None:
+            binding = conn.execute(
+                "SELECT e.runtime, b.native_id FROM goal_executions e LEFT JOIN goal_execution_bindings b "
+                "ON b.execution_id=e.id AND b.runtime=e.runtime WHERE e.id=?", (session_id,)).fetchone()
+            if binding is None:
+                binding = runtimes.get(conn, session_id)
+        runtime, native_id = binding['runtime'], binding['native_id']
+        if native_id is None:
+            return None
+        with self.lock:
+            journal = self.journals.get(session_id)
+            if journal is not None:
+                with journal.condition:
+                    saved = journal.last_context
+                    if saved is not None and saved[:2] == (runtime, native_id):
+                        return dict(saved[2])
+        if self.context_history is not None:
+            return self.context_history(conn, runtime, native_id)
+        return None
+
+    def context_state(self, session_id, conn=None):
         """Read native usage and compaction for one general or task execution."""
         with self.lock:
             current = self.processes.get(session_id)
@@ -695,7 +730,7 @@ class Manager:
                         phase = 'compacting'
                     elif current.pending_compact:
                         phase = 'queued'
-            return {'context': self.context(session_id), 'compaction': phase}
+        return {'context': self.display_context(session_id, conn), 'compaction': phase}
 
     def history(self, session_id):
         journal = self.journal(session_id)
@@ -786,7 +821,7 @@ class Manager:
                                                      native_missing=current.resumed_native, runtime="claude")
                                 if current.maintenance is None:
                                     current.native_lost = current.resumed_native
-                            if current.pending_compact and current.process.poll() is None:
+                            if current.pending_compact and current.stop_reason is None and current.process.poll() is None:
                                 current.pending_compact = False
                                 self._send(session_id, "/compact")
                         if (current.execution is not None and current.maintenance is None
@@ -1217,6 +1252,9 @@ class Manager:
                    "message": {"role": "user", "content": content}}
         try:
             with current.input_lock:
+                if current.execution is None and current.journal.status != 'working':
+                    with closing(store.connect(self.home)) as conn:
+                        guard.clear_general_handoff(conn, session_id)
                 current.interrupt_requested = False
                 current.journal.message(identity, original_text, source=source, images=files, sender=sender)
                 current.pending_native_accept=(identity,handoff_id) if handoff_id is not None else None
@@ -1762,6 +1800,8 @@ class Manager:
         identity = str(uuid.uuid4())
         request = {"type": "control_request", "request_id": identity, "request": {"subtype": subtype, **fields}}
         with current.input_lock:
+            if current.stop_reason is not None:
+                return
             current.control_requests[identity] = subtype
             current.process.stdin.write(json.dumps(request) + "\n")
             current.process.stdin.flush()
@@ -1775,6 +1815,8 @@ class Manager:
             elif subtype == "get_context_usage" and response["subtype"] == "success":
                 usage = response["response"]
                 current.context = {"used": usage["totalTokens"], "max": usage["maxTokens"], "source": "live"}
+                native_id = current.native_id if current.execution else current.journal.path.stem
+                current.journal.remember_context(current.runtime, native_id, current.context)
         if subtype in ("set_model", "apply_flag_settings") and response["subtype"] == "success":
             self._control(current, "get_settings")
 
@@ -2057,31 +2099,32 @@ class Manager:
         with self._close_lock:
             with self.lock:
                 self.closed = True
-                closing_processes = list(self.processes.values())
+                closing_processes = list(self.processes.items())
                 for journal in self.journals.values():
                     with journal.condition:
                         journal.condition.notify_all()
 
-            def close_current(current):
+            def close_current(key, current):
                 if current.process.poll() is None:
-                    if getattr(current, "runtime", "claude") == "codex":
-                        with current.input_lock:
-                            current.stop_reason = 'service_close'
-                        current.close()
-                    else:
-                        with current.input_lock:
-                            current.stop_reason = 'service_close'
+                    is_codex = getattr(current, "runtime", "claude") == "codex"
+                    with current.input_lock:
+                        runtime_recovery.record_service_close(current, key)
+                        current.stop_reason = current.stop_reason or 'service_close'
+                        if not is_codex:
                             try:
                                 current.process.stdin.close()
                             except OSError:
-                                current.stop_reason = None
+                                if current.stop_reason == 'service_close':
+                                    current.stop_reason = None
                                 raise
+                    if is_codex:
+                        current.close()
                 current.reader.join(timeout=1)
 
             errors = []
             if closing_processes:
                 with ThreadPoolExecutor(max_workers=min(8, len(closing_processes)), thread_name_prefix='crew-native-close') as pool:
-                    pending = [(current, pool.submit(close_current, current)) for current in closing_processes]
+                    pending = [(current, pool.submit(close_current, key, current)) for key, current in closing_processes]
                     for current, result in pending:
                         try:
                             result.result()

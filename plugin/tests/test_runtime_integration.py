@@ -21,6 +21,8 @@ class FakeCodex:
 
     def __init__(self, home, plugin_root, session, spec, options, journal, router, **kwargs):
         self.execution, self.goal_handler = kwargs.get('execution'), kwargs.get('goal_handler')
+        self.maintenance = kwargs.get('maintenance')
+        self.stop_reason, self.interrupt_requested = None, False
         self.thread_id = 'fixture-native-' + session['session_id']
         # Real CodexRunning supplies the effective startup prompt before send.
         with closing(store.connect(home)) as conn:

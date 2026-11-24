@@ -111,17 +111,23 @@ test("storage opens independently and late model discovery preserves its cleanup
   assert.equal(mounts,beforeMounts);assert.equal(cleanups,beforeCleanups);assert.equal(content.preview.id,"reviewed-cleanup");
   settings.hide();assert.equal(cleanups,beforeCleanups+1);
 });
-test("Codex speed is offered from catalog tiers and Claude never carries one",()=>{
+test("Codex speed settings offer inheritance and supported standard and fast speeds, preserving a saved tier",()=>{
   const fast=[catalog[0],{...catalog[1],models:[{id:"native-b",efforts:["deep"],speeds:[{id:"priority",name:"Fast",description:"2x speed"}]},{id:"native-c",efforts:[],speeds:[{id:"priority",name:"Fast"},{id:"ultrafast",name:"Ultrafast"}]}]}];
   const html=ui.selectionMarkup("default",{runtime:"codex",model:"native-c",effort:null,speed:"ultrafast"},fast);
-  assert(html.includes('value="ultrafast" selected'));assert(html.includes('value="default"'));assert.equal((html.match(/>原生默认<\/option>/g)||[]).length,3);
+  assert.match(html,/value="ultrafast" selected disabled[^>]*>当前 · 超快<\/option>/);
+  assert.match(html,/value="default"[^>]*>标准<\/option>/);
+  assert.match(html,/value="priority"[^>]*>快速<\/option>/);
+  assert.match(html,/value=""[^>]*>跟随 Codex 设置<\/option>/);
   assert(!ui.selectionMarkup("default",{runtime:"claude",model:null,effort:null,speed:null},fast).includes('data-ai-field="speed"'));
   const unset=ui.selectionMarkup("default",{runtime:"codex",model:null,effort:null,speed:null},fast);assert(unset.includes('value="priority"'));assert(!unset.includes('value="ultrafast"'));
-  assert(ui.selectionMarkup("default",{runtime:"codex",model:"native-b",effort:null,speed:"ultrafast"},fast).includes('当前 · ultrafast'));
+  const selectedModel = ui.selectionMarkup("default",{runtime:"codex",model:"native-c",effort:null,speed:null},fast);
+  assert(!selectedModel.includes('value="ultrafast"'));
+  const standardOnly = [catalog[0], {...catalog[1], models:[{id:"native-only", efforts:[], speeds:[]}]}];
+  assert(!ui.selectionMarkup("default",{runtime:"codex",model:"native-only",effort:null,speed:null},standardOnly).includes('value="priority"'));
   const ai=config();ai.default={runtime:"codex",model:"native-b",effort:null,speed:"ultrafast"};assert.throws(()=>ui.validate(ai,fast),/不支持所选速度/);
   ai.default.speed="priority";assert.equal(ui.validate(ai,fast).default.speed,"priority");
   ai.default={runtime:"claude",model:null,effort:null,speed:"priority"};assert.throws(()=>ui.validate(ai,fast),/只适用于 Codex/);
-  assert.equal(ui.speedName(fast[1],"priority"),"Fast");assert.equal(ui.speedName(fast[1],"default"),"标准");
+  assert.equal(ui.validate({...ai, default:{runtime:"codex",model:"native-c",effort:null,speed:"ultrafast"}},fast).default.speed,"ultrafast");
 });
 
 test("a LAN host connection labels host settings and offers no LAN access card or local backend wording",()=>{

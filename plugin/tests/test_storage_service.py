@@ -1,4 +1,5 @@
 """The user-visible storage flow must retain history without starting model work."""
+import tests  # Install the production-service connection guard.
 from contextlib import closing
 import hashlib
 import json

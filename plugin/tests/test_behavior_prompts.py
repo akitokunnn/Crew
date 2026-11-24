@@ -62,15 +62,15 @@ class BehaviorPromptTests(unittest.TestCase):
         self.assertEqual(other['content'], 'Global behavior')
 
     def test_stale_ai_edit_rejected_preserving_user_content_and_history(self):
-        prompts.save(self.conn, 'report', 'User report rules', expected_version=0)
+        prompts.save(self.conn, 'final_report', 'User report rules', expected_version=0)
         with self.assertRaises(board.Conflict):
-            prompts.save(self.conn, 'report', 'Stale AI rules', expected_version=0, actor='leader-one')
-        self.assertEqual(prompts.get(self.conn, 'report')['effective']['content'], 'User report rules')
-        self.assertEqual(len(prompts.history(self.conn, 'report')['history']), 1)
+            prompts.save(self.conn, 'final_report', 'Stale AI rules', expected_version=0, actor='leader-one')
+        self.assertEqual(prompts.get(self.conn, 'final_report')['effective']['content'], 'User report rules')
+        self.assertEqual(len(prompts.history(self.conn, 'final_report')['history']), 1)
 
     def test_recorded_sent_manifest_survives_later_edits_and_does_not_claim_native_loading(self):
         prompts.save(self.conn, 'leader', 'Instruction at send', expected_version=0)
-        manifest = prompts.resolve(self.conn, session_id='leader-one', keys=('common', 'leader', 'report', 'context'))
+        manifest = prompts.resolve(self.conn, session_id='leader-one', keys=('common', 'leader', 'final_report', 'context'))
         sent = prompts.record_applied(self.conn, self.execution['id'], manifest, status='sent', identity='turn-one')
         self.assertIn('Instruction at send', prompts.render(sent['manifest']))
         prompts.save(self.conn, 'leader', 'Instruction after send', expected_version=1)

@@ -77,10 +77,11 @@ function harness(options = {}) {
   }
   const menu = template => ({ template, getMenuItemById(id) { return template.flatMap(item => item.submenu || [item]).find(item => item.id === id); }, popup({ callback }) { callback?.(); } });
   const electron = { app, BrowserWindow:Window, WebContentsView:class {}, Tray:FakeTray,
+    nativeTheme:{ themeSource:'system', shouldUseDarkColors:false, on() {} }, webContents:{ getAllWebContents:() => [] },
     ipcMain:{ handle:(name,fn) => handlers.set(name,fn), on() {} },
     Menu:{ buildFromTemplate:menu, setApplicationMenu:value => { appMenu = value; }, getApplicationMenu:() => appMenu },
     nativeImage:{ createFromPath:file => { calls.image = file; return {}; } }, shell:{ openExternal:async () => {}, openPath:async () => {} }, safeStorage:{},
-    session:{ defaultSession:{ webRequest:{ onBeforeSendHeaders:(filter, listener) => { webRequests.headers = { filter, listener }; }, onCompleted:(filter, listener) => { webRequests.completed = { filter, listener }; } } } },
+    session:{ defaultSession:{ webRequest:{ onBeforeSendHeaders:(filter, listener) => { webRequests.headers = { filter, listener }; }, onCompleted:(filter, listener) => { webRequests.completed = { filter, listener }; } }, on:(name, listener) => { webRequests[name] = listener; } } },
     dialog:{ showMessageBox:async (...args) => { calls.dialogs++; if (args[0] instanceof Window) args[0].alive(); return { response:options.dialogResponse ?? 1 }; }, showOpenDialog:async () => ({ canceled:true }),
       showSaveDialog:async () => ({ canceled:false, filePath:'C:\\Users\\me\\demo.crewpack' }) } };
   class Backend {
@@ -154,14 +155,16 @@ function harness(options = {}) {
       request:async (base,route,body,timeoutMs) => options.request ? options.request(base,route,body,timeoutMs) : options.storageWrite&&route.startsWith('/api/workspace-data/')?options.storageWrite.promise:{} },
     './storage.cjs':{ prepare:async (project,base,_choose,_progress,request) => {if(options.storageWrite)await request(base,'/api/workspace-data/open',{});return project;} },
     './chrome.cjs':{ windowOptions:() => ({}) }, './tabs.cjs':{ WorkspaceTabs:Tabs },
+    './appearance.cjs':{ Appearance:class { async load() { return this.state(); } state() { return { mode:'system', dark:false, stored:false }; } async set(mode) { return { mode, dark:mode === 'dark', stored:true }; } } },
     './menu.cjs':require('../src/menu.cjs'), './login-shell.cjs':{ readLoginShellPath:() => options.loginPath.promise },
     './python.cjs':python,
     './activity-preview.cjs':{ ActivityPreview:Preview }, './permissions.cjs':{ installPermissions() {} },
     './report-preview.cjs':{ReportPreviewClient, ReportPreviewRenderer:class {}},
     './tool-updates.cjs':{ ToolUpdates:Tools }, './crew-updates.cjs':{ CrewUpdates:Updates },
+    './crew-self-update.cjs':{ CrewSelfUpdate:class { async initialize() {} async confirmReady() {} start() {} async close() {} }, installKind:() => ({ kind:'development' }) },
     './admin.cjs':{ Administrator:class {} }, './operations.cjs':{ OperationsClient:class { close() {} } },
     './product.cjs':require('../src/product.cjs'),
-    './launch-settings.cjs':{ LaunchSettings, relaunchArgs:() => [] },
+    './launch-settings.cjs':{ LaunchSettings, relaunchArgs:() => [], rememberPort:async () => false },
     './remote-backends.cjs':{ RemoteBackends:class { constructor(file) { calls.remoteFile = file; } async credential(id) { return { id, token:'t'.repeat(43) }; } } }
   };
   const sandbox = { require:name => Object.hasOwn(modules,name) ? modules[name] : require(name), __dirname:path.join(__dirname,'../src'),
@@ -427,6 +430,11 @@ test('a LAN connection starts no local tools or report worker, and its token rea
   listener({ url:'http://192.168.1.20:47813/', requestHeaders:{} }, value => { headers.port = value.requestHeaders; });
   assert.equal(headers.host.Authorization, 'Bearer ' + 't'.repeat(43));
   assert.deepEqual(headers.other, { Accept:'*/*' }); assert.deepEqual(headers.port, {});
+  // Host file downloads ask where to save, starting in Downloads; other origins keep Electron's default.
+  const saves = [], item = url => ({ getURL:() => url, getFilename:() => '方案.docx', setSaveDialogOptions:value => saves.push({ url, ...value }) });
+  h.webRequests['will-download']({}, item('http://192.168.1.20:47812/api/files/download?document_id=3'));
+  h.webRequests['will-download']({}, item('http://192.168.1.21:47812/api/files/download?document_id=3'));
+  assert.deepEqual(saves, [{ url:'http://192.168.1.20:47812/api/files/download?document_id=3', title:'下载到本机', defaultPath:path.join(FIXTURE_APP_DATA, '方案.docx') }]);
   assert.deepEqual(plain(await h.invoke('desktop:connection')), { mode:'remote', id:'saved-host', name:'书房主机', url:'http://192.168.1.20:47812',
     host_version:'0.3.99', local_version:'0.3.17', auth_expired:false, error:null });
   h.app.quit(); await tick();

@@ -38,7 +38,7 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 #chat-head .chat-toolbar-divider{display:none!important}
 #chat-head .head::after{content:"";order:7;flex:0 0 100%;height:0}
 /* 第二行：一行小字，空间不够时模型和说明先省略，不会再折行 */
-#chat-head .runtime-tag,#chat-head .right>.model-tag,#chat-head .right>.trust-tag,#chat-head .chat-scope,#chat-head .chat-member-stats{height:28px!important;margin:0 0 8px!important;font-size:var(--m-fs-min)!important;line-height:28px!important}
+#chat-head .runtime-tag,#chat-head .right>.model-tag,#chat-head .right>.trust-tag,#chat-head .chat-scope{height:28px!important;margin:0 0 8px!important;font-size:var(--m-fs-min)!important;line-height:28px!important}
 #chat-head .runtime-tag{order:8;max-width:none!important;margin-left:10px!important;padding:0 8px!important;border-radius:8px!important;border:0!important;background:var(--surface-2)!important;color:var(--text-2)!important}
 #chat-head .right>.model-tag{order:9;flex:1 1 0!important;min-width:0!important;max-width:max-content!important;padding:0 8px!important;margin-left:6px!important;border-radius:8px!important;border:0!important;background:var(--surface-2)!important;color:var(--text-2)!important;gap:3px}
 #chat-head .right>.trust-tag{order:10;flex:none;padding:0 8px!important;margin-left:6px!important;border-radius:8px!important;background:var(--surface-2)!important;color:var(--text-2)!important;gap:4px!important}
@@ -47,7 +47,6 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 #chat-head .right>.trust-tag[data-mode=autonomous]{color:var(--accent-text)!important;background:var(--accent-soft)!important}
 #chat-head .chat-scope{display:block!important;order:11;flex:1 1 0!important;min-width:0!important;margin-left:8px!important;color:var(--text-3)}
 #chat-head .chat-scope:empty{visibility:hidden}
-#chat-head .chat-member-stats{display:none!important}
 #chat-head .right>.rp-toggle{order:12;width:40px!important;min-width:40px!important;height:var(--mc-row2)!important;margin:-8px 0 0!important;align-self:flex-start}
 #chat-head .right>.rp-toggle .i{width:20px;height:20px}
 #chat-head .context-ring{order:8;margin:0 0 8px 10px}
@@ -216,12 +215,9 @@ body:has(#main[data-reader]) #chat-attention{display:none!important}
 #chat-attention>.rp{flex:none;border:0;border-radius:0;box-shadow:none;background:var(--bg);overflow:visible}
 #chat-attention .rp>.head{position:sticky;top:0;z-index:1;min-height:56px;padding:8px 8px 8px var(--m-gutter)!important;align-items:center!important;background:var(--bg);border-bottom:1px solid var(--line)}
 #chat-attention .rp>.head .title{font-size:var(--m-fs-section)!important;font-weight:600}
-#chat-attention .rp>.head .sub,#chat-attention .member-default-entry{font-size:var(--m-fs-min)!important}
-#chat-attention .member-default-entry{min-height:32px}
-#chat-attention .rp>.head .btn{min-height:40px;padding:0 12px!important;font-size:var(--m-fs-meta)!important}
+#chat-attention .rp>.head .btn{min-height:44px;padding:0 12px!important;font-size:var(--m-fs-meta)!important}
 #chat-attention .rp>.head .rp-close{width:var(--m-tap);height:var(--m-tap);color:var(--text-2)}
 #chat-attention .tree{overflow:visible!important;padding:12px var(--m-gutter) 16px!important}
-#chat-attention .rp-note{font-size:var(--m-fs-min)}
 
 /* ================= 助手页 ================= */
 .assistant-page{display:flex!important;flex-direction:column;height:calc(100dvh - var(--m-bottom))!important}

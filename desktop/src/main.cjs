@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, View, WebContentsView, ipcMain, dialog, Menu, Tray, nativeImage, nativeTheme, shell, clipboard, systemPreferences, safeStorage, session } = require('electron');
+const { app, BrowserWindow, View, WebContentsView, ipcMain, dialog, Menu, Tray, nativeImage, nativeTheme, shell, clipboard, systemPreferences, safeStorage, session, webContents } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -15,9 +15,10 @@ const { ReportPreviewRenderer, ReportPreviewClient } = require('./report-preview
 const { installPermissions } = require('./permissions.cjs');
 const { ToolUpdates } = require('./tool-updates.cjs');
 const { CrewUpdates } = require('./crew-updates.cjs');
+const { CrewSelfUpdate, installKind } = require('./crew-self-update.cjs');
 const { Administrator } = require('./admin.cjs');
 const { OperationsClient } = require('./operations.cjs');
-const { LaunchSettings, relaunchArgs } = require('./launch-settings.cjs');
+const { LaunchSettings, relaunchArgs, rememberPort } = require('./launch-settings.cjs');
 const { RemoteBackends } = require('./remote-backends.cjs');
 const product = require('./product.cjs');
 const platform = process.platform;
@@ -39,8 +40,10 @@ app.setPath('userData', config.userData);
 const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;
 const errorPage = pathToFileURL(path.join(__dirname, 'error.html')).href;
 let lastPublishedTab=null;
-let window, tray, backend, tabs, activityPreview, reportPreviews, tools, crewUpdates, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
+let window, tray, backend, tabs, activityPreview, reportPreviews, tools, crewUpdates, selfUpdate, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
 let startupWork = null, cleanupPromise = null, remoteHeartbeat = null, localVersion = null;
+const { Appearance } = require('./appearance.cjs');
+const appearance = new Appearance(config.userData, { nativeTheme });
 
 function liveWindow(target = window) {
   return !quitting && target === window && !!target && !target.isDestroyed() && !target.webContents.isDestroyed();
@@ -68,6 +71,7 @@ async function cleanupResources() {
     await Promise.all([
       finish('connection change', () => launchSettings?.pending),
       finish('Crew update', () => crewUpdates?.close()),
+      finish('Crew self-update', () => selfUpdate?.close()),
       finish('tool updates', () => tools?.close())
     ]);
     await Promise.all([...workspaceDataJobs].map(job=>finish('workspace data',()=>job)));
@@ -134,6 +138,11 @@ function attachDeviceToken(origin, token) {
     callback({requestHeaders:target(details.url) ? {...details.requestHeaders, Authorization:'Bearer ' + token} : details.requestHeaders});
   });
   session.defaultSession.webRequest.onCompleted(filter, details => { if (details.statusCode === 401 && target(details.url)) remoteAuthExpired(); });
+  // Host files a workspace page downloads ask where to save, starting in this computer's Downloads folder.
+  session.defaultSession.on('will-download', (_event, item) => {
+    if (!target(item.getURL())) return;
+    item.setSaveDialogOptions({title:'下载到本机', defaultPath:path.join(app.getPath('downloads'), item.getFilename())});
+  });
 }
 function trustedChrome(event) {
   if (!liveWindow() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame ||
@@ -514,7 +523,8 @@ handle('desktop:admin-status',async()=>{
       }
     }
   }
-  return status;
+  // Startup lands on this page when the backend cannot start; carry the real reason here (e.g. Python too old).
+  return backend?.startupError?{...status,startup_error:backend.startupError}:status;
 });
 handle('desktop:home-ready',()=>{
   homeBootstrapped=true;
@@ -593,10 +603,52 @@ if (platform !== 'darwin') {
     await shell.openExternal(url.href);return {ok:true};
   });
 }
+// A LAN client updates only itself, so these stay available in both modes.
+handle('desktop:self-update-snapshot',()=>selfUpdate.snapshot());
+handle('desktop:self-update-check',()=>selfUpdate.check());
+handle('desktop:self-update-download',()=>selfUpdate.fetchUpdate());
+handle('desktop:self-update-cancel',()=>selfUpdate.cancel());
+handle('desktop:self-update-install',()=>{if(launchSettings?.pending)throw Error('正在切换后台连接，请等待完成。');return selfUpdate.installUpdate();});
+handle('desktop:self-update-settings',value=>selfUpdate.settings(value));
+handle('desktop:self-update-open',async()=>{
+  const url=new URL(selfUpdate.snapshot().latest?.url||'https://github.com/akitokunnn/Crew/releases');
+  if(url.protocol!=='https:'||url.hostname!=='github.com'||!url.pathname.startsWith('/akitokunnn/Crew/releases'))throw new Error('发布链接不属于 Crew 官方仓库');
+  await shell.openExternal(url.href);return {ok:true};
+});
+// Installing a new version quits Crew: only when every session is idle, never by interrupting one.
+async function prepareSelfUpdateQuit() {
+  if (remoteMode || !backend || backend.startupError) return {ok:true};
+  if (!backend.owned) throw new Error('当前连接的是其他窗口启动的后台。请先退出那个 Crew，再更新。');
+  return crewUpdates.drainForRestart();
+}
 function settingsRequest(route, body, timeoutMs) {
   if (!backend?.url || new URL(backend.url).port === '0') throw Error(backend?.startupError || '后台尚未连接，请查看后台信息。');
   return core.request(backend.url, route, body, timeoutMs);
 }
+// The display mode is desktop-wide and harmless: the home page and workspace pages (this backend or a LAN host) may read and change it.
+function themeSender(event){
+  if(!liveWindow()||event.senderFrame!==event.sender.mainFrame)throw new Error('显示模式只接受 Crew 窗口内的页面');
+  if(event.sender===window.webContents&&[homePage,errorPage].includes(event.senderFrame.url))return;
+  let origin=null;try{origin=new URL(event.senderFrame.url).origin;}catch(_){}
+  if(!tabs||origin!==tabs.origin)throw new Error('显示模式只接受 Crew 窗口内的页面');
+}
+ipcMain.handle('desktop:theme',event=>{themeSender(event);return appearance.state();});
+ipcMain.handle('desktop:theme-set',(event,mode)=>{themeSender(event);return appearance.set(mode);});
+function applyTheme(){
+  const dark=nativeTheme.shouldUseDarkColors,frame=chrome.colors(dark);
+  if(liveWindow()){
+    window.setBackgroundColor(frame.color);
+    if(platform!=='darwin')window.setTitleBarOverlay?.({color:frame.color,symbolColor:frame.symbolColor,height:chrome.HEIGHT});
+  }
+  const state=appearance.state();
+  for(const contents of webContents.getAllWebContents()){
+    if(contents.isDestroyed())continue;
+    let origin=null;try{origin=new URL(contents.getURL()).origin;}catch(_){}
+    if(liveWindow()&&contents===window.webContents||tabs&&origin===tabs.origin)contents.send('desktop:theme',state);
+  }
+  tabs?.setBackground?.(dark?'#1E1E1C':'#F6F5F1');
+}
+nativeTheme.on('updated',applyTheme);
 handle('desktop:prompts-get',query=>settingsRequest('/api/behavior-prompts?'+new URLSearchParams(query || {})));
 handle('desktop:prompts-save',body=>settingsRequest('/api/behavior-prompts',body));
 // A LAN host's settings live in its HOME and are read and saved through its HTTP settings API.
@@ -719,6 +771,13 @@ else {
   app.whenReady().then(async () => {
     if (quitting) return;
     try {
+      selfUpdate=new CrewSelfUpdate({home:config.home,version:app.getVersion(),install:installKind({packaged:app.isPackaged}),
+        customBackend:config.backendSource==='custom',relaunchArgs:process.argv.slice(1),prepareQuit:prepareSelfUpdateQuit,
+        quit:()=>setTimeout(()=>app.quit(),250),openPath:file=>shell.openPath(file),showItem:file=>shell.showItemInFolder(file),
+        onChange:state=>{if(liveWindow())window.webContents.send('desktop:self-update-state',state);}});
+      // Before the backend starts, so a just-installed Mac version can still be rolled back by the helper.
+      await startupStep(selfUpdate.initialize().catch(error=>console.error('Crew self-update state unreadable:',error)));
+      if (quitting) return;
       if (platform === 'darwin') {
         process.env.PATH = await startupStep(readLoginShellPath());
         if (quitting) return;
@@ -749,7 +808,10 @@ else {
         }
       } else {
         backend = new core.Backend(config);
-        try { await startupStep(backend.start()); }
+        try {
+          await startupStep(backend.start());
+          await rememberPort(config, backend.url).catch(error => console.error('Crew 无法记住后台端口：', error.message));
+        }
         catch (error) {
           if (quitting) return;
           if(config.smoke)throw error;
@@ -793,13 +855,14 @@ else {
         if (quitting) return;
         if(!config.smoke&&!config.isolated&&!backend.startupError)tools.start();
       }
+      await appearance.load();
       window = new BrowserWindow({ width: 1220, height: 850, minWidth: 820, minHeight: 600,
-        show: false, title: config.instanceName, icon: path.join(__dirname, '../assets/crew.png'), ...chrome.windowOptions(),
+        show: false, title: config.instanceName, icon: path.join(__dirname, '../assets/crew.png'), ...chrome.windowOptions(platform, nativeTheme.shouldUseDarkColors),
         webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
           additionalArguments: ['--crew-desktop-config=' + encodeURIComponent(JSON.stringify({ home: homePage, origin: backend.url, error:errorPage, instanceName:config.instanceName, remote:remoteMode }))] } });
       tabs=new WorkspaceTabs(window,{origin:backend.url,
         createView:()=>{
-          const view=new WebContentsView({webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}});
+          const view=new WebContentsView({webPreferences:{preload:path.join(__dirname,'workspace-preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}});
           // Match the page's own first paint (system theme) so a loading page slides in without a white flash.
           view.setBackgroundColor(nativeTheme.shouldUseDarkColors?'#1E1E1C':'#F6F5F1');return view;
         },
@@ -859,6 +922,9 @@ else {
         tray.on('double-click', showWindow);
       }
       await window.loadURL(homePage);
+      if (quitting) return;
+      await selfUpdate.confirmReady(remoteMode || !backend.startupError).catch(error=>console.error('Crew self-update confirmation failed:',error));
+      if(!config.smoke&&!config.isolated)selfUpdate.start();
     } catch (error) {
       if (quitting) return;
       console.error(error);

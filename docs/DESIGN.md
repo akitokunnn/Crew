@@ -111,7 +111,7 @@ Crew/
 
 ## 2. 身份和项目
 
-- **项目主题**：`themes.py` 定义六套主题，state 下发浅 / 深色 token。分配与切换规则见 [WEB_UX.md 的外观](WEB_UX.md#外观)；存储在 `project_themes`，切换记录 `project:theme` 事件。浅 / 深 / 跟随系统是浏览器独立设置。
+- **项目主题**：`themes.py` 定义六套主题，state 下发浅 / 深色 token。分配与切换规则见 [WEB_UX.md 的外观](WEB_UX.md#外观)；存储在 `project_themes`，切换记录 `project:theme` 事件。浅 / 深 / 跟随系统：Crew 桌面里是整个应用共用的一个设置（`desktop/src/appearance.cjs` 存在桌面数据目录并设置 Electron `nativeTheme.themeSource`，首页、所有工作区页、窗口外框和标题栏同时生效，工作区页经 `workspace-preload.cjs` 的 `crewDesktopTheme` 读写）；手机或浏览器直接访问时仍是各自浏览器里的独立设置。
 
 - **会话 ID**：钩子从输入 JSON 的 `session_id` 取；命令行从环境变量 `CLAUDE_CODE_SESSION_ID` 取（Claude Code 会给工具命令设这个变量）。命令行也接受 `--session ID`。需要会话身份的命令拿不到 ID 时报错退出（exit 1），并说明"请在 Claude 会话里运行，或加 --session"。不需要身份的命令（status、decisions、answer 等）在普通终端里也能用，此时操作人记作 `user`。
 - **crew 名**：人起的稳定名字（雷达、视觉）。同一项目里，未离线（status 不是 offline / closed）的会话不能重名，重名时 join 报冲突（exit 3）。
@@ -308,7 +308,7 @@ PreToolUse 对所有工具运行。按顺序检查，命中任何一条就 stder
 - `Manager.close` 关闭 stdin，最多等待读线程 1 秒。日志已写 offline 的不自动续跑；未读完且仍为 working 的按中断轮次恢复，原进程存活时等待其退出。
 - 空闲回收：`Manager.reclaim_idle` 由 agents 轮询（每 10 秒）调用，关闭日志最后一条事件距今超过 30 分钟的托管原生进程，leader、成员总对话和任务执行一视同仁，CC 关 stdin 正常退出，Codex 关连接但不归档线程。正在回复、排队压缩、部门维护、载体切换待确认、原会话丢失替换中，或还有后台任务（CC 的 `task_started` 未收到对应 `task_notification`、后台子代理仍 running）的一律保留。回收后日志记 `runtime_released` 并显示离线；下一条用户消息、组员消息或 leader 通知按既有离线续跑逻辑用原 ID `--resume` 接回，上下文不丢。环境变量 `CREW_IDLE_RECLAIM_MINUTES` 改时长，0 关闭。理由：每个常驻 CLI 约 200–300 MB，leader 和任务执行多了会一直占着内存。
 - Windows 的 npm `claude.cmd` 会另起原生子进程；托管会话直接启动该安装目录的 `bin/claude.exe`，让 Manager 持有的 PID 与 `claude agents` 一致，交接时可以确认进程归属。
-- 子进程设置 `CLAUDE_CODE_ENTRYPOINT=crew-web`，使 VS Code 扩展能发现原 ID 和历史；`sdk-cli` 等程序会话会被扩展过滤。仍用 `-p/stream-json`，不修改 transcript 或扩展，交接按 Manager 持有的 PID 核对归属。
+- 子进程设置 `CLAUDE_CODE_ENTRYPOINT=cli`，标明这是面向人的会话，不归入 `sdk-*` 程序会话，会话库和 VS Code 扩展都能列出。不能用自定义值：2026-11-21 在 Claude Code 2.1.311 上实测，`crew-web`（原用值）和 `claude-vscode` 都不走订阅额度、改按 API 计费，订阅用户会直接报 `billing_error`；`cli`、`sdk-cli`、`sdk-ts` 正常。仍用 `-p/stream-json`，不修改 transcript 或扩展，交接按 Manager 持有的 PID 核对归属。
 - 后台子进程环境设置 `MSYS_NO_PATHCONV=1`，避免 Git Bash 转换任务正文中的 Windows 路径；不修改系统或用户环境。
 
 网页接口：

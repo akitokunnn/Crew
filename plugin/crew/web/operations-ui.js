@@ -35,7 +35,7 @@
     const first = tabs[0][0];
     root.innerHTML = `<div class="co-toolbar"><div class="co-tabs" role="tablist" aria-label="后台与运维">${tabs.map(([id,label]) => `<button type="button" role="tab" data-operations-tab="${id}" aria-controls="co-operations-panel" aria-selected="${id === first}" tabindex="${id === first ? 0 : -1}">${label}</button>`).join("")}</div>${chatAvailable ? '<button type="button" class="co-brain" data-operations-action="brain">运维 AI 大脑 <span aria-hidden="true">↗</span></button>' : ""}</div><div class="co-panel" id="co-operations-panel" role="tabpanel"></div>`;
     const panel = root.querySelector(".co-panel");
-    let tab = first, active = false, timer = null, healthCleanup = null, snapshot = null;
+    let launchIntent = null, tab = first, active = false, timer = null, healthCleanup = null, snapshot = null;
     let chat = null, chatLoaded = false, chatError = "", chatReadError = "", chatRead = 0, chatNote = "", chatDraft = "", pending = null, messageId = null;
     let config = null, configDraft = null, configError = "", configNote = "", configLoading = false, configSaving = false, advanced = false;
     let chatScroll = 0, chatPinned = true, messageSignature = "", launch = null;
@@ -187,7 +187,7 @@
       if (tab === "chat") { renderChat(); if (active) void readChat(); }
       if (tab === "status") renderStatus();
       if (tab === "config") { renderConfig(); if (!config && active) void readConfig(); }
-      if (tab === "launch") { panel.replaceChildren(); if (!launch) launch = window.CrewLaunchSettings.create({api:api.launch}); launch.mount(panel); }
+      if (tab === "launch") { panel.replaceChildren(); if (!launch) launch = window.CrewLaunchSettings.create({api:api.launch}); launch.mount(panel); if (launchIntent) { launch.prepare(launchIntent); launchIntent = null; } }
     }
     root.addEventListener("click", event => {
       const button = event.target.closest("button"); if (!button || !root.contains(button)) return;
@@ -221,6 +221,8 @@
     document.addEventListener("visibilitychange", visibility);
     function hide() { active = false; clearTimer(); clearClock(); unmountHealth(); launch?.hide(); }
     return {mount(host, value) { snapshot = value; active = true; host.append(root); render(); return hide; }, hide,
+      // Settings renders right after (open → mount), which shows the tab and hands over the intent once.
+      openLaunch(intent) { if (!api.launch) return; tab = "launch"; launchIntent = intent; },
       getState:() => ({tab, chatDraft, configDraft:configDraft && clone(configDraft), chatLoaded, chatError:chatError || chatReadError})};
   }
   window.CrewOperations = {create, parseCommands, policyDraft, policyValue, brainIssue};

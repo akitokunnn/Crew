@@ -129,30 +129,38 @@ test("a paused task does not lock the person's independent general conversation"
   const state=fixture();state.goals=[{id:"goal",status:"paused"}];const {ui}=harness(state),person={active_goal_id:"goal",web_chat:true,running:false,where:"offline"};assert.equal(ui.chatAccess(person,null).readonly,false);assert.equal(ui.chatAccess(person).readonly,false);state.goals[0].status="completed";assert.equal(ui.chatAccess(person,null).readonly,false);
 });
 
-test("Codex speed comes from the model's own tiers, is codex-only and stays visible in labels", () => {
+test("chat only offers supported standard and fast speeds while session settings can restore inheritance", () => {
   const {ui, nodes} = harness();
   const menu = ui.modelMenu(session({speed:"priority", applied:{model:"gpt-a", effort:"medium", speed:"priority"}}));
   assert(menu.includes('id="menu-speed-label"'));
-  for (const id of ["", "default", "priority"]) assert(menu.includes(`data-speed="${id}"`));
-  assert(!menu.includes('data-speed="ultrafast"'));
+  assert.deepEqual([...menu.matchAll(/data-speed="([^"]*)"/g)].map(match => match[1]), ["default", "priority"]);
+  assert.match(menu, />标准<\/button>/);
+  assert.match(menu, />快速<\/button>/);
   assert(/aria-checked="true" data-act="set-speed" data-id="session-codex" data-speed="priority"/.test(menu));
-  assert(ui.modelMenu(session({model:"gpt-b"})).includes('data-speed="ultrafast"'));
+  const inherited = session({model:"gpt-b", speed:null, applied:{model:"gpt-b", effort:"high", speed:"default"}});
+  assert(!ui.modelMenu(inherited).includes('data-speed="ultrafast"'));
+  assert.match(ui.modelMenu(inherited), /aria-checked="true" data-act="set-speed" data-id="session-codex" data-speed="default"/);
+  assert.match(ui.modelMenu(inherited, true), /aria-checked="true" data-act="set-speed" data-id="session-codex" data-speed=""[^>]*>.*跟随 Codex 设置<\/button>/);
   // No model chosen: only tiers every listed model offers.
   const unset = ui.modelMenu(session({model:null, applied:null}));
   assert(unset.includes('data-speed="priority"') && !unset.includes('data-speed="ultrafast"'));
   assert(!ui.modelMenu(session({runtime:"claude", model:"claude-sonnet", applied:null})).includes("set-speed"));
-  assert.equal(ui.optionsLabel(session({applied:{model:"gpt-b", effort:"high", speed:"ultrafast"}})), "GPT B · high · Ultrafast");
+  assert.equal(ui.optionsLabel(session({applied:{model:"gpt-b", effort:"high", speed:"ultrafast"}})), "GPT B · high · 超快");
   assert.equal(ui.optionsLabel(session({applied:{model:"gpt-a", effort:"medium", speed:"default"}})), "GPT A · medium");
   assert.deepEqual(plain(ui.optionChange(session(), "speed", "priority")), {speed:"priority"});
   assert.throws(() => ui.optionChange(session(), "speed", "ultrafast"), /速度/);
   const offline = session({model:"gpt-b", speed:"ultrafast", where:"offline", running:false, applied:null});
   assert.deepEqual(plain(ui.optionChange(offline, "model", "gpt-a")), {model:"gpt-a", speed:null});
   assert.throws(() => ui.optionChange(session({model:"gpt-b", speed:"ultrafast", applied:{model:"gpt-b", effort:"high"}}), "model", "gpt-a"), /速度/);
-  assert.equal(ui.optionChangeNotice(session(), {speed:"priority"}), "下一步启用速度：Fast");
+  assert.equal(ui.optionChangeNotice(session(), {speed:"priority"}), "下一步启用速度：快速");
   assert.equal(ui.optionChangeNotice(session(), {speed:null}), "下一步启用速度：跟随 Codex 设置");
   const leader = form("codex", "gpt-b", "", "ultrafast"); nodes.set("leader-form", leader); ui.renderLeaderRuntime();
   assert(nodes.get("leader-speed-options").innerHTML.includes('data-speed="ultrafast" aria-pressed="true"'));
+  assert.match(nodes.get("leader-speed-options").innerHTML, />当前 · 超快<\/button>/);
   assert.equal(plain(ui.leaderPayload(leader)).speed, "ultrafast");
+  ui.selectLeaderOption(leader, "speed", "default"); ui.renderLeaderRuntime();
+  assert.doesNotMatch(nodes.get("leader-speed-options").innerHTML, /data-speed="ultrafast"/);
+  leader.elements.speed.value = "ultrafast";
   ui.selectLeaderOption(leader, "model", "gpt-a"); ui.renderLeaderRuntime();
   assert.throws(() => ui.leaderPayload(leader), /速度/);
 });
@@ -510,6 +518,23 @@ test("every context ring is a named native button at low and high usage across b
     assert(ui.sidebarLeader(state.leaders[0],0).startsWith('<div draggable="true"'));
     assert(ui.memberNode(state.members[0]).includes('<div class="node session-surface'));
     assert(ui.workingRow(state.leaders[0]).includes('class="session-open"'));
+  }
+});
+
+test("offline conversations with history keep a usable compact ring without showing a percentage", () => {
+  for (const runtime of ["claude", "codex"]) {
+    const state = contextState(runtime), {ui} = harness(state);
+    const [lead, member] = [state.leaders[0], state.members[0]];
+    for (const item of [lead, member]) {
+      Object.assign(item, {where:"offline", running:false, status:"offline", context:null, web_chat:true});
+    }
+    for (const html of [ui.sidebarLeader(lead, 0), ui.memberNode(member), ui.contextControls(member)]) {
+      assert.match(html, /class="context-ring unknown"[^>]*data-act="context-compact"/);
+      assert.match(html, /上下文用量未知 · 点击压缩上下文/);
+      assert(!html.includes('class="context-arc"'));
+      assert(!html.includes('class="context-pct"'));
+    }
+    assert.equal(ui.contextRing({...lead, web_chat:false}), "");
   }
 });
 

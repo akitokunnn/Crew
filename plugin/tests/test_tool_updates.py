@@ -303,3 +303,75 @@ class ToolUpdateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HomebrewAndPosixTests(unittest.TestCase):
+    """Simulated macOS Homebrew cask installations and updates."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent)
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.home = self.root / "crew-home"
+        self.prefix = self.root / "homebrew prefix"
+        (self.prefix / "bin").mkdir(parents=True)
+        (self.prefix / "bin" / "brew").write_text("#!/bin/sh\n")
+        self.versions, self.latest = {"claude": "2.1.300", "codex": "0.170.0"}, {"claude-code": "2.1.311", "codex": "0.171.0"}
+        self.which, self.binaries, self.calls, self.processes = {}, {}, [], []
+        for runtime, cask in tools.CASKS.items():
+            self.install(runtime, cask, self.versions[runtime])
+        self.inspector = tools.Inspector(which=self.which.get, run=self.run_command,
+            latest=lambda runtime: self.fail("Homebrew installs never compare with npm"),
+            homebrew=lambda cask: self.latest[cask], processes=lambda: list(self.processes), user_home=self.root)
+
+    def install(self, runtime, cask, version):
+        binary = self.prefix / "Caskroom" / cask / version / ("claude" if runtime == "claude" else "bin/codex")
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(b"\xcf\xfa\xed\xfefixture")
+        link = self.prefix / "bin" / runtime
+        link.unlink(missing_ok=True)
+        link.symlink_to(binary)
+        self.which[runtime], self.binaries[runtime] = str(link), binary
+
+    def run_command(self, command, **options):
+        self.calls.append(list(command))
+        if command[-1] == "--version":
+            runtime = "codex" if "codex" in Path(command[0]).parts[-4:-1] or Path(command[0]).name == "codex" else "claude"
+            return subprocess.CompletedProcess(command, 0, self.versions[runtime] + (" (Claude Code)" if runtime == "claude" else ""), "")
+        runtime = {cask: runtime for runtime, cask in tools.CASKS.items()}[command[-1]]
+        self.versions[runtime] = self.latest[command[-1]]
+        self.install(runtime, command[-1], self.versions[runtime])
+        return subprocess.CompletedProcess(command, 0, "upgraded", "")
+
+    @unittest.skipIf(os.name == "nt", "Homebrew symlinks")
+    def test_cask_install_compares_with_homebrew_and_upgrades_through_its_own_brew(self):
+        record = self.inspector.inspect("claude")
+        self.assertEqual((record["installation"], record["installed_version"], record["latest_version"]), ("homebrew", "2.1.300", "2.1.311"))
+        self.assertTrue(record["update_available"] and record["can_update"])
+        self.assertEqual(record["_update"], [str(self.prefix / "bin" / "brew"), "upgrade", "--cask", "claude-code"])
+        result = tools.update(self.home, "codex", inspector=self.inspector)
+        self.assertEqual((result["status"], result["after"]["installed_version"]), ("updated", "0.171.0"))
+        self.assertIn([str(self.prefix / "bin" / "brew"), "upgrade", "--cask", "codex"], self.calls)
+
+    @unittest.skipIf(os.name == "nt", "Homebrew symlinks")
+    def test_running_cask_binary_blocks_the_upgrade(self):
+        self.processes[:] = [{"ProcessId": 9, "Name": "claude", "ExecutablePath": str(self.prefix / "bin" / "claude"),
+                              "CommandLine": str(self.prefix / "bin" / "claude") + ' -p --settings {"a": "b}'}]
+        result = tools.update(self.home, "claude", inspector=self.inspector)
+        self.assertEqual((result["status"], result["running_count"]), ("blocked", 1))
+        self.assertNotIn("upgrade", sum(self.calls, []))
+
+
+class PosixProcessTests(unittest.TestCase):
+    def test_ps_rows_keep_full_paths_and_unquoted_arguments(self):
+        outputs = {"comm=": " 41 /opt/homebrew/Caskroom/codex/0.171.0/bin/codex\n 42 /Applications/My App.app/Contents/MacOS/claude\n"
+                            " 43 /usr/bin/node\n 44 /bin/zsh\n",
+                   "args=": ' 41 /opt/homebrew/bin/codex app-server\n 42 claude --settings {"x":"y\n'
+                            " 43 node /Users/me/npm prefix/lib/node_modules/@openai/codex/bin/codex.js\n 44 -zsh\n"}
+        run = lambda command, **options: subprocess.CompletedProcess(command, 0, outputs[command[-1]], "")
+        rows = {row["ProcessId"]: row for row in tools.posix_processes(run)}
+        self.assertEqual(sorted(rows), [41, 42, 43])
+        self.assertEqual(rows[42]["ExecutablePath"], "/Applications/My App.app/Contents/MacOS/claude")
+        record = {"id": "codex", "_guard_roots": ["/Users/me/npm prefix/lib/node_modules/@openai/codex"]}
+        if os.name != "nt":
+            self.assertEqual(tools.running_count(record, list(rows.values())), 1)

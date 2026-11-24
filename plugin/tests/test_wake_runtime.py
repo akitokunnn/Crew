@@ -128,7 +128,7 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
         self.recover()
         self.assertEqual(len(self.resume_events()), 1)
 
-    def test_normal_close_with_drained_reader_persists_offline_and_does_not_resume(self):
+    def test_normal_close_with_drained_reader_persists_offline_and_resumes(self):
         with mock.patch("crew.chat.shutil.which", return_value="claude"):
             self.manager.wake(self.conn, board.session(self.conn, "s1"), "continue", caller_session_id="s3", now=NOW)
         self.assertEqual(self.manager.journal("s1").status, "working")
@@ -138,7 +138,8 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
         restarted = chat.Manager(self.home, PLUGIN, lambda: [], self.process_factory)
         self.addCleanup(restarted.close)
         restarted.auto_resume(self.conn, [], now=NOW)
-        self.assertEqual(len(self.processes), 1)
+        self.assertEqual(len(self.processes), 2)
+        self.assertTrue(restarted.busy("s1"))
 
     def test_auto_resume_missing_spawn_spec_records_failure_without_launch(self):
         self.interrupted()

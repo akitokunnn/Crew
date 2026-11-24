@@ -18,6 +18,41 @@ REPAIR_BLACKLIST = object()
 SHELL_WORDS = re.compile(r'''(?:"(?:`.|\\.|[^"\\])*"|'(?:''|[^'])*'|[^\s;&|()"'])+|&&|\|\||[;&|()\n]''')
 
 
+def clear_general_handoff(conn, session_id):
+    conn.execute('DELETE FROM general_goal_handoffs WHERE session_id=?', (session_id,))
+
+
+def _crew_coordination(home, command):
+    # An ordinary Crew CLI invocation is enough to start more tasks or route messages.
+    if not isinstance(command, str) or re.search(r'[\r\n\x00]', command):
+        return False
+    quoted = re.sub(r"'(?:''|[^'])*'", "''", command)
+    if re.search(r'[<>`$%]', quoted):
+        return False
+    words = SHELL_WORDS.findall(command)
+    if len(words) < 2 or any(word in ('&&', '||', ';', '|', '&', '(', ')') for word in words):
+        return False
+    if words[0].casefold() in ('crew', 'crew.exe', 'crew.cmd'):
+        return True
+    return (len(words) >= 3 and words[0].casefold() in ('python', 'python.exe', 'python3', 'py')
+            and store.norm_path(words[1].strip('\"\'')) == store.norm_path(Path(home) / 'crew.py'))
+
+
+def _handoff_reason(conn, home, session_id, tool, command):
+    if tool not in SHELLS + WRITES + ('apply_patch', 'Agent', 'Task', 'TeamCreate'):
+        return None
+    if tool in SHELLS and _crew_coordination(home, command):
+        return None
+    # A live checkout can supply the new hook before the host migrates its board.
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='general_goal_handoffs'").fetchone():
+        return None
+    row = conn.execute('SELECT goal_id FROM general_goal_handoffs WHERE session_id=?', (session_id,)).fetchone()
+    if row is not None:
+        return ('BLOCKED by Crew: 本轮已将任务 %s 交给执行对话。请在任务内实施和验证，'
+                '总对话可继续用独立的 Crew 命令协调其他事项。' % row['goal_id'])
+    return None
+
+
 def discussion_write_reason(conn, execution_id, tool):
     """Known native editors need an explicit amendment of a delivered goal.
 
@@ -134,7 +169,7 @@ def enabled_project(home, session_id, cwd):
         return board.project_for_session(conn, session_id, cwd)
 
 
-def check(home, data, now=None):
+def check(home, data, now=None, *, execution_id=None):
     reason = blacklist_reason(home, data)
     if reason is REPAIR_BLACKLIST:
         return None
@@ -150,6 +185,8 @@ def check(home, data, now=None):
             if p is None:
                 return reason
             sid = data["session_id"]
+            if reason is None and execution_id is None:
+                reason = _handoff_reason(conn, home, sid, tool, command)
             if reason is None and tool in ('Agent', 'Task', 'TeamCreate'):
                 member = conn.execute('SELECT role,crew_name FROM sessions WHERE session_id=?', (sid,)).fetchone()
                 if member is not None and member['crew_name'] and member['role'] == 'member':

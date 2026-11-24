@@ -221,6 +221,9 @@ def _describe(row):
     address = ipaddress.ip_address(row['address'])
     if 'bsd_name' in row:
         kind = _macos_kind(row['bsd_name'], row['name'], str(address))
+        if kind == 'zerotier' and row['name'] == row['bsd_name']:
+            # networksetup does not list ZeroTier's feth ports; name the network, keep the port as description.
+            row = {**row, 'name': 'ZeroTier'}
     else:
         label = (row.get('name', '') + ' ' + row.get('description', '')).casefold()
         virtual = row.get('if_type') == 131 or any(word in label for word in ('virtual', 'vethernet', 'hyper-v'))

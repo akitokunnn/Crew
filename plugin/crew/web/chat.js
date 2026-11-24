@@ -8,12 +8,15 @@
   function usage(context) {
     const used = known(context?.used) ? context.used : null, max = known(context?.max) && context.max > 0 ? context.max : null;
     const ratio = used !== null && max !== null ? used / max : null;
-    return {used, max, ratio, percent:ratio === null ? null : Math.round(ratio * 100)};
+    const previous = context?.source === "last_observed" || context?.source === "transcript";
+    return {used, max, ratio, previous, percent:ratio === null ? null : Math.round(ratio * 100)};
   }
   function usageText(context) {
     const value = usage(context);
-    if (value.ratio !== null) return `上下文已用 ${tokens(value.used)} / ${value.max >= 10000 ? `${Number((value.max / 10000).toFixed(1))} 万` : tokens(value.max)}（${value.percent}%）`;
-    return value.used === null ? "上下文用量未知" : `上下文已用 ${tokens(value.used)}，上限未知`;
+    if (value.used === null) return "上下文用量未知";
+    const prefix = value.previous ? "上次记录的上下文已用" : "上下文已用";
+    if (value.ratio !== null) return `${prefix} ${tokens(value.used)} / ${value.max >= 10000 ? `${Number((value.max / 10000).toFixed(1))} 万` : tokens(value.max)}（${value.percent}%）`;
+    return `${prefix} ${tokens(value.used)}，上限未知`;
   }
   // target: id, name, phase (submitting|queued|compacting), failed (reason), busy, external.
   function ring(context, target) {
@@ -23,10 +26,11 @@
       : target.external ? "点击查看原工具压缩方式" : target.failed ? `上次压缩未完成：${target.failed} · 点击重试` : target.busy ? "点击在本轮结束后压缩" : "点击压缩上下文";
     const label = [target.name, target.scope, usageText(context), hint].filter(Boolean).join(" · ");
     const level = value.ratio === null ? "unknown" : value.ratio >= CONTEXT_DANGER ? "danger" : value.ratio >= CONTEXT_WARN ? "warn" : "calm";
-    const text = value.percent !== null ? `${value.percent}%` : value.used !== null ? tokens(value.used) : "—";
+    const text = value.percent !== null ? `${value.percent}%` : value.used !== null ? tokens(value.used) : "";
+    const caption = text ? `<span class="context-pct" aria-hidden="true">${escape(text)}</span>` : "";
     const state = phase === "queued" ? " is-queued" : phase ? " is-compacting" : target.failed ? " has-failed" : "";
     // Data attributes stay identical across states so a re-render keeps keyboard focus on the ring.
-    return `<button type="button" class="context-ring ${level}${state}" data-act="context-compact" data-id="${escape(target.id)}" title="${escape(label)}" aria-label="${escape(label)}" ${phase ? 'aria-busy="true" aria-disabled="true"' : ""}><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7.5"/>${value.ratio === null ? "" : `<circle class="context-arc" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="${Math.min(100, value.ratio * 100)} 100"/>`}</svg><span class="context-pct" aria-hidden="true">${escape(text)}</span></button>`;
+    return `<button type="button" class="context-ring ${level}${state}" data-act="context-compact" data-id="${escape(target.id)}" title="${escape(label)}" aria-label="${escape(label)}" ${phase ? 'aria-busy="true" aria-disabled="true"' : ""}><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7.5"/>${value.ratio === null ? "" : `<circle class="context-arc" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="${Math.min(100, value.ratio * 100)} 100"/>`}</svg>${caption}</button>`;
   }
   // A freshly resumed Codex thread reports no size before compaction.
   const compactSize = value => value === null ? "未知" : tokens(value);
@@ -207,6 +211,10 @@
     if (raw) params.set("raw", "1");
     return "/api/files/content?" + params;
   }
+  // Another device (phone browser or a Crew desktop client on a LAN host) saves host files instead of opening them.
+  function fileDownloadUrl(path, sessionId, documentId = null) {
+    return fileContentUrl(path, sessionId, null, false, documentId).replace("/api/files/content?", "/api/files/download?");
+  }
   function initFiles(api, toast) {
     let request = 0;
     const panel = document.createElement("section");
@@ -252,10 +260,10 @@
         const renderingSession = documentLink ? (typeof info.session_id === "string" ? info.session_id : "") : data.session_id;
         const resolved = documentLink ? {document_id:data.document_id} : {path:info.path, session_id:data.session_id};
         const localDesktop = !window.CrewAccess || window.CrewAccess.local_desktop;
-        // A Crew desktop client connected to a host cannot open host files either; name where they open.
-        const elsewhere = window.CrewAccess?.client === "desktop" ? "此格式不能在这里预览，请在主机上的 Crew 中查看。" : "此格式暂不能在浏览器预览，请在运行 Crew 的电脑上查看。";
+        // A Crew desktop client connected to a host cannot open host files either; it downloads them like a browser.
+        const downloadUrl = fileDownloadUrl(info.path, data.session_id || "", documentLink ? data.document_id : null);
         if (info.type === "external" && info.open_with === "default") {
-          if (!localDesktop) throw Error(elsewhere + "任务报告可从“交付与文档”打开。");
+          if (!localDesktop) { window.CrewBrowser.download(downloadUrl); toast("正在下载到本机：" + info.path.split(/[\\/]/).pop()); return; }
           await api("/api/files/open", resolved); return;
         }
         let content;
@@ -267,8 +275,8 @@
         if (sequence !== request) return;
         const openLabel = info.open_with === "vscode" ? "在 VS Code 打开" : "用默认程序打开";
         const openButton = !localDesktop || info.open_with === "blocked" ? "" : `<button class="btn file-open">${openLabel}</button>`;
-        const actions = localDesktop ? `${openButton}<button class="btn file-reveal">在文件夹中显示</button>` : "";
-        const bodyMarkup = info.open_with === "blocked" ? escape(localDesktop ? "这类文件不直接打开，请用‘在文件夹中显示’" : elsewhere)
+        const actions = localDesktop ? `${openButton}<button class="btn file-reveal">在文件夹中显示</button>` : '<button class="btn file-download">下载到本机</button>';
+        const bodyMarkup = info.open_with === "blocked" ? escape(localDesktop ? "这类文件不直接打开，请用‘在文件夹中显示’" : "这类文件不能在这里预览，可以下载到本机查看。")
           : info.kind === "image" ? `<img class="file-image" alt="${escape(info.path)}" src="${escape(fileContentUrl(info.path, data.session_id || "", null, true, documentLink ? data.document_id : null))}">`
           : (content.truncated ? `<p class="note">文件较大，仅显示${escape(content.portion)} 256 KiB</p>` : "") + (info.kind === "markdown" ? `<div class="markdown">${renderMarkdown(content.content, renderingSession, info.path)}</div>` : `<pre class="file-text">${escape(content.content)}</pre>`);
         // Beside a conversation the file opens in the shared reading pane; elsewhere (channel, assistant page) in the drawer.
@@ -289,6 +297,7 @@
         for (const action of (!localDesktop ? [] : info.open_with === "blocked" ? ["reveal"] : ["open", "reveal"])) host.querySelector(".file-" + action).onclick = async () => {
           try { await api("/api/files/" + action, resolved); } catch (error) { toast(error.message); }
         };
+        if (!localDesktop) host.querySelector(".file-download").onclick = () => window.CrewBrowser.download(downloadUrl);
         if (inPane) host.querySelector(".file-close").focus({preventScroll:true}); else panel.classList.add("show");
       } catch (error) { toast(error.message); }
     }, true);

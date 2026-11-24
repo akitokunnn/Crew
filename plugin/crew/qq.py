@@ -119,7 +119,12 @@ class WS:
     def _watch_stop(self, stop, done):
         while not done.wait(0.01):
             if stop.is_set():
-                self.drop()
+                if os.name == 'nt':
+                    # Winsock may keep a timed recv waiting until the socket closes.
+                    self.drop()
+                else:
+                    # On macOS, let recv observe shutdown while its descriptor is still open.
+                    self._shutdown()
                 return
 
     def _read(self, length):
@@ -193,7 +198,8 @@ class WS:
     def send_json(self, value):
         self._frame(1, json.dumps(value, ensure_ascii=False).encode('utf-8'))
 
-    def drop(self):
+    def _shutdown(self):
+        """Wake a blocked recv() once; leaves the socket open for its owner to close."""
         with self.drop_lock:
             if self.dead:
                 return
@@ -204,8 +210,12 @@ class WS:
                 # shutdown on an already disconnected Windows socket reports WSAENOTCONN.
                 if exc.errno not in (errno.ENOTCONN, errno.EBADF, errno.ENOTSOCK, 10057, 10038):
                     raise
-            finally:
-                self.sock.close()
+
+    def drop(self):
+        try:
+            self._shutdown()
+        finally:
+            self.sock.close()  # Idempotent; also releases a socket only shut down by _watch_stop.
 
 
 class _HTTPSRedirect(HTTPRedirectHandler):

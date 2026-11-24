@@ -7,8 +7,8 @@ const source=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").r
 vm.runInContext(source.replace("  setup();\n})();","  window.ui={codexMarkup,leaderNode,memberNode,setState(value){state=value;}};\n})();"),sandbox);
 const ui=sandbox.window.ui;
 const task=extra=>({id:"child",task_name:"检查界面 <safe>",source:"native_subagent",status:"running",started_at:new Date().toISOString(),ended_at:null,...extra});
-test("native task status renders spinner, check only on success, and separate failure/pause/closed/unknown labels",()=>{
-  for(const [status,label] of Object.entries({running:"运行中",succeeded:"已完成",failed:"失败",interrupted:"已暂停",closed:"已关闭",unknown:"状态未确认"})){
+test("native task status renders spinner, check only on success, and separate pause and interruption labels",()=>{
+  for(const [status,label] of Object.entries({running:"运行中",succeeded:"已完成",failed:"失败",paused:"已暂停",interrupted:"已中断",closed:"已关闭",unknown:"状态未确认"})){
     const html=ui.codexMarkup(task({status,detail:'fixture <error> "quoted"'}));
     assert(html.includes('data-codex-source="native_subagent"'));assert(html.includes(`aria-label="${label}"`));
     assert.equal(html.includes('class="spin"'),status==="running");assert.equal(html.includes('xs ok'),status==="succeeded");

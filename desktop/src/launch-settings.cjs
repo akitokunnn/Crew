@@ -63,6 +63,21 @@ async function save(file, settings) {
   await fs.rename(temporary,file);
 }
 
+// Workspace pages keep drafts, theme and layout in per-origin storage, so an
+// automatically chosen port is kept for later launches. Only a local backend on
+// "0 = automatic" with the normal settings file is remembered; explicit,
+// isolated, smoke and LAN/existing-service launches stay untouched.
+async function rememberPort(config, url) {
+  if (config.smoke || config.isolated || config.remoteBackend || config.serviceUrl || config.port !== 0 || !config.launchSettingsPath) return false;
+  const port = Number(new URL(url).port);
+  if (!Number.isInteger(port) || port <= 0) return false;
+  const current = readSync(config.launchSettingsPath);
+  if (current && (current.mode !== 'local' || current.port !== 0)) return false;
+  await save(config.launchSettingsPath, shape({...(current || fromConfig(config)), port}));
+  config.port = port;
+  return true;
+}
+
 async function availablePort(port) {
   await new Promise((resolve,reject)=>{
     const server=net.createServer();
@@ -261,4 +276,4 @@ class LaunchSettings {
   }
 }
 
-module.exports={LaunchSettings,shape,migrate,readSync,fromConfig,relaunchArgs,save,availablePort};
+module.exports={LaunchSettings,shape,migrate,readSync,fromConfig,relaunchArgs,save,availablePort,rememberPort};

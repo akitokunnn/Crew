@@ -1,5 +1,4 @@
 """Local board API, with an independently authenticated LAN transport."""
-import csv
 import datetime as dt
 import hashlib
 import io
@@ -22,12 +21,12 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 from urllib.error import HTTPError, URLError
 
-from . import board, channel, channel_digest, chat, claude_limits, codex_runtime, documents, git_admin, git_ci, git_overview, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
+from . import board, channel, channel_digest, chat, claude_budget, claude_limits, codex_runtime, documents, git_admin, git_ci, git_overview, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
 from . import appearance, codex_client, member_defaults, operations_chat, operations_settings
 from . import connections, session_delete, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
-from . import codex_binding, personal, native_home, native_skills
+from . import codex_binding, personal, native_folders, native_home, native_skills
 from . import host_workspace, remote_access, remote_http
 from . import report_preview, event_sounds, reading_context
 from . import domains
@@ -92,7 +91,10 @@ class Service:
         self.agents_error = "\u6b63\u5728\u83b7\u53d6\u8fdb\u7a0b\u72b6\u6001"
         self.scanned_at = None
         self.crew_usage = (None, None)
+        self.claude_budget = None
         self.title_cache = {}
+        self.codex_context_cache = {}
+        self.chat.context_history = self._native_context_history
         self.vscode_state_db = _vscode_state_db() if vscode_state_db is None else Path(vscode_state_db)
         self.vscode_session_caches = {}
         self.vscode_sessions, self.vscode_record_ids = {}, {}
@@ -674,13 +676,43 @@ class Service:
         """A member's task executions for its own page: current ones first, then the most recent."""
         order = {item['id']: index for index, item in enumerate(active)}
         rows = conn.execute(
-            'SELECT e.id,e.goal_id,g.title,e.status FROM goal_executions e JOIN goals g ON g.id=e.goal_id '
+            'SELECT e.id,e.goal_id,g.title,e.status,e.runtime,e.model,e.effort,e.speed,b.native_id '
+            'FROM goal_executions e JOIN goals g ON g.id=e.goal_id '
+            'LEFT JOIN goal_execution_bindings b ON b.execution_id=e.id AND b.runtime=e.runtime '
             'WHERE e.session_id=? AND e.round=g.current_round AND e.generation=(SELECT MAX(x.generation) '
             'FROM goal_executions x WHERE x.goal_id=e.goal_id AND x.round=e.round AND x.session_id=e.session_id) '
             'ORDER BY e.updated_at DESC,e.id', (session_id,)).fetchall()
-        records = [{'goal_id': row['goal_id'], 'title': row['title'], 'execution_id': row['id'],
-                    'status': row['status'], 'active': row['id'] in order} for row in rows]
-        return sorted(records, key=lambda item: order.get(item['execution_id'], len(order)))[:8]
+        return [
+            {'goal_id': row['goal_id'], 'title': row['title'], 'execution_id': row['id'],
+             'status': row['status'], 'active': row['id'] in order,
+             'runtime': row['runtime'],
+             'settings': self._execution_dispatch_settings(conn, row['id'], row['runtime'], row['native_id'], dict(row))}
+            for row in sorted(rows, key=lambda item: order.get(item['id'], len(order)))[:8]
+        ]
+
+    def _execution_dispatch_settings(self, conn, execution_id, runtime, native_id, requested):
+        observed = usage.agent_settings(conn, runtime, native_id)
+        applied = self.chat.applied(execution_id) or {}
+        return usage.displayed_settings({**observed, **{key: value for key, value in applied.items() if value}}, requested)
+
+    def _conversation_dispatch(self, conn, task, goal_id):
+        runtime = task.get('runtime', 'codex')
+        if task.get('source') == 'skill_dispatch':
+            observed = usage.agent_settings(conn, runtime, task.get('native_id'))
+        elif runtime == 'codex':
+            observed = {**usage.agent_settings(conn, runtime, task['agent_id']), **task.get('applied', {})}
+        else:
+            observed = usage.agent_settings(conn, runtime, task['root_thread_id'], task['native_task_id']) if task.get('native_task_id') else {}
+        return {'id': task.get('id') or task['run_id'], 'goal_id': goal_id, 'runtime': runtime,
+                'task_name': task['task_name'], 'status': task['status'], 'started_at': task['started_at'],
+                **usage.displayed_settings(observed, task.get('requested', {}))}
+
+    def _native_context_history(self, conn, runtime, native_id):
+        with self.scan_lock:
+            if runtime == 'codex':
+                return usage.codex_context(conn, self.codex_root, native_id, self.codex_context_cache)
+            usage.session_titles(self.claude_root, [native_id], self.title_cache)
+            return self.title_cache.get(native_id, {}).get('context')
 
     def _project_conversations(self, conn, name, agents, error):
         general_present = board.live_sessions(agents)
@@ -706,7 +738,6 @@ class Service:
         looks = appearance.all_looks(conn)
         with self.scan_lock:
             titles = usage.session_titles(self.claude_root, [s['session_id'] for s in sessions], self.title_cache)
-            contexts = {sid: cached['context'] for sid, cached in self.title_cache.items()}
         result['native_approvals'] = self.native_approvals(name)
         histories, active_scopes, active_goals, active_goal_ids = {}, {}, {}, {}
         for session in sessions:
@@ -732,20 +763,34 @@ class Service:
                     'asker': asker['crew_name'], 'leader_session_id': leader_id,
                     'goal_id': links.get(('decision', decision['id']))})
         tasks = usage.dispatch_tasks(conn, None, None, project=name)
-        subagent_keys = {}
-        for row in conn.execute('SELECT e.id,e.session_id FROM goal_executions e '
-                                'JOIN goals g ON g.id=e.goal_id WHERE g.project=?', (name,)):
+        subagent_keys, conversation_keys = {}, {}
+        for row in conn.execute('SELECT e.id,e.session_id,e.goal_id,e.round,g.current_round FROM goal_executions e '
+                                'JOIN goals g ON g.id=e.goal_id WHERE g.project=? ORDER BY e.generation DESC', (name,)):
             subagent_keys.setdefault(row['session_id'], []).append(row['id'])
+            if row['round'] == row['current_round']:
+                conversation_keys.setdefault(row['session_id'], {}).setdefault(row['goal_id'], row['id'])
+        tasks_by_session = {}
+        for task in tasks:
+            tasks_by_session.setdefault(task['session_id'], []).append(task)
         reports, leases, claims = board.reports(conn, name), board.leases(conn, name), board.claims(conn, name)
         member_leaders = {s['session_id']: board.leader_of(conn, s['session_id'])
                           for s in sessions if s['role'] != 'leader'}
         for session in sessions:
             sid = session['session_id']
             key = sid
-            context = self.chat.context(key) if self.chat.running(key) else contexts.get(sid)
-            own_tasks = [t for t in tasks if t['session_id'] == sid]
+            binding = runtimes.get(conn, sid)
+            context = self.chat.display_context(sid, conn, binding=binding)
+            own_tasks = list(tasks_by_session.get(sid, []))
+            scope = {identity: goal_id for goal_id, identity in conversation_keys.get(sid, {}).items()}
+            scope[None] = None
+            dispatches = [self._conversation_dispatch(conn, task, scope[task.get('execution_id')])
+                          for task in own_tasks if task.get('source') == 'skill_dispatch' and task.get('execution_id') in scope]
             for task_key in [sid, *subagent_keys.get(sid, [])]:
-                own_tasks.extend(self.chat.subagent_tasks(task_key))
+                children = self.chat.subagent_tasks(task_key)
+                own_tasks.extend(children)
+                execution_id = None if task_key == sid else task_key
+                if execution_id in scope:
+                    dispatches.extend(self._conversation_dispatch(conn, task, scope[execution_id]) for task in children)
             own_tasks.sort(key=lambda task: task['started_at'])
             recent_tasks = [t for t in own_tasks if t['status'] == 'running' or
                             store.parse_iso(t.get('updated_at') or t['ended_at'] or t['started_at']) >=
@@ -758,7 +803,7 @@ class Service:
                                 **({key: t.get(key) for key in ('pid', 'cwd', 'task_file', 'execution_id', 'goal_id')}
                                    if t.get('source') == 'skill_dispatch' else {})}
                                for t in recent_tasks],
-                         codex_older=len(own_tasks) - len(recent_tasks))
+                         codex_older=len(own_tasks) - len(recent_tasks), dispatches=dispatches)
             if session['role'] == 'leader':
                 events = histories[sid]['events'] if sid in histories else []
                 journal = self.chat.journal(sid)
@@ -771,7 +816,7 @@ class Service:
                     member_defaults=member_choices.get(sid), **looks.get(sid, {'color': None, 'avatar_version': None}),
                     active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
                     active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
-                    runtime=runtimes.get(conn, sid)['runtime'],
+                    runtime=binding['runtime'],
                     runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
                     trust=trust_mode.get(conn,name,sid),
                     **models.get(conn, sid), applied=self.chat.applied(key), activity=self.chat.activity(key),
@@ -796,7 +841,7 @@ class Service:
                     active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
                     execution_records=self.member_execution_records(conn, sid, active_scopes[sid]),
                     general_has_output=sid in histories and chat.has_native_output(histories[sid]['events']),
-                    runtime=runtimes.get(conn, sid)['runtime'],
+                    runtime=binding['runtime'],
                     runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
                     **models.get(conn, sid), applied=self.chat.applied(key), activity=self.chat.activity(key),
                     context=context, busy=self.chat.busy(sid) or (sid in general_present and general_present[sid].get('status') == 'busy'),
@@ -863,7 +908,15 @@ class Service:
         if (seven_day is not None and seven_day['used_percent'] is not None
                 and crew is not None and seven_day['resets_at'] == reset):
             seven_day['crew'] = crew
+        limits['budget'] = self.claude_budget
         return limits
+
+    def _budget(self, conn, now):
+        """The API dollar budget for display; a broken settings file shows its error instead of failing the page."""
+        try:
+            return claude_budget.read(self.home, conn, now)
+        except (ValueError, OSError) as exc:
+            return {'error': f'Claude 额度设置无法读取：{exc}'}
 
     def decision_participants(self, conn, decision):
         asker = board.session(conn, decision['session_id'])
@@ -1178,6 +1231,13 @@ class Service:
                 raise board.BoardError('删除自定义音效只需要 id')
             with self.write_lock, closing(store.connect(self.home)) as conn:
                 return event_sounds.delete_custom(conn, self.home, data['id'])
+        if path == '/api/claude-budget':
+            if set(data) != {'budget'}:
+                raise ValueError('Claude 额度设置只能包含 budget')
+            claude_budget.save(self.home, data['budget'])
+            with self.scan_lock, closing(store.connect(self.home)) as conn:
+                self.claude_budget = self._budget(conn, self.now())
+            return {'budget': self.claude_budget}
         if path == '/api/settings':
             if not data or not set(data) <= {'ai', 'execution', 'sounds'}:
                 raise ValueError('设置请求只能包含 ai、execution 和 sounds 配置')
@@ -1247,11 +1307,15 @@ class Service:
                     raise board.BoardError('报告不属于此目标')
                 folder = goals.report_folder(board.project(conn, project)['root'], report['data'])
             if not os.path.isdir(folder['path']):
-                raise board.BoardError(('交付文件夹' if folder['declared'] else '工作区文件夹') + '不存在：' + folder['path'])
+                name = '交付文件夹' if folder['declared'] or folder.get('inferred') else '工作区文件夹'
+                raise board.BoardError(name + '不存在：' + folder['path'])
             if sys.platform == "darwin":
                 subprocess.Popen(["open", folder['path']])
             elif sys.platform == "win32":
-                os.startfile(folder['path'])
+                try:
+                    native_folders.open_windows(folder['path'])
+                except OSError as exc:
+                    raise board.BoardError(str(exc)) from exc
             else:
                 raise board.BoardError("当前系统暂不支持从 Crew 打开文件夹")
             return {'ok': True, **folder}
@@ -1750,7 +1814,7 @@ class Service:
                 goals.get(conn, goal_id, self.selected_project(conn, project_name))
                 return self.chat.goal_controller.history(conn, goal_id, session_id, include_previous=include_previous)
             self.chat_session(conn, self.chat_project(conn, project_name, session_id), session_id)
-            return {**self.chat.history(session_id), **self.chat.context_state(session_id),
+            return {**self.chat.history(session_id), **self.chat.context_state(session_id, conn),
                     'read_seq': board.read_seq(conn, session_id)}
 
     def chat_skills(self, session_id, project_name=None, goal_id=None, refresh=False):
@@ -1891,6 +1955,7 @@ class Service:
                 if seven_day is not None and seven_day['used_percent'] is not None and seven_day['resets_at'] is not None:
                     crew = usage.crew_weekly(conn, seven_day, usage.load_prices(self.home / 'prices.json'), now)
                 self.crew_usage = (seven_day['resets_at'] if seven_day is not None else None, crew)
+                self.claude_budget = self._budget(conn, now)
                 self.scanned_at = now
 
     def notification_status(self):
@@ -1946,6 +2011,7 @@ POST_PATHS.update(('/api/workspace-data/discover','/api/workspace-data/open','/a
 POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch', '/api/git/adopt', '/api/git/settings'))
 POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
 POST_PATHS.add('/api/settings')
+POST_PATHS.add('/api/claude-budget')
 POST_PATHS.update(('/api/sounds/custom', '/api/sounds/custom/delete'))
 POST_PATHS.update(('/api/storage/preview', '/api/storage/clean', '/api/storage/restore',
                    '/api/storage/trash/empty', '/api/storage/policy'))
@@ -2129,7 +2195,9 @@ class Handler(BaseHTTPRequestHandler):
             if sandbox:
                 self.send_header('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:")
             if attachment:
-                self.send_header('Content-Disposition', 'attachment; filename="'+attachment+'"')
+                # RFC 6266: an ASCII fallback plus the exact UTF-8 name (Chinese file names survive the download).
+                fallback = ''.join(c if 32 <= ord(c) < 127 and c not in '"\\' else '_' for c in attachment)
+                self.send_header('Content-Disposition', "attachment; filename=\"%s\"; filename*=UTF-8''%s" % (fallback, quote(attachment, safe='')))
             self.end_headers()
             while chunk := source.read(1024 * 1024):
                 self.wfile.write(chunk)
@@ -2192,7 +2260,7 @@ class Handler(BaseHTTPRequestHandler):
             if file is None:
                 raise ValueError('导出文件已失效，请重新导出')
             self._stream_storage_file(file, 'application/zip', attachment='workspace.crewpack')
-        elif url.path == "/api/files/content":
+        elif url.path in ("/api/files/content", "/api/files/download"):
             hosts = {"127.0.0.1:%d" % self.server.server_port, "localhost:%d" % self.server.server_port}
             remote = getattr(self.server, 'remote_controller', None)
             remote_files = remote is not None and self._request_active()
@@ -2202,6 +2270,13 @@ class Handler(BaseHTTPRequestHandler):
             document_id=int(query['document_id'][0]) if 'document_id' in query else None
             info = service.resolve_file(query.get("session_id", [None])[0], query.get("path",[None])[0],
                                         query.get("project", [None])[0], query.get("base", [None])[0],document_id)
+            if url.path == "/api/files/download":
+                # Another device cannot open host files with a local program; it saves the original bytes instead.
+                if info["error"] is not None:
+                    raise board.BoardError(info["error"])
+                path = Path(info["path"])
+                self._stream_storage_file(path, "application/octet-stream", attachment=path.name, sandbox=True)
+                return
             content, media_type = service.read_file(info, raw=query.get("raw") == ["1"])
             self.send_file_content(content, media_type)
         elif url.path == '/api/admin/connection/plan':
@@ -2239,7 +2314,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, personal_api.tags(service.home))
         elif url.path == '/api/assistant/state':
             self._send(200, personal_api.state(service.home, history=service.chat.history, journal=service.chat.journal,
-                activity=service.chat.activity, applied=service.chat.applied, context=service.chat.context))
+                activity=service.chat.activity, applied=service.chat.applied, context=service.chat.display_context))
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
         elif url.path in ('/api/session-library', '/api/session-library/preview'):
@@ -2379,9 +2454,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("\u5bfc\u51fa\u7c7b\u578b\u5fc5\u987b\u662f sessions / daily / codex / requests")
                 rows = service.usage(period, what, query.get('project', [None])[0], query.get('scope', ['workspace'])[0])
                 stream = io.StringIO(newline="")
-                writer = csv.DictWriter(stream, fieldnames=usage_cli.EXPORT_FIELDS[what])
-                writer.writeheader()
-                writer.writerows({key: "" if value is None else usage_cli._format(value, key) for key, value in row.items()} for row in rows)
+                usage_cli.write_csv(stream, what, rows)
                 self._send(200, stream.getvalue().encode("utf-8-sig"), "text/csv; charset=utf-8", "crew-" + what + ".csv")
             else:
                 self._send(200, service.usage(period, project_name=query.get('project', [None])[0], scope=query.get('scope', ['workspace'])[0]))

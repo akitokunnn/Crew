@@ -1,4 +1,5 @@
 """Interface facts, stale addresses and the portable fallback, without OS changes."""
+import tests  # Install the production-service connection guard.
 import ctypes
 import os
 import socket
@@ -182,6 +183,17 @@ Device: unmapped0
         self.assertEqual({item['description']: (item['name'], item['kind']) for item in first['addresses']},
                          {'en0': ('Wi-Fi', 'lan'), 'feth6': ('ZeroTier Virtual Port', 'zerotier'),
                           'bridge0': ('Thunderbolt Bridge', 'lan'), 'en99': ('en99', 'lan')})
+
+    def test_unlabelled_zerotier_port_is_named_zerotier_with_port_as_description(self):
+        interfaces = [row('172.22.100.3', 'feth4876', 'feth4876', bsd_name='feth4876'),
+                      row('10.251.1.1', 'utun5', 'utun5', bsd_name='utun5')]
+        result = subprocess.CompletedProcess([], 0, self.hardware_ports, '')
+        with patch('crew.network_addresses.sys.platform', 'darwin'), \
+             patch('crew.network_addresses._macos_interface_rows', side_effect=lambda: [item.copy() for item in interfaces]), \
+             patch('crew.network_addresses.subprocess.run', return_value=result):
+            snapshot = network_addresses.Discovery().snapshot()
+        self.assertEqual([(item['address'], item['name'], item['description'], item['kind']) for item in snapshot['addresses']],
+                         [('172.22.100.3', 'ZeroTier', 'feth4876', 'zerotier'), ('10.251.1.1', 'utun5', 'utun5', 'other')])
 
     def test_networksetup_failure_keeps_bsd_names_addresses_and_real_error(self):
         interface = row('192.168.2.13', 'en0', 'en0', bsd_name='en0')

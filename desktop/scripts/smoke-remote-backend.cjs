@@ -9,6 +9,7 @@
 const fs = require('node:fs/promises'), path = require('node:path'), assert = require('node:assert/strict');
 const { spawn } = require('node:child_process'), http = require('node:http');
 const desktop = path.resolve(__dirname, '..'), root = path.dirname(desktop);
+const { defaultPython } = require('../src/python.cjs');
 const output = process.env.CREW_REMOTE_BACKEND_OUTPUT || path.join(root, 'Temp', 'remote-backend');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(test, label, timeout = 30000) { const end = Date.now() + timeout; while (Date.now() < end) { const value = await test(); if (value) return value; await pause(80); } throw Error('Timed out: ' + label); }
@@ -66,7 +67,7 @@ finally:
     let fixture, info, buffer = '', fixtureError = '';
     const records = [], phases = [];
     try {
-      fixture = spawn('python', ['-u', '-c', fixtureSource], { cwd:root, env, windowsHide:true, stdio:['pipe', 'pipe', 'pipe'] });
+      fixture = spawn(defaultPython(), ['-u', '-c', fixtureSource], { cwd:root, env, windowsHide:true, stdio:['pipe', 'pipe', 'pipe'] });
       fixture.stderr.on('data', data => { fixtureError += data; process.stderr.write(data); });
       fixture.stdout.on('data', data => { buffer += data; let end; while ((end = buffer.indexOf('\n')) >= 0) { const line = buffer.slice(0, end); buffer = buffer.slice(end + 1); try { const item = JSON.parse(line); records.push(item); if (item.url) info = item; } catch { /* Python diagnostics */ } } });
       await until(() => { if (fixture.exitCode !== null) throw Error('Fixture exited: ' + fixtureError); return info; }, 'isolated host Service');
@@ -191,12 +192,15 @@ finally:
         if (phase === 'pair') {
           await wait('document.querySelector("#service")?.textContent==="已连接"', 'client local backend');
           check('The client first runs on its own isolated local backend', true);
-          await click('#nav-settings'); await click('[data-settings-category="backend"]'); await click('[data-operations-tab="launch"]');
-          await click('input[data-launch-field="mode"][value="remote"]');
-          await wait('Boolean(document.querySelector(".cl-remote .cl-inline-hint"))', 'empty LAN device list');
-          await click('[data-launch-action="pair-open"]');
+          // The home shortcut lands on "后台与运维 → 连接与目录" with the LAN mode chosen and the add-host form open.
+          await wait('document.querySelector("#connection-switch")?.textContent==="连接其他主机"', 'home connection shortcut');
+          await click('#connection-switch');
+          await wait('Boolean(document.querySelector(\'[data-pair-field="url"]\'))', 'add-host form opened by the shortcut');
+          check('The home shortcut opens the add-host form in LAN mode', await js('document.querySelector(\'input[data-launch-field="mode"][value="remote"]\').checked&&Boolean(document.querySelector(".cl-remote .cl-inline-hint"))&&document.activeElement===document.querySelector(\'[data-pair-field="url"]\')'));
           const pair = await hostRequest(hostUrl, '/api/remote-access', { action:'pair' }); assert.equal(pair.status, 200);
-          await fill('[data-pair-field="url"]', hostRemote.replace('http://', '')); await fill('[data-pair-field="code"]', pair.value.code);
+          // The host's copied connection link fills both the address and the one-time code.
+          await fill('[data-pair-field="url"]', hostRemote + '/remote/login#code=' + pair.value.code);
+          check('A pasted connection link fills the host address and pairing code', await js(`document.querySelector("[data-pair-field=url]").value===${JSON.stringify(hostRemote)}&&document.querySelector("[data-pair-field=code]").value===${JSON.stringify(pair.value.code)}`));
           check('Device name defaults to this computer name', await js('document.querySelector("[data-pair-field=device_name]").value.length>0'));
           await shots('add-device');
           await click('[data-launch-action="pair-submit"]');
@@ -205,8 +209,8 @@ finally:
           check('The saved device file holds the host origin and an OS-encrypted token, never the token text', record.url === hostRemote && !/^[A-Za-z0-9_-]{43}$/.test(record.token) && Buffer.from(record.token, 'base64').length > 43);
           const devices = (await hostRequest(hostUrl, '/api/remote-access')).value.devices;
           check('The host lists the client as a Crew desktop client', devices.length === 1 && devices[0].kind === 'desktop');
-          await click('[data-launch-action="check"]');
-          await wait('Boolean(document.querySelector(".cl-confirm"))', 'apply preview');
+          await wait('Boolean(document.querySelector(".cl-confirm"))', 'apply preview shown right after pairing');
+          check('Pairing goes straight to the apply confirmation', true);
           check('Preview names the host and warns about the version difference', await js('/9\\.9\\.9-host/.test(document.querySelector(".cl-confirm").textContent)&&/不一致/.test(document.querySelector(".cl-confirm").textContent)'));
           await shots('apply-preview');
           await click('.cl-confirm [data-launch-action="apply"]');
@@ -218,7 +222,9 @@ finally:
           await wait('document.querySelector("#service")?.textContent.startsWith("已连接 · ")', 'connected to the LAN host');
           await wait('[...document.querySelectorAll(".project strong")].some(node=>node.textContent==="demo")', 'host workspaces listed');
           check('Version banner names the host and both versions', await js('/已连接到 .*（版本 9\\.9\\.9-host），本机版本 .*部分功能可能不一致/.test(document.querySelector("#remote-banner").textContent)'));
-          check('Host-only entries are absent', await js('document.querySelector("#import-workspace").hidden&&document.querySelector("#nav-tools").hidden&&!document.querySelector("#nav-admin").hidden'));
+          // The tools page stays for Crew's own update (c1bd4f0); importing packages is host-only.
+          check('Host-only entries are absent', await js('document.querySelector("#import-workspace").hidden&&!document.querySelector("#nav-tools").hidden&&!document.querySelector("#nav-admin").hidden'));
+          check('The home page offers switching back to this computer', await js('document.querySelector("#connection-switch").hidden===false&&document.querySelector("#connection-switch").textContent==="切回本机"'));
           await shots('home');
           // New workspace on the host through the in-page folder picker, driven by keyboard.
           await click('#new'); await fill('#name', '远程新建'); await click('#choose-parent');

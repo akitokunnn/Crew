@@ -142,8 +142,6 @@
 .chat-domain-path svg.i{width:12px;height:12px;flex:none;color:var(--text-3)}
 .chat-domain-path span{overflow:hidden;text-overflow:ellipsis}
 /* The same path in the right panel's header, under its counts. */
-.rp-domain{margin:6px 0 2px;min-width:0}
-.rp-domain .chat-domain-path{max-width:100%}
 
 @media (max-width:1023px){
   .arch-hint{max-width:calc(100% - 220px)}

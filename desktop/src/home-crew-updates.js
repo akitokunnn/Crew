@@ -1,10 +1,8 @@
 'use strict';
 (() => {
   const bridge = window.crewDesktop, root = document.getElementById('crew-update-card');
-  if (bridge?.platform === 'darwin' && !bridge.remote) {
-    document.getElementById('crew-mac-update-card').hidden = false;
-    return;
-  }
+  // Mac has no backend unification; Crew itself updates through the self-update card.
+  if (bridge?.platform === 'darwin') return;
   if (!root || typeof bridge?.crewUpdateSnapshot !== 'function') return;
   root.hidden = false;
   let state = null, request = false;
@@ -20,16 +18,12 @@
     $('crew-target-version').textContent = state.target?.version || '未检查';
     $('crew-plugin-version').textContent = state.plugin?.state === 'not_installed' ? '未安装' : state.plugin?.registered_version || '未读取';
     const online=state.online;
-    $('crew-release-version').textContent=state.online_checking?'检查中…':online?(online.release?.version||'尚无正式发布包'):state.online_error?'检查失败':'尚未检查';
-    $('crew-release-open').disabled=!online?.release?.url;
     $('crew-main-version').textContent=state.online_checking?'检查中…':online?.main?.version|| (state.online_error?'检查失败':'尚未检查');
     $('crew-online-error').textContent=state.online_error?'线上检查失败：'+state.online_error:'';
     $('crew-online-error').hidden=!state.online_error;
     let onlineMessage=state.online_checking?'正在查询 GitHub 开发分支版本…':'点击检查 Crew 查询线上版本。';
     if(online){
-      const comparison=online.release_comparison;
-      onlineMessage=comparison>0?'有新的正式发布，可打开发布页查看。':online.main_comparison<0?'当前桌面含未发布更改，版本高于线上开发分支。':online.main_comparison>0?'开发分支有更新的源码，尚未正式发布。':'当前桌面与线上开发分支版本一致。';
-      if(!online.release)onlineMessage+=' 当前尚无正式发布包。';
+      onlineMessage=online.main_comparison<0?'当前桌面含未发布更改，版本高于线上开发分支。':online.main_comparison>0?'开发分支有更新的源码，尚未正式发布。':'当前桌面与线上开发分支版本一致。';
       onlineMessage+=' 检查时间：'+new Date(online.checked_at).toLocaleString('zh-CN');
     }
     if(state.online_error)onlineMessage='本机检查结果仍可使用，请稍后重试线上查询。';
@@ -60,7 +54,7 @@
   function check(){void operation(() => bridge.crewUpdateCheck());}
   $('crew-update-check').addEventListener('click', check);
   $('tools-check').addEventListener('click', check);
-  for(const kind of ['release','main'])$('crew-'+kind+'-open').addEventListener('click',()=>{
+  for(const kind of ['main'])$('crew-'+kind+'-open').addEventListener('click',()=>{
     void bridge.crewUpdateOpen(kind).catch(error=>{state={...state,online_error:error.message};render();});
   });
   $('crew-update-apply').addEventListener('click', () => { void operation(() => bridge.crewUpdateApply()); });

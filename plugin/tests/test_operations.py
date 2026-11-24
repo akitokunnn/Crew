@@ -78,9 +78,13 @@ class OperationsTests(unittest.TestCase):
                     policy=self.policy(mode, timeout), incident=dict(id='a' * 32, attempts=1,
                     evidence={'error': 'AssertionError: broken', 'example': 'VALUE: broken → fixed'}))
 
-    def wait_worker(self, admin):
+    def wait_worker(self, admin, parent=None):
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline:
+            if parent is not None:
+                # 同进程里模拟控制器重启时，原实例仍是 worker 的父进程；POSIX 上不回收
+                # 就成了僵尸，按 pid 看一直存活。真实重启是新进程，系统会代为回收。
+                parent.poll()
             admin.tick()
             if not admin.state['active_worker']:
                 return
@@ -464,7 +468,7 @@ print(json.dumps({'module':operations.__file__,'repository':str(admin.repository
         active = admin.state['active_worker']
         reloaded = operations.Operations(self.home, repository=self.repo)
         self.assertEqual(reloaded.state['active_worker']['pid'], active['pid'])
-        self.wait_worker(reloaded)
+        self.wait_worker(reloaded, parent=admin.process)
         self.assertEqual(reloaded.state['incidents'][0]['attempts'], 1)
         admin.process.wait(timeout=5)
 

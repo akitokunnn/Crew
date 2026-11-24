@@ -13,7 +13,8 @@ sys.path.insert(0, str(plugin_root))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tests
 from test_goal_http import GoalHttpTests
-from crew import board, goal_actions, goal_work, goals, runtimes, todo, web
+from crew import board, domains, goal_actions, goal_work, goals, runtimes, todo, web
+from crew.codex_runtime import process_identity
 import test_goal_http
 import test_shell
 
@@ -54,9 +55,34 @@ def main():
                 goal_actions.dispatch(case.home, 'coordinator', None, 'report.publish',
                     {'goal_id': goal['id'], 'request_id': 'routing-stage', 'report': report})
         manager = case.server.service.chat
+        goals.assign(case.conn, work[0][0], 's1', '核查采集清单')
+        member_execution = goals.create_execution(case.conn, work[0][0], 's1', runtime='claude',
+                                                  model='claude-haiku-4-5-20251001', effort='low')
+        goals.set_execution_status(case.conn, member_execution['id'], 'completed')
+        domains.apply(case.conn, 'demo', [
+            {'op': 'create', 'id': 'voice-root', 'name': '体验系统', 'x': 0, 'y': 0},
+            {'op': 'create', 'id': 'voice-part', 'name': '语音评测', 'parent_id': 'voice-root', 'x': 0, 'y': 140},
+            {'op': 'assign', 'session_id': 'coordinator', 'domain_id': 'voice-part'},
+        ])
+        stamp = case.server.service.now().isoformat()
+        for identity, execution, task, model, effort, speed in (
+            ('dispatch-general', None, '盘点语音样本', 'gpt-6-luna', 'low', 'default'),
+            ('dispatch-sound', work[0][1], '核对分段边界', 'gpt-6.2-sol', 'high', 'priority'),
+            ('dispatch-client', work[1][1], '检查客户端联调', None, None, None),
+        ):
+            case.conn.execute(
+                'INSERT INTO codex_runs(run_id,crew_session_id,crew_execution_id,task_file,workdir,started_at,ended_at,exit_code,model,effort,speed) '
+                'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                (identity, 'coordinator', execution, task, str(case.project), stamp, stamp, 0, model, effort, speed))
+        journal = manager.journal('coordinator')
+        native_agent = {'type': 'system', 'task_id': 'stopped-native-agent', 'task_type': 'local_agent'}
+        journal.consume({**native_agent, 'subtype': 'task_started', 'description': '复核录音环境'})
+        journal.consume({**native_agent, 'subtype': 'task_notification', 'status': 'stopped', 'summary': '执行已停止'})
+        case.conn.execute(
+            'INSERT INTO codex_runs(run_id,crew_session_id,task_file,workdir,started_at,pid,pid_created) VALUES(?,?,?,?,?,?,?)',
+            ('dispatch-active', 'coordinator', '核对声学样本', str(case.project), stamp, os.getpid(), process_identity(os.getpid())))
         delivered = None
         if os.environ.get('CREW_UI_REVIEW_FIXTURE') == '1':
-            from crew.codex_runtime import process_identity
             for index in range(8):
                 stamp = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=8-index)
                 active = index >= 5
@@ -111,7 +137,11 @@ def main():
         original = None
         for line in sys.stdin:
             command = line.strip()
-            if command == 'request':
+            if command == 'complete-dispatch':
+                case.conn.execute(
+                    'INSERT INTO codex_runs(run_id,crew_session_id,task_file,workdir,started_at,ended_at,exit_code) VALUES(?,?,?,?,?,?,?)',
+                    ('dispatch-refresh', 'coordinator', '刷新后完成的派发', str(case.project), stamp, stamp, 0))
+            elif command == 'request':
                 original = manager.send_message('s3', 'coordinator', '请确认接口格式，声音任务继续执行。',
                     execution_id=source_execution['execution_id'], kind='decision', message_id='native-ui-request')
                 manager.deliver_messages()

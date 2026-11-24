@@ -1,4 +1,5 @@
 """Content-addressed bytes are verified and atomically published in temporary stores."""
+import tests  # Install the production-service connection guard.
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import io

@@ -271,6 +271,19 @@ class DocumentHTTPTests(DocumentFixture,unittest.TestCase):
             opener.assert_called_once_with(str(file))
         self.assertEqual(self.request('/api/documents/refresh',{'project':'demo'})[0],200)
 
+    def test_http_download_returns_original_bytes_with_the_file_name_and_stays_in_scope(self):
+        file=self.project/'交付 报告.docx';file.write_bytes(b'PK\x03\x04 binary \x00\xff')
+        row=self.register('s1',str(file))
+        url='http://127.0.0.1:%d/api/files/download?'%self.server.server_port+urlencode({'project':'demo','document_id':row['id']})
+        with self.opener.open(Request(url,None,{'X-Crew':'1'}),timeout=3) as response:
+            self.assertEqual(response.read(),file.read_bytes())
+            self.assertEqual(response.headers['Content-Type'],'application/octet-stream')
+            self.assertEqual(response.headers['Content-Disposition'],
+                             "attachment; filename=\"__ __.docx\"; filename*=UTF-8''%E4%BA%A4%E4%BB%98%20%E6%8A%A5%E5%91%8A.docx")
+        outside=self.root/'secret.txt';outside.write_text('private')
+        self.assertEqual(self.request('/api/files/download',project='demo',session_id='s1',path=str(outside))[0],400)
+        self.assertEqual(self.request('/api/files/download',project='demo',session_id='s1',path='missing.docx')[0],400)
+
     def test_http_task_materials_are_strictly_scoped_in_list_and_detail(self):
         goal = goals.create(self.conn, 'demo', 's3', '这个任务', '任务要求', ['可验收'])
         other = goals.create(self.conn, 'demo', 's3', '下个任务', '另一个要求', ['可验收'])

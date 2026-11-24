@@ -3,6 +3,8 @@ const test = require('node:test'); const assert = require('node:assert/strict');
 const fs = require('node:fs/promises'); const path = require('node:path'); const os = require('node:os');
 const http = require('node:http'); const { execFile } = require('node:child_process'); const { promisify } = require('node:util');
 const core = require('../src/core.cjs'); const run = promisify(execFile);
+// The interpreter Crew itself picks on this platform: python3 on macOS, python elsewhere.
+const PYTHON = require('../src/python.cjs').defaultPython();
 const {listen}=require('./fixtures/loopback.cjs');
 async function directory(t) { const root = await fs.mkdtemp(path.join(os.tmpdir(), 'crew-desktop-test-')); t.after(() => fs.rm(root, { recursive: true, force: true })); return root; }
 async function fixture(t, known = []) {
@@ -270,7 +272,7 @@ test('a timeout can delegate startup only after the administrator independently 
   await fs.writeFile(path.join(backendDir,'crew_supervisor.py'),code);
   const original=global.fetch;global.fetch=async(url,...args)=>{if(String(url).startsWith(old+'/'))throw new DOMException('timeout','TimeoutError');return original(url,...args);};
   t.after(()=>{global.fetch=original;});
-  const backend=new core.Backend({home:root,backendDir,python:'python',port:0,isolated:true,smoke:true});
+  const backend=new core.Backend({home:root,backendDir,python:PYTHON,port:0,isolated:true,smoke:true});
   t.after(()=>backend.stop());
   assert.deepEqual(await backend.start(),{url:service.url,owned:true});
   assert.equal(backend.supervised,true);
@@ -301,7 +303,7 @@ test('a supervised startup timeout reaches recovery without killing or waiting f
   await fs.writeFile(path.join(backendDir,'crew_supervisor.py'),'# isolated fake supervisor');
   const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.stdin=new PassThrough();child.exitCode=null;
   let kills=0,written='';child.kill=()=>{kills++;};child.stdin.on('data',chunk=>written+=chunk);
-  const backend=new core.Backend({home:root,backendDir,python:'python',port:0,startupTimeoutMs:25},{spawn:()=>child});
+  const backend=new core.Backend({home:root,backendDir,python:PYTHON,port:0,startupTimeoutMs:25},{spawn:()=>child});
   const began=Date.now();await assert.rejects(backend.start(),/服务启动超时/);
   assert(Date.now()-began<1000,'A hung supervisor shutdown must not block the recovery UI');
   assert.equal(kills,0);assert.equal(written,'');assert.equal(backend.owned,true);
@@ -315,7 +317,7 @@ test('owned Python diagnostics survive exit in a bounded local log', async t => 
   const root=await directory(t), service=await fixture(t), backendDir=path.join(root,'backend');
   await fs.mkdir(backendDir);
   await fs.writeFile(path.join(backendDir,'crew_desktop.py'), 'import sys\nprint('+JSON.stringify(service.url)+', flush=True)\nprint("diagnostic marker", file=sys.stderr, flush=True)\nsys.stdin.readline()\n');
-  const backend=new core.Backend({home:path.join(root,'home'),backendDir,python:'python',port:0,isolated:true,smoke:true});
+  const backend=new core.Backend({home:path.join(root,'home'),backendDir,python:PYTHON,port:0,isolated:true,smoke:true});
   t.after(()=>backend.stop()); await backend.start(); await backend.stop();
   const text=await fs.readFile(backend.logPath,'utf8'); assert(text.includes('diagnostic marker')); assert(text.length<6200);
   assert.equal(backend.child.exitCode,0);
@@ -341,7 +343,7 @@ test('smoke refuses an existing production registry without making a network cal
 });
 test('isolated Python service binds port zero and exits gracefully without stale registry', { timeout: 30000 }, async t => {
   const root = await directory(t);
-  const backend = new core.Backend({ home: root, backendDir: path.resolve(__dirname, '../../plugin'), python: 'python', port: 0, isolated: true, smoke: true });
+  const backend = new core.Backend({ home: root, backendDir: path.resolve(__dirname, '../../plugin'), python:PYTHON, port: 0, isolated: true, smoke: true });
   t.after(() => backend.stop());
   const result = await backend.start(); assert.equal(result.owned, true); assert.notEqual(new URL(result.url).port, '0'); assert.notEqual(new URL(result.url).port, '47811');
   assert.deepEqual(await core.projects(result.url), []);
@@ -350,7 +352,7 @@ test('isolated Python service binds port zero and exits gracefully without stale
   await assert.rejects(fs.access(path.join(root, 'web.json')));
 });
 test('simultaneous UI profiles share one OS-locked service and the loser only borrows', {timeout:45000},async t=>{
-  const root=await directory(t), config={home:root,backendDir:path.resolve(__dirname,'../../plugin'),python:'python',port:0,isolated:true,smoke:true};
+  const root=await directory(t), config={home:root,backendDir:path.resolve(__dirname,'../../plugin'),python:PYTHON,port:0,isolated:true,smoke:true};
   const first=new core.Backend(config),second=new core.Backend(config);t.after(()=>Promise.all([first.stop(),second.stop()]));
   const results=await Promise.all([first.start(),second.start()]);
   assert.equal(results.filter(result=>result.owned).length,1);assert.equal(results[0].url,results[1].url);

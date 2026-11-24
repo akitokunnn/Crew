@@ -33,5 +33,10 @@
   function keyboardShortcut(key, {shift = false, platform = globalThis.navigator?.userAgentData?.platform || globalThis.navigator?.platform} = {}) {
     return /^Mac/i.test(platform) ? `${shift ? "⇧" : ""}⌘${key}` : `Ctrl+${shift ? "Shift+" : ""}${key}`;
   }
-  window.CrewBrowser = {requestId, copyText, keyboardShortcut};
+  // Saves a same-origin file response (Content-Disposition names it); a Crew desktop client asks where to save.
+  function download(url) {
+    const link = document.createElement("a"); link.href = url; link.download = ""; link.hidden = true;
+    document.body.append(link); link.click(); link.remove();
+  }
+  window.CrewBrowser = {requestId, copyText, keyboardShortcut, download};
 })();

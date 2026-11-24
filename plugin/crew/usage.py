@@ -1,5 +1,6 @@
 """Incremental transcript ingestion and shared usage reports (Python 3.11+)."""
 import datetime as dt
+from glob import escape as escape_glob
 import json
 import ntpath
 import sys
@@ -142,6 +143,75 @@ def session_titles(root, session_ids, cache):
     return titles
 
 
+def _last_codex_context(path):
+    """Read from the tail so a long rollout need not be scanned twice on startup."""
+    with path.open("rb") as stream:
+        offset = stream.seek(0, 2)
+        leading, found_end = b"", False
+        while offset:
+            end = offset
+            offset = max(0, end - 65536)
+            stream.seek(offset)
+            lines = (stream.read(end - offset) + leading).split(b"\n")
+            leading = lines.pop(0)
+            if not found_end and lines:
+                lines.pop()  # The part after the last newline may still be written.
+                found_end = True
+            if offset == 0 and found_end:
+                lines.insert(0, leading)
+            for line in reversed(lines):
+                if b'"token_count"' not in line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    payload = record["payload"]
+                    if record["type"] != "event_msg" or payload["type"] != "token_count":
+                        continue
+                    info = payload["info"]
+                    used = info["last_token_usage"]["total_tokens"]
+                    maximum = info.get("model_context_window")
+                    if type(used) is int and used >= 0:
+                        return {"used": used, "max": maximum, "source": "transcript"}
+                except (ValueError, KeyError, TypeError):
+                    continue
+    return None
+
+
+def codex_context(conn, root, native_id, cache):
+    """Read the last measured window of a Codex conversation."""
+    row = conn.execute("SELECT path FROM codex_sessions WHERE rollout_id=?", (native_id,)).fetchone()
+    root = Path(root).resolve()
+    archive = root.parent / "archived_sessions"
+    if row is None:
+        # Brief task executions can be archived before the usage scanner indexes them.
+        if "/" in native_id or "\\" in native_id:
+            return None
+        path = next(archive.glob("rollout-*-" + escape_glob(native_id) + ".jsonl"), None)
+        if path is None:
+            return None
+    else:
+        path = Path(row["path"])
+    resolved = path.resolve()
+    if not (resolved.is_relative_to(root) or resolved.is_relative_to(archive)):
+        return None
+    if not path.is_file():
+        path = archive / path.name
+        if not path.resolve().is_relative_to(archive):
+            return None
+    try:
+        stat = path.stat()
+        signature = (stat.st_size, stat.st_mtime_ns)
+        previous = cache.get(path)
+        if previous is not None and previous[0] == signature:
+            return previous[1]
+        context = _last_codex_context(path)
+    except OSError:
+        cache.pop(path, None)
+        return None
+    cache[path] = (signature, context)
+    return context
+
+
 def _claude_identity(path, root, kind):
     relative = path.relative_to(root)
     if kind == "claude":
@@ -271,7 +341,7 @@ def _codex_line(conn, record, path, counts, is_header):
     values = {"rollout_id": session["rollout_id"], "ended_at": _timestamp(record["timestamp"])}
     if kind == "turn_context" and session["model"] is None:
         values.update(model=payload["model"], effort=payload["collaboration_mode"]["settings"]["reasoning_effort"],
-                      sandbox=payload["sandbox_policy"]["type"])
+                      sandbox=payload["sandbox_policy"]["type"], speed=payload.get("service_tier"))
     elif kind == "response_item" and payload["type"] == "message" and payload["role"] == "user":
         if session["first_user_text"] is None:
             # Codex injects AGENTS.md and <environment_context> as user messages before the real task.
@@ -305,7 +375,7 @@ def _codex_line(conn, record, path, counts, is_header):
 
 def _run_line(conn, record, counts, runtime='codex'):
     values = {key: record[key] for key in ('run_id', 'task_file', 'workdir', 'model', 'effort', 'exit_code')}
-    values.update(runtime=runtime, sandbox=record.get('sandbox'),
+    values.update(runtime=runtime, sandbox=record.get('sandbox'), speed=record.get('speed'),
                   claude_session_id=record.get('claude_session_id') if runtime == 'codex' else record.get('codex_thread_id'),
                   native_id=record.get('native_id') if runtime == 'codex' else record['claude_session_id'])
     values.update({key: record.get(key) for key in ('crew_session_id', 'crew_execution_id', 'pid', 'pid_created')})
@@ -532,7 +602,7 @@ def _total(row):
     return row["input_tokens"] + row["cache_write_tokens"] + row["cache_read_tokens"] + row["output_tokens"]
 
 
-def _money(row, prices):
+def price(row, prices):
     if row["model"] not in prices:
         # Zero-token rows (Claude Code's "<synthetic>" placeholder messages) cost nothing whatever the model.
         return (0.0 if _total(row) == 0 else None), 0.0, _total(row)
@@ -547,7 +617,7 @@ def _money(row, prices):
     return (None if unsplit else cost), cost, unsplit
 
 
-def _crew_sessions(conn):
+def crew_sessions(conn):
     """Claude sessions counted as Crew: current leaders and grouped members, with their native bindings."""
     crew = {row['session_id'] for row in conn.execute("SELECT session_id FROM sessions "
         "WHERE role='leader' OR (group_name IS NOT NULL AND group_name!='')")}
@@ -559,7 +629,7 @@ def _week_costs(conn, crew, since, reset, prices, now):
     crew_cost = machine_cost = 0.0
     for row in conn.execute('SELECT * FROM claude_requests WHERE ts>=? AND ts<? AND ts<=?',
                             (_iso(since), _iso(reset), _iso(now))):
-        cost = _money(row, prices)[0]
+        cost = price(row, prices)[0]
         machine_cost = None if cost is None or machine_cost is None else machine_cost + cost
         if row['session_id'] in crew:
             crew_cost = None if cost is None or crew_cost is None else crew_cost + cost
@@ -585,7 +655,7 @@ def crew_weekly(conn, seven_day, prices, now):
     if reset <= now:
         return None
     since = reset - CLAUDE_WEEK
-    cost = _week_costs(conn, _crew_sessions(conn), since, reset, prices, now)[0]
+    cost = _week_costs(conn, crew_sessions(conn), since, reset, prices, now)[0]
     return {**_points(cost), "since": _iso(since)}
 
 
@@ -623,7 +693,7 @@ def claude_weeks(conn, prices, now):
     recorded = [dict(row) for row in conn.execute("SELECT * FROM claude_weeks ORDER BY resets_at")]
     if not recorded:
         return []
-    crew = _crew_sessions(conn)
+    crew = crew_sessions(conn)
     first = conn.execute("SELECT MIN(ts) FROM claude_requests WHERE session_id IN (SELECT value FROM json_each(?))",
                          (json.dumps(sorted(crew)),)).fetchone()[0]
     windows, earlier = [], None
@@ -656,7 +726,7 @@ def _add(result, request, prices):
         result[field] += request[field]
     result["total_tokens"] += _total(request)
     result["requests"] += 1
-    cost, priced, unpriced = _money(request, prices)
+    cost, priced, unpriced = price(request, prices)
     result["priced_cost_usd"] += priced
     result["unpriced_tokens"] += unpriced
     result["cost_usd"] = None if cost is None or result["cost_usd"] is None else result["cost_usd"] + cost
@@ -821,7 +891,7 @@ def dispatch_tasks(conn, start, end, project=None):
     query = (
         "SELECT r.run_id, r.claude_session_id, r.task_file, r.workdir, r.started_at AS run_start, "
         "r.ended_at AS run_end, r.exit_code, r.model AS requested_model, r.effort AS requested_effort, "
-        "r.sandbox AS requested_sandbox, r.ephemeral, r.usage_json, r.runtime, r.crew_session_id, "
+        "r.speed AS requested_speed, r.sandbox AS requested_sandbox, r.ephemeral, r.usage_json, r.runtime, r.crew_session_id, "
         "r.crew_execution_id, r.pid, r.pid_created, r.native_id, c.* FROM codex_runs r "
         "LEFT JOIN codex_sessions c ON c.rollout_id = r.rollout_id"
     )
@@ -852,6 +922,7 @@ def dispatch_tasks(conn, start, end, project=None):
                     project=task_project, cwd=cwd, last_event_at=row["ended_at"],
                     model=row["model"] if row["rollout_id"] else row["requested_model"],
                     effort=row["effort"] if row["rollout_id"] else row["requested_effort"],
+                    requested={key: row["requested_" + key] for key in ("model", "effort", "speed")},
                     sandbox=row["sandbox"] if row["rollout_id"] else row["requested_sandbox"])
         if status == 'running' and row['pid'] is not None and row['pid_created'] is not None:
             from .codex_runtime import process_identity
@@ -886,6 +957,30 @@ def dispatch_tasks(conn, start, end, project=None):
     for item in result:
         item["duration_seconds"] = (store.parse_iso(item["ended_at"]) - store.parse_iso(item["started_at"])).total_seconds() if item["ended_at"] else None
     return sorted(result, key=lambda item: (item["started_at"], item["run_id"] or item["rollout_id"]))
+
+
+def agent_settings(conn, runtime, native_id, agent_id=None):
+    """Observed settings from the exact native thread or Claude agent transcript."""
+    if not native_id:
+        return {}
+    if runtime == 'codex':
+        row = conn.execute('SELECT model,effort,speed FROM codex_sessions WHERE rollout_id=?', (native_id,)).fetchone()
+    else:
+        row = conn.execute('SELECT model,effort,speed FROM claude_requests WHERE session_id=? AND agent_id IS ? '
+                           'ORDER BY ts DESC,request_key DESC LIMIT 1', (native_id, agent_id)).fetchone()
+    return dict(row) if row else {}
+
+
+def displayed_settings(observed, requested):
+    values = {}
+    specified = []
+    for key in ('model', 'effort', 'speed'):
+        if isinstance(observed.get(key), str) and observed[key]:
+            values[key] = observed[key]
+        elif isinstance(requested.get(key), str) and requested[key]:
+            values[key] = requested[key]
+            specified.append(key)
+    return {**values, 'specified': specified}
 
 
 def codex_tasks(conn, start, end, project=None):
@@ -1055,6 +1150,6 @@ def requests(conn, start, end, prices, project=None):
         row = dict(request)
         row["display_name"] = names[row["session_id"]]["display_name"]
         row["total_tokens"] = _total(row)
-        row["cost_usd"], row["priced_cost_usd"], row["unpriced_tokens"] = _money(row, prices)
+        row["cost_usd"], row["priced_cost_usd"], row["unpriced_tokens"] = price(row, prices)
         result.append(row)
     return result

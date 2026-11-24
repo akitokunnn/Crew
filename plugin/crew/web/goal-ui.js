@@ -56,7 +56,7 @@
   // Opens the report's delivery folder on this computer; a phone (remote access) gets no button and no route.
   function folderButton(goalId, reportId, folder) {
     if (!folder || (window.CrewAccess && !window.CrewAccess.local_desktop)) return "";
-    const title = folder.declared ? `打开交付文件夹：${folder.path}` : `报告没有登记交付文件夹，打开工作区：${folder.path}`;
+    const title = folder.declared || folder.inferred ? `打开交付文件夹：${folder.path}` : `报告没有登记交付文件夹，打开工作区：${folder.path}`;
     return `<button type="button" class="btn ghost" data-goal-act="open-folder" data-goal-id="${esc(goalId)}" data-report-id="${esc(reportId)}" title="${esc(title)}">打开文件夹</button>`;
   }
   // The user's own acceptance decision. The same two buttons appear on the workspace home, at the top of the

@@ -27,11 +27,11 @@ test("operations form rejects malformed JSON and commands without program names"
 });
 
 function operationsHarness(){
-  const element=()=>({innerHTML:"",textContent:"",hidden:false,classList:{toggle(){},add(){}},setAttribute(){},addEventListener(){},append(){},querySelector(){return element();},querySelectorAll(){return [];},focus(){},scrollIntoView(){}});
+  const element=()=>({innerHTML:"",textContent:"",hidden:false,classList:{toggle(){},add(){}},setAttribute(){},addEventListener(){},append(){},replaceChildren(){},querySelector(){return element();},querySelectorAll(){return [];},focus(){},scrollIntoView(){}});
   const panel=element(),root={...element(),querySelector:selector=>selector===".co-panel"?panel:element()};
   const sandbox={window:{},document:{createElement:()=>root,addEventListener(){},hidden:false},setTimeout,clearTimeout};
   vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/operations-ui.js"),"utf8"),sandbox);
-  return {ui:sandbox.window.CrewOperations,root,panel};
+  return {ui:sandbox.window.CrewOperations,root,panel,sandbox};
 }
 test("a LAN host keeps its operations chat and repair policy on the host: only status and connection remain",()=>{
   const {ui,root,panel}=operationsHarness();let reads=0;
@@ -43,4 +43,22 @@ test("a LAN host keeps its operations chat and repair policy on the host: only s
   const local=operationsHarness();
   local.ui.create({api:{snapshot:()=>new Promise(()=>{}),configGet(){},launch:{get:()=>new Promise(()=>{})}}}).mount({append(){}},{});
   assert.match(local.root.innerHTML,/data-operations-tab="chat"[^>]*aria-selected="true"/);assert.match(local.root.innerHTML,/data-operations-tab="config"/);assert.match(local.root.innerHTML,/运维 AI 大脑/);
+});
+test("a home-page shortcut opens the connection tab and hands its intent to the launch settings once",()=>{
+  const {ui,sandbox}=operationsHarness(),prepared=[],mounts=[];
+  sandbox.window.CrewLaunchSettings={create:()=>({mount:host=>mounts.push(host),hide(){},prepare:value=>prepared.push(value)})};
+  const operations=ui.create({api:{launch:{get:()=>new Promise(()=>{})}},remote:true});
+  operations.openLaunch("local");
+  assert.deepEqual(prepared,[]);
+  const close=operations.mount({append(){}},{});
+  // The launch tab rendered (its settings mounted) and received the intent exactly once.
+  assert.deepEqual(prepared,["local"]);assert.equal(mounts.length,1);
+  close();operations.mount({append(){}},{});
+  assert.deepEqual(prepared,["local"]);assert.equal(mounts.length,2);
+});
+test("without connection settings a shortcut leaves the operations tabs unchanged",()=>{
+  const {ui,root}=operationsHarness();
+  const operations=ui.create({api:{snapshot:()=>new Promise(()=>{}),configGet(){}}});
+  operations.openLaunch("pair");operations.mount({append(){}},{});
+  assert.match(root.innerHTML,/data-operations-tab="chat" aria-controls="co-operations-panel" aria-selected="true"/);
 });

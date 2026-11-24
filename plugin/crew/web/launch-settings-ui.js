@@ -2,6 +2,12 @@
 (() => {
   const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const clone = value => JSON.parse(JSON.stringify(value));
+  // The host's "copy connection link" is http://<address>:<port>/remote/login#code=<8 digits>; the fragment never reaches a server.
+  function pairingLink(text) {
+    let url; try { url = new URL(String(text).trim()); } catch (_) { return null; }
+    const match = /^#code=(\d{8})$/.exec(url.hash);
+    return match && url.protocol === "http:" && !url.search && ["/", "/remote/login"].includes(url.pathname) ? {url:url.origin, code:match[1]} : null;
+  }
   function draftSettings(value) { return {...clone(value), port:String(value.port)}; }
   function settingsValue(value) {
     const port = Number(value.port);
@@ -10,7 +16,7 @@
   }
   function create(options) {
     const api = options.api, root = document.createElement("section"); root.className = "cl-settings";
-    let active = false, snapshot = null, draft = null, homeAction = "copy", pending = null, error = "", note = "", preview = null, advanced = false, recoveryAvailable = false, pairing = null;
+    let active = false, intent = null, snapshot = null, draft = null, homeAction = "copy", pending = null, error = "", note = "", preview = null, advanced = false, recoveryAvailable = false, pairing = null;
     const pathField = (label, field, kind, placeholder) => `<label>${label}<span class="cl-path-input"><input data-launch-field="${field}" value="${esc(draft[field])}" placeholder="${esc(placeholder)}" autocomplete="off"><button type="button" class="cs-button" data-launch-pick="${kind}" data-launch-pick-field="${field}">选择${kind === "python" ? "程序" : "目录"}</button></span></label>`;
     function changed() { return snapshot && draft && JSON.stringify(draft) !== JSON.stringify(draftSettings(snapshot.settings)); }
     function homeChanged() {
@@ -38,7 +44,14 @@
       if (pending) return; pending = "read"; error = ""; render();
       try { snapshot = await api.get(); if (!draft) draft = draftSettings(snapshot.settings); recoveryAvailable = snapshot.reconnect_required === true; error = snapshot.error || ""; }
       catch (caught) { error = caught.message || String(caught); }
-      finally { pending = null; if (active) render(); }
+      finally { pending = null; if (active) { render(); prepared(); } }
+    }
+    // A shortcut from the home page: "pair" opens the add-host form, "local" previews switching back to this computer.
+    function prepared() {
+      if (!intent || !active || pending || !snapshot || !draft) return;
+      const next = intent; intent = null;
+      if (next === "pair") { draft.mode = "remote"; invalidate(); openPairing(); return; }
+      if (next === "local" && snapshot.settings.mode !== "local") { draft = {...draftSettings(snapshot.settings), mode:"local", remote_backend:""}; invalidate(); render(); void check(); }
     }
     function payload() { return {settings:settingsValue(draft), home_action:homeAction}; }
     async function check() {
@@ -92,16 +105,17 @@
       try {
         const result = await api.pair({url:pairing.url, code:pairing.code, device_name:pairing.device_name});
         snapshot.remote_backends = result.remote_backends; draft.mode = "remote"; draft.remote_backend = result.backend.id; pairing = null; invalidate();
-        note = `已保存 ${result.backend.name}。检查连接后应用，Crew 会重新打开并连接这台主机。`;
       } catch (caught) { pairing.error = caught.message || String(caught); }
-      finally { pending = null; if (active) { render(); root.querySelector(pairing ? '[data-pair-field="code"]' : '[data-launch-action="check"]')?.focus(); } }
+      finally { pending = null; if (active) { render(); if (pairing) root.querySelector('[data-pair-field="code"]')?.focus(); } }
+      // Pairing only saves the host; go straight to the switch preview so applying is the one remaining step.
+      if (!pairing && active) { await check(); if (!preview && !error) note = "已保存主机。检查连接后应用，Crew 会重新打开并连接这台主机。"; controls(); }
     }
     function pairedAt(value) { return new Date(value).toLocaleString("zh-CN", {year:"numeric", month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"}); }
     function remoteMarkup() {
       const backends = snapshot.remote_backends || [];
       const list = backends.length ? `<div class="cl-remote-list" role="radiogroup" aria-label="已保存的局域网设备">${backends.map(item => `<label class="cl-mode cl-remote-item ${draft.remote_backend === item.id ? "selected" : ""}"><input type="radio" name="crew-remote-backend" value="${esc(item.id)}" data-launch-remote ${draft.remote_backend === item.id ? "checked" : ""}><span><strong>${esc(item.name)}</strong><small>${esc(item.url)} · 配对于 ${esc(pairedAt(item.paired_at))}</small></span></label>`).join("")}</div>`
-        : '<p class="cl-inline-hint">还没有保存的设备。先在主机的“设置 → 局域网访问”中开启访问并生成配对码，再添加设备。</p>';
-      const form = pairing ? `<form class="cl-pair co-form-fields cl-form-fields" aria-label="添加局域网设备"><label>主机地址<input data-pair-field="url" value="${esc(pairing.url)}" placeholder="192.168.1.20:47812" autocomplete="off" spellcheck="false"><small>主机“设置 → 局域网访问”里显示的地址。</small></label><label>配对码<input data-pair-field="code" value="${esc(pairing.code)}" inputmode="numeric" maxlength="8" placeholder="主机上生成的 8 位数字" autocomplete="off"></label><label>本机设备名<input data-pair-field="device_name" value="${esc(pairing.device_name)}" maxlength="80" autocomplete="off"><small>显示在主机的设备列表里，主机可以随时让它下线。</small></label><p class="cl-pair-error co-error" role="alert" hidden></p><div class="cl-pair-actions"><button type="button" class="cs-button" data-launch-action="pair-cancel">取消</button><button type="submit" class="cs-button cs-primary" data-launch-action="pair-submit">连接并保存</button></div></form>`
+        : '<p class="cl-inline-hint">还没有保存的设备。先在主机的“设置 → 局域网访问”中开启访问，生成配对码并复制连接链接，再添加设备。</p>';
+      const form = pairing ? `<form class="cl-pair co-form-fields cl-form-fields" aria-label="添加局域网设备"><label>连接链接或主机地址<input data-pair-field="url" value="${esc(pairing.url)}" placeholder="粘贴连接链接，或填 192.168.1.20:47812" autocomplete="off" spellcheck="false"><small>在主机“设置 → 局域网访问”生成配对码后点“复制连接链接”，粘贴到这里会自动填好配对码。</small></label><label>配对码<input data-pair-field="code" value="${esc(pairing.code)}" inputmode="numeric" maxlength="8" placeholder="主机上生成的 8 位数字" autocomplete="off"></label><label>本机设备名<input data-pair-field="device_name" value="${esc(pairing.device_name)}" maxlength="80" autocomplete="off"><small>显示在主机的设备列表里，主机可以随时让它下线。</small></label><p class="cl-pair-error co-error" role="alert" hidden></p><div class="cl-pair-actions"><button type="button" class="cs-button" data-launch-action="pair-cancel">取消</button><button type="submit" class="cs-button cs-primary" data-launch-action="pair-submit">连接并保存</button></div></form>`
         : '<div class="cl-pair-open"><button type="button" class="cs-button" data-launch-action="pair-open">添加设备</button></div>';
       return `<div class="cl-remote">${list}${form}</div>`;
     }
@@ -131,7 +145,7 @@
         root.innerHTML = `<section class="cs-card"><h2>${pending ? "正在读取连接与目录…" : "启动设置暂时无法读取"}</h2><p class="co-error" role="alert">${esc(error)}</p>${pending ? "" : '<button type="button" class="cs-button" data-launch-action="reload">重新读取</button>'}</section>`; return;
       }
       const local = draft.mode === "local", lan = draft.mode === "remote";
-      const advancedMarkup = lan ? "" : `<details class="co-advanced cl-advanced" ${advanced ? "open" : ""}><summary>高级连接设置</summary><div class="co-form-fields cl-form-fields">${local ? `<label>固定端口<input type="number" min="0" max="65535" data-launch-field="port" value="${esc(draft.port)}"><small>0 为自动分配；需要固定访问地址时再指定端口。</small></label>` : ""}${pathField(local ? "Python 解释器" : "桌面运维 Python", "python", "python", "python 或解释器的完整路径")}${local ? "" : '<p class="cl-inline-hint">供本机运维对话和设置使用，不改变对方后台的 Python 解释器。</p>'}</div></details>`;
+      const advancedMarkup = lan ? "" : `<details class="co-advanced cl-advanced" ${advanced ? "open" : ""}><summary>高级连接设置</summary><div class="co-form-fields cl-form-fields">${local ? `<label>固定端口<input type="number" min="0" max="65535" data-launch-field="port" value="${esc(draft.port)}"><small>0 为自动分配，首次启动后记住分到的端口并一直沿用，工作区页面的草稿和显示设置因此得以保留；被其他程序占用时可在这里换一个。</small></label>` : ""}${pathField(local ? "Python 解释器" : "桌面运维 Python", "python", "python", "python 或解释器的完整路径")}${local ? "" : '<p class="cl-inline-hint">供本机运维对话和设置使用，不改变对方后台的 Python 解释器。</p>'}</div></details>`;
       root.innerHTML = `<section class="cs-card"><div class="cs-card-heading"><div><h2>连接与目录</h2><p>决定 Crew 的数据存放位置和连接方式。修改工作区的项目路径，请使用工作区设置。</p></div></div>${snapshot.applying ? '<p class="cl-pending">正在应用启动设置，请等待完成。</p>' : ""}<div class="cl-modes" role="radiogroup" aria-label="后台连接方式">${[["local","本机后台","由 Crew 启动并管理"],["existing","连接已有后台","连接本机已运行的服务"],["remote","局域网主机","连接另一台电脑上的 Crew"]].map(([id,label,hint]) => `<label class="cl-mode ${draft.mode === id ? "selected" : ""}"><input type="radio" name="crew-launch-mode" value="${id}" data-launch-field="mode" ${draft.mode === id ? "checked" : ""}><span><strong>${label}</strong><small>${hint}</small></span></label>`).join("")}</div>${local ? `<div class="co-form-fields cl-form-fields">${pathField("数据目录 · HOME", "home", "home", "例如 D:\\Crew Data")}<div class="cl-home-action"><span>切换数据目录时</span><label><input type="radio" name="crew-home-action" value="copy" data-launch-home-action ${homeAction === "copy" ? "checked" : ""}><span>复制现有数据，保留原目录作备份</span></label><label><input type="radio" name="crew-home-action" value="existing" data-launch-home-action ${homeAction === "existing" ? "checked" : ""}><span>使用该目录数据（空目录从零开始）</span></label></div><label>后台程序来源<select data-launch-field="source"><option value="bundled" ${draft.source === "bundled" ? "selected" : ""}>随应用提供</option><option value="custom" ${draft.source === "custom" ? "selected" : ""}>指定后台程序目录</option></select></label>${draft.source === "custom" ? pathField("后台程序目录", "backend_directory", "backend", "包含 crew、crew_supervisor.py 的 plugin 目录") : '<p class="cl-inline-hint">后台程序随 Crew 应用版本更新。</p>'}</div>` : lan ? remoteMarkup() : `<div class="co-form-fields cl-form-fields"><label>本机后台地址<input type="url" data-launch-field="service_url" value="${esc(draft.service_url)}" placeholder="http://127.0.0.1:7122" autocomplete="off"><small>仅支持本机地址。检查时会核实它是否为可用的 Crew 后台，并读取实际数据目录。</small></label></div>`}${advancedMarkup}</section><div class="cl-check-actions"><p class="cl-status" role="status"></p><div><button type="button" class="cs-button" data-launch-action="reset">撤销更改</button><button type="button" class="cs-button" data-launch-action="check">检查连接与路径</button></div></div><div class="cl-preview"></div><details class="co-config-location"><summary>启动设置保存位置</summary><p>${esc(snapshot.settings_path)}</p></details>`;
       const recovery = document.createElement("div"); recovery.className = "cl-recovery"; recovery.hidden = true;
       recovery.innerHTML = '<p>重新打开使用当前配置，不会应用正在编辑的新目录。</p><button type="button" class="cs-button" data-launch-action="recover">重新打开当前配置</button>';
@@ -160,14 +174,20 @@
       if (field) { draft[field] = event.target.value; invalidate(); if (["mode","source"].includes(field)) render(); else controls(); }
       if (event.target.hasAttribute("data-launch-remote")) { draft.remote_backend = event.target.value; invalidate(); render(); root.querySelector(`[data-launch-remote][value="${CSS.escape(event.target.value)}"]`)?.focus(); }
       const pairField = event.target.dataset.pairField;
-      if (pairField && pairing) { pairing[pairField] = event.target.value; pairing.error = ""; controls(); }
+      if (pairField && pairing) {
+        const link = pairField === "url" ? pairingLink(event.target.value) : null;
+        if (link) { Object.assign(pairing, link); event.target.value = link.url; const code = root.querySelector('[data-pair-field="code"]'); if (code) code.value = link.code; }
+        else pairing[pairField] = event.target.value;
+        pairing.error = ""; controls();
+      }
       if (event.target.hasAttribute("data-launch-home-action")) { homeAction = event.target.value; invalidate(); controls(); }
     }
     root.addEventListener("input", change);
     root.addEventListener("change", event => { if (["mode","source"].includes(event.target.dataset.launchField) || event.target.hasAttribute("data-launch-home-action") || event.target.hasAttribute("data-launch-remote")) change(event); });
     function hide() { active = false; }
     return {mount(host) { active = true; host.append(root); render(); if (!snapshot) void read(); return hide; }, hide,
+      prepare(value) { intent = value; prepared(); },
       getState:() => ({draft:draft && clone(draft), homeAction, pending, error, checked:Boolean(preview)})};
   }
-  window.CrewLaunchSettings = {create, draftSettings, settingsValue};
+  window.CrewLaunchSettings = {create, draftSettings, settingsValue, pairingLink};
 })();

@@ -20,7 +20,8 @@ from .supervisor import _atomic_json, _pid_alive, _read_json
 MARKER = '.crew-home-migration.json'
 LOCKS = ('desktop/service.lock', 'desktop/supervisor.lock', 'desktop/home-migration.lock',
          'desktop/admin/operations/chat/state.lock')
-EXCLUDED = ('web.json', 'crew.db-wal', 'crew.db-shm', 'runtime-locks', 'desktop/ui', 'desktop/profiles',
+EXCLUDED = ('web.json', 'crew.db-wal', 'crew.db-shm', 'runtime-locks', 'runtime-cache/codex-app-server',
+            'desktop/ui', 'desktop/profiles',
             'desktop/service.lock', 'desktop/supervisor.lock', 'desktop/update.lock',
             'desktop/home-migration.lock', 'desktop/operations-worker.lock', 'desktop/tool-updates.lock',
             'desktop/admin/status.json', 'desktop/admin/control.json', 'desktop/admin/maintenance.json',

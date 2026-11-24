@@ -4,10 +4,11 @@
   const panel = $('tools-page'), workspace = $('workspaces-page');
   let snapshot = null, request = null, setting = false, settingNote = '', globalError = '';
   const supported = typeof bridge?.toolsSnapshot === 'function';
-  const mac = bridge?.platform === 'darwin';
-  if (supported && mac) {
-    $('tools-preferences').hidden = true;
-    $('tools-note').textContent = 'Mac 版暂不支持一键更新，请用原安装方式更新。';
+  // A LAN client manages Claude Code and Codex on the host; its tools page only updates Crew itself.
+  const crewOnly = !supported && typeof bridge?.selfUpdateSnapshot === 'function';
+  if (crewOnly) {
+    for (const id of ['tools-preferences', 'tools-global-error', 'tools-check-status', 'tools-list', 'tools-note']) $(id).hidden = true;
+    $('tools-subtitle').textContent = '更新这台电脑上的 Crew。Claude Code 和 Codex 在主机上管理。';
   }
   function text(value) { return typeof value === 'string' ? value : value?.message || ''; }
   function node(tag, className, value) {
@@ -15,7 +16,7 @@
     if (value !== undefined) element.textContent = value; return element;
   }
   function select(tools) {
-    if (tools && !supported) return;
+    if (tools && !supported && !crewOnly) return;
     panel.hidden = !tools; workspace.hidden = tools;
     for (const [id, active] of [['nav-workspaces', !tools], ['nav-tools', tools]]) {
       $(id).classList.toggle('active', active);
@@ -27,13 +28,13 @@
     if (labels[tool.phase]) return labels[tool.phase];
     if (tool.error) return tool.phase === 'error' ? '操作失败' : '检查失败';
     if (!tool.installed_version) return '未检测到';
-    if (tool.update_available) return mac ? '有新版本' : tool.can_update ? '有更新' : tool.can_queue ? '会话使用中' : '需手动更新';
+    if (tool.update_available) return tool.can_update ? '有更新' : tool.can_queue ? '会话使用中' : '需手动更新';
     if (tool.phase === 'done') return '已更新';
     return tool.latest_version ? '已是最新' : '已安装';
   }
   function installation(tool) {
     const value = typeof tool.installation === 'string' ? tool.installation : tool.installation?.label || tool.installation?.kind || '';
-    return {npm:'npm', native:'官方安装', unknown:'未识别', missing:'未安装'}[value] || value;
+    return {npm:'npm', native:'官方安装', homebrew:'Homebrew', unknown:'未识别', missing:'未安装'}[value] || value;
   }
   function render() {
     const busy = Boolean(snapshot?.checking || request === 'check');
@@ -68,7 +69,7 @@
         messages.append(node('p', 'tool-message' + (error ? ' error' : ''), message));
       }
       footer.append(messages);
-      if (!mac) {
+      {
         const actions = node('div', 'tool-card-actions');
         const update = node('button', 'button secondary', tool.phase === 'updating' ? '正在更新…' : tool.phase === 'queued' ? '已排队' : !tool.can_update && tool.can_queue ? '等待会话结束后更新' : '更新');
         update.type = 'button'; update.dataset.toolUpdate = tool.id;
@@ -98,21 +99,22 @@
   async function read() { await operation('read', () => bridge.toolsSnapshot()); }
   function show() {
     window.CrewHomeSettings?.hide();
-    select(true); if (!supported) return;
-    $('tools-title').focus(); void read();
+    select(true); if (!supported && !crewOnly) return;
+    $('tools-title').focus(); if (supported) void read();
   }
   $('nav-workspaces').addEventListener('click', () => select(false));
   $('nav-tools').addEventListener('click', show);
-  $('tools-check').addEventListener('click', () => { void operation('check', () => bridge.toolsCheck()); });
-  if (!mac) $('tools-auto').addEventListener('change', async () => {
+  if (supported) $('tools-check').addEventListener('click', () => { void operation('check', () => bridge.toolsCheck()); });
+  $('tools-auto').addEventListener('change', async () => {
     if (setting) return;
     const enabled = $('tools-auto').checked; setting = true; settingNote = ''; globalError = ''; render();
     try { consume(await bridge.toolsSettings({autoUpdate:enabled})); settingNote = enabled ? '已开启' : '已关闭'; }
     catch (error) { globalError = error.message || String(error); }
     finally { setting = false; render(); }
   });
-  function mount(host) { const parent=panel.parentNode; host.append(panel); panel.hidden=false; void read(); return () => { panel.hidden=true; parent.append(panel); }; }
+  function mount(host) { const parent=panel.parentNode; host.append(panel); panel.hidden=false; if (supported) void read(); return () => { panel.hidden=true; parent.append(panel); }; }
   window.CrewHomeTools = Object.freeze({show, hide:() => select(false), mount});
+  if (crewOnly) $('nav-tools').hidden = false;
   if (supported) {
     $('nav-tools').hidden = false;
     if (typeof bridge.onToolUpdates === 'function') bridge.onToolUpdates(value => { try { consume(value); } catch (error) { globalError = error.message; render(); } });

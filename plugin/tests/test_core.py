@@ -721,14 +721,12 @@ class RuleTextTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertRegex(content, r"不再发 ACK|不再确认|不回复确认")
                 self.assertRegex(content, r"不(?:自动)?建目标")
-                self.assertIn("example", content)
-                # Final delivery is a readable HTML page with a concrete example (user ruling 2026-11-15).
                 self.assertIn("最终报告", content)
                 self.assertIn("HTML", content)
         leader = self.roles()[0][1]
-        self.assertRegex(leader, r"必须有：至少一个具体案例.*至少一处帮助理解的可视化")
-        self.assertIn("提交前至少把最终要交的页面预览一次", leader)
-        self.assertNotIn("形式由你按成果判断", leader)
+        self.assertIn("第一次出现时，就在旁边用一句白话解释", leader)
+        self.assertIn("篇幅、章节和排版由你按任务决定", leader)
+        self.assertIn("关键结论旁放最能说明它的证据", leader)
         member = self.roles()[1][1]
         self.assertIn("--kind result|blocker|decision", member)
         self.assertRegex(member, r"不再.*重复 report")
@@ -764,8 +762,7 @@ class RuleTextTests(unittest.TestCase):
             self.assertNotIn("你不写业务代码", content)
         self.assertIn("跨组协助也由你统一验收", leader)
         self.assertIn("一份最终答复", leader)
-        self.assertIn("用户点“通过”后任务完成", leader)
-        self.assertIn("归档本组已无其他未完成任务的成员", leader)
+        self.assertIn("用户点「通过」后任务才完成", leader)
         self.assertIn("用户新指令优先于 leader 旧安排", member)
 
 
@@ -909,7 +906,8 @@ class InstallAndCliTests(CoreCase):
         home = self.base / "posix-home"
         home.mkdir()
         install._launchers(home, only_missing=False, windows=False)
-        python = shlex.quote(Path(sys.executable).resolve().as_posix())
+        # The stable path Python started from, not a Homebrew Cellar path that `brew upgrade` deletes.
+        python = shlex.quote(Path(sys.executable).absolute().as_posix())
         shim = home / "bin" / "python"
         self.assertEqual(shim.read_text(encoding="utf-8"), '#!/bin/sh\nexec ' + python + ' "$@"\n')
         self.assertFalse((home / "bin" / "crew.exe").exists())

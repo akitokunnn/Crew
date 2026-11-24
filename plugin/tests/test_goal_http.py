@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 import tests
 from unittest import mock
-from crew import board, chat, codex_runtime, goals, hooks, messaging, personal, report_preview, runtimes, session_ops, store, web
+from crew import board, chat, codex_guard, codex_runtime, goals, hooks, messaging, personal, report_preview, runtimes, session_ops, store, web
 import test_chat_http as chat_helpers
 import test_codex_runtime as codex_helpers
 from test_shell import ShellFixture, PLUGIN, NOW
@@ -132,6 +132,12 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                         self.assertTrue(any(e['type'] == 'compact' for e in history['events']))
                         self.assertTrue(manager.busy(person))
                         self.assertTrue(manager.busy(keys[2]))
+                        last = history['context']
+                        manager.stop_managed(keys[1])
+                        offline = self.request(history_path)[1]
+                        self.assertFalse(offline['running'])
+                        self.assertEqual(offline['context'], dict(last, source='last_observed'))
+                        self.assertEqual(manager.context(person)['used'], 1000)
 
     def test_task_context_unknown_and_stale_compact_never_touch_general_or_other_tasks(self):
         goal = self.goal()
@@ -353,6 +359,99 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
 
     def test_codex_ai_task_starts_are_independent_and_retry_does_not_repeat_input(self):
         self.finite_agent_starts('codex')
+
+    def check_general_task_handoff(self, runtime):
+        if runtime == 'codex':
+            counter = iter(range(4))
+
+            def client(**options):
+                value = codex_helpers.FakeClient(**options)
+                value.thread_id = 'handoff-' + str(next(counter))
+                return value
+
+            patcher = mock.patch('crew.codex_runtime._ObservedClient', side_effect=client)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            runtimes.set(self.conn, 's3', 'codex', 'general-s3')
+
+        manager = self.server.service.chat
+        chat_url = '/api/chat/send?project=demo'
+        goal_url = '/api/goals/agent?project=demo'
+        code, value, _ = self.request(chat_url, {'session_id': 's3', 'text': 'Start both tasks.'})
+        self.assertEqual(code, 200, value)
+        general = manager.processes['s3']
+
+        def allowed(tool, inputs, execution_id=None):
+            current = manager.processes[execution_id] if execution_id else general
+            payload = {'cwd': str(self.project), 'tool_name': tool, 'tool_input': inputs}
+            if runtime == 'codex':
+                return codex_guard.check(self.home, 's3', {**payload, 'hook_event_name': 'PreToolUse',
+                    'session_id': current.thread_id}, execution_id) is None
+            with mock.patch('sys.stderr'):
+                return hooks.handle('guard', {**payload, 'session_id': getattr(current, 'native_id', 's3')}, self.home, PLUGIN,
+                    {'CREW_SESSION_ID': 's3', **({'CREW_EXECUTION_ID': execution_id} if execution_id else {})})[0] == 0
+
+        def shell(command, execution_id=None):
+            return allowed('Bash', {'command': command}, execution_id)
+
+        def edit(execution_id=None):
+            if runtime == 'codex':
+                patch = '*** Begin Patch\n*** Add File: inspection.txt\n+record\n*** End Patch\n'
+                return allowed('apply_patch', {'command': patch}, execution_id)
+            return allowed('Write', {'file_path': str(self.project / 'inspection.txt')}, execution_id)
+
+        independently_started = self.goal()
+        code, value, _ = self.request('/api/goals/action?project=demo', {
+            'goal_id': independently_started['id'], 'action': 'start'})
+        self.assertEqual(code, 200, value)
+        self.assertTrue(shell('python check_assets.py'))
+        self.assertTrue(edit())
+        payload = {'title': 'Audit assets', 'request': 'Check the assets.', 'acceptance': ['Record results'], 'start': True}
+        if runtime == 'codex':
+            result = general.client.kwargs['tool_handler']({'threadId': general.thread_id, 'turnId': general.client.turn_id,
+                'callId': 'start-audit', 'tool': 'crew_goal', 'arguments': {'action': 'create', 'data': payload}})
+            self.assertTrue(result['success'], result)
+            created = json.loads(result['contentItems'][0]['text'])
+        else:
+            code, created, _ = self.request(goal_url, {'actor_session_id': 's3', 'action': 'create', 'data': payload})
+            self.assertEqual(code, 200, created)
+        first = created['receipt']['execution_id']
+        self.assertTrue(manager.busy(first))
+        self.assertFalse(shell('python check_assets.py'))
+        self.assertFalse(edit())
+        self.assertTrue(shell('python check_assets.py', first))
+        self.assertTrue(edit(first))
+        self.assertTrue(shell('crew goal status'))
+        self.assertTrue(shell(f'python "{self.home / "crew.py"}" goal status'))
+        self.assertFalse(shell('crew goal status && python check_assets.py'))
+        self.assertTrue(manager.busy('s3'))
+
+        second = self.goal()
+        code, receipt, _ = self.request(goal_url, {'actor_session_id': 's3', 'action': 'start',
+            'data': {'goal_id': second['id']}})
+        self.assertEqual(code, 200, receipt)
+        self.assertTrue(manager.busy(receipt['execution_id']))
+        self.assertFalse(shell('python check_assets.py'))
+
+        if runtime == 'codex':
+            general.client.finish()
+        else:
+            self.finish_turn('s3', general.process)
+        code, value, _ = self.request(chat_url, {'session_id': 's3', 'text': 'Now do a separate short check.'})
+        self.assertEqual(code, 200, value)
+        self.assertTrue(shell('python check_assets.py'))
+        code, retry, _ = self.request(goal_url, {'actor_session_id': 's3', 'action': 'start',
+            'data': {'goal_id': second['id']}})
+        self.assertEqual(code, 200, retry)
+        self.assertTrue(retry['duplicate'])
+        self.assertTrue(shell('python check_assets.py'))
+        self.assertTrue(manager.busy(first))
+
+    def test_claude_goal_start_leaves_only_coordination_in_the_originating_turn(self):
+        self.check_general_task_handoff('claude')
+
+    def test_codex_goal_start_leaves_only_coordination_in_the_originating_turn(self):
+        self.check_general_task_handoff('codex')
 
     def coordinate_member_tasks(self, runtime):
         if runtime == 'codex':
@@ -1671,24 +1770,38 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             goal_ids.append(created['goal']['id'])
         root = board.project(self.conn, 'demo')['root']
         os.makedirs(os.path.join(root, 'deliveries', 'v1'))
-        final = goals.save_report(self.conn, goal_ids[0], {**self.report(), 'folder': 'deliveries/v1'})
-        stage = goals.save_report(self.conn, goal_ids[0], {**{key: value for key, value in self.report().items() if key != 'folder'}, 'outcome': 'progress'})
+        stage_data = {key: value for key, value in self.report().items() if key != 'folder'}
+        stage = goals.save_report(self.conn, goal_ids[0], {**stage_data, 'outcome': 'progress'})
+        artifacts = ['missing/report.html', 'deliveries/v1/report.html', 'docs/notes.md']
+        for artifact in artifacts[1:]:
+            target = os.path.join(root, artifact)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, 'w', encoding='utf-8') as file:
+                file.write('Saved delivery')
+        legacy = goals.save_report(self.conn, goal_ids[0], {**stage_data, 'artifacts': artifacts})
+        final = goals.save_report(self.conn, goal_ids[0], {**stage_data, 'artifacts': artifacts, 'folder': 'docs'})
         code, detail, _ = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal_ids[0]}))
         self.assertEqual(code, 200, detail)
         folders = {item['id']: item['folder'] for item in detail['reports']}
-        self.assertEqual(folders, {final['id']: {'path': os.path.abspath(os.path.join(root, 'deliveries', 'v1')), 'declared': True},
+        self.assertEqual(folders, {final['id']: {'path': os.path.abspath(os.path.join(root, 'docs')), 'declared': True},
+                                   legacy['id']: {'path': os.path.abspath(os.path.join(root, 'deliveries', 'v1')), 'declared': False, 'inferred': True},
                                    stage['id']: {'path': os.path.abspath(root), 'declared': False}})
-        with mock.patch('crew.web.sys.platform', 'win32'), mock.patch('crew.web.os.startfile', create=True) as opener:
-            for report in (final, stage):
+        with mock.patch('crew.web.sys.platform', 'win32'), mock.patch('crew.native_folders.open_windows') as opener:
+            for report in (final, legacy, stage):
                 code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': report['id']})
                 self.assertEqual((code, result), (200, {'ok': True, **folders[report['id']]}))
-            self.assertEqual([call.args for call in opener.call_args_list], [(folders[final['id']]['path'],), (folders[stage['id']]['path'],)])
+            self.assertEqual([call.args for call in opener.call_args_list],
+                             [(folders[report['id']]['path'],) for report in (final, legacy, stage)])
             code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[1], 'report_id': final['id']})
             self.assertEqual((code, result.get('error')), (400, '报告不属于此目标'))
-            os.rmdir(os.path.join(root, 'deliveries', 'v1'))
+            os.remove(os.path.join(root, 'docs', 'notes.md'))
+            os.rmdir(os.path.join(root, 'docs'))
             code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': final['id']})
             self.assertEqual((code, result.get('error')), (400, '交付文件夹不存在：' + folders[final['id']]['path']))
-            self.assertEqual(opener.call_count, 2, 'a missing folder or a foreign report opens nothing')
+            self.assertEqual(opener.call_count, 3, 'a missing folder or a foreign report opens nothing')
+            opener.side_effect = OSError('等待资源管理器打开文件夹超时')
+            code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': stage['id']})
+            self.assertEqual((code, result.get('error')), (400, '等待资源管理器打开文件夹超时'))
         with mock.patch('crew.web.sys.platform', 'darwin'), mock.patch('crew.web.subprocess.Popen') as popen:
             code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': stage['id']})
             self.assertEqual((code, result), (200, {'ok': True, **folders[stage['id']]}))

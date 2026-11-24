@@ -174,18 +174,19 @@ class GoalTests(GoalFixture):
                 goals.save_report(self.conn, goal['id'], data)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports').fetchone()[0], 0)
 
-    def test_final_delivery_names_an_existing_folder_the_user_can_open(self):
-        # User ruling 2026-11-19: every final report has an 「打开文件夹」 that leads to the deliverables.
+    def test_final_delivery_can_link_to_an_existing_folder_or_open_the_workspace(self):
         goal, root = self.goal(), board.project(self.conn, 'demo')['root']
         (self.root / 'out').mkdir()
         (self.root / 'note.txt').write_text('x', encoding='utf-8')
         missing = self.report('awaiting_acceptance')
         missing.pop('folder')
-        for folder, error in ((None, '最终交付需要 folder'), ('', '最终交付需要 folder'), ('  ', '最终交付需要 folder'),
-                              ('gone', '不存在或不是文件夹'), ('note.txt', '不存在或不是文件夹'), (7, 'folder 交付文件夹文本无效')):
+        for folder, error in (('gone', '不存在或不是文件夹'), ('note.txt', '不存在或不是文件夹'),
+                              (7, 'folder 交付文件夹文本无效')):
             with self.subTest(folder=folder), self.assertRaisesRegex(board.BoardError, error):
-                goals.save_report(self.conn, goal['id'], missing if folder is None else {**missing, 'folder': folder})
-        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports').fetchone()[0], 0)
+                goals.save_report(self.conn, goal['id'], {**missing, 'folder': folder})
+        saved = goals.save_report(self.conn, goal['id'], missing)
+        self.assertNotIn('folder', saved['data'])
+        self.assertEqual(goals.report_folder(root, saved['data']), {'path': os.path.abspath(root), 'declared': False})
         saved = goals.save_report(self.conn, goal['id'], {**missing, 'folder': ' out '})
         self.assertEqual(saved['data']['folder'], 'out')
         self.assertEqual(goals.report_folder(root, saved['data']), {'path': os.path.abspath(os.path.join(root, 'out')), 'declared': True})
@@ -197,8 +198,7 @@ class GoalTests(GoalFixture):
         self.assertNotIn('folder', progress['data'])
         self.assertEqual(goals.report_folder(root, progress['data']), {'path': os.path.abspath(root), 'declared': False})
 
-    def test_final_delivery_needs_a_page_a_concrete_example_and_verification_evidence(self):
-        # User ruling 2026-11-15: the final report is a readable HTML page with a concrete case; user_test stays optional.
+    def test_final_delivery_requires_a_page_and_records_unverified_results_honestly(self):
         goal = self.goal()
         data = self.report('awaiting_acceptance')
         data.update(user_test=[])
@@ -211,23 +211,26 @@ class GoalTests(GoalFixture):
                 with self.subTest(outcome=outcome, page=blank):
                     page = self.report(outcome)
                     page['document_html'] = blank
-                    with self.assertRaisesRegex(board.BoardError, 'HTML 页面.*具体案例.*可视化'):
+                    with self.assertRaisesRegex(board.BoardError, 'HTML 正文 document_html'):
                         goals.save_report(self.conn, goal['id'], page)
             missing_page = self.report(outcome)
             missing_page.pop('document_html')
             with self.assertRaisesRegex(board.BoardError, 'document_html'):
                 goals.save_report(self.conn, goal['id'], missing_page)
-            case = self.report(outcome)
-            case['examples'] = []
-            with self.assertRaisesRegex(board.BoardError, '具体 example'):
-                goals.save_report(self.conn, goal['id'], case)
         illustrative = self.report('awaiting_acceptance')
         illustrative['examples'][0]['kind'] = 'illustrative'
         self.assertEqual(goals.save_report(self.conn, goal['id'], illustrative)['data']['examples'][0]['kind'], 'illustrative')
-        missing = self.report('awaiting_acceptance')
-        missing['acceptance'][0].update(status='unverified', evidence=[])
-        with self.assertRaisesRegex(board.BoardError, '验证证据'):
-            goals.save_report(self.conn, goal['id'], missing)
+        text_only = self.report('awaiting_acceptance')
+        text_only['document_html'] = '<h1>设备上的效果还需确认</h1><p>请在真机上重放样例。</p>'
+        text_only.pop('examples')
+        text_only['acceptance'][0].update(status='unverified', evidence=[])
+        with self.assertRaisesRegex(board.BoardError, 'unresolved'):
+            goals.save_report(self.conn, goal['id'], text_only)
+        text_only['unresolved'] = ['只有用户能在真机上确认。']
+        saved = goals.save_report(self.conn, goal['id'], text_only)
+        self.assertEqual(saved['data']['examples'], [])
+        self.assertEqual(saved['data']['acceptance'][0]['evidence'], [])
+        self.assertIn('设备上的效果还需确认', saved['html'])
         boundary = self.report('awaiting_acceptance')
         boundary['acceptance'][0]['status'] = 'simulated'
         with self.assertRaisesRegex(board.BoardError, 'unresolved'):

@@ -121,6 +121,13 @@ class Events:
                 events.extend(self._update(thread, status=status, detail=detail))
         elif method == 'thread/closed':
             events.extend(self._update(thread, status='closed'))
+        elif method == 'thread/settings/updated':
+            settings = params.get('settings') or {}
+            observed = {key: settings[native] for key, native in
+                        (('model', 'model'), ('effort', 'effort'), ('speed', 'serviceTier'))
+                        if native in settings}
+            if observed:
+                events.extend(self._update(thread, applied={**self.agents[thread].get('applied', {}), **observed}))
         elif method == 'thread/name/updated' and title(params.get('threadName')):
             events.extend(self._update(thread, task_name=title(params['threadName'])))
         return events

@@ -356,7 +356,7 @@ class ReportDecisionTests(GoalFixture):
                 self.assertEqual(item['recommendation'], expected.get('recommendation'))
             self.assertTrue(goals.finalize_finish(self.conn, target['id'])['already'])
             self.assertEqual(board.decisions(self.conn, 'demo', all=True), rows)
-        self.assertEqual(goal_actions.report_template(self.conn, target['id'])['user_decisions'], [])
+        self.assertNotIn('user_decisions', goal_actions.report_template(self.conn, target['id']))
 
     def test_failed_decision_registration_rolls_back_todos_and_finish(self):
         target = self.goal()
@@ -447,9 +447,9 @@ class RemoteDecisionActionTests(GoalFixture):
         leader_rules = behavior_prompts.DEFAULTS['leader']
         for part in ('各建一个目标并分别 start', '已有同一任务就补充原目标'):
             self.assertIn(part, leader_rules)
-        final_rules = behavior_prompts.DEFAULTS['final_report']
+        human_input_rules = behavior_prompts.DEFAULTS['human_input']
         for part in ('crew todo list', 'crew decisions', 'todo withdraw', '撤回拍板', 'user_todos', 'user_decisions'):
-            self.assertIn(part, final_rules)
+            self.assertIn(part, human_input_rules)
         self.assertIn('final_report', behavior_prompts.bundle('leader'))
 
     def test_missing_answered_or_unverified_decisions_are_rejected(self):

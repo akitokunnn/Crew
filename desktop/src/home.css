@@ -24,6 +24,8 @@ aside nav{margin-top:25px}
 .status-dot{width:5px;height:5px;flex:none;border-radius:50%;background:#898989}
 .service{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .service.failed{color:#9d3838}
+.service-switch{display:block;margin:4px 0 0 12px;padding:2px 0;border:0;background:none;font:inherit;color:inherit;text-decoration:underline;text-decoration-color:transparent;text-underline-offset:2px;cursor:pointer}
+.service-switch:hover,.service-switch:focus-visible{color:var(--text,#202020);text-decoration-color:currentColor}
 .shortcut{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:14px;color:#8b8b8b}
 kbd{font-family:inherit;font-size:10px;letter-spacing:.2px;color:#777}
 main{display:flex;flex:1;flex-direction:column;min-width:0;height:100%;overflow-y:auto;background:#fafafa}

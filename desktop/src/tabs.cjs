@@ -72,6 +72,10 @@ class WorkspaceTabs {
       transition: this.slide ? { from: this.slide.from, to: this.slide.to } : null };
   }
   get activeView() { return this.entries.get(this.activeId)?.view || null; }
+  // Loading and resizing reveal the view background; keep it on the current display mode.
+  setBackground(color) {
+    for (const tab of this.entries.values()) if (tab.view && !tab.view.webContents.isDestroyed()) tab.view.setBackgroundColor(color);
+  }
   reconnect(origin) {
     if (this.entries.size !== 0) throw new Error('已有工作区标签时不能更换服务地址');
     this.origin = serviceOrigin(origin);

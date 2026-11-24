@@ -1,10 +1,11 @@
 import tests
+import io
 import unittest
 from contextlib import closing
 from unittest import mock
 
 import test_codex_runtime as fixtures
-from crew import board, chat, codex_client, codex_runtime, codex_visibility, goals, session_ops, store
+from crew import board, chat, codex_app_server, codex_client, codex_runtime, codex_visibility, goals, session_ops, store
 
 
 class CodexVisibilityTests(unittest.TestCase):
@@ -17,6 +18,51 @@ class CodexVisibilityTests(unittest.TestCase):
         self.assertEqual(client.calls[1], ('thread/name/set', {'threadId': 'native-1', 'name': 'worker · 组员'}))
         running.close()
         self.assertNotIn('thread/archive', [name for name, _ in client.calls])
+
+    def test_new_leader_uses_mcp_in_the_same_home_and_resumes_its_bound_thread(self):
+        native_home = self.base / 'codex-home'
+        stock = ['codex', 'app-server', '--listen', 'stdio://']
+        standalone = ['codex-app-server', '--listen', 'stdio://', '--session-source', 'mcp']
+        processes = []
+        clients = []
+
+        def spawn(command, *, env):
+            processes.append((command, env['CODEX_HOME']))
+            return fixtures.FakeProcess()
+
+        def create_client(**kwargs):
+            client = fixtures.FakeClient(**kwargs)
+            client.process = kwargs['process_factory'](stock, env=kwargs['env'])
+            clients.append(client)
+            return client
+
+        with closing(store.connect(self.home)) as conn:
+            conn.execute("UPDATE sessions SET role='leader' WHERE session_id='worker'")
+            session = board.session(conn, 'worker')
+        with mock.patch.dict('os.environ', {'CODEX_HOME': str(native_home)}), \
+             mock.patch.object(codex_runtime, '_ObservedClient', side_effect=create_client), \
+             mock.patch.object(codex_runtime, 'process_identity', return_value='test-process'), \
+             mock.patch('crew.codex_app_server.command', return_value=standalone):
+            journal = chat.Journal(self.home / 'chat' / 'worker.jsonl')
+            for resume in (False, True):
+                running = codex_runtime.CodexRunning(self.home, self.plugin, session, {}, {}, journal, None,
+                                                     process_factory=spawn, resume=resume)
+                try:
+                    self.assertEqual(running.thread_id, 'native-1')
+                finally:
+                    running.close()
+                    self.assertTrue(running.reader_done.wait(2))
+        self.assertEqual(processes, [(standalone, str(native_home)), (stock, str(native_home))])
+        self.assertEqual(clients[0].calls[0][0], 'thread/start')
+        self.assertEqual(clients[1].calls[0][0], 'thread/resume')
+
+    def test_invalid_release_is_never_published_or_launched(self):
+        with mock.patch.object(codex_app_server.platform, 'system', return_value='Windows'), \
+             mock.patch.object(codex_app_server.platform, 'machine', return_value='AMD64'), \
+             mock.patch.object(codex_app_server, 'urlopen', return_value=io.BytesIO(b'invalid package')):
+            with self.assertRaisesRegex(board.BoardError, 'SHA-256'):
+                codex_app_server.command(self.home)
+        self.assertEqual(list((self.home / 'runtime-cache').rglob('codex-app-server.exe')), [])
 
     def test_ring_compact_queues_on_the_current_codex_thread_without_starting_another_turn(self):
         running, client = self.make_running()

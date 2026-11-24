@@ -148,7 +148,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
               {"CLAUDE_API_KEY"})
         self.assertNotIn("CLAUDE_CODE_SESSION_ID", env)
         self.assertNotIn("CLAUDE_CODE_CHILD_SESSION", env)
-        self.assertEqual(env["CLAUDE_CODE_ENTRYPOINT"], "crew-web")
+        self.assertEqual(env["CLAUDE_CODE_ENTRYPOINT"], "cli")
         self.assertEqual(env["CLAUDE_API_KEY"], "keep")
         self.assertEqual(env["CLAUDE_CONFIG_DIR"], "isolated-profile")
         self.assertEqual(env["MSYS_NO_PATHCONV"], "1")

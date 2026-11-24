@@ -4,7 +4,7 @@
   let mounted=null, opened=false, loading=false, timer=null, toastTimer=null, assistantSession=null, note=null, notePrefill=false;
   const NOTE_OPENING="帮我把这个想法想清楚";
   const systemTheme=matchMedia("(prefers-color-scheme: dark)");
-  function theme(){let selected="system";try{selected=localStorage.getItem("crew.theme")||selected;}catch{}document.documentElement.dataset.theme=selected==="system"?(systemTheme.matches?"dark":"light"):selected;}
+  function theme(){let selected="system";if(!window.crewDesktopTheme)try{selected=localStorage.getItem("crew.theme")||selected;}catch{}document.documentElement.dataset.theme=selected==="system"?(systemTheme.matches?"dark":"light"):selected;}
   theme();systemTheme.addEventListener("change",theme);window.addEventListener("storage",theme);
   const toast=message=>{const node=$("assistant-toast");node.textContent=message;node.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>{node.hidden=true;},5000);};
   document.addEventListener("crew:sound-error",event=>toast(event.detail));

@@ -3,15 +3,15 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 
-function preload({location='file:///crew/home.html',mainFrame=true}={}){
+function preload({location='file:///crew/home.html',mainFrame=true,platform='win32',remote=false}={}){
   const invocations=[];let bridge;
-  const settings={home:'file:///crew/home.html',error:'file:///crew/error.html'};
+  const settings={home:'file:///crew/home.html',error:'file:///crew/error.html',remote};
   const sandbox={
     require:name=>{assert.equal(name,'electron');return{
       contextBridge:{exposeInMainWorld:(name,value)=>{assert.equal(name,'crewDesktop');bridge=value;}},
       ipcRenderer:{on(){},invoke:async(channel,...args)=>{invocations.push({channel,args});return{ok:true};}}
     };},
-    process:{isMainFrame:mainFrame,argv:['--crew-desktop-config='+encodeURIComponent(JSON.stringify(settings))]},
+    process:{platform,isMainFrame:mainFrame,argv:['--crew-desktop-config='+encodeURIComponent(JSON.stringify(settings))]},
     location:{href:location},window:{addEventListener(){}},Promise,encodeURIComponent,decodeURIComponent,setTimeout,clearTimeout
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../src/preload.cjs'),'utf8'),sandbox);
@@ -29,4 +29,15 @@ test('remote access has separate read and action bridges without exposing an arb
 test('workspace, external, error and child frames cannot acquire the remote access management bridge',()=>{
   for(const settings of [{location:'http://127.0.0.1:47811/?project=demo'},{location:'https://example.test/'},{location:'file:///crew/error.html'},{mainFrame:false}])
     assert.equal(preload(settings).bridge,undefined);
+});
+
+test('the Crew self-update bridge reaches Mac, Windows and LAN client home pages',async()=>{
+  for(const settings of [{platform:'darwin'},{platform:'win32'},{platform:'darwin',remote:true}]){
+    const h=preload(settings);
+    for(const name of ['selfUpdateSnapshot','selfUpdateCheck','selfUpdateDownload','selfUpdateCancel','selfUpdateInstall','selfUpdateSettings','selfUpdateOpen','onSelfUpdateState'])
+      assert.equal(typeof h.bridge[name],'function',name+' '+JSON.stringify(settings));
+    await h.bridge.selfUpdateSettings({auto_download:true});
+    assert.deepEqual(h.invocations.at(-1),{channel:'desktop:self-update-settings',args:[{auto_download:true}]});
+  }
+  assert.equal(preload({platform:'darwin'}).bridge.crewUpdateSnapshot,undefined);
 });

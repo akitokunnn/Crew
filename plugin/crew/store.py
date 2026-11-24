@@ -70,7 +70,8 @@ def _migrate_domain_members(conn):
 def _migrate_codex_speed(conn):
     """Codex speed (service tier) beside model/effort; existing rows keep following Codex's own setting."""
     columns = {'session_options': 'speed', 'session_runtime_bindings': 'speed', 'goal_executions': 'speed',
-               'goal_execution_bindings': 'speed', 'runtime_switches': 'target_speed'}
+               'goal_execution_bindings': 'speed', 'runtime_switches': 'target_speed',
+               'codex_sessions': 'speed', 'codex_runs': 'speed'}
 
     def missing():
         return [(table, name) for table, name in columns.items()
