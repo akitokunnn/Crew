@@ -288,6 +288,7 @@ def ship(live, main_checkout, skip_ci):
         return
     if skip_ci:
         git(live, 'commit', '--allow-empty', '--quiet', '-m', '[skip ci] 本批改动已在本地试用，跳过 CI')
+    head = git(live, 'rev-parse', 'HEAD')
     push(live)
     count = len(subjects.splitlines())
     number = gh('pr', 'list', '--head', LIVE, '--base', BASE, '--state', 'open', '--json', 'number', '--jq', '.[0].number').stdout.strip()
@@ -298,19 +299,18 @@ def ship(live, main_checkout, skip_ci):
     print(f'批次 PR：#{number}')
     if not skip_ci:
         print('等待 CI（Windows 和 macOS）……')
+        expected = {'backend', 'backend (macOS)', 'desktop', 'desktop (macOS)'}
         for _ in range(18):
-            checks = gh('pr', 'checks', number, '--json', 'name', '--jq', 'length', check=False).stdout.strip()
-            if checks.isdigit() and int(checks) > 0:
+            checks = gh('pr', 'checks', number, '--json', 'name', '--jq', '.[].name', check=False).stdout.splitlines()
+            if expected.issubset(checks):
                 break
             time.sleep(10)
         else:
-            checks = ''
-        if checks:
-            if subprocess.run(['gh', 'pr', 'checks', number, '--watch', '--fail-fast']).returncode:
-                raise Failure(f'CI 没通过，PR #{number} 保留未合并。修好后重新 merge 进 live，再运行 ship。')
-        else:
-            print('这个 PR 没有触发 CI，直接合并。')
-    gh('pr', 'merge', number, '--merge')
+            missing = '、'.join(sorted(expected.difference(checks)))
+            raise Failure(f'PR #{number} 尚未登记这些 CI 检查：{missing}。PR 保留未合并。')
+        if subprocess.run(['gh', 'pr', 'checks', number, '--watch', '--fail-fast']).returncode:
+            raise Failure(f'CI 没通过，PR #{number} 保留未合并。修好后重新 merge 进 live，再运行 ship。')
+    gh('pr', 'merge', number, '--merge', '--match-head-commit', head)
     git(live, 'fetch', '--quiet', REMOTE)
     git(live, 'merge', '--ff-only', f'{REMOTE}/{BASE}')
     push(live)
