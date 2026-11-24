@@ -521,6 +521,22 @@ test("every context ring is a named native button at low and high usage across b
   }
 });
 
+test("offline conversations with history keep a usable compact ring without showing a percentage", () => {
+  for (const runtime of ["claude", "codex"]) {
+    const state = contextState(runtime), {ui} = harness(state);
+    const [lead, member] = [state.leaders[0], state.members[0]];
+    for (const item of [lead, member]) {
+      Object.assign(item, {where:"offline", running:false, status:"offline", context:null, web_chat:true});
+    }
+    for (const html of [ui.sidebarLeader(lead, 0), ui.memberNode(member), ui.contextControls(member)]) {
+      assert.match(html, /class="context-ring unknown"[^>]*data-act="context-compact"/);
+      assert.match(html, /上下文用量未知 · 点击压缩上下文/);
+      assert(!html.includes('class="context-arc"'));
+    }
+    assert.equal(ui.contextRing({...lead, web_chat:false}), "");
+  }
+});
+
 test("a ring queues only its own session, suppresses duplicate clicks, and clears on actual completion",async()=>{
   for(const runtime of ["claude","codex"])for(const id of ["lead","member"]){
     const {ui}=harness(contextState(runtime)),writes=[],toasts=[];let watcher,release;
