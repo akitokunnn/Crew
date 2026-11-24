@@ -73,6 +73,10 @@ def main():
                 'INSERT INTO codex_runs(run_id,crew_session_id,crew_execution_id,task_file,workdir,started_at,ended_at,exit_code,model,effort,speed) '
                 'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                 (identity, 'coordinator', execution, task, str(case.project), stamp, stamp, 0, model, effort, speed))
+        journal = manager.journal('coordinator')
+        native_agent = {'type': 'system', 'task_id': 'stopped-native-agent', 'task_type': 'local_agent'}
+        journal.consume({**native_agent, 'subtype': 'task_started', 'description': '复核录音环境'})
+        journal.consume({**native_agent, 'subtype': 'task_notification', 'status': 'stopped', 'summary': '执行已停止'})
         delivered = None
         if os.environ.get('CREW_UI_REVIEW_FIXTURE') == '1':
             from crew.codex_runtime import process_identity
@@ -130,7 +134,11 @@ def main():
         original = None
         for line in sys.stdin:
             command = line.strip()
-            if command == 'request':
+            if command == 'complete-dispatch':
+                case.conn.execute(
+                    'INSERT INTO codex_runs(run_id,crew_session_id,task_file,workdir,started_at,ended_at,exit_code) VALUES(?,?,?,?,?,?,?)',
+                    ('dispatch-refresh', 'coordinator', '刷新后完成的派发', str(case.project), stamp, stamp, 0))
+            elif command == 'request':
                 original = manager.send_message('s3', 'coordinator', '请确认接口格式，声音任务继续执行。',
                     execution_id=source_execution['execution_id'], kind='decision', message_id='native-ui-request')
                 manager.deliver_messages()

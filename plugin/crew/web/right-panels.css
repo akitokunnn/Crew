@@ -27,6 +27,13 @@
 .rp-dispatch-head>span{font-variant-numeric:tabular-nums}
 .rp-empty{margin:0;padding:7px 0}
 .rp-runs{display:grid;gap:6px;margin:0;padding:0;list-style:none}
+.rp-runs+.rp-completed,.rp-completed[open]>.rp-runs{margin-top:6px}
+.rp-completed>summary{list-style:none;display:flex;align-items:center;gap:6px;min-height:32px;padding:4px 9px;border:1px solid var(--line);border-radius:8px;color:var(--text-2);font-size:calc(12px * var(--fs));cursor:pointer}
+.rp-completed>summary::-webkit-details-marker{display:none}
+.rp-completed>summary:hover{background:var(--hover);color:var(--text)}
+.rp-completed>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.rp-completed>summary>span{margin-inline-start:auto;font-variant-numeric:tabular-nums}
+.rp-completed[open]>summary>.i{transform:rotate(90deg)}
 .rp-run{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:4px 7px;padding:8px 9px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2);color:var(--text);font:inherit;text-align:start}
 button.rp-run{width:100%;cursor:pointer}
 button.rp-run:hover{background:var(--hover);border-color:var(--line-strong)}
@@ -60,6 +67,7 @@ main:has(.task-list[data-open=true]:not([hidden])) #chat-host{margin-right:max(v
 @starting-style{.chat-sidepanels:not([hidden]){opacity:0;transform:translateY(-8px)}.chat-sidepanels>.rp:not([hidden]){opacity:0;transform:translateY(8px)}}
 @keyframes crew-content-enter{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:620px){.chat-sidepanels{right:12px}.chat-sidepanels .rp>.head{padding:10px}.chat-sidepanels .tree{padding:12px 10px}.attention-panel .attention-head{padding:10px 12px}}
+@media(max-width:760px),(pointer:coarse){.rp-completed>summary{min-height:44px}}
 @media(prefers-reduced-motion:reduce){.chat-sidepanels,.attention-slot,.chat-sidepanels>.rp,#chat-host{transition:none!important}.attention-panel .side-decision[open]>.dc,.attention-panel .todo-card.open>.todo-details{animation:none!important}}
 
 

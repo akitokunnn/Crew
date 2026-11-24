@@ -35,6 +35,7 @@
   let fontScale = 1;
   const FONT_MIN = .9, FONT_MAX = 1.4;
   const sideDecisionsOpen = new Set(), decisionsOpen = new Set(), usageCollapsed = new Set(), operationIds = new Set();
+  const completedDispatchesOpen = new Set();
   const todoExpanded = new Set(), todoActions = new Map(), todoSaving = new Set();
   let reportReaderOpen = false, behaviorSession = null;
   let taskListScope = null, tasksOpen = true, taskDeliveryFocus = null;
@@ -459,10 +460,14 @@
     const name = Array.from(String(item.task_name || "临时协作").replace(/\s+/g, " ").trim());
     return esc(name.length > 48 ? name.slice(0, 47).join("") + "…" : name.join(""));
   }
+  const dispatchStatuses = {
+    queued:"排队中", running:"运行中", pausing:"暂停中", succeeded:"已完成", failed:"失败",
+    paused:"已暂停", interrupted:"已中断", closed:"已关闭", cancelled:"已取消", idle:"空闲", offline:"离线",
+  };
   function codexMarkup(item, cls = "cx", sessionId) {
     const running = item.status === "running";
-    const label = ({running:"运行中",succeeded:"已完成",failed:"失败",interrupted:"已暂停",closed:"已关闭",unknown:"状态未确认"})[item.status] || "状态未确认";
-    const icon = item.status === "succeeded" ? "check" : item.status === "failed" ? "x" : item.status === "interrupted" ? "pause" : item.status === "closed" ? "stop" : "more";
+    const label = dispatchStatuses[item.status] || "状态未确认";
+    const icon = ({succeeded:"check", failed:"x", paused:"pause", interrupted:"stop", closed:"stop"})[item.status] || "more";
     const hint = `${item.runtime === "claude" ? "Claude" : "Codex"} ${item.source === "native_subagent" ? "子代理" : "派活"} · ${label}${item.pid ? " · PID " + item.pid : ""}${item.cwd ? " · " + item.cwd : ""}${item.detail ? " · " + item.detail : ""}`;
     return `<div class="${cls} codex-status-${esc(item.status)}" data-codex-source="${esc(item.source || "dispatch")}" title="${esc(hint)}">${runtimeBadge(item, true)}<span class="${cls === "cx" ? "n" : "grow"}" title="${esc(item.task_description || item.task_name)}">${codexTaskName(item, sessionId)}</span><span class="s" aria-label="${esc(label)}">${running ? `<span class="spin" style="width:10px;height:10px"></span>${Math.max(0, Math.floor((Date.now() - new Date(item.started_at)) / 60000))} 分钟` : `${ic(icon, item.status === "succeeded" ? "xs ok" : "xs")}${item.status === "succeeded" && item.ended_at ? time(item.ended_at) : esc(label)}`}</span></div>`;
   }
@@ -489,10 +494,6 @@
     const skill = task.source === "skill_dispatch";
     return `<button class="li click" data-act="${isLeader ? "leader" : "member-chat"}" data-id="${esc(person.session_id)}" data-dispatch-id="${esc(task.id)}" title="查看发起人对话${skill ? ` · PID ${esc(task.pid)}` : ""}"><span class="av" style="--s:32px;--tint:var(--working)">${ic("bolt", "sm")}</span><span class="grow"><span class="ttl">${CrewChat.renderInline(task.task_name, person.session_id)}${runtimeBadge(task, true)}</span><span class="li-sub">${skill ? `临时派工 · 由 ${esc(person.name)} 派出` : `子代理 · 由 ${esc(person.name)} 发起`}</span></span>${skill ? `<span class="li-now">PID ${esc(task.pid)}</span>` : ""}${st("working")}</button>`;
   }
-  const dispatchStatuses = {
-    queued:"排队中", running:"运行中", pausing:"暂停中", succeeded:"已完成", failed:"失败",
-    interrupted:"已暂停", closed:"已关闭", cancelled:"已取消", idle:"空闲", offline:"离线",
-  };
   function dispatchCard(run) {
     const status = dispatchStatuses[run.status] || "状态未确认";
     const keys = ["model", "effort", "speed"].filter(key => run[key]);
@@ -518,7 +519,7 @@
         const execution = person.execution_records?.find(run => String(run.goal_id) === String(scope));
         if (!execution) continue;
         const state = execution.status;
-        const status = ({working:"running", completed:"succeeded", paused:"interrupted", waiting:"idle"})[state] || state;
+        const status = ({working:"running", completed:"succeeded", waiting:"idle"})[state] || state;
         members.push({...execution.settings,
           member_id:person.session_id, goal_id:scope, task_name:person.name, status,
           runtime:execution.runtime});
@@ -539,7 +540,13 @@
     const branch = path.length ? `<ol class="rp-branch" aria-label="Leader 的架构路径">${path.slice(-3).map(part => `<li>${esc(part.name)}</li>`).join("")}</ol>` : "";
     const runs = conversationDispatches(item, record);
     const running = runs.filter(run => run.status === "running").length;
-    const body = runs.length ? `<ul class="rp-runs">${runs.map(dispatchCard).join("")}</ul>` : '<p class="rp-empty">当前对话暂无派发</p>';
+    const current = runs.filter(run => run.status !== "succeeded");
+    const completed = runs.filter(run => run.status === "succeeded");
+    const scope = JSON.stringify([item.session_id, record?.goal_id ?? null]);
+    const list = entries => `<ul class="rp-runs">${entries.map(dispatchCard).join("")}</ul>`;
+    const history = completed.length ? `<details class="rp-completed" data-completed-dispatches="${esc(scope)}"${completedDispatchesOpen.has(scope) ? " open" : ""}>
+      <summary data-preserve="completed-dispatches-${esc(scope)}">${ic("right", "xs")}已完成<span>${completed.length} 个</span></summary>${list(completed)}</details>` : "";
+    const body = runs.length ? (current.length ? list(current) : "") + history : '<p class="rp-empty">当前对话暂无派发</p>';
     replace(panel, `<div class="head"><h2 class="title">会话结构</h2><div class="right">${architecture}<button type="button" class="icon-btn rp-close" data-act="right-close" aria-label="关闭会话结构">${ic("x")}</button></div></div>
       <div class="tree rp-tree">${branch}<div class="rp-leader">${av(group.name, 27)}<strong>${esc(group.name)}</strong><span>Leader</span></div>
       <section class="rp-dispatch" aria-labelledby="rp-dispatch-title"><div class="rp-dispatch-head"><h3 id="rp-dispatch-title">Agent 派发</h3>${runs.length ? `<span>已派发 ${runs.length} 个 · 运行中 ${running} 个</span>` : ""}</div>${body}</section></div>`);
@@ -1592,6 +1599,14 @@
     });
     document.addEventListener("toggle", event => {
       const details = event.target;
+      const dispatchScope = details.dataset.completedDispatches;
+      if (dispatchScope !== undefined) {
+        if (details.isConnected) {
+          if (details.open) completedDispatchesOpen.add(dispatchScope);
+          else completedDispatchesOpen.delete(dispatchScope);
+        }
+        return;
+      }
       if (details.dataset.sideDecision !== undefined) { const id = Number(details.dataset.sideDecision); if (details.open) sideDecisionsOpen.add(id); else sideDecisionsOpen.delete(id); return; }
       if (details.dataset.decisionContext === undefined) return;
       const id = Number(details.dataset.decisionContext);
