@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import behavior_prompts, runtime_recovery, trust_mode
 
-from . import board, channel, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
+from . import board, channel, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, guard, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 
 
 PAUSED_FOR_UPDATE = "Crew 正在准备更新，暂不接受新任务；更新完成后再试"
@@ -1218,6 +1218,9 @@ class Manager:
                    "message": {"role": "user", "content": content}}
         try:
             with current.input_lock:
+                if current.execution is None and current.journal.status != 'working':
+                    with closing(store.connect(self.home)) as conn:
+                        guard.clear_general_handoff(conn, session_id)
                 current.interrupt_requested = False
                 current.journal.message(identity, original_text, source=source, images=files, sender=sender)
                 current.pending_native_accept=(identity,handoff_id) if handoff_id is not None else None
