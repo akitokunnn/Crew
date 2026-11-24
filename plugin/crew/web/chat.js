@@ -8,12 +8,15 @@
   function usage(context) {
     const used = known(context?.used) ? context.used : null, max = known(context?.max) && context.max > 0 ? context.max : null;
     const ratio = used !== null && max !== null ? used / max : null;
-    return {used, max, ratio, percent:ratio === null ? null : Math.round(ratio * 100)};
+    const previous = context?.source === "last_observed" || context?.source === "transcript";
+    return {used, max, ratio, previous, percent:ratio === null ? null : Math.round(ratio * 100)};
   }
   function usageText(context) {
     const value = usage(context);
-    if (value.ratio !== null) return `上下文已用 ${tokens(value.used)} / ${value.max >= 10000 ? `${Number((value.max / 10000).toFixed(1))} 万` : tokens(value.max)}（${value.percent}%）`;
-    return value.used === null ? "上下文用量未知" : `上下文已用 ${tokens(value.used)}，上限未知`;
+    if (value.used === null) return "上下文用量未知";
+    const prefix = value.previous ? "上次记录的上下文已用" : "上下文已用";
+    if (value.ratio !== null) return `${prefix} ${tokens(value.used)} / ${value.max >= 10000 ? `${Number((value.max / 10000).toFixed(1))} 万` : tokens(value.max)}（${value.percent}%）`;
+    return `${prefix} ${tokens(value.used)}，上限未知`;
   }
   // target: id, name, phase (submitting|queued|compacting), failed (reason), busy, external.
   function ring(context, target) {
@@ -23,10 +26,11 @@
       : target.external ? "点击查看原工具压缩方式" : target.failed ? `上次压缩未完成：${target.failed} · 点击重试` : target.busy ? "点击在本轮结束后压缩" : "点击压缩上下文";
     const label = [target.name, target.scope, usageText(context), hint].filter(Boolean).join(" · ");
     const level = value.ratio === null ? "unknown" : value.ratio >= CONTEXT_DANGER ? "danger" : value.ratio >= CONTEXT_WARN ? "warn" : "calm";
-    const text = value.percent !== null ? `${value.percent}%` : value.used !== null ? tokens(value.used) : "—";
+    const text = value.percent !== null ? `${value.percent}%` : value.used !== null ? tokens(value.used) : "";
+    const caption = text ? `<span class="context-pct" aria-hidden="true">${escape(text)}</span>` : "";
     const state = phase === "queued" ? " is-queued" : phase ? " is-compacting" : target.failed ? " has-failed" : "";
     // Data attributes stay identical across states so a re-render keeps keyboard focus on the ring.
-    return `<button type="button" class="context-ring ${level}${state}" data-act="context-compact" data-id="${escape(target.id)}" title="${escape(label)}" aria-label="${escape(label)}" ${phase ? 'aria-busy="true" aria-disabled="true"' : ""}><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7.5"/>${value.ratio === null ? "" : `<circle class="context-arc" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="${Math.min(100, value.ratio * 100)} 100"/>`}</svg><span class="context-pct" aria-hidden="true">${escape(text)}</span></button>`;
+    return `<button type="button" class="context-ring ${level}${state}" data-act="context-compact" data-id="${escape(target.id)}" title="${escape(label)}" aria-label="${escape(label)}" ${phase ? 'aria-busy="true" aria-disabled="true"' : ""}><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7.5"/>${value.ratio === null ? "" : `<circle class="context-arc" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="${Math.min(100, value.ratio * 100)} 100"/>`}</svg>${caption}</button>`;
   }
   // A freshly resumed Codex thread reports no size before compaction.
   const compactSize = value => value === null ? "未知" : tokens(value);

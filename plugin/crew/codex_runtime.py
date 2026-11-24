@@ -457,6 +457,7 @@ class CodexRunning:
                         self.trust_context = None
                     if kind == "context":
                         self.context = event
+                        self.journal.remember_context(self.runtime, self.thread_id, self.context)
                     elif kind == "activity":
                         with self.journal.condition:
                             if self.journal.progress is not None:

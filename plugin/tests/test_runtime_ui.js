@@ -532,6 +532,7 @@ test("offline conversations with history keep a usable compact ring without show
       assert.match(html, /class="context-ring unknown"[^>]*data-act="context-compact"/);
       assert.match(html, /上下文用量未知 · 点击压缩上下文/);
       assert(!html.includes('class="context-arc"'));
+      assert(!html.includes('class="context-pct"'));
     }
     assert.equal(ui.contextRing({...lead, web_chat:false}), "");
   }

@@ -876,7 +876,9 @@
   }
   function modelControls(item) {
     const id = item.session_id;
-    return modelMenu(item) + `<div class="menu-context">${item.where === "vscode" ? '<span class="context-hint">去 VS Code 里输入 /compact</span>' : `<button role="menuitem" data-act="compact" data-id="${esc(id)}">压缩上下文（${CrewContext.usage(item.context).percent === null ? CrewContext.usageText(item.context).replace("上下文", "当前") : `当前 ${CrewContext.usage(item.context).percent}%`}）</button>`}</div>`;
+    const usage = CrewContext.usage(item.context);
+    const reading = usage.percent === null ? CrewContext.usageText(item.context) : `${usage.previous ? "上次记录" : "当前"} ${usage.percent}%`;
+    return modelMenu(item) + `<div class="menu-context">${item.where === "vscode" ? '<span class="context-hint">去 VS Code 里输入 /compact</span>' : `<button role="menuitem" data-act="compact" data-id="${esc(id)}">压缩上下文（${reading}）</button>`}</div>`;
   }
   function menuButton(item, act, label, reason = "", danger = false, extra = "") {
     if (!localControls() && ["settings", "runtime-switch", "compact-department"].includes(act)) return "";

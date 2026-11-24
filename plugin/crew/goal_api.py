@@ -80,7 +80,7 @@ def detail(conn, project, identity, *, context_state=None):
         'SELECT id FROM goal_executions WHERE goal_id=? ORDER BY round,generation', (identity,))]
     if context_state is not None:
         for execution in executions:
-            execution.update(context_state(execution['id']))
+            execution.update(context_state(execution['id'], conn))
     current = [e for e in executions if e['round'] == value['current_round'] and e['session_id'] == value['leader_session_id']]
     # Newest first by the stored report version within each round, the same order acceptance_target uses;
     # created_at is display-only because a saved clock can repeat or move backwards.

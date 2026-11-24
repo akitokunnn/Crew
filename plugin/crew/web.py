@@ -94,6 +94,8 @@ class Service:
         self.crew_usage = (None, None)
         self.claude_budget = None
         self.title_cache = {}
+        self.codex_context_cache = {}
+        self.chat.context_history = self._native_context_history
         self.vscode_state_db = _vscode_state_db() if vscode_state_db is None else Path(vscode_state_db)
         self.vscode_session_caches = {}
         self.vscode_sessions, self.vscode_record_ids = {}, {}
@@ -706,6 +708,13 @@ class Service:
                 'task_name': task['task_name'], 'status': task['status'], 'started_at': task['started_at'],
                 **usage.displayed_settings(observed, task.get('requested', {}))}
 
+    def _native_context_history(self, conn, runtime, native_id):
+        with self.scan_lock:
+            if runtime == 'codex':
+                return usage.codex_context(conn, self.codex_root, native_id, self.codex_context_cache)
+            usage.session_titles(self.claude_root, [native_id], self.title_cache)
+            return self.title_cache.get(native_id, {}).get('context')
+
     def _project_conversations(self, conn, name, agents, error):
         general_present = board.live_sessions(agents)
         result = {'leaders': [], 'members': [], 'decisions': [], 'git_assistant': None}
@@ -730,7 +739,6 @@ class Service:
         looks = appearance.all_looks(conn)
         with self.scan_lock:
             titles = usage.session_titles(self.claude_root, [s['session_id'] for s in sessions], self.title_cache)
-            contexts = {sid: cached['context'] for sid, cached in self.title_cache.items()}
         result['native_approvals'] = self.native_approvals(name)
         histories, active_scopes, active_goals, active_goal_ids = {}, {}, {}, {}
         for session in sessions:
@@ -771,7 +779,8 @@ class Service:
         for session in sessions:
             sid = session['session_id']
             key = sid
-            context = self.chat.context(key) if self.chat.running(key) else contexts.get(sid)
+            binding = runtimes.get(conn, sid)
+            context = self.chat.display_context(sid, conn, binding=binding)
             own_tasks = list(tasks_by_session.get(sid, []))
             scope = {identity: goal_id for goal_id, identity in conversation_keys.get(sid, {}).items()}
             scope[None] = None
@@ -808,7 +817,7 @@ class Service:
                     member_defaults=member_choices.get(sid), **looks.get(sid, {'color': None, 'avatar_version': None}),
                     active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
                     active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
-                    runtime=runtimes.get(conn, sid)['runtime'],
+                    runtime=binding['runtime'],
                     runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
                     trust=trust_mode.get(conn,name,sid),
                     **models.get(conn, sid), applied=self.chat.applied(key), activity=self.chat.activity(key),
@@ -833,7 +842,7 @@ class Service:
                     active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
                     execution_records=self.member_execution_records(conn, sid, active_scopes[sid]),
                     general_has_output=sid in histories and chat.has_native_output(histories[sid]['events']),
-                    runtime=runtimes.get(conn, sid)['runtime'],
+                    runtime=binding['runtime'],
                     runtime_switch=runtime_switch.state(conn,session,self.chat,agents,error),
                     **models.get(conn, sid), applied=self.chat.applied(key), activity=self.chat.activity(key),
                     context=context, busy=self.chat.busy(sid) or (sid in general_present and general_present[sid].get('status') == 'busy'),
@@ -1806,7 +1815,7 @@ class Service:
                 goals.get(conn, goal_id, self.selected_project(conn, project_name))
                 return self.chat.goal_controller.history(conn, goal_id, session_id, include_previous=include_previous)
             self.chat_session(conn, self.chat_project(conn, project_name, session_id), session_id)
-            return {**self.chat.history(session_id), **self.chat.context_state(session_id),
+            return {**self.chat.history(session_id), **self.chat.context_state(session_id, conn),
                     'read_seq': board.read_seq(conn, session_id)}
 
     def chat_skills(self, session_id, project_name=None, goal_id=None, refresh=False):
@@ -2306,7 +2315,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, personal_api.tags(service.home))
         elif url.path == '/api/assistant/state':
             self._send(200, personal_api.state(service.home, history=service.chat.history, journal=service.chat.journal,
-                activity=service.chat.activity, applied=service.chat.applied, context=service.chat.context))
+                activity=service.chat.activity, applied=service.chat.applied, context=service.chat.display_context))
         elif url.path == "/api/state":
             self._send(200, service.state(query.get("project", [None])[0]))
         elif url.path in ('/api/session-library', '/api/session-library/preview'):

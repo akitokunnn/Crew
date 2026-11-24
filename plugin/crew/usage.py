@@ -1,5 +1,6 @@
 """Incremental transcript ingestion and shared usage reports (Python 3.11+)."""
 import datetime as dt
+from glob import escape as escape_glob
 import json
 import ntpath
 import sys
@@ -140,6 +141,75 @@ def session_titles(root, session_ids, cache):
                              "title": title, "context": context}
         titles[session_id] = title
     return titles
+
+
+def _last_codex_context(path):
+    """Read from the tail so a long rollout need not be scanned twice on startup."""
+    with path.open("rb") as stream:
+        offset = stream.seek(0, 2)
+        leading, found_end = b"", False
+        while offset:
+            end = offset
+            offset = max(0, end - 65536)
+            stream.seek(offset)
+            lines = (stream.read(end - offset) + leading).split(b"\n")
+            leading = lines.pop(0)
+            if not found_end and lines:
+                lines.pop()  # The part after the last newline may still be written.
+                found_end = True
+            if offset == 0 and found_end:
+                lines.insert(0, leading)
+            for line in reversed(lines):
+                if b'"token_count"' not in line:
+                    continue
+                try:
+                    record = json.loads(line)
+                    payload = record["payload"]
+                    if record["type"] != "event_msg" or payload["type"] != "token_count":
+                        continue
+                    info = payload["info"]
+                    used = info["last_token_usage"]["total_tokens"]
+                    maximum = info.get("model_context_window")
+                    if type(used) is int and used >= 0:
+                        return {"used": used, "max": maximum, "source": "transcript"}
+                except (ValueError, KeyError, TypeError):
+                    continue
+    return None
+
+
+def codex_context(conn, root, native_id, cache):
+    """Read the last measured window of a Codex conversation."""
+    row = conn.execute("SELECT path FROM codex_sessions WHERE rollout_id=?", (native_id,)).fetchone()
+    root = Path(root).resolve()
+    archive = root.parent / "archived_sessions"
+    if row is None:
+        # Brief task executions can be archived before the usage scanner indexes them.
+        if "/" in native_id or "\\" in native_id:
+            return None
+        path = next(archive.glob("rollout-*-" + escape_glob(native_id) + ".jsonl"), None)
+        if path is None:
+            return None
+    else:
+        path = Path(row["path"])
+    resolved = path.resolve()
+    if not (resolved.is_relative_to(root) or resolved.is_relative_to(archive)):
+        return None
+    if not path.is_file():
+        path = archive / path.name
+        if not path.resolve().is_relative_to(archive):
+            return None
+    try:
+        stat = path.stat()
+        signature = (stat.st_size, stat.st_mtime_ns)
+        previous = cache.get(path)
+        if previous is not None and previous[0] == signature:
+            return previous[1]
+        context = _last_codex_context(path)
+    except OSError:
+        cache.pop(path, None)
+        return None
+    cache[path] = (signature, context)
+    return context
 
 
 def _claude_identity(path, root, kind):

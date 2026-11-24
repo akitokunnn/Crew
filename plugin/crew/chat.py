@@ -222,6 +222,7 @@ class Journal:
         self.condition = threading.Condition(threading.RLock())
         self.events = []
         self.signature = None
+        self.last_context = None
         self.reset_runtime()
         self._index()
         self.refresh()
@@ -290,6 +291,10 @@ class Journal:
             self.progress = None
             self._calls, self._tools = {}, {}
             self._call_id, self._thinking_index = None, None
+
+    def remember_context(self, runtime, native_id, context):
+        with self.condition:
+            self.last_context = (runtime, native_id, dict(context, source="last_observed"))
 
     def bind_claude_subagents(self, native_id):
         with self.condition:
@@ -507,6 +512,7 @@ class Manager:
         self.home, self.plugin_root = Path(home), Path(plugin_root)
         self.agents_provider, self.process_factory = agents_provider, process_factory
         self.journals, self.processes = {}, {}
+        self.context_history = None
         self.lock = threading.RLock()
         self._close_lock = threading.Lock()
         self.closed = False
@@ -685,7 +691,35 @@ class Manager:
             with current.input_lock:
                 return dict(current.context) if current.context is not None else None
 
-    def context_state(self, session_id):
+    def display_context(self, session_id, conn=None, *, binding=None):
+        """Keep the last reading for display while the bound conversation is offline."""
+        live = self.context(session_id)
+        if live is not None:
+            return live
+        if conn is None:
+            with closing(store.connect(self.home)) as conn:
+                return self.display_context(session_id, conn, binding=binding)
+        if binding is None:
+            binding = conn.execute(
+                "SELECT e.runtime, b.native_id FROM goal_executions e LEFT JOIN goal_execution_bindings b "
+                "ON b.execution_id=e.id AND b.runtime=e.runtime WHERE e.id=?", (session_id,)).fetchone()
+            if binding is None:
+                binding = runtimes.get(conn, session_id)
+        runtime, native_id = binding['runtime'], binding['native_id']
+        if native_id is None:
+            return None
+        with self.lock:
+            journal = self.journals.get(session_id)
+            if journal is not None:
+                with journal.condition:
+                    saved = journal.last_context
+                    if saved is not None and saved[:2] == (runtime, native_id):
+                        return dict(saved[2])
+        if self.context_history is not None:
+            return self.context_history(conn, runtime, native_id)
+        return None
+
+    def context_state(self, session_id, conn=None):
         """Read native usage and compaction for one general or task execution."""
         with self.lock:
             current = self.processes.get(session_id)
@@ -696,7 +730,7 @@ class Manager:
                         phase = 'compacting'
                     elif current.pending_compact:
                         phase = 'queued'
-            return {'context': self.context(session_id), 'compaction': phase}
+        return {'context': self.display_context(session_id, conn), 'compaction': phase}
 
     def history(self, session_id):
         journal = self.journal(session_id)
@@ -1781,6 +1815,8 @@ class Manager:
             elif subtype == "get_context_usage" and response["subtype"] == "success":
                 usage = response["response"]
                 current.context = {"used": usage["totalTokens"], "max": usage["maxTokens"], "source": "live"}
+                native_id = current.native_id if current.execution else current.journal.path.stem
+                current.journal.remember_context(current.runtime, native_id, current.context)
         if subtype in ("set_model", "apply_flag_settings") and response["subtype"] == "success":
             self._control(current, "get_settings")
 

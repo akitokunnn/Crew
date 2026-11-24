@@ -437,7 +437,7 @@ class Controller:
         value = ({'events': [], 'busy': False, 'running': False, 'context': None, 'compaction': None}
                  if execution is None else self.manager.history(execution['id']))
         if execution is not None:
-            value.update(self.manager.context_state(execution['id']))
+            value.update(self.manager.context_state(execution['id'], conn))
         value.update(session_id=session_id, goal_id=goal_id,
                      execution_id=execution['id'] if execution else None,
                      response_mode='discussion' if execution and goals.discussion(conn, execution['id']) else 'work',

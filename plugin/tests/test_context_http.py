@@ -7,8 +7,10 @@ from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from crew import board, store, web
+from crew import board, runtimes, store, web
+from test_codex_runtime import FakeClient
 from test_shell import NOW, PLUGIN, ShellFixture
+from test_usage import token_count
 
 
 class ContextHttpTests(ShellFixture, unittest.TestCase):
@@ -85,10 +87,10 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         self.assertFalse(state["s1"]["running"])
         self.assertFalse(state["s1"]["busy"])
 
-    def test_state_running_live_has_priority_and_stopping_restores_transcript(self):
+    def test_state_keeps_last_live_claude_reading_when_the_process_exits(self):
         sid, process = self.start_session()
         self.transcript(sid, 521000)
-        self.assertIsNone(self.state()[sid]["context"])
+        self.assertEqual(self.state()[sid]["context"]["used"], 521000)
         current = self.chat.processes[sid]
         identity = next(key for key, subtype in current.control_requests.items() if subtype == "get_context_usage")
         self.chat._control_response(current, {"subtype": "success", "request_id": identity,
@@ -98,7 +100,59 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(state["where"], "bg")
         self.assertTrue(state["busy"])
         self.stop_process(sid, process)
-        self.assertEqual(self.state()[sid]["context"], {"used": 521000, "max": 1000000, "source": "transcript"})
+        expected = {"used": 850000, "max": 1000000, "source": "last_observed"}
+        self.assertEqual(self.state()[sid]["context"], expected)
+        history = self.request("/api/chat/history?project=demo&session_id=" + sid)[1]
+        self.assertEqual(history["context"], expected)
+        self.assertIsNone(self.chat.context(sid))
+
+    def test_offline_codex_recovers_latest_measurement_from_its_own_transcript(self):
+        native_id = "native-leader"
+        self.transcript("s3", 200000)
+        runtimes.set(self.conn, "s3", "codex", native_id)
+        meta = {"type": "session_meta", "timestamp": NOW, "payload": {
+            "id": native_id, "timestamp": NOW, "cwd": str(self.project),
+            "originator": "crew", "source": "app-server", "cli_version": "0.172.0"}}
+        older, latest = token_count(30), token_count(40)
+        older["payload"]["info"].update(last_token_usage={"total_tokens": 12000}, model_context_window=258400)
+        latest["payload"]["info"].update(last_token_usage={"total_tokens": 57554}, model_context_window=258400)
+        path = self.write(self.codex / ("rollout-fixture-" + native_id + ".jsonl"),
+                          [meta, older, latest, token_count(45, info=False)])
+        expected = {"used": 57554, "max": 258400, "source": "transcript"}
+        self.assertEqual(self.state()["s3"]["context"], expected)
+        self.assertEqual(self.request("/api/chat/history?project=demo&session_id=s3")[1]["context"], expected)
+        archive = self.codex.parent / "archived_sessions"
+        archive.mkdir()
+        archived = path.rename(archive / path.name)
+        with archived.open("ab") as stream:
+            stream.write(b" " * 70000 + json.dumps(older).encode("utf-8"))
+        self.assertEqual(self.state()["s3"]["context"], expected)
+        self.conn.execute("DELETE FROM codex_sessions WHERE rollout_id=?", (native_id,))
+        self.assertEqual(self.state()["s3"]["context"], expected)
+        runtimes.set(self.conn, "s3", "codex", "another-native")
+        self.assertIsNone(self.state()["s3"]["context"])
+
+    def test_codex_keeps_its_last_measurement_until_the_resumed_thread_reports_again(self):
+        sid = "s3"
+        runtimes.set(self.conn, sid, "codex")
+        with mock.patch("crew.codex_binding.home_for", return_value=self.root / "codex-home"), \
+                mock.patch("crew.codex_runtime._ObservedClient", FakeClient):
+            self.assertEqual(self.request("/api/chat/send?project=demo", {"session_id": sid, "text": "Begin"})[0], 200)
+            first = self.chat.processes[sid]
+            first.client.emit("thread/tokenUsage/updated", tokenUsage={
+                "last": {"totalTokens": 57554, "outputTokens": 100}, "modelContextWindow": 258400})
+            first.client.finish()
+            self.chat.stop_managed(sid)
+            expected = {"used": 57554, "max": 258400, "source": "last_observed"}
+            self.assertEqual(self.state()[sid]["context"], expected)
+            self.assertEqual(self.request("/api/chat/send?project=demo", {"session_id": sid, "text": "Resume"})[0], 200)
+            resumed = self.chat.processes[sid]
+            self.assertEqual(resumed.thread_id, first.thread_id)
+            self.assertEqual(self.state()[sid]["context"], expected)
+            self.assertIsNone(self.chat.context(sid))
+            resumed.client.emit("thread/tokenUsage/updated", tokenUsage={
+                "last": {"totalTokens": 58000, "outputTokens": 100}, "modelContextWindow": 828400})
+            self.assertEqual(self.state()[sid]["context"], {"used": 58000, "max": 828400, "source": "live"})
 
     def test_idle_leader_compact_writes_command_and_records_system_separators(self):
         sid, process = self.start_session()

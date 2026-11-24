@@ -132,6 +132,12 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                         self.assertTrue(any(e['type'] == 'compact' for e in history['events']))
                         self.assertTrue(manager.busy(person))
                         self.assertTrue(manager.busy(keys[2]))
+                        last = history['context']
+                        manager.stop_managed(keys[1])
+                        offline = self.request(history_path)[1]
+                        self.assertFalse(offline['running'])
+                        self.assertEqual(offline['context'], dict(last, source='last_observed'))
+                        self.assertEqual(manager.context(person)['used'], 1000)
 
     def test_task_context_unknown_and_stale_compact_never_touch_general_or_other_tasks(self):
         goal = self.goal()
