@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tests
 from test_goal_http import GoalHttpTests
 from crew import board, domains, goal_actions, goal_work, goals, runtimes, todo, web
+from crew.codex_runtime import process_identity
 import test_goal_http
 import test_shell
 
@@ -77,9 +78,11 @@ def main():
         native_agent = {'type': 'system', 'task_id': 'stopped-native-agent', 'task_type': 'local_agent'}
         journal.consume({**native_agent, 'subtype': 'task_started', 'description': '复核录音环境'})
         journal.consume({**native_agent, 'subtype': 'task_notification', 'status': 'stopped', 'summary': '执行已停止'})
+        case.conn.execute(
+            'INSERT INTO codex_runs(run_id,crew_session_id,task_file,workdir,started_at,pid,pid_created) VALUES(?,?,?,?,?,?,?)',
+            ('dispatch-active', 'coordinator', '核对声学样本', str(case.project), stamp, os.getpid(), process_identity(os.getpid())))
         delivered = None
         if os.environ.get('CREW_UI_REVIEW_FIXTURE') == '1':
-            from crew.codex_runtime import process_identity
             for index in range(8):
                 stamp = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=8-index)
                 active = index >= 5

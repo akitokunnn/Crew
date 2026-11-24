@@ -54,18 +54,18 @@ if(!process.versions.electron){
       await click('[data-act="right-open"]');await pause(450);
       await check('real backend positions the conversation structure in the visible right column','(()=>{const root=document.querySelector("#chat-attention"),p=root.getBoundingClientRect(),r=document.querySelector("#right-panel").getBoundingClientRect();return getComputedStyle(root).position==="fixed"&&r.width>200&&r.height>300&&r.right<=innerWidth&&Math.abs(p.top-r.top)<1&&!!document.querySelector("#right-panel .rp-leader")})()');
       await check('conversation structure shows the leader branch and only runs of the active conversation',
-        '(()=>{const p=document.querySelector("#right-panel");return p.querySelector(".rp-branch")?.textContent.includes("语音评测")&&p.textContent.includes("盘点语音样本")&&p.textContent.includes("gpt-6-luna")&&p.textContent.includes("强度")&&p.querySelector(".rp-speed")?.textContent.includes("标准")&&p.querySelectorAll(".rp-run").length===2})()');
-      await check('completed dispatches start folded and native interruption stays visible',
-        '(()=>{const p=document.querySelector("#right-panel"),d=p.querySelector(".rp-completed"),s=p.querySelector(".rp-run-status[data-status=interrupted]");return d&&!d.open&&d.querySelector("summary").textContent.includes("1")&&!p.innerText.includes("盘点语音样本")&&s?.textContent==="已中断"&&s.getBoundingClientRect().height>0})()');
-      await capture('structure-completed-folded');
-      await click('.rp-completed > summary');
-      await check('completed dispatches can be expanded',
-        'document.querySelector(".rp-completed").open&&document.querySelector("#right-panel").innerText.includes("盘点语音样本")');
+        '(()=>{const p=document.querySelector("#right-panel");return p.querySelector(".rp-branch")?.textContent.includes("语音评测")&&p.textContent.includes("盘点语音样本")&&p.textContent.includes("gpt-6-luna")&&p.textContent.includes("强度")&&p.querySelector(".rp-speed")?.textContent.includes("标准")&&p.querySelectorAll(".rp-run").length===3})()');
+      await check('completed and interrupted dispatches start folded while the running dispatch stays visible',
+        '(()=>{const p=document.querySelector("#right-panel"),d=p.querySelector(".rp-history");return d&&!d.open&&d.querySelector("summary").textContent.includes("2")&&!p.innerText.includes("盘点语音样本")&&!p.innerText.includes("复核录音环境")&&p.innerText.includes("核对声学样本")&&p.querySelector(".rp-dispatch-head").textContent.includes("运行中 1 个")})()');
+      await capture('structure-history-folded');
+      await click('.rp-history > summary');
+      await check('expanded history keeps the individual interrupted and completed statuses',
+        '(()=>{const d=document.querySelector(".rp-history");return d.open&&d.innerText.includes("盘点语音样本")&&d.innerText.includes("复核录音环境")&&d.querySelector("[data-status=interrupted]")?.textContent==="已中断"})()');
       fixture.stdin.write('complete-dispatch\n');
-      await check('open completed dispatches stay open when a new completion arrives',
-        'document.querySelector(".rp-completed").open&&document.querySelector("#right-panel").innerText.includes("刷新后完成的派发")');
-      await capture('structure-completed-expanded');
-      await click('.rp-completed > summary');
+      await check('dispatch history stays open when a new completion arrives',
+        'document.querySelector(".rp-history").open&&document.querySelector("#right-panel").innerText.includes("刷新后完成的派发")');
+      await capture('structure-history-expanded');
+      await click('.rp-history > summary');
       for(const width of [375,760]){
         window.setSize(width,844);
         await pause(180);
@@ -115,8 +115,8 @@ if(!process.versions.electron){
       await click('[data-act="right-open"]');
       await check('task conversation displays only its own dispatched agents and speed',
         '(()=>{const p=document.querySelector("#right-panel");return p.textContent.includes("核对分段边界")&&p.textContent.includes("gpt-6.2-sol")&&p.querySelector(".rp-speed.is-fast")?.textContent.includes("快速")&&p.querySelector("[data-act=member-chat][data-id=s1]")?.textContent.includes("claude-haiku-4-5-20251001")&&p.querySelectorAll(".rp-run").length===2})()');
-      await check('task dispatches have their own folded completed section',
-        '(()=>{const d=document.querySelector("#right-panel .rp-completed");return d&&!d.open&&d.querySelectorAll(".rp-run").length===2})()');
+      await check('task dispatches have their own folded history',
+        '(()=>{const d=document.querySelector("#right-panel .rp-history");return d&&!d.open&&d.querySelectorAll(".rp-run").length===2})()');
       await check('the side panel starts below the toolbar beside the task conversation bar',
         '(()=>{const toolbar=document.querySelector("#chat-head > .head").getBoundingClientRect(),scope=document.querySelector(".exec-chat-bar").getBoundingClientRect(),panel=document.querySelector("#right-panel").getBoundingClientRect();return Math.abs(panel.top-toolbar.bottom-10)<1&&scope.right<panel.left&&scope.bottom>panel.top})()');
       await capture('structure-task-execution');

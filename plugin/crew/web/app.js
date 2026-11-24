@@ -35,7 +35,7 @@
   let fontScale = 1;
   const FONT_MIN = .9, FONT_MAX = 1.4;
   const sideDecisionsOpen = new Set(), decisionsOpen = new Set(), usageCollapsed = new Set(), operationIds = new Set();
-  const completedDispatchesOpen = new Set();
+  const dispatchHistoryOpen = new Set();
   const todoExpanded = new Set(), todoActions = new Map(), todoSaving = new Set();
   let reportReaderOpen = false, behaviorSession = null;
   let taskListScope = null, tasksOpen = true, taskDeliveryFocus = null;
@@ -464,6 +464,7 @@
     queued:"排队中", running:"运行中", pausing:"暂停中", succeeded:"已完成", failed:"失败",
     paused:"已暂停", interrupted:"已中断", closed:"已关闭", cancelled:"已取消", idle:"空闲", offline:"离线",
   };
+  const endedDispatchStatuses = new Set(["succeeded", "interrupted", "failed", "closed", "cancelled"]);
   function codexMarkup(item, cls = "cx", sessionId) {
     const running = item.status === "running";
     const label = dispatchStatuses[item.status] || "状态未确认";
@@ -540,12 +541,12 @@
     const branch = path.length ? `<ol class="rp-branch" aria-label="Leader 的架构路径">${path.slice(-3).map(part => `<li>${esc(part.name)}</li>`).join("")}</ol>` : "";
     const runs = conversationDispatches(item, record);
     const running = runs.filter(run => run.status === "running").length;
-    const current = runs.filter(run => run.status !== "succeeded");
-    const completed = runs.filter(run => run.status === "succeeded");
+    const current = runs.filter(run => !endedDispatchStatuses.has(run.status));
+    const ended = runs.filter(run => endedDispatchStatuses.has(run.status));
     const scope = JSON.stringify([item.session_id, record?.goal_id ?? null]);
     const list = entries => `<ul class="rp-runs">${entries.map(dispatchCard).join("")}</ul>`;
-    const history = completed.length ? `<details class="rp-completed" data-completed-dispatches="${esc(scope)}"${completedDispatchesOpen.has(scope) ? " open" : ""}>
-      <summary data-preserve="completed-dispatches-${esc(scope)}">${ic("right", "xs")}已完成<span>${completed.length} 个</span></summary>${list(completed)}</details>` : "";
+    const history = ended.length ? `<details class="rp-history" data-dispatch-history="${esc(scope)}"${dispatchHistoryOpen.has(scope) ? " open" : ""}>
+      <summary data-preserve="dispatch-history-${esc(scope)}">${ic("right", "xs")}历史<span>${ended.length} 个</span></summary>${list(ended)}</details>` : "";
     const body = runs.length ? (current.length ? list(current) : "") + history : '<p class="rp-empty">当前对话暂无派发</p>';
     replace(panel, `<div class="head"><h2 class="title">会话结构</h2><div class="right">${architecture}<button type="button" class="icon-btn rp-close" data-act="right-close" aria-label="关闭会话结构">${ic("x")}</button></div></div>
       <div class="tree rp-tree">${branch}<div class="rp-leader">${av(group.name, 27)}<strong>${esc(group.name)}</strong><span>Leader</span></div>
@@ -1599,11 +1600,11 @@
     });
     document.addEventListener("toggle", event => {
       const details = event.target;
-      const dispatchScope = details.dataset.completedDispatches;
+      const dispatchScope = details.dataset.dispatchHistory;
       if (dispatchScope !== undefined) {
         if (details.isConnected) {
-          if (details.open) completedDispatchesOpen.add(dispatchScope);
-          else completedDispatchesOpen.delete(dispatchScope);
+          if (details.open) dispatchHistoryOpen.add(dispatchScope);
+          else dispatchHistoryOpen.delete(dispatchScope);
         }
         return;
       }
