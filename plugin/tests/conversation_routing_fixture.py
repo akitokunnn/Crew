@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from unittest import mock
 
 for key in ('CREW_SESSION_ID', 'CLAUDE_CODE_SESSION_ID'):
     os.environ.pop(key, None)
@@ -22,6 +23,15 @@ assert Path(web.__file__).resolve().is_relative_to(plugin_root), web.__file__
 
 # The same fixture can validate the built backend without reading source assets.
 test_goal_http.PLUGIN = test_shell.PLUGIN = plugin_root
+
+
+class GroupExecutionClient(test_goal_http.codex_helpers.FakeClient):
+    sequence = 0
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        type(self).sequence += 1
+        self.thread_id = 'group-execution-native-' + str(type(self).sequence)
 
 
 def main():
@@ -141,6 +151,21 @@ def main():
                 case.conn.execute(
                     'INSERT INTO codex_runs(run_id,crew_session_id,task_file,workdir,started_at,ended_at,exit_code) VALUES(?,?,?,?,?,?,?)',
                     ('dispatch-refresh', 'coordinator', '刷新后完成的派发', str(case.project), stamp, stamp, 0))
+            elif command == 'start-group-executions':
+                goal_id = work[1][0]
+                case.conn.execute("UPDATE codex_runs SET ended_at=?,exit_code=0 WHERE run_id='dispatch-active'",
+                                  (case.server.service.now().isoformat(),))
+                with mock.patch('crew.codex_runtime._ObservedClient', GroupExecutionClient):
+                    for index, name in enumerate(('one', '核对日志', '检查运行时', '复核配置', '检验窗口状态', '检查长执行名称在窄屏上的换行')):
+                        sid = 's1' if index == 0 else f'group-execution-{index}'
+                        if index:
+                            board.join(case.conn, sid, 'demo', name, case.project, case.project, 'main', group_name='协作负责人')
+                        runtimes.set(case.conn, sid, 'codex' if index % 2 else 'claude')
+                        goals.assign(case.conn, goal_id, sid, '复核任务执行')
+                        code, receipt, _ = case.request('/api/chat/send?project=demo', {
+                            'session_id': sid, 'goal_id': goal_id, 'text': '开始复核', 'message_id': 'group-' + sid})
+                        assert code == 200, receipt
+                print(json.dumps({'group_executions_started': True}), flush=True)
             elif command == 'request':
                 original = manager.send_message('s3', 'coordinator', '请确认接口格式，声音任务继续执行。',
                     execution_id=source_execution['execution_id'], kind='decision', message_id='native-ui-request')

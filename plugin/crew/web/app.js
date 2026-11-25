@@ -529,6 +529,27 @@
     return [...members, ...own].sort((a, b) => Number(b.status === "running") - Number(a.status === "running")
       || String(b.started_at ?? "").localeCompare(String(a.started_at ?? "")));
   }
+  function groupExecutionCard(person) {
+    // The general turn takes precedence over the active task when the member is doing both.
+    const execution = person.busy ? null : person.execution_records?.find(run => run.execution_id === person.active_execution_id);
+    const scope = execution?.title ?? (person.busy ? "总对话" : "");
+    const target = execution?.goal_id ?? (person.busy ? "general" : null);
+    const status = person.status === "working" ? "running" : person.status;
+    return `<li><button type="button" class="rp-run" data-act="member-chat" data-id="${esc(person.session_id)}"${target === null ? "" : ` data-goal-id="${esc(target)}"`}>
+      <span class="rp-run-name">${esc(person.name)}</span><span class="rp-run-status" data-status="${esc(status)}">${esc(statusText[person.status])}</span>
+      <span class="rp-run-settings">${runtimeBadge(execution || person, true)}${scope ? `<span class="rp-execution-scope" title="${esc(scope)}">${esc(scope)}</span>` : ""}</span>
+    </button></li>`;
+  }
+  function groupExecutions(group) {
+    const people = membersOf(group.session_id);
+    if (people.length === 0) return "";
+    const working = workingPeople(people);
+    people.sort((a, b) => Number(b.status === "working") - Number(a.status === "working"));
+    return `<section class="rp-executions" aria-labelledby="rp-executions-title">
+      <div class="rp-dispatch-head"><h3 id="rp-executions-title">组内执行</h3><span>${people.length} 个执行 · ${working.length} 个在干活</span></div>
+      <ul class="rp-runs">${people.map(groupExecutionCard).join("")}</ul>
+    </section>`;
+  }
   function renderRight(group, item, record) {
     const panel = $("right-panel");
     if (!group) {
@@ -548,8 +569,9 @@
     const history = ended.length ? `<details class="rp-history" data-dispatch-history="${esc(scope)}"${dispatchHistoryOpen.has(scope) ? " open" : ""}>
       <summary data-preserve="dispatch-history-${esc(scope)}">${ic("right", "xs")}历史<span>${ended.length} 个</span></summary>${list(ended)}</details>` : "";
     const body = runs.length ? (current.length ? list(current) : "") + history : '<p class="rp-empty">当前对话暂无派发</p>';
+    const executions = readOnlyId === null && record === null ? groupExecutions(group) : "";
     replace(panel, `<div class="head"><h2 class="title">会话结构</h2><div class="right">${architecture}<button type="button" class="icon-btn rp-close" data-act="right-close" aria-label="关闭会话结构">${ic("x")}</button></div></div>
-      <div class="tree rp-tree">${branch}<div class="rp-leader">${av(group.name, 27)}<strong>${esc(group.name)}</strong><span>Leader</span></div>
+      <div class="tree rp-tree">${branch}<div class="rp-leader">${av(group.name, 27)}<strong>${esc(group.name)}</strong><span>Leader</span></div>${executions}
       <section class="rp-dispatch" aria-labelledby="rp-dispatch-title"><div class="rp-dispatch-head"><h3 id="rp-dispatch-title">Agent 派发</h3>${runs.length ? `<span>已派发 ${runs.length} 个 · 运行中 ${running} 个</span>` : ""}</div>${body}</section></div>`);
     syncSidecar();
   }
