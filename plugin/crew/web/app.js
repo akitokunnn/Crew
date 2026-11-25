@@ -22,7 +22,7 @@
   let stopConfirmation = null;
   let documents = null, runtimeSwitch = null, goals = null, goalId = null;
   let leaderDrag = null, leaderOrderSaving = false;
-  let allTab = "overview", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0;
+  let allTab = "overview", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0, usageScannedAt = null;
   let cardId = null, cardReturn = null, rightOpen = false, dialogReturn = null;
   let theme = "system", leadersOpen = true, presenceOpen = false, presenceFailure = null;
   // 手机宽度下 Leader 栏是覆盖在内容上的抽屉：每次打开默认收起，选完即收，不改宽屏的记忆。
@@ -854,8 +854,11 @@
     }
     replace($("main"), `<div class="head big"><div><div class="title">用量</div><div class="sub">${esc(projectDisplay(state.project))} · ${{today:"今天", week:"本周", all:"全部"}[period]}</div></div><div class="right" style="gap:10px"><div class="seg">${[["today", "今天"], ["week", "本周"], ["all", "全部"]].map(([key, name]) => `<button class="${period === key ? "on" : ""}" data-act="usage-period" data-period="${key}">${name}</button>`).join("")}</div><a class="btn" href="${esc(queryPath(`/api/usage/export?period=${period}&what=${usageTab === "daily" ? "daily" : "sessions"}`))}" download>${ic("download", "sm")}导出</a></div></div><div class="page"><div class="page-in"><div class="qcards${budget ? " two" : ""}">${budget ? budgetCard(budget) : ""}${quotas().map(([label, limit]) => quotaCard(label, limit)).join("")}</div><div class="usage-tabs"><div class="seg">${[["tree", "按结构"], ["daily", "按天"], ["models", "按模型"], ...(budget ? [] : [["weeks", "每周额度"]])].map(([key, name]) => `<button class="${usageTab === key ? "on" : ""}" data-act="usage-tab" data-tab="${key}">${name}</button>`).join("")}</div><span style="font-size:calc(12.5px * var(--fs));color:var(--text-3)">${total}</span></div>${table}<div class="note">${budget ? "折合金额按 API 价换算；API 额度只算这台电脑的 Claude 请求，其他电脑或程序用同一账户的花费不在内，以 Console 账单为准；" : "折合金额按 API 价换算，只用于比较；额度是账户级；"}界面字体 HarmonyOS Sans（华为，按其许可证随附）</div></div></div>`);
   }
+  function refreshUsage(reopened = false) {
+    if (view === "usage" && !usageLoading && (reopened || usage === null || usageScannedAt !== state.usage_scanned_at)) loadUsage();
+  }
   async function loadUsage() {
-    const sequence = ++usageRequest; usageLoading = true;
+    const sequence = ++usageRequest; usageLoading = true; usageScannedAt = state.usage_scanned_at;
     try { const result = await api(`/api/usage?period=${period}`); if (sequence === usageRequest) { usage = result; if (view === "usage") renderUsage(); } }
     catch (error) { if (sequence === usageRequest) { toast(error.message); if (view === "usage") { const note = $("main").querySelector(".page-in"); note.append(Object.assign(document.createElement("p"), {className:"error-line", textContent:error.message})); } } }
     finally { if (sequence === usageRequest) usageLoading = false; }
@@ -1243,7 +1246,7 @@
     if (next !== "chat" || leaderId !== id || readonly !== null) leaderTaskChat = taskChat;
     view = next; leaderId = id; readOnlyId = readonly; goalId = next === "chat" ? nextGoal : null;
     render(); syncRoute();
-    if (view === "usage" && usage === null && !usageLoading) loadUsage();
+    refreshUsage(true);
   }
   function readRoute() {
     const hash = location.hash.slice(1), params = new URLSearchParams(hash);
@@ -1312,7 +1315,7 @@
       else if (view === "chat" && readOnlyId === null && leader(leaderId) === undefined) { navigate("all"); toast("这个 leader 已结束，已返回工作台"); }
       else if (view === "chat" && goalId != null && !(state.goals || []).some(item => String(item.id) === String(goalId) && item.leader_session_id === leaderId)) { navigate("chat",leaderId,readOnlyId,null); toast("目标已不在本组，已回到总对话。"); }
       else { render(); syncRoute(); }
-      if (view === "usage" && usage === null && !usageLoading) loadUsage();
+      refreshUsage();
       if (previous !== null) notifySounds(previous, fresh, requestedGeneration);
     } catch (error) {
       if (state === null) {
@@ -1665,7 +1668,7 @@
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
       }
     });
-    window.addEventListener("hashchange", () => { if (state === null || project === null) return; CrewChat.unmount(); mountedChat = null; readRoute(); render(); if (view === "usage" && usage === null && !usageLoading) loadUsage(); });
+    window.addEventListener("hashchange", () => { if (state === null || project === null) return; CrewChat.unmount(); mountedChat = null; readRoute(); render(); refreshUsage(true); });
     loadState(); setInterval(loadState, 3000);
   }
   setup();

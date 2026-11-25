@@ -643,7 +643,7 @@ class Service:
         return session
 
     def state(self, project_name=None):
-        self.scan_usage(live_dispatch=True)
+        usage_scanned_at = self.scan_usage(live_dispatch=True)
         with self.agents_lock:
             agents, error = self.agents, self.agents_error
         agents = session_presence.external_agents(self.chat, agents)
@@ -658,7 +658,7 @@ class Service:
                       'todos': [], 'todo_count': 0, 'goals': [], 'native_approvals': [],
                       'candidates': {'running': [], 'others': []},
                       'channel': {'unread': 0, 'latest_id': 0, 'digesting': False, 'digest_error': None, 'digest_id': None},
-                      'limits': self.limits(conn)}
+                      'limits': self.limits(conn), 'usage_scanned_at': usage_scanned_at.isoformat()}
             result['vscode_error'] = self.vscode_error
             histories = {}
             if project_name is not None:
@@ -1957,6 +1957,7 @@ class Service:
                 self.crew_usage = (seven_day['resets_at'] if seven_day is not None else None, crew)
                 self.claude_budget = self._budget(conn, now)
                 self.scanned_at = now
+            return self.scanned_at
 
     def notification_status(self):
         return self.connections.notification_status()

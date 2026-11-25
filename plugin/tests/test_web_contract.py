@@ -83,9 +83,10 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
                     "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
                     "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant", "git_branches",
-                    "domains"}
+                    "domains", "usage_scanned_at"}
         state = self.state()
         self.assertEqual(set(state), expected)
+        self.assertEqual(state["usage_scanned_at"], self.clock.isoformat())
         self.assertEqual(state["domains"], {"version": 0, "paths": {}})
 
         self.assertEqual(set(state["project"]), {"name", "display_name", "root", "theme"})
@@ -116,8 +117,12 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(leader["dispatches"], [])
         self.assertIsNone(state['git_assistant'])
         self.assertNotIn('is_git_admin', leader)
+        self.clock += dt.timedelta(seconds=59)
         landing = self.state(None)
         self.assertEqual(set(landing), expected)
+        self.assertEqual(landing["usage_scanned_at"], state["usage_scanned_at"])
+        self.clock += dt.timedelta(seconds=1)
+        self.assertEqual(self.state()["usage_scanned_at"], self.clock.isoformat())
         self.assertIsNone(landing["project"])
         self.assertIsNone(landing['git_assistant'])
         self.assertEqual(landing["channel"], {"unread": 0, "latest_id": 0, "digesting": False, "digest_error": None, "digest_id": None})
