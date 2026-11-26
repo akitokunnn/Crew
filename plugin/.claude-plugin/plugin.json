@@ -7,7 +7,6 @@
   },
   "repository": "https://github.com/akitokunnn/Crew",
   "skills": [
-    "./skills",
-    "./user-skills"
+    "./skills"
   ]
 }

@@ -15,17 +15,10 @@ from pathlib import Path
 
 from . import codex_client, rules
 
-# Skills the user calls on purpose. Role rules under skills/ are injected by
-# the host instead and stay out of the picker and out of Codex.
-USER_SKILLS_DIR = 'user-skills'
 CACHE_SECONDS = 120
 PROBE_TIMEOUT = 30
 
 _cache, _lock = {}, threading.Lock()
-
-
-def user_skills_root(plugin_root):
-    return str((Path(plugin_root) / USER_SKILLS_DIR).resolve())
 
 
 def _claude_probe(cwd, plugin_root, process_factory):
@@ -65,12 +58,11 @@ def _claude_probe(cwd, plugin_root, process_factory):
             stream.close()
 
 
-def _codex_probe(cwd, plugin_root, codex_home, process_factory):
+def _codex_probe(cwd, codex_home, process_factory):
     env = dict(os.environ)
     if codex_home is not None:
         env['CODEX_HOME'] = str(codex_home)
-    with codex_client.Client(cwd=cwd, env=env, process_factory=process_factory, timeout=PROBE_TIMEOUT,
-                             skill_roots=[user_skills_root(plugin_root)]) as client:
+    with codex_client.Client(cwd=cwd, env=env, process_factory=process_factory, timeout=PROBE_TIMEOUT) as client:
         result = client.request('skills/list', {'cwds': [cwd]})
     skills = []
     for entry in result['data']:
@@ -94,7 +86,7 @@ def list_skills(runtime, cwd, plugin_root, *, codex_home=None, refresh=False, pr
         return {'runtime': runtime, 'skills': hit[1], 'cached': True}
     factory = process_factory or subprocess.Popen
     skills = (_claude_probe(cwd, plugin_root, factory) if runtime == 'claude'
-              else _codex_probe(cwd, plugin_root, codex_home, factory))
+              else _codex_probe(cwd, codex_home, factory))
     skills.sort(key=lambda item: item['name'].lower())
     with _lock:
         _cache[key] = (moment, skills)

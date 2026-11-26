@@ -1,6 +1,5 @@
 import tests  # Install the production-service connection guard.
 import json
-import re
 import subprocess
 import sys
 import tempfile
@@ -23,27 +22,23 @@ print(json.dumps({'type': 'control_response', 'response': {'subtype': 'success',
     'response': {'commands': [
         {'name': 'compact', 'description': 'Free up context', 'argumentHint': '', 'builtin': True},
         {'name': 'crew:leader', 'description': '(crew) role rules', 'argumentHint': ''},
-        {'name': 'crew:git-land', 'description': '(crew) Git one step', 'argumentHint': 'tested scope'},
+        {'name': 'review', 'description': 'review a diff (user)', 'argumentHint': 'target'},
         {'name': 'Diagnose', 'description': 'debug loop (user)', 'argumentHint': ''}]}}}), flush=True)
 sys.stdin.read()
 '''
 
-# Minimal Codex app-server: records extra roots and lists one enabled and one disabled skill.
+# Minimal Codex app-server: lists one enabled and one disabled skill.
 CODEX = r'''
 import json, sys
-roots = []
 for line in sys.stdin:
     message = json.loads(line)
     method = message.get('method')
     if method == 'initialize':
         print(json.dumps({'id': message['id'], 'result': {}}), flush=True)
-    elif method == 'skills/extraRoots/set':
-        roots = message['params']['extraRoots']
-        print(json.dumps({'id': message['id'], 'result': {}}), flush=True)
     elif method == 'skills/list':
         print(json.dumps({'id': message['id'], 'result': {'data': [{'cwd': message['params']['cwds'][0], 'errors': [], 'skills': [
-            {'name': 'crew:git-land', 'description': 'long', 'interface': {'shortDescription': 'short'}, 'enabled': True,
-             'path': roots[0] + '/git-land/SKILL.md', 'scope': 'user'},
+            {'name': 'review', 'description': 'long', 'interface': {'shortDescription': 'short'}, 'enabled': True,
+             'path': 'review/SKILL.md', 'scope': 'user'},
             {'name': 'off', 'description': 'disabled', 'enabled': False, 'path': 'x', 'scope': 'user'}]}]}}), flush=True)
 '''
 
@@ -68,16 +63,15 @@ class NativeSkillsTests(unittest.TestCase):
             result = native_skills.list_skills('claude', self.cwd, PLUGIN, process_factory=self.factory(CLAUDE))
         self.assertEqual(result['runtime'], 'claude')
         self.assertEqual([(item['name'], item['token'], item['hint']) for item in result['skills']],
-                         [('crew:git-land', '/crew:git-land', 'tested scope'), ('Diagnose', '/Diagnose', '')])
+                         [('Diagnose', '/Diagnose', ''), ('review', '/review', 'target')])
         command = self.commands[0]
         self.assertIn('--no-session-persistence', command)
         self.assertEqual(json.loads(command[command.index('--settings') + 1]), {'disableAllHooks': True})
         self.assertEqual(command[command.index('--plugin-dir') + 1], str(PLUGIN.resolve()))
 
-    def test_codex_probe_adds_crew_user_skills_and_keeps_enabled_ones(self):
+    def test_codex_probe_keeps_enabled_skills(self):
         result = native_skills.list_skills('codex', self.cwd, PLUGIN, process_factory=self.factory(CODEX))
-        self.assertEqual(result['skills'], [{'name': 'crew:git-land', 'description': 'short', 'hint': '',
-                                             'token': '$crew:git-land'}])
+        self.assertEqual(result['skills'], [{'name': 'review', 'description': 'short', 'hint': '', 'token': '$review'}])
 
     def test_results_are_cached_per_carrier_and_directory_until_refresh(self):
         factory = self.factory(CODEX)
@@ -95,17 +89,6 @@ class NativeSkillsTests(unittest.TestCase):
         with mock.patch('crew.chat.claude_executable', return_value='claude'), \
                 self.assertRaisesRegex(RuntimeError, 'bad plugin'):
             native_skills.list_skills('claude', self.cwd, PLUGIN, process_factory=self.factory(script))
-
-    def test_bundled_user_skills_are_separate_from_injected_role_rules(self):
-        manifest = json.loads((PLUGIN / '.claude-plugin' / 'plugin.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest['skills'], ['./skills', './user-skills'])
-        user = {path.parent.name for path in (PLUGIN / native_skills.USER_SKILLS_DIR).glob('*/SKILL.md')}
-        roles = {path.parent.name for path in (PLUGIN / 'skills').glob('*/SKILL.md')}
-        self.assertIn('git-land', user)
-        self.assertFalse(user & roles)
-        for name in user:
-            text = (PLUGIN / native_skills.USER_SKILLS_DIR / name / 'SKILL.md').read_text(encoding='utf-8')
-            self.assertEqual(re.search(r'^name: (.+)$', text, re.M).group(1), name)
 
 
 if __name__ == '__main__':
@@ -125,12 +108,11 @@ class ChatSkillsHttpTests(unittest.TestCase):
             calls = []
             def fake(runtime, cwd, plugin_root, **options):
                 calls.append((runtime, cwd, options['refresh']))
-                return {'runtime': runtime, 'skills': [{'name': 'crew:git-land', 'description': 'd', 'hint': '',
-                                                        'token': '/crew:git-land'}], 'cached': False}
+                return {'runtime': runtime, 'skills': [{'name': 'review', 'description': 'd', 'hint': '', 'token': '/review'}], 'cached': False}
             with mock.patch('crew.native_skills.list_skills', side_effect=fake):
                 code, value, _ = case.request('/api/chat/skills?' + urlencode({'session_id': sid, 'refresh': '1'}))
             self.assertEqual(code, 200, value)
-            self.assertEqual(value['skills'][0]['token'], '/crew:git-land')
+            self.assertEqual(value['skills'][0]['token'], '/review')
             from crew import board
             self.assertEqual(calls, [('claude', board.session(case.conn, sid)['cwd'], True)])
             self.assertEqual(case.processes, [])

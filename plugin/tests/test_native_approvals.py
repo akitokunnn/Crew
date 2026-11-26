@@ -118,7 +118,7 @@ for line in sys.stdin:
         send({'method':'turn/completed','params':{'threadId':'thread-fixture','turn':{'id':target,'status':'completed','items':[]}}})
     elif method == 'initialize':
         send({'id':message['id'],'result':{}})
-    elif method in ('skills/extraRoots/set', 'thread/name/set'):
+    elif method == 'thread/name/set':
         send({'id':message['id'],'result':{}})
     elif method == 'thread/start':
         cwd = params['cwd']

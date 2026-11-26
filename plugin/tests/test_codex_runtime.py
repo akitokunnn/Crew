@@ -621,8 +621,6 @@ for line in sys.stdin:
     method = message.get('method')
     if method == 'initialize':
         send({'id':message['id'],'result':{'userAgent':'fixture'}})
-    elif method == 'skills/extraRoots/set':
-        send({'id':message['id'],'result':{}})
     elif method == 'thread/start':
         send({'id':message['id'],'result':{'thread':{'id':'fixture-thread','turns':[]},'model':'fixture-model','reasoningEffort':'medium'}})
     elif method == 'turn/start':

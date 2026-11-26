@@ -327,9 +327,7 @@ class CodexRunning:
             self.client = _ObservedClient(cwd=cwd, env=env,
                                           on_notification=self._notification, tool_handler=self._tool,
                                           approval_handler=self._approval,
-                                          process_factory=own_process,
-                                          # Crew's user-invoked skills (not the injected role rules) join Codex's native list.
-                                          skill_roots=[native_skills.user_skills_root(self.plugin_root)])
+                                          process_factory=own_process)
             self.process = self.client.process
             self._approval_process = self.process
             if native_id:

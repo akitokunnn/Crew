@@ -604,7 +604,7 @@ class RuleReadTests(CoreCase):
                 self.assertEqual(row, {"session_id": sid, "role": role, "digest": hashlib.sha256(content).hexdigest(), "read_at": NOW})
 
     def test_other_skill_and_tool_calls_do_not_record_reads(self):
-        for tool, tool_input in (("Skill", {"skill": "crew:trust"}), ("Bash", {"command": "echo ok", "skill": "crew:member"})):
+        for tool, tool_input in (("Skill", {"skill": "review"}), ("Bash", {"command": "echo ok", "skill": "crew:member"})):
             self.assertEqual(self.hook("guard", tool_name=tool, tool_input=tool_input), (0, None))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM rule_reads").fetchone()[0], 0)
 

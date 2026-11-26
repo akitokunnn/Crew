@@ -25,7 +25,7 @@ Crew/
     .claude-plugin/plugin.json
     hooks/hooks.json                  钩子注册（主控写）
     agents/leader.md  agents/git.md   leader 与 Git 管理员角色
-    skills/member|leader|git|trust/   守则和 /crew:trust
+    skills/member|leader|git|assistant/  角色守则
     crew_hook.py                      钩子入口：python crew_hook.py <事件>
     crew_cli.py                       命令行入口：python crew_cli.py <子命令>
     crew/                             Python 包，只用标准库（Python 3.11+）

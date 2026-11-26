@@ -92,7 +92,7 @@ claude plugin install crew@crew --scope user
 
 使用浏览器和登录自启时，执行 `crew autostart install`；需要文件夹右键入口时，再执行 `crew menu install`。之后在工作文件夹里运行 `crew start`，或右键选择“在这里启动 Crew”，会自动启用项目并打开网页。已有服务时用 `crew web --open` 打开当前项目。
 
-Claude 协作会话建议统一权限模式；`/crew:trust` 用于 Claude 的工具权限。下面的 `crew trust set on --leader ... --goal ...` 用于单个 leader 组的自主决策目标，两者分别配置。
+Claude 协作会话建议统一权限模式，在 Claude Code 自己的权限设置里配置。下面的 `crew trust set on --leader ... --goal ...` 用于单个 leader 组的自主决策目标，和 Claude 的工具权限无关。
 
 ## 日常怎么用
 
@@ -155,7 +155,7 @@ Codex 桌面的人员标题使用 Crew 名字与职位，例如“声纹施工 �
 
 会话里的守则在 `plugin/skills/`：Claude 成员是 `/crew:member`，leader 是 `/crew:leader`，Git 管理员是 `/crew:git`；Codex 由宿主加载同一角色守则，绑定 Crew 身份和动态白板工具。启动时 Crew 会说明身份、所属组和命令入口；还没收编的会话不会被要求自己登记。启用 Git 管理的项目还会附管理员提示和分支规则前 6 行，全文用 `crew git policy` 看。守则更新后，在下一条消息或 resume / compact 时提醒已收编会话重读。
 
-聊天输入框里打 `/` 会弹出技能窗口，列出这个会话的执行工具能用的技能：Claude Code 取原生命令清单（不含内置命令和上面的角色守则），Codex 取原生 `skills/list`。选中后插入该工具自己的写法（Claude `/名字`、Codex `$名字`），由 AI 自行调用；↑↓ 选择，Enter / Tab 插入，Esc 关闭。Crew 自带的可调用技能放在 `plugin/user-skills/`，Claude 里是 `/crew:<名字>`，Codex 里是 `$crew:<名字>`，比如 `git-land`（Git 一步到位：说明哪些内容测过、可以进主干，AI 完成锁定范围、同步远端、合入、验证、推送和核对）。
+聊天输入框里打 `/` 会弹出技能窗口，列出这个会话的执行工具能用的技能：Claude Code 取原生命令清单（不含内置命令和上面的角色守则），Codex 取原生 `skills/list`。选中后插入该工具自己的写法（Claude `/名字`、Codex `$名字`），由 AI 自行调用；↑↓ 选择，Enter / Tab 插入，Esc 关闭。Crew 不自带可调用技能，面板里是用户自己装在 Claude Code / Codex 里的技能。
 
 ## 命令速查
 
