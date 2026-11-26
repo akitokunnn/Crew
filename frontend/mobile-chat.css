@@ -222,7 +222,7 @@ body:has(#main[data-reader]) #chat-attention{display:none!important}
 /* ================= 助手页 ================= */
 .assistant-page{display:flex!important;flex-direction:column;height:calc(100dvh - var(--m-bottom))!important}
 .assistant-page .assistant-main{flex:1;min-height:0}
-.assistant-main>.head{display:flex;flex-wrap:nowrap!important;align-items:center!important;height:auto!important;min-height:0!important;padding:calc(var(--m-safe-t) + 6px) 6px 6px var(--m-gutter)!important;gap:4px!important;border-bottom:1px solid var(--line)}
+.assistant-main>.head{display:flex;flex-wrap:nowrap!important;align-items:center!important;height:auto!important;min-height:0!important;padding:calc(var(--m-safe-t) + 6px) 10px 6px var(--m-gutter)!important;gap:4px!important;border-bottom:1px solid var(--line)}
 .assistant-main>.head>div:first-child{flex:1;min-width:0}
 .assistant-main h1{font-size:var(--m-fs-title)!important;font-weight:600!important;line-height:1.3}
 .assistant-main .sub{display:none}
