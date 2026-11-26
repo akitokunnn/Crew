@@ -456,8 +456,9 @@ class CodexTools:
                 return {**actor, **personal.assistant_context(conn, sid)}
             raise ToolError('forbidden', 'Global assistant actions use crew_personal with original user intent')
         if name == 'crew_say':
-            return channel.post(conn, project, sid, args['text'], args.get('to', []),
-                                reply_to=args.get('reply_to'), detail=args.get('detail', False))
+            message = channel.post(conn, project, sid, args['text'], args.get('to', []),
+                                   reply_to=args.get('reply_to'), detail=args.get('detail', False))
+            return {**message, 'receipt': channel.receipt(message)}
         if name == 'crew_channel':
             if channel._leader(conn, project, sid) is None:
                 raise ToolError('forbidden', 'Leader 交流区只给 leader 用；有事告诉你的 leader')

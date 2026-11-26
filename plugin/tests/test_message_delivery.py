@@ -150,6 +150,7 @@ class ReplyNotifiesAuthorTests(DeliveryFixture):
             self.assertEqual((mention["name"], mention["delivery"]), ("beta", "queued"))
             self.conn.close()
         self.conn = store.connect(self.home)
+        self.addCleanup(self.conn.close)
 
 
 class DeliveryStateTests(DeliveryFixture):

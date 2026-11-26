@@ -53,7 +53,7 @@ class ChannelTests(unittest.TestCase):
         message = self.post("**plan**\nsecond line", to=["beta"])
         self.assertEqual(message["speaker_session_id"], "a")
         self.assertEqual(message["speaker_name"], "alpha")
-        self.assertEqual(message["mentions"], [{"session_id": "b", "name": "beta", "replied": False}])
+        self.assertEqual(message["mentions"], [{"session_id": "b", "name": "beta", "replied": False, "delivery": "queued"}])
         notice = board.pending_notices(self.conn, "b")[0]
         self.assertEqual(notice["source"], "crew")
         self.assertEqual(notice["text"], '交流区：「alpha」点名你（交流区发言 #%d）：\n**plan**\nsecond line\n\n'
@@ -152,7 +152,7 @@ class ChannelTests(unittest.TestCase):
     def test_cli_say_with_at_name_wakes_the_leader(self):
         result, output, error = self.run_cli(["say", "@beta 合并前先 rebase", "--json"])
         self.assertEqual(result, 0, error)
-        self.assertEqual(json.loads(output)["mentions"], [{"session_id": "b", "name": "beta", "replied": False}])
+        self.assertEqual(json.loads(output)["mentions"], [{"session_id": "b", "name": "beta", "replied": False, "delivery": "queued"}])
         self.assertEqual(len(board.pending_notices(self.conn, "b")), 1)
 
     def test_human_post_uses_web_notice(self):

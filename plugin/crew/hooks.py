@@ -200,7 +200,9 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
             if reminder is not None:
                 lines.append(reminder)
         if event == "user-prompt-submit":
-            summary = channel.summary(conn, data["session_id"], now=now)
+            # Crew writes notices into the input of sessions it runs; an external one only hears them here.
+            summary = channel.summary(conn, data["session_id"], now=now,
+                                      carry_pending=not environ.get('CREW_SESSION_ID'))
             if summary is not None:
                 lines.append(summary)
     if lines and event in ("session-start", "user-prompt-submit"):
