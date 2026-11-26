@@ -1,3 +1,6 @@
+UNHANDLED = object()
+
+
 def _text(data, key):
     value = data.get(key)
     if not isinstance(value, str) or not value.strip():
