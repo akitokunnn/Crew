@@ -14,6 +14,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
+from crew.web_api import routes
 from crew import frontend_root, session_ops, board, codex_runtime, decision_flow, goals, remote_routes, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
@@ -109,7 +110,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(state['native_approvals'], [])
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
-            "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
+            "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "channel_queued_id", "member_ids",
             "model", "effort", "speed", "applied", "activity", "context", "where", "codex", "codex_older", "dispatches",
             "pinned", "runtime", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
             "member_defaults", "color", "avatar_version"})
@@ -426,7 +427,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.conn.execute("INSERT INTO decision_holds(decision_id,held_at) VALUES(?,?)", (legacy, NOW))
         for path in ("/api/decision/hold", "/api/decision/unhold"):
             with self.subTest(path=path):
-                self.assertNotIn(path, web.POST_PATHS)
+                self.assertNotIn(path, routes.post_paths())
                 self.assertNotIn(path, remote_routes.POST_PATHS)
                 self.assertEqual(self.request(path, {"id": legacy})[0], 404)
         state = self.state()
@@ -1151,14 +1152,19 @@ const fs = require("node:fs"), path = require("node:path"), vm = require("node:v
 const folder = process.argv[1];
 const listeners = new Map();
 const document = {visibilityState:"visible", addEventListener:(name, fn) => listeners.set(name, fn), removeEventListener:(name, fn) => { if (listeners.get(name) === fn) listeners.delete(name); }};
-const sandbox = {document, matchMedia:() => ({matches:false}), setTimeout, clearTimeout, atob};
+const sandbox = {document, matchMedia:() => ({matches:false, addEventListener() {}, removeEventListener() {}}), setTimeout, clearTimeout, atob};
 sandbox.window = sandbox;
 vm.createContext(sandbox);
-for (const file of ["vendor/markdown-it.min.js", "chat.js", "channel.js"]) vm.runInContext(fs.readFileSync(path.join(folder, file), "utf8"), sandbox);
+for (const file of ["vendor/markdown-it.min.js", "browser-utils.js", "chat.js", "channel.js"]) vm.runInContext(fs.readFileSync(path.join(folder, file), "utf8"), sandbox);
 const flush = async () => { for (let index = 0; index < 12; index++) await Promise.resolve(); };
 function element() {
   let html = "", buttons = [];
-  return {hidden:false, disabled:false, value:"", style:{}, textContent:"", scrollHeight:26,
+  const classes = new Set(), attributes = new Map();
+  return {hidden:false, disabled:false, value:"", style:{}, textContent:"", scrollHeight:26, dataset:{},
+    classList:{toggle:(name, on) => on ? classes.add(name) : classes.delete(name), contains:name => classes.has(name)},
+    toggleAttribute:(name, on) => on ? attributes.set(name, "") : attributes.delete(name),
+    setAttribute:(name, value) => attributes.set(name, value), removeAttribute:name => attributes.delete(name),
+    addEventListener() {}, focus() {}, querySelector:() => null,
     get innerHTML() { return html; },
     set innerHTML(value) {
       html = value;
@@ -1174,10 +1180,14 @@ function fixture() {
   const inner = element(), older = element(), targets = element(), input = element(), send = element(), form = element();
   const original = Object.getOwnPropertyDescriptor(inner, "innerHTML");
   Object.defineProperty(inner, "innerHTML", {get:original.get, set(value) { original.set.call(inner, value); scroll.scrollHeight = 40 + [...value.matchAll(/data-channel-id=/g)].length * 100; }});
-  const nodes = {".channel-pin":element(), ".channel-scroll":scroll, ".channel-inner":inner, ".channel-older":older, ".channel-targets":targets, textarea:input, ".channel-send":send, form};
+  const nodes = {".cx-pin":element(), ".cx-scroll":scroll, ".cx-inner":inner, ".cx-older":older, ".cx-targets":targets, textarea:input, ".cx-send":send, form};
+  for (const selector of [".cx-digest-btn", ".cx-pendingbar", ".cx-composer-wrap", ".cx-replybar", ".cx-aside", ".cx-members", ".cx-pending", ".cx-count", ".cx-backdrop", ".cx-pop"]) nodes[selector] = element();
+  Object.assign(scroll, {addEventListener() {}});
+  inner.querySelector = () => null;
+  nodes[".cx-pin"].addEventListener = () => {};
   const host = {innerHTML:"", querySelector:selector => nodes[selector]};
-  const state = {project:{name:"demo"}, leaders:[{session_id:"git",name:"Git"},{session_id:"design",name:"Design"}], channel:{latest_id:25,digest_id:null,digesting:false,digest_error:null}};
-  const message = (id, body = "发言 " + id, speaker = "git") => ({id, speaker_session_id:speaker, speaker_name:speaker === "user" ? "用户" : "Git", body, mentions:[], created_at:"2026-10-23T08:30:00Z"});
+  const state = {project:{name:"demo"}, leaders:[{session_id:"git",name:"Git",where:"bg",busy:false},{session_id:"design",name:"Design",where:"offline",busy:false}], channel:{latest_id:25,unread:0,digest_id:null,digesting:false,digest_error:null}};
+  const message = (id, body = "发言 " + id, speaker = "git") => ({id, speaker_session_id:speaker, speaker_name:speaker === "user" ? "用户" : "Git", body, mentions:[], notified:[], reply:null, created_at:"2026-10-23T08:30:00Z"});
   const messages = Array.from({length:25}, (_, index) => message(index + 1));
   const calls = [], toasts = [], reads = [];
   let interloper = false;
@@ -1187,7 +1197,7 @@ function fixture() {
     if (route === "/api/channel") {
       if (interloper) messages.push(message(messages.length + 1, "发送期间到达的发言"));
       const posted = message(messages.length + 1, data.body, "user");
-      posted.mentions = data.to.map(name => ({session_id:state.leaders.find(item => item.name === name).session_id, name}));
+      posted.mentions = data.to.map(name => ({session_id:state.leaders.find(item => item.name === name).session_id, name, delivery:"queued", queued_at:new Date().toISOString()}));
       messages.push(posted);
       return {message:posted};
     }
@@ -1196,9 +1206,11 @@ function fixture() {
     const eligible = messages.filter(item => item.id < before);
     return {messages:eligible.slice(-20), has_more:eligible.length > 20, latest_id:messages[messages.length - 1].id, digest:null};
   };
-  const mount = () => sandbox.CrewChannel.mount({host, digestButton:element(), state, api, toast:text => toasts.push(text), onRead:result => reads.push(result.read_id)});
-  const select = id => { const button = targets.querySelectorAll().find(item => item.dataset.channelTo === id); targets.onclick({target:button}); };
-  return {...nodes, scroll, inner, older, targets, input, send, form, state, messages, message, calls, toasts, reads, mount, select, setInterloper:() => { interloper = true; }};
+  const avatar = name => `<span class="av">${name.slice(0, 1)}</span>`;
+  const mount = () => sandbox.CrewChannel.mount({host, state, api, avatar, toast:text => toasts.push(text), onRead:result => reads.push(result.read_id)});
+  const click = (wanted, node) => host.onclick({target:{closest:selector => selector === wanted ? node : null}});
+  const select = id => click("[data-channel-to]", targets.querySelectorAll().find(item => item.dataset.channelTo === id));
+  return {...nodes, scroll, inner, older, targets, input, send, form, state, messages, message, calls, toasts, reads, mount, select, click, setInterloper:() => { interloper = true; }};
 }
 '''
         script = bootstrap + "\n(async () => {\n" + scenario + "\n})().catch(error => { console.error(error); process.exitCode = 1; });"
@@ -1218,7 +1230,7 @@ function fixture() {
         self.run_component(r'''
 const f = fixture();
 f.messages[24].body = '**标题：**正文\n\n<script>alert(1)</script>\n\n[链接](https://example.com)';
-f.messages[24].mentions = [{session_id:"design", name:'<Design>"'}];
+f.messages[24].mentions = [{session_id:"design", name:'<Design>"', delivery:"queued", queued_at:new Date().toISOString()}];
 f.messages[24].speaker_name = '<Git>"';
 f.mount(); await flush();
 const html = f.inner.innerHTML;
@@ -1227,7 +1239,7 @@ assert(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
 assert(!html.includes('<script>'));
 assert(html.includes('target="_blank" rel="noopener noreferrer"'));
 assert(html.includes('&lt;Git&gt;&quot;'));
-assert(html.includes('class="channel-mention">@&lt;Design&gt;&quot;'));
+assert(html.includes('<span class="cx-dl-name">@&lt;Design&gt;&quot;</span>'));
 assert.deepEqual(f.reads, [25]);
 assert(!f.older.hidden);
 sandbox.CrewChannel.unmount();
@@ -1255,9 +1267,9 @@ assert.equal(prevented, 1);
 assert.equal(f.input.value, "");
 assert.equal(f.targets.querySelectorAll().filter(item => item.pressed === "true").length, 0);
 assert(f.send.disabled);
-assert(f.inner.innerHTML.includes('channel-user'));
+assert(f.inner.innerHTML.includes('cx-user'));
 assert(f.inner.innerHTML.includes('<strong>确认</strong>发布'));
-assert.equal(f.toasts[0], "已发到 Leader 交流区，点名的 Git、Design 会被叫醒");
+assert.equal(f.toasts[0], "已发到 Leader 交流区，Git、Design空闲时收到，送达情况看徽章");
 sandbox.CrewChannel.unmount();
 ''')
 
@@ -1265,7 +1277,7 @@ sandbox.CrewChannel.unmount();
         self.run_component(r'''
 const f = fixture(); f.mount(); await flush();
 assert(!f.inner.innerHTML.includes('data-channel-id="1"'));
-f.scroll.scrollTop = 0; f.older.onclick(); await flush();
+f.scroll.scrollTop = 0; f.click(".cx-older", f.older); await flush();
 assert(f.calls.some(item => item.route === "/api/channel?limit=20&before=6"));
 assert(f.inner.innerHTML.includes('data-channel-id="1"'));
 assert(f.older.hidden);

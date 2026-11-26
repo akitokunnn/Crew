@@ -395,7 +395,9 @@ CREATE TABLE IF NOT EXISTS leader_notices (
     created_at TEXT NOT NULL,
     sent_at    TEXT,
     wake       INTEGER NOT NULL DEFAULT 1,  -- 0: wait for the leader's next conversation instead of starting a turn
-    delivered_via TEXT CHECK (delivered_via IN ('hook'))  -- NULL: written into the leader's input; hook: carried by an external session's prompt hook
+    delivered_via TEXT CHECK (delivered_via IN ('hook')),  -- NULL: written into the leader's input; hook: carried by an external session's prompt hook
+    batch_id   TEXT,                       -- the web service's input batch that owns delivering it; the hook never takes these
+    waiting    TEXT CHECK (waiting IN ('external', 'busy', 'stopped'))  -- why it is still queued, as last seen by the web service
 );
 CREATE INDEX IF NOT EXISTS leader_notices_pending ON leader_notices (session_id, sent_at);
 
@@ -421,6 +423,8 @@ CREATE TABLE IF NOT EXISTS channel_mentions (
     reason     TEXT NOT NULL DEFAULT 'mention' CHECK (reason IN ('mention', 'reply')),  -- reply: told because the post answers its own
     PRIMARY KEY (message_id, session_id)
 );
+-- A notice's delivery change finds the posts that show it (change_triggers.py).
+CREATE INDEX IF NOT EXISTS channel_mentions_notice ON channel_mentions (notice_id);
 
 CREATE TABLE IF NOT EXISTS channel_reads (
     project    TEXT NOT NULL REFERENCES projects(name),
@@ -1058,4 +1062,17 @@ CREATE TABLE IF NOT EXISTS domain_boards (
     version    INTEGER NOT NULL,
     updated_at TEXT NOT NULL,
     direction  TEXT NOT NULL DEFAULT 'TB' CHECK (direction IN ('TB', 'LR'))
+);
+
+-- Operation receipts: a write retried with the same request_id runs once (OPERATIONS_REGISTRY_DESIGN §5.5).
+CREATE TABLE IF NOT EXISTS op_requests (
+ caller_key TEXT NOT NULL,
+ request_id TEXT NOT NULL,
+ op TEXT NOT NULL,
+ args_hash TEXT NOT NULL,
+ status TEXT NOT NULL CHECK (status IN ('running','done','failed','unknown')),
+ result TEXT,
+ created_at TEXT NOT NULL,
+ finished_at TEXT,
+ PRIMARY KEY (caller_key, request_id)
 );

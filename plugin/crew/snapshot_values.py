@@ -91,6 +91,11 @@ def channel(conn, project_name, _):
     return {**channel_board.counts(conn, project_name), 'digest_id': card['id'] if card is not None else None}
 
 
+def channel_message(conn, project_name, message_id):
+    """One channel post with its delivery badges; the page that shows it replaces it (not part of the snapshot)."""
+    return channel_board.listed_message(conn, project_name, message_id)
+
+
 def sound_settings(conn, _, __):
     """The sound fields shared by every workspace; `events` follows the conversation journals."""
     return event_sounds.settings_value(conn, Path(conn.execute('PRAGMA database_list').fetchone()['file']).parent)

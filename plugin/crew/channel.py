@@ -1,6 +1,4 @@
 """The project channel: shared posts, explicit mentions, and per-reader cursors."""
-from pathlib import Path
-
 from . import board, change_feed, git_admin, messaging, store
 
 
@@ -22,31 +20,24 @@ def _excerpt(body, size=40):
     return text if len(text) <= size else text[:size] + "…"
 
 
-# What a named or answered leader has actually got, decided here from stored facts only:
-# none (nothing to deliver, e.g. naming yourself), queued (notice not yet in its input),
-# delivered (in its input, no answer yet), replied (it answered this post in the channel).
+# What a named or answered leader has actually got; chat_delivery.notice_state decides it from stored facts.
 DELIVERY_LABELS = {"queued": "已排队，对方尚未收到", "delivered": "已送达，未回复", "replied": "已回复"}
-
-
-def _delivery(row):
-    if row["notice_id"] is None:
-        return "none"
-    if row["replied"]:
-        return "replied"
-    return "delivered" if row["sent_at"] is not None else "queued"
 
 
 def _message(conn, row):
     value = dict(row)
     value["detail"], value["auto"] = bool(value["detail"]), bool(value["auto"])
     told = board._rows(
-        conn, "SELECT t.session_id,t.name,t.reason,t.notice_id,n.sent_at,EXISTS(SELECT 1 FROM channel_messages r "
-        "WHERE r.reply_to=t.message_id AND r.speaker_session_id=t.session_id) AS replied FROM channel_mentions t "
+        conn, "SELECT t.session_id,t.name,t.reason,t.notice_id,n.created_at AS queued_at,n.sent_at,n.delivered_via,"
+        "n.waiting,(SELECT MIN(r.id) FROM channel_messages r WHERE r.reply_to=t.message_id "
+        "AND r.speaker_session_id=t.session_id) AS reply_id FROM channel_mentions t "
         "LEFT JOIN leader_notices n ON n.id=t.notice_id WHERE t.message_id=? ORDER BY t.rowid", (value["id"],))
-    value["mentions"] = [{"session_id": item["session_id"], "name": item["name"], "replied": bool(item["replied"]),
-                          "delivery": _delivery(item)} for item in told if item["reason"] == "mention"]
+    if told:
+        from . import chat_delivery
+    value["mentions"] = [{"session_id": item["session_id"], "name": item["name"], "replied": item["reply_id"] is not None,
+                          **chat_delivery.notice_state(item)} for item in told if item["reason"] == "mention"]
     # The author of the answered post, told without being named.
-    value["notified"] = [{"session_id": item["session_id"], "name": item["name"], "delivery": _delivery(item)}
+    value["notified"] = [{"session_id": item["session_id"], "name": item["name"], **chat_delivery.notice_state(item)}
                          for item in told if item["reason"] == "reply"]
     if value["reply_to"] is not None:
         quoted = conn.execute("SELECT id,speaker_session_id,speaker_name,body FROM channel_messages WHERE id=?",
@@ -203,6 +194,9 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
         "VALUES(?,?,?,?,?,?,?)",
         (project_name, actor, speaker_name, body, board._time(now), reply_to, int(detail))).lastrowid
     change_feed.touch(conn, 'channel', project_name, project_name)
+    if reply_to is not None:
+        # A leader answering a post it was told about turns that post's badge to replied.
+        change_feed.touch(conn, 'channel_message', project_name, reply_to)
     if reply_to is not None and actor != board.HUMAN:
         conn.execute("UPDATE channel_mentions SET await_reply=0 WHERE message_id=? AND session_id=?", (reply_to, actor))
     for target, reason in told:
@@ -235,28 +229,31 @@ def user_mentions(conn, notice_ids):
 
 
 def awaiting(conn, session_id):
-    """The user's mentions this leader received as input and has not answered in the channel.
+    """The user's mentions this leader received as input and has not answered in the channel, with their batch.
 
     A mention carried by an external session's prompt hook stays waiting: Crew cannot see that turn end,
     so it never claims the leader answered in private.
     """
-    return board._rows(conn, "SELECT t.message_id FROM channel_mentions t JOIN leader_notices n ON n.id=t.notice_id "
-                             "WHERE t.session_id=? AND t.await_reply=1 AND n.sent_at IS NOT NULL "
+    return board._rows(conn, "SELECT t.message_id,n.batch_id FROM channel_mentions t JOIN leader_notices n "
+                             "ON n.id=t.notice_id WHERE t.session_id=? AND t.await_reply=1 AND n.sent_at IS NOT NULL "
                              "AND n.delivered_via IS NULL ORDER BY t.message_id", (session_id,))
 
 
 @board.atomic
-def settle(conn, session_id, now=None):
-    """After the leader's turn ends, a user mention it answered only in private gets a pointer there."""
+def settle(conn, session_id, message_ids, now=None):
+    """These user mentions the leader's finished turn answered only in private get a pointer there."""
     leader = board.session(conn, session_id)
     posted = []
     for row in awaiting(conn, session_id):
+        if row["message_id"] not in message_ids:
+            continue
         message_id = conn.execute(
             "INSERT INTO channel_messages(project,speaker_session_id,speaker_name,body,created_at,reply_to,detail,auto) "
             "VALUES(?,?,?,?,?,?,1,1)",
             (leader["project"], session_id, leader["crew_name"], "回复在私聊里", board._time(now),
              row["message_id"])).lastrowid
         change_feed.touch(conn, 'channel', leader["project"], leader["project"])
+        change_feed.touch(conn, 'channel_message', leader["project"], row["message_id"])
         conn.execute("UPDATE channel_mentions SET await_reply=0 WHERE message_id=? AND session_id=?",
                      (row["message_id"], session_id))
         posted.append(message_id)
@@ -288,6 +285,13 @@ def messages(conn, project_name, limit=20, before=None, after=0):
     rows = conn.execute(sql + " ORDER BY id DESC LIMIT ?", (*args, limit + 1)).fetchall()
     return {"messages": [_message(conn, row) for row in reversed(rows[:limit])],
             "has_more": len(rows) > limit, "latest_id": _latest(conn, project_name)}
+
+
+def listed_message(conn, project_name, message_id):
+    """One post as `messages` lists it now, or None once it is gone or behind the workspace's cleanup boundary."""
+    row = conn.execute("SELECT * FROM channel_messages WHERE project=? AND id=? AND id>?",
+                       (project_name, message_id, board.cleanup_boundary(conn, project_name)["channel_after"])).fetchone()
+    return None if row is None else _message(conn, row)
 
 
 def state(conn, project_name, reader=board.HUMAN):
@@ -322,42 +326,24 @@ def read(conn, project_name, reader, limit=20, now=None, after=0):
     return result["messages"]
 
 
-def _batched(conn, session_id):
-    """Notices the web service already put in a delivery batch for this leader's input; that batch owns them."""
-    from .chat import Journal
-    database = next(row["file"] for row in conn.execute("PRAGMA database_list") if row["name"] == "main")
-    events = Journal(Path(database).parent / "chat" / (session_id + ".jsonl"), None).events
-    return {notice for event in events if event["type"] == "leader_notice_batch" for notice in event["notice_ids"]}
-
-
 def _carry_pending(conn, session_id, now):
     """Take this leader's undelivered channel notices for its prompt hook, each exactly once."""
-    pending = board._rows(conn, "SELECT n.id,n.text FROM channel_mentions t JOIN leader_notices n ON n.id=t.notice_id "
-                                "WHERE t.session_id=? AND n.sent_at IS NULL ORDER BY n.id", (session_id,))
-    batched = _batched(conn, session_id) if pending else set()
-    carried = []
-    for notice in pending:
-        # The guarded update is the claim: whoever marks the notice sent first is the one that delivers it.
-        if notice["id"] not in batched and conn.execute(
-                "UPDATE leader_notices SET sent_at=?,delivered_via='hook' WHERE id=? AND sent_at IS NULL",
-                (board._time(now), notice["id"])).rowcount:
-            carried.append(notice["text"])
-    return carried
+    if conn.execute("SELECT 1 FROM leader_notices WHERE session_id=? AND sent_at IS NULL AND batch_id IS NULL LIMIT 1",
+                    (session_id,)).fetchone() is None:
+        return []
+    from . import chat_delivery
+    return chat_delivery.claim_for_hook(conn, session_id, now)
 
 
-@board.atomic
-def summary(conn, session_id, now=None, carry_pending=False):
-    """New channel posts for the leader's next turn; the read cursor then moves to the latest post.
+def preview(conn, session_id):
+    """New channel posts for the leader's next turn and the cursor they cover, without moving it.
 
     A post that names this leader is left out while its notice is delivered on its own: already sent, or
-    queued for the web service to write into the leader's input. An external session's prompt hook passes
-    carry_pending because the web service never writes into that session: its queued channel notices travel
-    here in full instead, so moving the cursor never skips a mention.
+    queued for the web service to write into the leader's input.
     """
     s = board.session(conn, session_id)
     if _leader(conn, s["project"], session_id) is None:
-        return None
-    carried = _carry_pending(conn, session_id, now) if carry_pending else []
+        return None, None
     read_id = max(_read_id(conn, s["project"], session_id), board.cleanup_boundary(conn, s["project"])["channel_after"])
     card = digest(conn, s["project"])
     show_card = card is not None and card["upto_message_id"] > read_id
@@ -367,21 +353,41 @@ def summary(conn, session_id, now=None, carry_pending=False):
         "AND NOT EXISTS (SELECT 1 FROM channel_mentions t "
         "WHERE t.message_id=m.id AND t.session_id=? AND t.notice_id IS NOT NULL) ORDER BY m.id",
         (s["project"], after, session_id, session_id)).fetchall()
-    _mark_read(conn, s["project"], session_id, _latest(conn, s["project"]), now)
+    blocks = ["[Crew 交流区要点]\n" + card["body"]] if show_card else []
+    if rows:
+        lines = ["[Crew 交流区] 你上次看之后有 %d 条新发言：" % len(rows)]
+        for row in rows[:10]:
+            message = _message(conn, row)
+            first_line = message["body"].splitlines()[0]
+            if len(first_line) > 120:
+                first_line = first_line[:120] + "…"
+            lines.append("- %s：%s" % (line(message), first_line))
+        if len(rows) > 10:
+            lines.append("还有 %d 条" % (len(rows) - 10))
+        lines.append("全文用 crew channel 看（Codex 用 crew_channel）；要接话用 crew say --reply-to <编号>")
+        blocks.append("\n".join(lines))
+    return ("\n\n".join(blocks) if blocks else None), _latest(conn, s["project"])
+
+
+@board.atomic
+def seen(conn, session_id, upto, now=None):
+    """The leader's input carrying a preview was accepted; its cursor moves past what that preview covered."""
+    _mark_read(conn, board.session(conn, session_id)["project"], session_id, upto, now)
+
+
+@board.atomic
+def summary(conn, session_id, now=None, carry_pending=False):
+    """The prompt hook's preview, taken at once: the hook's output is the leader's input.
+
+    An external session's prompt hook passes carry_pending because the web service never writes into that
+    session: its queued channel notices travel here in full instead, so moving the cursor never skips a mention.
+    """
+    s = board.session(conn, session_id)
+    if _leader(conn, s["project"], session_id) is None:
+        return None
+    carried = _carry_pending(conn, session_id, now) if carry_pending else []
+    text, upto = preview(conn, session_id)
+    _mark_read(conn, s["project"], session_id, upto, now)
     blocks = (["[Crew 交流区点名] 以下点名之前没送到你这里，现在送达：\n" +
-               "\n".join("%d. %s" % (index, text) for index, text in enumerate(carried, 1))] if carried else [])
-    if show_card:
-        blocks.append("[Crew 交流区要点]\n" + card["body"])
-    if not rows:
-        return "\n\n".join(blocks) if blocks else None
-    lines = ["[Crew 交流区] 你上次看之后有 %d 条新发言：" % len(rows)]
-    for row in rows[:10]:
-        message = _message(conn, row)
-        first_line = message["body"].splitlines()[0]
-        if len(first_line) > 120:
-            first_line = first_line[:120] + "…"
-        lines.append("- %s：%s" % (line(message), first_line))
-    if len(rows) > 10:
-        lines.append("还有 %d 条" % (len(rows) - 10))
-    lines.append("全文用 crew channel 看（Codex 用 crew_channel）；要接话用 crew say --reply-to <编号>")
-    return "\n\n".join(blocks + ["\n".join(lines)])
+               "\n".join("%d. %s" % (index, item) for index, item in enumerate(carried, 1))] if carried else [])
+    return "\n\n".join(blocks + ([text] if text else [])) or None

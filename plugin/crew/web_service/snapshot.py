@@ -234,6 +234,10 @@ class SnapshotMixin:
                     unread=sum(reply['seq'] > read_seq for reply in replies),
                     pending=pending_leaders.count(sid),
                     notices_pending=len(board.pending_notices(conn, sid)),
+                    # The earliest channel post whose mention of this leader is still queued: the sidebar jumps there.
+                    channel_queued_id=conn.execute(
+                        'SELECT MIN(t.message_id) FROM channel_mentions t JOIN leader_notices n ON n.id=t.notice_id '
+                        'WHERE t.session_id=? AND n.sent_at IS NULL', (sid,)).fetchone()[0],
                     member_ids=[s['session_id'] for s in sessions if s['role'] != 'leader' and s['crew_name']
                                 and member_leaders[s['session_id']] is not None
                                 and member_leaders[s['session_id']]['session_id'] == sid]))

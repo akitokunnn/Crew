@@ -328,11 +328,18 @@
     const more = items.slice(3);
     return `<span class="leader-branches" style="--tint:${tint(item.name)}" aria-label="${items.length} 个分支待处理">${items.slice(0, 3).map(chip).join("")}${more.length === 0 ? "" : `<span class="leader-branch more" title="${esc(more.map(hint).join("\n\n"))}">+${more.length}</span>`}</span>`;
   }
+  // Notices still waiting for this leader (channel mentions and others); a queued mention opens the channel on its post.
+  function leaderQueued(item) {
+    if (item.notices_pending === 0) return "";
+    const text = `${ic("clock")}<span>${item.notices_pending} 条通知排队中</span>`;
+    if (item.channel_queued_id === null) return `<span class="leader-queued" title="${esc(`${item.name} 空下来或下次提示时送达`)}">${text}</span>`;
+    return `<button type="button" class="leader-queued" data-act="leader-queued" data-id="${esc(item.session_id)}" data-message="${item.channel_queued_id}" title="打开交流区，定位到最早一条还在排队的点名">${text}</button>`;
+  }
   function sidebarLeader(item) {
     // A member conversation stays inside its leader's group: that leader keeps a quieter selection and its tasks.
     const inGroup = view === "chat" && leaderId === item.session_id, selected = inGroup && readOnlyId === null;
     const work = groupWork(item), unread = leaderUnread(item);
-    return `<div draggable="true" class="leader-row session-surface${item.pinned ? " pinned" : ""} ${selected ? "active" : inGroup ? "in-group" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}${unread ? "，有未读消息" : ""}" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><span class="leader-row-name"><strong>${esc(item.name)}</strong>${contextRing(item)}${trustMark(item)}${unread ? '<span class="leader-unread-dot" title="有未读消息"></span>' : ""}</span><span class="leader-row-sub">${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}${work.active ? groupWorkLabel(work, true) : st(item.status)}</span>${leaderBranches(item)}</span>${pinButton(item)}</div>${inGroup ? CrewGoals.leaderTasks(state.goals.filter(task => task.leader_session_id === item.session_id), goalId) : ""}`;
+    return `<div draggable="true" class="leader-row session-surface${item.pinned ? " pinned" : ""} ${selected ? "active" : inGroup ? "in-group" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}${unread ? "，有未读消息" : ""}" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><span class="leader-row-name"><strong>${esc(item.name)}</strong>${contextRing(item)}${trustMark(item)}${unread ? '<span class="leader-unread-dot" title="有未读消息"></span>' : ""}</span><span class="leader-row-sub">${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}${work.active ? groupWorkLabel(work, true) : st(item.status)}</span>${leaderBranches(item)}${leaderQueued(item)}</span>${pinButton(item)}</div>${inGroup ? CrewGoals.leaderTasks(state.goals.filter(task => task.leader_session_id === item.session_id), goalId) : ""}`;
   }
   function setLeadersOpen(open, remember = true) {
     leadersOpen = open;
@@ -825,11 +832,11 @@
   }
   function renderChannel() {
     if (!mountedChannel) {
-      $("main").innerHTML = `<div class="head channel-head"><div><div class="title">${ic("msg")}Leader 交流区</div><div class="sub">所有 leader 和用户的公共频道 · 点名才叫醒</div></div><button id="channel-digest-button" class="btn">整理</button></div><div id="channel-host" class="chat-host"></div>`;
+      $("main").innerHTML = '<div id="channel-host" class="cx-host"></div>';
       delete $("main").dataset.render;
       mountedChannel = true;
       const focus = channelFocus; channelFocus = null;
-      CrewChannel.mount({host:$("channel-host"), digestButton:$("channel-digest-button"), state, api, toast, focus, onRead:channel => { Object.assign(state.channel, {unread:channel.unread, latest_id:channel.latest_id}); renderSidebar(); },
+      CrewChannel.mount({host:$("channel-host"), state, api, toast, focus, avatar:av, onRead:channel => { Object.assign(state.channel, {unread:channel.unread, latest_id:channel.latest_id}); renderSidebar(); },
         openChat(id, target) { if (leader(id) === undefined) { toast("这位 leader 已不在列表里，看不到它的私聊"); return; } chatFocus = {session:id, ...target}; navigate("chat", id, null, null); }});
     }
     CrewChannel.update(state);
@@ -1386,6 +1393,8 @@
     else if (view === "chat" && readOnlyId === null && leader(leaderId) === undefined) { navigate("all"); toast("这个 leader 已结束，已返回工作台"); }
     else if (view === "chat" && goalId != null && !(state.goals || []).some(item => String(item.id) === String(goalId) && item.leader_session_id === leaderId)) { navigate("chat",leaderId,readOnlyId,null); toast("目标已不在本组，已回到总对话。"); }
     else { render(); syncRoute(); }
+    // Channel posts are not in the snapshot: a change replaces a shown post, a snapshot has the channel re-read its newest page.
+    if (mountedChannel) CrewChannel.changed(meta.source === "snapshot" ? null : meta.changes.filter(change => change.type.startsWith("channel_message.")));
     if (pendingSettingsHash) { pendingSettingsHash = false; openSettings("ai"); }
     refreshUsage();
     if (previous !== null) notifySounds(previous, meta.source === "snapshot" || meta.catchUp, meta.source === "snapshot" ? snapshotGeneration : soundGeneration);
@@ -1567,6 +1576,11 @@
         toast("已结束 leader", async () => { await api("/api/group/undo", {group, before:result.before}); await loadState(true); toast("已撤销"); });
       });
       else if (act === "wake-session") action(`wake:${id}`, async () => { await api("/api/wake", {session_id:id, text:"用户叫醒了你，请继续当前任务。"}); await loadState(true); toast("已叫醒"); });
+      else if (act === "leader-queued") {
+        const message = Number(button.dataset.message);
+        if (narrowLayout() && leadersOpen) setLeadersOpen(false);
+        if (mountedChannel) CrewChannel.focus(message); else { channelFocus = message; navigate("channel"); }
+      }
       else if (act === "leader") { tasksOpen = !narrowLayout(); if (cardId !== null) closeCard(); navigate("chat", id, null, null); }
       else if (act === "member-chat") { const item = member(id); if (item) { if (button.dataset.goalId) memberScopes.set(item.session_id, button.dataset.goalId); if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id, null); } }
       else if (act === "view") { if (settingsOpen) closeSettings(false); if (narrowLayout() && leadersOpen) setLeadersOpen(false); if (cardId !== null) closeCard(); if (button.dataset.view === "all") allTab = "overview"; navigate(button.dataset.view); }

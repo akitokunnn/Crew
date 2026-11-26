@@ -9,7 +9,8 @@
   //   list  - entities in a snapshot list, replaced or removed by key, then reordered like the server orders them;
   //   field - one snapshot field replaced as a whole;
   //   part  - the named fields of one snapshot object (null = the snapshot itself); other fields there belong to
-  //           sources that are not in the feed yet and keep their value.
+  //           sources that are not in the feed yet and keep their value;
+  //   page  - entities the snapshot does not hold; the view that shows them takes them from the change list.
   const KINDS = {
     todo: {list:"todos", key:"id", order:(a, b) => Number(!a.blocking) - Number(!b.blocking) || byText(a.created_at, b.created_at) || a.id - b.id,
       derive(next) { next.todo_count = next.todos.length; }},
@@ -20,6 +21,7 @@
     ai: {field:"ai"},
     domains: {field:"domains"},
     channel: {part:"channel", keys:["unread", "latest_id", "digest_id"]},
+    channel_message: {page:"channel"},
     sound_settings: {part:"sounds", keys:["preferences", "revision", "catalog", "missing"]},
     limits: {part:null, keys:["limits", "usage_scanned_at", "usage_error"]},
     conversations: {part:null, keys:["leaders", "members", "attention", "native_approvals", "git_assistant", "git_branches", "candidates"]},
@@ -39,6 +41,7 @@
       const [name, op] = change.type.split(".");
       const kind = Object.hasOwn(KINDS, name) ? KINDS[name] : undefined;
       if (kind === undefined || (op !== "updated" && op !== "removed")) throw new UnknownChange(`页面不认识的增量事件：${change.type}，请刷新页面`);
+      if (kind.page !== undefined) continue;
       if (kind.list !== undefined) {
         if (!lists.has(kind)) { next[kind.list] = [...base[kind.list]]; lists.add(kind); }
         const list = next[kind.list], index = list.findIndex(item => String(item[kind.key]) === change.entity);

@@ -1,4 +1,3 @@
-import hashlib
 import json
 import sqlite3
 import subprocess
@@ -6,8 +5,7 @@ import threading
 import traceback
 from contextlib import closing
 
-from .. import board, change_feed, channel, git_admin, messaging, runtimes, store, vscode_sessions
-from .. import codex_client
+from .. import board, change_feed, messaging, runtimes, store, vscode_sessions
 
 # Marks of state outside the database are recorded at most once a second; the last one always is.
 CHANGE_SECONDS = 1.0
@@ -265,90 +263,12 @@ class WorkersMixin:
     def deliver_notices(self):
         with self.write_lock, closing(store.connect(self.home)) as conn:
             self.deliver_git_results(conn)
-            self.settle_channel_mentions(conn)
-            leaders = [dict(row) for row in conn.execute(
-                "SELECT DISTINCT s.* FROM sessions s JOIN leader_notices n ON n.session_id=s.session_id "
-                "WHERE n.sent_at IS NULL AND n.wake=1 AND s.role='leader' AND s.status!='closed'")]
-            for leader in leaders:
-                sid = leader['session_id']
-                batch = None
-                try:
-                    with self.chat.lock:
-                        key = sid
-                        git_admin.wake_for_new_requests(conn, sid, now=self.now().isoformat())
-                        if messaging.stopped(conn, sid) or self.chat.maintenance_held(sid):
-                            continue
-                        if self.chat.running(key):
-                            if self.chat.busy(key):
-                                continue
-                        else:
-                            with self.agents_lock:
-                                agents, agents_error = self.agents, self.agents_error
-                            # Unknown process state could mean the leader runs elsewhere; resuming then would start a second copy.
-                            claude = runtimes.get(conn, sid)['runtime'] == 'claude'
-                            if claude and (agents_error is not None or not self.agents_ready.is_set()):
-                                continue
-                            if claude and any(agent['sessionId'] == sid for agent in agents):
-                                if conn.execute("SELECT 1 FROM events WHERE session_id=? AND kind='leader:notice_blocked'",
-                                                (sid,)).fetchone() is None:
-                                    board.record_event(conn, 'leader:notice_blocked', leader['project'], sid,
-                                                       {'reason': '会话正在其他进程中运行'}, now=self.now().isoformat())
-                                continue
-                            if not self.chat.path(key).exists():
-                                self.chat.journal(key).set_status('idle')
-                        pending = board.pending_notices(conn, sid)
-                        if not pending:
-                            continue
-                        # The user's own channel words go in a batch of their own, shown in private as the user's message.
-                        from_user = channel.user_mentions(conn, [notice['id'] for notice in pending])
-                        if from_user:
-                            pending = [notice for notice in pending if notice['id'] in from_user]
-                        pending_ids = {notice['id'] for notice in pending}
-                        journal = self.chat.journal(sid)
-                        batch = next((event for event in reversed(journal.events) if event['type'] == 'leader_notice_batch'
-                                      and pending_ids.intersection(event['notice_ids'])), None)
-                        if batch is None:
-                            digest = hashlib.sha256(','.join(str(n['id']) for n in pending).encode()).hexdigest()
-                            text = '[Crew]\n' + '\n'.join('%s. %s' % (index, notice['text'])
-                                                           for index, notice in enumerate(pending, 1))
-                            shown = {}
-                            if from_user:
-                                posts = [from_user[notice['id']] for notice in pending]
-                                # The id carries the first post so the private bubble can link back to the channel.
-                                shown = {'id': 'channel:%d:%s' % (posts[0]['id'], digest[:32]), 'sender': board.HUMAN,
-                                         'display': '\n\n'.join(post['body'] for post in posts)}
-                            batch = journal.emit('leader_notice_batch', **{'id': 'leader-notices:' + digest, **shown},
-                                                 text=text, notice_ids=[n['id'] for n in pending])
-                        receipt = self.chat.send(leader, batch['text'], source='crew', identity=batch['id'],
-                                                 display_text=batch.get('display'), sender=batch.get('sender'))
-                        if not isinstance(receipt, dict) or receipt.get('accepted') is not True:
-                            raise board.Conflict('NativeReceiptUnknown: 通知输入尚无确认的接收回执')
-                        for identity in pending_ids.intersection(batch['notice_ids']):
-                            board.mark_notice_sent(conn, identity, now=self.now().isoformat())
-                except (board.BoardError, codex_client.CodexError, OSError) as exc:
-                    detail = '%s: %s' % (type(exc).__name__, exc)
-                    if batch is not None:
-                        text = '协作通知投递未确认，已保留原消息，不重复执行。' + detail
-                        if any(event['type'] == 'error' and event.get('notice_batch') == batch['id']
-                               and event.get('text') == text for event in journal.events):
-                            continue
-                        journal.emit('error', notice_batch=batch['id'], text=text)
-                    board.record_event(conn, 'leader:notice_error', leader['project'], sid,
-                                       {'error': detail}, now=self.now().isoformat())
-
-    def settle_channel_mentions(self, conn):
-        """A user mention the leader answered only in private gets a channel pointer once its turn is over."""
-        for row in conn.execute("SELECT DISTINCT t.session_id FROM channel_mentions t JOIN leader_notices n "
-                                "ON n.id=t.notice_id WHERE t.await_reply=1 AND n.sent_at IS NOT NULL").fetchall():
-            sid = row['session_id']
-            with self.chat.lock:
-                if self.chat.busy(sid):
-                    continue
-            try:
-                channel.settle(conn, sid, now=self.now().isoformat())
-            except board.BoardError as exc:
-                board.record_event(conn, 'channel:settle_error', None, sid,
-                                   {'error': '%s: %s' % (type(exc).__name__, exc)}, now=self.now().isoformat())
+            now = self.now().isoformat()
+            self.chat.settle_channel_mentions(conn, now)
+            with self.agents_lock:
+                live = (None if self.agents_error is not None or not self.agents_ready.is_set()
+                        else frozenset(agent['sessionId'] for agent in self.agents))
+            self.chat.deliver_leader_notices(conn, live, now)
 
     def deliver_git_results(self, conn):
         pending = conn.execute(

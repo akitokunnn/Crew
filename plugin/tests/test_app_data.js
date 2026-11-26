@@ -248,3 +248,18 @@ test("every managed kind of the server has a place in the snapshot",()=>{
   eq(next.leaders,[{session_id:"s1"}]);eq(next.channel,{unread:2,latest_id:3,digest_id:null,digesting:true,digest_error:null});
   eq(next.sounds.events,[{id:"reply:s1:4"}]);assert.equal(next.sounds.revision,1);eq([next.agents_error,next.vscode_error],["失败",null]);
 });
+
+test("channel posts are not in the snapshot: the state stays as it was and the shell gets them in the change list",async()=>{
+  const {merge}=load();
+  const base={channel:{unread:0,latest_id:4,digest_id:null,digesting:false,digest_error:null}};
+  const post={id:4,mentions:[{session_id:"s1",delivery:"delivered"}],notified:[]};
+  eq(merge(base,[{seq:1,type:"channel_message.updated",entity:"4",data:post},{seq:2,type:"channel_message.removed",entity:"3",data:null}]),base);
+  assert.throws(()=>merge(base,[{seq:3,type:"channel_message.created",entity:"4",data:post}]),/channel_message\.created/);
+  const h=harness({snapshots:[snapshot(5)]});
+  await h.data.loadState();
+  const [stream]=h.streams;stream.emit("ready",{seq:5});
+  stream.send({seq:6,type:"channel_message.updated",entity:"4",data:post});
+  const last=h.renders.at(-1);
+  eq(last.meta.changes,[{seq:6,type:"channel_message.updated",entity:"4",data:post}]);
+  eq(last.next,JSON.parse(JSON.stringify(last.previous)));assert.equal(h.data.seq,6);
+});

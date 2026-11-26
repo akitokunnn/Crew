@@ -13,6 +13,11 @@ every page of the workspace takes a new snapshot.
 The notification channels' delivery receipts (a global table) invalidate the global `notification`
 field the same way.
 
+A leader notice carrying a channel mention moves from queued to delivered (or changes why it waits)
+in the service's delivery batch, in an external session's prompt hook and in plain autocommit
+statements; its trigger invalidates the channel posts whose badges show that notice
+(`channel_message`, docs/MESSAGE_DELIVERY_DESIGN.md §12).
+
 `store.connect` installs the set when the database holds a different one. This module imports
 nothing from the package: store imports it.
 """
@@ -69,6 +74,10 @@ _STRUCTURAL = [
 ]
 
 
+# The columns of a leader notice that a channel badge shows (chat_delivery.notice_state).
+_BADGE = "NEW.sent_at IS NOT OLD.sent_at OR NEW.delivered_via IS NOT OLD.delivered_via OR NEW.waiting IS NOT OLD.waiting"
+
+
 def _rows(operation):
     return {'INSERT': ('NEW',), 'DELETE': ('OLD',), 'UPDATE': ('NEW', 'OLD')}[operation]
 
@@ -95,6 +104,12 @@ def statements():
             name = 'feed_global_%s_%s' % (table, operation.lower())
             result[name] = ('CREATE TRIGGER %s AFTER %s ON %s BEGIN INSERT INTO change_log(at,scope,type,entity,data) '
                             "VALUES(%s,'global','%s.invalidated','%s',NULL); END" % (name, operation, table, _AT, kind, kind))
+    # Inserted together with its mention inside channel.post, which records the new post itself; a notice a
+    # mention refers to is never deleted (the foreign key), so only its updates change a badge.
+    name = 'feed_channel_leader_notices_update'
+    result[name] = ('CREATE TRIGGER %s AFTER UPDATE ON leader_notices WHEN %s BEGIN INSERT INTO change_log(at,scope,type,entity,data) '
+                    "SELECT %s,'workspace:'||m.project,'channel_message.invalidated',m.id,NULL FROM channel_mentions t "
+                    'JOIN channel_messages m ON m.id=t.message_id WHERE t.notice_id=NEW.id; END' % (name, _BADGE, _AT))
     return result
 
 

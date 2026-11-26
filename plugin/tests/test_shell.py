@@ -14,6 +14,7 @@ from unittest import mock
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from crew.web_api import routes
 from crew import session_ops, board, chat, cli, spawn, store, usage_cli, vscode_sessions, web
 from test_usage import UsageFixture, assistant, prompt
 from test_chat import FakeProcess
@@ -498,7 +499,7 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.get("/api/state?project=missing")[0], 400)
 
     def test_all_posts_require_crew_header(self):
-        for path in web.POST_PATHS:
+        for path in routes.post_paths():
             with self.subTest(path=path):
                 self.assertEqual(self.get(path, {}, crew=False)[0], 403)
 

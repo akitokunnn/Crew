@@ -19,7 +19,7 @@ import time
 import uuid
 import zipfile
 
-from .database import SCHEMA_VERSION, create_domain, now_iso
+from .database import SCHEMA_VERSION, create_domain, mark_legacy_reports, now_iso
 from .objects import ObjectStore, canonical_uuid
 
 
@@ -93,10 +93,10 @@ def _insert(conn, table, row):
                  + ','.join('?' for _ in row) + ')', tuple(row.values()))
 
 
-@lru_cache(maxsize=1)
-def _schema():
+@lru_cache(maxsize=3)
+def _schema(version=SCHEMA_VERSION):
     with closing(sqlite3.connect(':memory:', isolation_level=None)) as conn:
-        create_domain(conn)
+        create_domain(conn, version)
         result = {}
         for table, in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
             columns = [tuple(row) for row in conn.execute('PRAGMA table_info(' + _quote(table) + ')')]
@@ -111,9 +111,8 @@ def _schema():
 
 
 def _shape(conn, *, incoming=False):
-    schema, trusted_objects = _schema()
-    if conn.execute('PRAGMA user_version').fetchone()[0] == 2:
-        schema = {key: value for key, value in schema.items() if key != 'workspace_feature_records'}
+    version = conn.execute('PRAGMA user_version').fetchone()[0]
+    schema, trusted_objects = _schema(version)
     actual = {name: (kind, sql) for kind, name, sql in conn.execute(
         "SELECT type,name,sql FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%'")}
     if incoming and set(actual) != set(schema):
@@ -232,7 +231,7 @@ def _manifest(value, limits):
                 'export_id', 'workspace_id', 'created_at', 'consistency', 'source', 'database', 'blobs', 'capabilities', 'omissions'}
     if not isinstance(value, dict) or set(value) != required:
         raise PackageError('Unsupported package manifest')
-    if value['format'] != 'crew-workspace' or _integer(value['format_version'], 'format_version', minimum=1) != 1 or _integer(value['schema_version'], 'schema_version', minimum=1) not in (2, SCHEMA_VERSION):
+    if value['format'] != 'crew-workspace' or _integer(value['format_version'], 'format_version', minimum=1) != 1 or _integer(value['schema_version'], 'schema_version', minimum=1) not in (2, 3, SCHEMA_VERSION):
         raise PackageError('Unsupported package format/schema version')
     if _integer(value['min_reader_version'], 'min_reader_version', minimum=1) > SCHEMA_VERSION:
         raise PackageError('Package requires a newer reader')
@@ -256,9 +255,7 @@ def _manifest(value, limits):
     _digest(database['sha256'])
     if _integer(database['bytes'], 'database bytes', minimum=1) > limits.max_file_bytes:
         raise PackageError('Database exceeds package quota')
-    schema, _ = _schema()
-    if value['schema_version'] == 2:
-        schema = {key: info for key, info in schema.items() if key != 'workspace_feature_records'}
+    schema, _ = _schema(value['schema_version'])
     if not isinstance(database['tables'], dict) or set(database['tables']) != set(schema):
         raise PackageError('Incomplete domain table inventory')
     if sum(_integer(n, 'table count') for n in database['tables'].values()) > limits.max_rows:
@@ -325,12 +322,17 @@ def _verified_package(path, limits, *, extract_blobs=False):
                 incoming.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, limits.max_value_bytes)
                 deadline = time.monotonic() + limits.sql_timeout_seconds
                 incoming.set_progress_handler(lambda: int(time.monotonic() > deadline), 10000)
+                if incoming.execute('PRAGMA user_version').fetchone()[0] != manifest['schema_version']:
+                    raise PackageError('Package database schema version differs from manifest')
                 _shape(incoming, incoming=True)
                 create_domain(clean)
                 clean.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, limits.max_value_bytes)
                 counts = _copy_scope(incoming, clean, manifest['workspace_id'], limits)
                 if counts != database['tables'] or any(incoming.execute('SELECT count(*) FROM ' + _quote(t) + ' NOT INDEXED').fetchone()[0] != n for t, n in counts.items()):
                     raise PackageError('Package contains unrelated rows or incorrect table counts')
+                if manifest['schema_version'] < 4:
+                    mark_legacy_reports(clean)
+                _check_report_versions(clean)
                 if clean.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
                     raise PackageError('Rebuilt package database failed its integrity check')
                 catalog = {r['id']: r for r in _rows(clean, 'SELECT * FROM blob_objects')}
@@ -356,6 +358,13 @@ def _verified_package(path, limits, *, extract_blobs=False):
         raise
     except (sqlite3.Error, zipfile.BadZipFile, OSError, ValueError, KeyError, TypeError, UnicodeError) as exc:
         raise PackageError('Cannot verify crewpack: ' + str(exc)) from exc
+
+
+def _check_report_versions(conn):
+    missing = conn.execute("SELECT 1 FROM reports r LEFT JOIN goal_report_versions v ON v.report_id=r.id "
+                           "WHERE (r.kind='goal_delivery' AND r.goal_round_id IS NOT NULL) != (v.id IS NOT NULL) LIMIT 1")
+    if missing.fetchone():
+        raise PackageError('Goal report metadata does not match package reports')
 
 
 def preview_package(path, *, limits=None):
@@ -415,6 +424,7 @@ def export_workspace(conn, object_root, workspace_id, destination, *, source=Non
                 conn.execute('BEGIN')
                 try:
                     counts = _copy_scope(conn, clean, workspace_id, limits)
+                    _check_report_versions(clean)
                 finally:
                     conn.rollback()  # End only the read transaction opened here.
                     conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, previous_limit)
@@ -667,7 +677,7 @@ def import_package(conn, object_root, path, *, mode='fork', target_account_id, a
                     summary='Source history and original attribution; no machine state or authentication grants', previous_version_id=None, author_user_id=actor_user_id, author_agent_id=None))
                 receipt = dict(manifest_sha256=fingerprint, export_id=manifest['export_id'], operation_id=operation_id, mode=mode)
                 _insert(conn, 'import_batches', dict(id=batch_id, workspace_id=target_workspace, revision=1, created_at=stamp, updated_at=stamp, deleted_at=None,
-                    legacy_origin_id=str(uuid.uuid5(uuid.NAMESPACE_URL, 'crew-workspace:' + source_workspace)), source_format='crewpack', source_schema_version=str(SCHEMA_VERSION),
+                    legacy_origin_id=str(uuid.uuid5(uuid.NAMESPACE_URL, 'crew-workspace:' + source_workspace)), source_format='crewpack', source_schema_version=str(manifest['schema_version']),
                     archive_artifact_version_id=version_id, transform_version='crewpack-import-1', status='committed', verified_at=stamp, verification_summary=_json(receipt)))
                 for table in schema:
                     for original in _rows(clean, 'SELECT * FROM ' + _quote(table)):

@@ -10,8 +10,8 @@ import re
 from pathlib import Path
 from unittest import mock
 
-from crew import (board, change_feed, channel, decision_briefs, decision_flow, domains, event_sounds, goal_work, goals,
-                  settings, store, web, workspace_settings)
+from crew import (board, change_feed, channel, chat_delivery, decision_briefs, decision_flow, domains, event_sounds,
+                  goal_work, goals, settings, store, web, workspace_settings)
 from crew.web_service.snapshot import CONVERSATION_FIELDS
 from tests.test_runtimes import RuntimeFixture
 from test_shell import PLUGIN
@@ -75,6 +75,11 @@ class DomainFeedFixture(RuntimeFixture):
                     self.assertEqual(found, [] if change['data'] is None else [change['data']])
                 elif kind in FIELDS:
                     self.assertEqual(change['data'], state[FIELDS[kind]])
+                elif kind == 'channel_message':
+                    # Not in the snapshot: the channel page reads posts from /api/channel.
+                    listed = plain(channel.messages(self.conn, project, limit=1000)['messages'])
+                    found = [item for item in listed if str(item['id']) == change['entity']]
+                    self.assertEqual(found, [] if change['data'] is None else [change['data']])
                 else:
                     part, keys = PARTS[kind]
                     target = state if part is None else state[part]
@@ -336,6 +341,76 @@ class ChannelTests(DomainFeedFixture):
 
     def test_a_rolled_back_post_records_nothing(self):
         self.assert_rolled_back(lambda: channel.post.__wrapped__(self.conn, 'demo', 'chief-id', '回滚'))
+
+    def badges(self, changes):
+        return [(change['entity'], [(item['delivery'], item['waiting'], item['via']) for item in change['data']['mentions']])
+                for change in changes if change['type'] == 'channel_message.updated']
+
+    def queued_card(self, changes):
+        cards = [change['data'] for change in changes if change['type'] == 'conversations.updated']
+        return [leader['channel_queued_id'] for leader in cards[-1]['leaders'] if leader['session_id'] == 'chief-id']
+
+    def test_a_mention_queued_waiting_delivered_and_replied_changes_its_post_and_the_leader_card(self):
+        post = channel.post(self.conn, 'demo', board.HUMAN, '@chief 看一下', to=['chief'], source='web')
+        changes = self.changes()
+        # The new post itself arrives with the channel's latest id; its card points the sidebar at it.
+        self.assertEqual(self.badges(changes), [])
+        self.assertEqual(self.queued_card(changes), [post['id']])
+        entity = str(post['id'])
+
+        # The delivery worker writes these as plain statements, outside any board.transaction.
+        chat_delivery.note_waiting(self.conn, 'chief-id', 'busy')
+        changes = self.changes()
+        self.assertEqual(self.badges(changes), [(entity, [('queued', 'busy', None)])])
+        self.assert_snapshot(changes)
+        chat_delivery.note_waiting(self.conn, 'chief-id', 'busy')
+        self.assertEqual(self.badges(self.changes()), [], 'an unchanged reason writes nothing')
+        notice = board.pending_notices(self.conn, 'chief-id')[0]['id']
+        chat_delivery.claim_batch(self.conn, [notice], 'batch-1')
+        self.assertEqual(self.badges(self.changes()), [], 'a claimed notice still shows queued')
+
+        chat_delivery.note_waiting(self.conn, 'chief-id', None)
+        board.mark_notice_sent(self.conn, notice)
+        changes = self.changes()
+        self.assertEqual(self.badges(changes), [(entity, [('delivered', None, 'input')])])
+        self.assertEqual(self.queued_card(changes), [None])
+        self.assert_snapshot(changes)
+
+        reply = channel.post(self.conn, 'demo', 'chief-id', '收到', reply_to=post['id'])
+        changes = self.changes()
+        self.assertEqual(self.kinds(changes), [('channel.updated', 'demo'), ('channel_message.updated', entity)])
+        self.assertEqual(changes[1]['data']['mentions'][0]['reply_id'], reply['id'])
+        self.assertEqual(self.badges(changes), [(entity, [('replied', None, 'input')])])
+        self.assert_snapshot(changes)
+
+    def test_a_mention_carried_by_the_prompt_hook_or_answered_in_private_changes_its_post(self):
+        post = channel.post(self.conn, 'demo', board.HUMAN, '@chief 看一下', to=['chief'], source='web')
+        self.changes()
+        channel.summary(self.conn, 'chief-id', carry_pending=True)
+        changes = self.changes()
+        self.assertEqual(self.badges(changes), [(str(post['id']), [('delivered', None, 'hook')])])
+        self.assert_snapshot(changes)
+
+        asked = channel.post(self.conn, 'demo', board.HUMAN, '@chief 再看一下', to=['chief'], source='web')
+        notice = board.pending_notices(self.conn, 'chief-id')[0]['id']
+        board.mark_notice_sent(self.conn, notice)
+        self.changes()
+        channel.settle(self.conn, 'chief-id', {asked['id']})
+        changes = self.changes()
+        self.assertEqual(self.kinds(changes), [('channel.updated', 'demo'), ('channel_message.updated', str(asked['id']))])
+        self.assert_snapshot(changes)
+
+    def test_a_post_behind_the_cleanup_boundary_is_removed(self):
+        post = channel.post(self.conn, 'demo', board.HUMAN, '@chief 看一下', to=['chief'], source='web')
+        at = store.now_iso()
+        self.conn.execute("INSERT INTO maintenance_jobs(id,project,kind,request_id,status,detail_json,created_at,updated_at) "
+                          "VALUES('job-1','demo','workspace_cleanup','r-1','completed','{}',?,?)", (at, at))
+        self.conn.execute('INSERT INTO workspace_cleanup_boundaries(project,channel_after,digest_after,handoff_after,cleanups,'
+                          "job_id,updated_at) VALUES(?,?,0,0,1,'job-1',?)", ('demo', post['id'], at))
+        self.changes()
+        board.mark_notice_sent(self.conn, board.pending_notices(self.conn, 'chief-id')[0]['id'])
+        changes = self.changes()
+        self.assertEqual(self.kinds(changes), [('channel_message.removed', str(post['id']))])
 
 
 class SoundTests(DomainFeedFixture):

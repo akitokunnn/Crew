@@ -1,7 +1,9 @@
 # 增量事件流设计：快照 + 序号
 
 > 日期：2026-11-27 · 分支 `claude/event-stream`（基于 `9a2cc6f`）· 依据：[架构重审](ARCHITECTURE_REVIEW.md) §6.2 / §7 阶段 3、[拆分边界](SPLIT_BOUNDARIES.md) §3.3、[交互清单](INTERACTION_INVENTORY.md)
-> 状态（第 3 轮，2026-11-27）：生产方式改为**只记失效、发送前现算**（方式 Y，第 5 节）；快照里每个会随时间变化的字段都有生产者（6.1）——数据库领域在业务事务里标记，卡片依赖的二十多张表由触发器标记（5.3），会话托管状态、扫描、连接与摘要状态经通知器标记（5.4）；`app.js` 已接线到 `CrewAppData`，**3 秒轮询已删除**（第 10 节）。
+> 状态（第 4 轮，2026-11-27）：并入集成分支后两个入口改由操作清单登记（`workspace.snapshot`、`workspace.events`，第 10 节）；新增页面类 kind `channel_message`，交流区投递徽章随 `leader_notices` 的投递列变化实时更新（4.3、5.3）。
+>
+> 第 3 轮：生产方式改为**只记失效、发送前现算**（方式 Y，第 5 节）；快照里每个会随时间变化的字段都有生产者（6.1）——数据库领域在业务事务里标记，卡片依赖的二十多张表由触发器标记（5.3），会话托管状态、扫描、连接与摘要状态经通知器标记（5.4）；`app.js` 已接线到 `CrewAppData`，**3 秒轮询已删除**（第 10 节）。
 
 ## 1. 目标与边界
 
@@ -79,7 +81,7 @@ data: {"reason":"projection","kind":"goal","entity":"g-1","seq":57,"error":"KeyE
 
 ### 4.3 事件内容与 kind 登记
 
-事件按实体给出**快照中的完整当前值**，客户端按 `kind` 找到它在快照里的位置并按实体 ID 替换或删除；不用 JSON Patch。后端 `change_feed.KINDS`（kind → 范围）与前端 `CrewAppData.KINDS` 是同一份登记（`snapshot` 除外：它从不下发，服务端把它变成 `snapshot-required`），记录未登记的 kind 直接报错（后端 `ValueError`，前端 `UnknownChange` → 状态 `failed` 并提示刷新页面），不静默丢弃。schema 只增不改：新增 kind 必须先进前端登记，再由后端产生。测试 `test_the_frontend_registry_mirrors_the_backend_kinds` 逐项比对。三种形状：**列表**（按键替换 / 删除后按后端顺序重排）、**字段**（整值替换，没有删除）、**字段组**（只合并登记的几个字段，同一对象里其他来源的字段保持原值；字段不一致视为页面过旧）：
+事件按实体给出**快照中的完整当前值**，客户端按 `kind` 找到它在快照里的位置并按实体 ID 替换或删除；不用 JSON Patch。后端 `change_feed.KINDS`（kind → 范围）与前端 `CrewAppData.KINDS` 是同一份登记（`snapshot` 除外：它从不下发，服务端把它变成 `snapshot-required`），记录未登记的 kind 直接报错（后端 `ValueError`，前端 `UnknownChange` → 状态 `failed` 并提示刷新页面），不静默丢弃。schema 只增不改：新增 kind 必须先进前端登记，再由后端产生。测试 `test_the_frontend_registry_mirrors_the_backend_kinds` 逐项比对。四种形状：**列表**（按键替换 / 删除后按后端顺序重排）、**字段**（整值替换，没有删除）、**字段组**（只合并登记的几个字段，同一对象里其他来源的字段保持原值；字段不一致视为页面过旧）、**页面**（快照里没有的实体，数据层不合并，原样留在 `meta.changes` 里交给显示它的视图）：
 
 | kind | 范围 | 形状 · 快照位置 | 实体 ID | 排序 / 字段 | 构造 |
 | --- | --- | --- | --- | --- | --- |
@@ -91,6 +93,7 @@ data: {"reason":"projection","kind":"goal","entity":"g-1","seq":57,"error":"KeyE
 | `goal` | 工作区 | 列表 `goals[]` | `id` | `priority` 降序 → `created_at` → `id`（只列可见 leader 的任务） | `snapshot_values.goal` |
 | `domains` | 工作区 | 字段 `domains` | 工作区名 | — | `snapshot_values.domains` |
 | `channel` | 工作区 | 字段组 `channel` | 工作区名 | `unread`、`latest_id`、`digest_id` | `snapshot_values.channel` |
+| `channel_message` | 工作区 | 页面 · 交流区（不在快照里） | 发言 `id`（读取时转回整数） | 一条发言的完整值，与 `/api/channel` 列出的相同（含 `mentions` / `notified` 的投递状态）；清理边界之前或已不存在 → `removed` | `snapshot_values.channel_message` → `channel.listed_message` |
 | `sound_settings` | global | 字段组 `sounds` | `sounds` | `preferences`、`revision`、`catalog`、`missing` | `snapshot_values.sound_settings` |
 | `limits` | global | 字段组（快照顶层） | `limits` | `limits`、`usage_scanned_at`、`usage_error` | 后台用量扫描**带值记录**（6.3），读取直接解码 |
 | `conversations` | 工作区 | 字段组（快照顶层） | 工作区名 | `leaders`、`members`、`attention`、`native_approvals`、`git_assistant`、`git_branches`、`candidates` | 服务 `_conversation_cards`（快照同用） |
@@ -161,6 +164,7 @@ leader / member 卡片读二十多张表，写入点散在服务、CLI、hook �
 | 所有工作区 | `attention_resolutions`（条目 ID 不含工作区；用户手动关闭，极少） |
 
 - **结构变化写重置**：会话改名、换组、换角色、换工作区、关闭或重开（`sessions` 的条件更新与删除），归档 / 移除 / 改名覆盖（`session_controls`），组改名、关闭、换 leader 与删除（`groups`），会改动嵌在其他 kind 里的值（待办提出者、拍板提问人、哪些 leader 的任务在页面上）。这些触发器写 `snapshot.invalidated`，页面重拿快照。这补上了第 2 轮列为“会话 / 组领域，未覆盖”的几项。
+- **交流区投递徽章**：`leader_notices` 的 `sent_at`、`delivered_via`、`waiting` 任一变化时，触发器 `feed_channel_leader_notices_update` 给挂在这条通知上的每条发言（`channel_mentions.notice_id`）写 `channel_message.invalidated`。这些变化来自服务投递批次的 `mark_notice_sent` 与 `note_waiting`（`chat_delivery.deliver_leader_notices`，自动提交的单句，不在 `board.transaction` 里，无法 `touch`）和外部会话提示词钩子的 `claim_for_hook`；只改 `batch_id` 的认领不改变徽章，不写。新增索引 `channel_mentions_notice` 供触发器查找。挂着点名的通知受外键保护不会被删，所以不设删除触发器。回复使徽章变成“已回复”在 `channel.post`（`reply_to`）与 `channel.settle`（私聊指针）里直接 `touch('channel_message', …)`。
 - **全局表**：投递回执 `notification_messages` 的写入写全局 `notification.invalidated`（快照的连接状态列出最近回执）；轮次交付 `goal_round_finishes` 的写入写全局 `sound_events.invalidated`（交付提示音）。
 - **安装**：`store.connect` 比对 `sqlite_master` 里 `feed_` 触发器的名字与语句，与当前版本不同才在一个写事务里整组重装；相同时只多一次查询。
 
@@ -259,6 +263,7 @@ leader / member 卡片读二十多张表，写入点散在服务、CLI、hook �
 - **状态**：`connecting`、`live`、`disconnected`、`resyncing`、`failed`（页面版本过旧）、`idle`。外壳 `showConnection` 在 `disconnected` 显示“已断开，正在重连…”、`resyncing` 显示“正在重新同步…”、`failed` 显示“页面版本过旧，请刷新页面”（`#connection-status`，警示色胶囊，沿用 `--warn` 系状态色），其余状态隐藏。
 - **前端本地计时**：活动计时与 token 滚动本来就在 `CrewActivity` 里按本地时钟插值（快照的 `now` 只校准一次偏差）。“N 分钟前”“已运行 N 分钟”这类只随时间变化的文字由外壳每 30 秒本地重绘一次（`setInterval(render, 30000)`，不发请求）。
 - 外壳渲染抛出的错误不被数据层吞掉（只捕获 `UnknownChange`）。
+- **交流区发言（页面类 `channel_message`）**：`applyState` 在渲染后把本批 `channel_message.*` 交给 `CrewChannel.changed`：已加载的同 id 发言整条替换（`removed` 则移除）并重绘，没加载的忽略（之后读到的就是当前值）；读页请求进行中收到变化则读完再读一次最新页，避免读到的旧徽章盖掉新值。快照（首次、写后、重同步）不带发言，`changed(null)` 让交流区重读最新页。这取代了消息可靠性分支里“leader 的 `notices_pending`/`busy`/`where` 变化就重读最新页”的近似做法（已删除）。侧栏 leader 行在 `notices_pending > 0` 时显示“N 条通知排队中”，卡片字段 `channel_queued_id`（最早一条仍在排队的点名所在发言）不为空时可点，打开交流区并定位到那条发言。
 
 ## 8. 与操作清单 / MCP、手机端的关系
 
@@ -286,7 +291,7 @@ leader / member 卡片读二十多张表，写入点散在服务、CLI、hook �
 
 | 位置 | 内容 |
 | --- | --- |
-| `web_api/routes.py` 的 `GET` 表 | `/api/snapshot` → `web_service.events.serve_snapshot`；`/api/events` → `serve_events`（签名与其他 GET 处理函数相同：`(handler, service, url, query)`）；`after` 缺失或非法抛 `ValueError`（400），工作区不存在抛 `BoardError` |
+| 操作清单与传输层 | `workspace.snapshot`（GET `/api/snapshot` → `web_service.events.serve_snapshot`）是只读操作，经 `ops.executor` 分派。`/api/events` 是持有打开着的 HTTP 响应的 SSE 流，按操作清单设计 §8.14 归传输层，登记在 `web_api/routes.py` 的 `TRANSPORT_GET`（与 `/api/chat/events` 同类），不是操作，也就不会被 `POST /api/op` 或 CLI 误调（主会话 2026-11-27 裁决）。`after` 缺失或非法抛 `ValueError`（400），工作区不存在抛 `BoardError`。 |
 | `remote_routes.py` 的 `GET_PATHS` | 两个路径与 `/api/state`、`/api/chat/events` 同权限；远程长连接沿用 `stream_opened/stream_closed` 与 `remote_stop_event` |
 | `web.py` 的 `STATIC` | `/app-data.js`；`test_assistant_http.py::test_new_page_assets_are_served_by_the_actual_backend` 同步登记 |
 | `index.html` | `app-data.js` 在 `app.js` 之前加载；新增 `#connection-status` |

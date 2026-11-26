@@ -1,6 +1,6 @@
 /* "/" skill picker above chat composers */
 .composer{position:relative}
-.skill-picker{position:absolute;left:0;right:0;bottom:calc(100% + 8px);z-index:30;max-height:min(340px,50vh);display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line-strong);border-radius:16px;box-shadow:var(--shadow-lg);padding:6px;overflow:hidden}
+.skill-picker{position:absolute;left:0;right:0;bottom:calc(100% + 8px);z-index:30;max-height:min(340px,50vh);display:flex;flex-direction:column;background:var(--studio-glass);border:1px solid var(--studio-border);border-radius:14px;box-shadow:var(--studio-shadow-float);padding:6px;overflow:hidden;backdrop-filter:saturate(1.4) blur(16px);-webkit-backdrop-filter:saturate(1.4) blur(16px)}
 .skill-picker[hidden]{display:none}
 .skill-picker-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 8px 6px;font-size:calc(11.5px * var(--fs));color:var(--text-3)}
 .skill-picker-refresh{border:0;background:none;color:var(--text-3);font:inherit;padding:2px 6px;border-radius:6px;cursor:pointer}
@@ -18,7 +18,3 @@
   .skill-picker-item{grid-template-columns:minmax(0,1fr);gap:2px;padding:8px 10px}
   .skill-picker-token{max-width:none}
 }
-
-
-/* === Spatial Studio (High-Density Direction C) === */
-.skill-picker{background:var(--studio-glass);backdrop-filter:saturate(1.4) blur(16px);-webkit-backdrop-filter:saturate(1.4) blur(16px);border-color:var(--studio-border);box-shadow:var(--studio-shadow-float);border-radius:14px}

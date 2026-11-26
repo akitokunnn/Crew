@@ -14,7 +14,7 @@
 body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 
 /* ================= 顶栏 ================= */
-#chat-head{position:relative;z-index:24;background:var(--bg);border-bottom:1px solid var(--line)}
+#chat-head{position:relative;z-index:24;background:var(--studio-glass);border-bottom:1px solid var(--line);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px)}
 #chat-head .head{display:flex!important;flex-wrap:wrap;align-items:center;align-content:flex-start;height:auto!important;min-height:0!important;padding:var(--m-safe-t) 6px 0 4px!important;gap:0 2px!important;border:0;background:transparent}
 #chat-head .head>.right,#chat-head .head>.heading-meta{display:contents!important}
 /* 第一行 */
@@ -49,7 +49,7 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 #chat-head .chat-scope:empty{visibility:hidden}
 #chat-head .right>.rp-toggle{order:12;width:40px!important;min-width:40px!important;height:var(--mc-row2)!important;margin:-8px 0 0!important;align-self:flex-start}
 #chat-head .right>.rp-toggle .i{width:20px;height:20px}
-#chat-head .context-ring{order:8;margin:0 0 8px 10px}
+#chat-head .right>.context-ring{order:9;flex:none;height:28px;min-width:30px;margin:0 0 8px 6px;padding:0 7px;border-radius:999px;border:1px solid var(--line);background:var(--surface-2)}
 /* 很窄的屏幕：拍板方式只留图标（颜色区分自主推进），把位置让给模型 */
 @media (max-width:374px){#chat-head .right>.trust-tag>span{display:none!important}}
 /* 两行高度固定，面板据此定位 */
@@ -92,7 +92,7 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 :is(#chat-host,.assistant-chat) .m-lead .m-meta{margin-top:2px}
 /* 用户气泡 */
 :is(#chat-host,.assistant-chat) .m-user{margin:14px 0}
-:is(#chat-host,.assistant-chat) .bubble{max-width:min(86%,520px)!important;padding:9px 14px;border-radius:20px 20px 6px 20px;font-size:16px;line-height:1.6;overflow-wrap:anywhere}
+:is(#chat-host,.assistant-chat) .bubble{max-width:min(86%,520px)!important;padding:9px 14px;border-radius:20px 20px 6px 20px;font-size:16px;line-height:1.6;overflow-wrap:anywhere;background:color-mix(in srgb,var(--accent) 14%,var(--surface));border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line))}
 :is(#chat-host,.assistant-chat) .message-images{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 :is(#chat-host,.assistant-chat) .message-images img{max-width:100%;max-height:240px;border-radius:12px}
 :is(#chat-host,.assistant-chat) .chat-task-label{font-size:var(--m-fs-min)}
@@ -119,12 +119,12 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 
 /* ================= 输入框 ================= */
 :is(#chat-host,.assistant-chat) .composer-wrap{padding:8px 10px calc(8px + var(--m-safe-b))!important;background:var(--bg);border-top:1px solid var(--line)}
-:is(#chat-host,.assistant-chat) .composer{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:end;column-gap:4px;max-width:none;padding:3px 4px 3px 2px!important;border-radius:24px;box-shadow:none}
+:is(#chat-host,.assistant-chat) .composer{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:end;column-gap:4px;max-width:none;padding:3px 4px 3px 2px!important;border-radius:24px;box-shadow:var(--studio-shadow-sm);background:var(--studio-card);border-color:var(--studio-border)}
 :is(#chat-host,.assistant-chat) .composer:focus-within{box-shadow:0 0 0 3px var(--accent-softer)}
 :is(#chat-host,.assistant-chat) .composer>.attach{grid-column:1/-1;margin:6px 8px 6px;overflow-x:auto}
 :is(#chat-host,.assistant-chat) .composer>:is(.chat-note-chip,.chat-reading-chip){grid-column:1/-1;justify-self:start;max-width:calc(100% - 16px);margin:6px 8px 2px;min-height:32px;font-size:var(--m-fs-meta)}
 #chat-host .composer>.chat-reading-chip{grid-row:1}
-:is(#chat-host,.assistant-chat) .composer>textarea{grid-column:2;grid-row:3;align-self:center;min-height:24px;max-height:40dvh;padding:9px 4px;font-size:16px!important;line-height:1.5}
+:is(#chat-host,.assistant-chat) .composer>textarea{grid-column:2;grid-row:3;align-self:center;min-height:42px;max-height:40dvh;padding:9px 4px;font-size:16px!important;line-height:1.5}
 :is(#chat-host,.assistant-chat) .composer>.c-row{display:contents}
 :is(#chat-host,.assistant-chat) .composer>textarea::placeholder{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 :is(#chat-host,.assistant-chat) .c-row>.chat-image-button{grid-column:1;grid-row:3;width:var(--m-tap);height:var(--m-tap);min-height:0;border-radius:50%;color:var(--text-2)}
@@ -252,11 +252,3 @@ body:has(#main[data-reader]) #chat-attention{display:none!important}
 body:has(#chat-head .exec-chat-bar){--mc-scope:58px}
 #chat-head .exec-chat-bar{width:auto;max-width:none;height:calc(var(--mc-scope) - 10px);box-sizing:border-box;margin:0 var(--m-gutter) 10px}
 #chat-head .exec-chat-bar .goal-status{display:none}
-
-
-/* === Spatial Studio Mobile Chat (<=760px) === */
-#chat-head{background:var(--studio-glass);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px)}
-#chat-head .right>.context-ring{order:9;flex:none;height:28px!important;min-width:30px;margin:0 0 8px 6px!important;padding:0 7px!important;border-radius:999px!important;border:1px solid var(--line)!important;background:var(--surface-2)!important}
-:is(#chat-host,.assistant-chat) .composer>textarea{min-height:42px}
-:is(#chat-host,.assistant-chat) .bubble{background:color-mix(in srgb,var(--accent) 14%,var(--surface));border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line))}
-:is(#chat-host,.assistant-chat) .composer{background:var(--studio-card);border-color:var(--studio-border);box-shadow:var(--studio-shadow-sm)}
