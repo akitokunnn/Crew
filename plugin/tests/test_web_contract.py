@@ -910,9 +910,11 @@ class FrontendThemeContractTests(unittest.TestCase):
         for contract in ('data-act="project-theme"', 'class="theme-swatches"',
                          'aria-pressed="${state.project.theme === item.id}"',
                          'api("/api/project/theme", {project:state.project.name, theme:button.dataset.themeId})',
-                         'CrewTheme.projectStyle(state.themes, item.theme)',
                          'addEventListener("change", applyTheme)'):
             self.assertIn(contract, app)
+        # The "/" project list lives in its own module; each workspace card keeps its saved theme colour.
+        entry = (assets / "workspace-entry.js").read_text(encoding="utf-8")
+        self.assertIn('style="${CrewTheme.projectStyle(themes, item.theme)}"', entry)
         self.assertIn('.dot.working{background:var(--working)', css)
         self.assertIn('.st.working{color:var(--working-text)}', css)
         self.assertIn('.m-lead .body a{color:var(--accent-text)', css)
