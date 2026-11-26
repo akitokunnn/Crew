@@ -10,9 +10,11 @@
 
 1. **清单是唯一事实来源。** 每个业务动作登记一次：名称、参数格式、读写级别、风险、各角色可用范围、加锁与准入、对外绑定（HTTP 路径 / CLI 命令 / MCP 工具）。HTTP 路由表、CLI、MCP 工具、助手指南、覆盖测试全部从清单生成或对照清单检查。
 2. **AI 只走 MCP。** Crew 后端在本机 HTTP 端口上提供 `/mcp`（Streamable HTTP，无常驻流），每个托管会话启动时拿到自己的令牌（经启动参数 / 配置文件注入，不放环境变量）。后端按令牌认出调用者、按清单卡权限。Bash 调 `crew`、Codex `dynamicTools`、`/api/assistant/native-action` 三条旧路径整条删除。
-3. **按载体的真实差异（已用真模型实测，第 12 节）**：
-   - **Claude Code**：支持会话中途 `notifications/tools/list_changed`，收到后立即重拉工具列表并能调用新工具。→ 默认核心工具 + `crew_search`；搜到的操作由服务端**加载为正式工具**并发 `list_changed`。
-   - **Codex**：只在 MCP 连接建立时读一次工具列表；`list_changed`、`config/mcpServer/reload`、`thread/resume`、同进程新开线程都拿不到新工具。→ 线程启动时给定角色的固定常用工具集 + `crew_search`（返回参数 schema 和调用方式）+ `crew_call(op, args, request_id)` 通用执行器。这是明确的按载体差异，不做隐式回退：Codex 会话的 `crew_search` 结果里直接写“用 `crew_call` 调用”，CC 会话的结果里写“已加载为工具 `<名字>`”。
+3. **权限即工具集，由载体原生按需加载（已用真模型实测，第 12 节）。** 每个会话在 MCP 连接建立时拿到它有效权限内的**全部**操作工具（每个操作一个，带只读 / 破坏性 / 可重复注解）。两种载体都会把 MCP 工具藏在自带的工具搜索后面：60 个带长说明的工具，Claude Code 只多约 900 token（只列名字），Codex 几乎不增加（19706 vs 19511），两者都能按需找到并调用其中任意一个。所以“默认只给少数核心工具、其余按需加载”由载体完成，Crew 不需要自己做加载协议：
+   - **Claude Code**：全部工具一次给出，CC 的 ToolSearch 负责延迟加载。
+   - **Codex**：按 t3code 的做法注册两个服务名：`crew`（全部工具，走 Codex 的延迟加载）与 `crew_core`（只启用核心工具，`omit_tools_from = ["deferred"]` 直出），核心工具不用搜就能调。
+   - `crew_search` 保留为只读的**用法指南**工具（中文检索“想做 X 用哪个操作”、返回风险与相近操作的区别），两种载体相同，不承担加载。
+   - 实测还确认：Claude Code 支持中途 `tools/list_changed`，**Codex 不支持**（`list_changed`、`config/mcpServer/reload`、`thread/resume`、同进程新开线程都拿不到新工具）。本设计因此不依赖 `list_changed`：会话的工具集在启动时确定，权限收紧由后端每次调用时拒绝、立即生效；新增权限在会话下次启动（重签令牌）时出现在工具列表里。两种载体行为一致，没有按载体分叉的调用路径。
 4. **权限在后端卡死，派出的权限不超过发起方**：令牌记录有效权限集 = 角色默认集 ∩ 签发者有效集；每次调用按 `(操作, 调用者, 目标)` 查表。
 5. **写操作带 `request_id` 只执行一次**（借鉴 t3code 的 commandId）；高风险操作由 AI 发起时生成统一的“用户确认请求”，用户在界面确认后才执行。
 6. **覆盖测试**：任何 HTTP 路由、前端或桌面里的改数据调用、CLI 子命令、MCP 工具，没有对应清单条目（或未列入带理由的“非操作入口”表）即测试失败。
@@ -138,34 +140,52 @@ class Operation:
 ### 5.1 传输
 
 - 端点：Crew 后端现有端口上的 `POST /mcp`（Streamable HTTP，MCP 2025-06-18 起的形态）。`GET /mcp` 返回 405（规范允许“服务器不提供独立 SSE 流”），`DELETE /mcp` 返回 200。两种载体在这种形态下都能工作（第 12 节）。
-- 只有需要随响应推通知的请求（CC 会话里的 `crew_search` 加载了新工具）才把响应写成 `text/event-stream`，内容是一条 `notifications/tools/list_changed` 加一条结果，然后关闭——不需要常驻连接，`BaseHTTPRequestHandler` 足够，不引入依赖。
+- 所有响应都是普通 `application/json`；不推通知、不需要常驻连接，`BaseHTTPRequestHandler` 足够，不引入依赖。
 - 鉴权：`Authorization: Bearer <令牌>`。缺失或吊销 → 401；权限不足 → 工具结果 `isError: true` + 结构化错误（`forbidden`、原因、需要的角色），不用 HTTP 403，避免载体把它当连接故障重试。
-- `initialize` 返回 `capabilities.tools.listChanged = true`；`serverInfo.name = "crew"`。会话 ID 头 `Mcp-Session-Id` 用令牌哈希前缀，便于日志关联。
+- `initialize` 返回 `capabilities.tools = {}`（不声明 `listChanged`）；`serverInfo.name = "crew"`。会话 ID 头 `Mcp-Session-Id` 用令牌哈希前缀，便于日志关联。
 
 ### 5.2 工具集
 
-| 角色 | 默认工具（`core_for`） |
+- `tools/list` 返回令牌有效权限集内的全部操作，工具名为操作名把点换成下划线（`channel.post` → `channel_post`），加上 `crew_search`。每个工具的 `inputSchema` 就是清单 `params`；`annotations` 来自 `hints`（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`），`title` 用 `summary`，`description` 用 `description`（写清何时用、与相近操作的区别）。
+- 核心工具（`core_for`）只影响 Codex 的直出注册，CC 不区分：
+
+| 角色 | 核心工具（Codex `crew_core` 直出） |
 | --- | --- |
-| leader | `whoami`、`workspace_state`、`message_send`、`channel_post`、`channel_consume`、`decision_ask`、`execution_spawn`、`session_stop`、`todo_add`、`document_register`、`goal_get`、`goal_finish`、`crew_search` |
-| execution | `whoami`、`message_send`、`decision_ask`、`todo_add`、`document_register`、`goal_get`、`goal_work_update`、`goal_context_put`、`goal_report_publish`、`goal_finish`、`crew_search` |
-| assistant | `assistant_summary`、`session_detail`、`goal_get`、`chat_send`、`leader_create`、`decision_answer`、`todo_resolve`、`note_capture`、`notes_list`、`crew_search` |
-| git_admin | `whoami`、`git_requests_list`、`git_branches_list`、`git_policy_get`、`git_request_resolve`、`message_send`、`crew_search` |
-| Codex 会话额外 | `crew_call` |
+| leader | `session_whoami`、`workspace_state`、`message_send`、`channel_post`、`channel_consume`、`decision_ask`、`execution_spawn`、`session_stop`、`todo_add`、`document_register`、`goal_get`、`goal_finish` |
+| execution | `session_whoami`、`message_send`、`decision_ask`、`todo_add`、`document_register`、`goal_get`、`goal_work_update`、`goal_context_put`、`goal_report_publish`、`goal_finish` |
+| assistant | `workspace_state`、`session_detail`、`goal_get`、`chat_send`、`leader_create`、`decision_answer`、`todo_resolve`、`note_capture`、`notes_list` |
+| git_admin | `session_whoami`、`git_requests_list`、`git_branches_list`、`git_policy_get`、`git_request_resolve`、`message_send` |
 
-每个工具的 `inputSchema` 就是清单 `params`；`annotations` 来自 `hints`（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`），`title` 用 `summary`。核心工具集控制在 10–13 个，避免挤占上下文。
+- Codex 启动参数（每会话 app-server）：
 
-### 5.3 `crew_search`
+```
+-c mcp_servers.crew.url="http://127.0.0.1:<端口>/mcp"
+-c mcp_servers.crew.http_headers.Authorization="Bearer <令牌>"
+-c mcp_servers.crew.disabled_tools=[<核心工具名>]
+-c mcp_servers.crew_core.url="http://127.0.0.1:<端口>/mcp"
+-c mcp_servers.crew_core.http_headers.Authorization="Bearer <令牌>"
+-c mcp_servers.crew_core.enabled_tools=[<核心工具名>]
+-c mcp_servers.crew_core.omit_tools_from=["deferred"]
+```
 
-- 参数：`query`（关键词，中文或操作名片段），可选 `domain`。
-- 只在调用者有效权限集里搜；按名称、`summary`、`description` 打分，返回前 8 条：`name`、`summary`、`params`、`risk`、`hints`，以及 `how_to_call`。
-- **CC 会话**：命中项写入该令牌的“已加载工具集”，响应流里先发 `list_changed` 再发结果，结果文字为“已加载为工具 `mcp__crew__<名>`”。
-- **Codex 会话**：不发通知，结果文字为“用 `crew_call` 调用，`op` 填 `<操作名>`”，并附完整 `params` schema。
-- 载体类型在签发令牌时记录（`runtime` 字段），不从客户端声明的 `clientInfo` 猜。
+  `disabled_tools` / `enabled_tools` / `omit_tools_from` 的写法照 t3code `CodexAdapterV2.ts:1747–1761`；R5 落地时先在隔离 `CODEX_HOME` 用 0.172 实测这三个键（本次只实测了 `url` 与 `http_headers`）。
 
-### 5.4 `crew_call`（只出现在 Codex 会话）
+### 5.3 `crew_search`（用法指南）
 
-- 参数：`op`（操作名）、`args`（对象）、`request_id`（写操作必填）。
-- 行为与直接调用同名工具完全相同：同一权限检查、同一参数校验（按 `op` 的 schema 校验 `args`）、同一幂等记录。不是“后门”：`op` 不在有效权限集里同样被拒。
+- 参数：`query`（中文或操作名片段），可选 `domain`。只读。
+- 只在调用者有效权限集里搜；按名称、`summary`、`description` 打分，返回前 8 条：工具名、`summary`、何时用、风险（`confirm` 要带哪条用户消息，`high` 会生成用户确认请求）、相近操作的区别。
+- 不加载工具、不发通知；结果对两种载体相同（工具名在 CC 里显示为 `mcp__crew__<名>`，结果文字只写裸工具名）。
+
+### 5.4 被否决的方案：`list_changed` 动态加载 + Codex `crew_call`
+
+最初按用户裁决的字面方案设计为：默认只列核心工具 + `crew_search`，CC 搜到后服务端加载并发 `list_changed`，Codex 因不支持 `list_changed` 改用 `crew_call(op, args)` 通用执行器。第 12 节第 12–15 行实测载体原生延迟加载后改为 5.2 的做法，理由：
+
+1. 上下文代价已由载体解决（实测数据见第 12 节），自做加载协议没有额外收益；
+2. 两种载体工具面一致，不需要按载体分叉的提示词、搜索结果文字和执行路径；
+3. Codex 侧也保留逐工具的注解和 Codex 自带的工具审批粒度，`crew_call` 会把所有操作压成一个工具；
+4. MCP 端点不需要 SSE 响应，实现更简单。
+
+保留的风险：载体的延迟加载是它们自己的行为，若某个版本改为全量加载，代价是上下文变大而不是功能失效；阶段五真实模型实测与后续升级检查都看 `tools/list` 的 token 代价（第 12 节的对照方法可复跑）。
 
 ### 5.5 幂等（命令带 ID 只执行一次）
 
@@ -200,7 +220,7 @@ class Operation:
 | 步骤 | 内容 | 验证 |
 | --- | --- | --- |
 | 1 | 建 `mcp_tokens` 表与签发 / 吊销函数；`chat._launch_native`、`goal_runtime` 启动 CC 时写每会话 MCP 配置文件 `<home>/runtime/mcp/<令牌哈希前缀>.json`（仅当前用户可读）并加 `--mcp-config <文件>`；`codex_runtime` 启动 app-server 时加 `-c mcp_servers.crew.url=...` 与 `-c mcp_servers.crew.http_headers.Authorization="Bearer ..."`，不写用户的 `~/.codex/config.toml` | 单测：签发、吊销、范围求交；隔离 home 真起 CC / Codex，`tools/list` 按角色返回 |
-| 2 | `/mcp` 端点 + 清单驱动的工具执行；CC `crew_search` 加载 + `list_changed`，Codex `crew_search` + `crew_call` | 第 12 节实验复跑到产品端点 |
+| 2 | `/mcp` 端点 + 清单驱动的工具执行；`tools/list` 按令牌返回全部有权限的操作；Codex 双服务名直出核心工具 | 第 12 节实验（含 12–15 的延迟加载对照）复跑到产品端点 |
 | 3 | hooks 不再从环境变量认会话：CC 的 hook 命令在每会话 `--settings` 里写死 `--session <id> --execution <id>`（与现有 Codex 守卫命令行固定 `--home --session` 的做法一致，`codex_runtime.py:325–329`） | `test_hooks*`、守卫相关测试 |
 | 4 | 删除注入：`chat.py:1053`、`codex_runtime.py:292`、`goal_runtime.py:315` 不再设置 `CREW_SESSION_ID` / `CREW_EXECUTION_ID` / `CREW_GOAL_ID` / `CREW_NAME` / `CREW_ROLE`；`child_environment` 继续**剥离**这些变量（防外层残留） | grep 无注入点；托管会话 shell 中 `echo $CREW_SESSION_ID` 为空 |
 | 5 | 删除读取：`cli.py` 12 处、`spawn.py:271,304`、`hooks.py:69,76,154–168` | grep `CREW_SESSION_ID\|CLAUDE_CODE_SESSION_ID\|CREW_EXECUTION_ID` 只剩剥离代码与测试 |
@@ -512,7 +532,7 @@ Web 用 `git.settings.set enabled:false` 停用、CLI 用 `/api/git/disable`：�
 2. **按 action 分派的入口**：`/api/personal/notes`、`/api/personal/tags`、`/api/behavior-prompts`、`/api/goals/agent`、`/api/goals/action`、`/api/goals/context` 的每个合法 `action` 值都映射到一个操作（从处理函数的动作表读取，如 `personal.py` 的动作常量、`goal_actions.dispatch` 的分派表）。
 3. **界面改数据动作全覆盖**：扫描 `frontend/*.js`、`frontend/app/*.js`、`desktop/src/*.cjs`、`desktop/src/home*.js` 中 `api(` / `fetch(` / `post(` 调用的路径字面量与 `method:"POST"`，每个非 GET 路径必须命中清单绑定；动态拼接的路径必须在文件内声明 `// crew-op: <操作名>` 注释，否则失败（逼迫新代码写字面量或声明）。
 4. **CLI 全覆盖**：生成的 argparse 树中每个叶子命令必须对应一个操作或在主机命令白名单里；反之每个 `cli != None` 的操作都能在树里找到。
-5. **MCP 工具全覆盖**：对每个角色、每种载体，模拟签发令牌后调用 `tools/list`，返回的工具 = 该角色 `core_for` 交有效权限集（Codex 另加 `crew_call`）；`crew_search` 对每个可用操作都能按名字搜到。
+5. **MCP 工具全覆盖**：对每个角色模拟签发令牌后调用 `tools/list`，返回的工具 = 有效权限集内的全部操作 + `crew_search`；生成的 Codex 启动参数里 `crew_core.enabled_tools` = 该角色 `core_for` ∩ 有效权限集；`crew_search` 对每个可用操作都能按名字搜到。
 6. **权限穷尽**（借鉴 t3code 的“权限穷尽声明”）：`Operation` 构造时 `scopes`、`access`、`risk`、`target` 缺一即抛错；测试遍历 `所有操作 × 所有角色`，断言 `authorize()` 的结果与第 4 节表（以数据形式存于 `ops/scopes.py`）一致；新增角色或操作而不更新表即失败。
 7. **字段一致性**：第 2 节的规则（读 ⇒ 只读注解与只读连接、写 ⇒ `request_id` 与 `emits`、high ⇒ destructive）逐条断言；读操作用样例参数在只读连接上执行一遍，写库即失败。
 8. **远程边界**：`/mcp`、全部 `host` 类操作对 `device` 拒绝。
@@ -576,9 +596,18 @@ CODEX_HOME=<临时> codex exec --skip-git-repo-check --json "$PROMPT"
 | 10 | 对照：服务端先解锁，Codex 再启动 | `tools/list` 即含新工具 | 直接调用成功，回复口令 | 连接建立时已有的工具可用 |
 | 11 | Codex · exec · 令牌只用 `-c mcp_servers.crew.url=... -c mcp_servers.crew.http_headers.Authorization="Bearer ..."` 注入（配置文件无此服务） | 带正确令牌的 `initialize` / `tools/list` / `tools/call` | 调用成功 | ✅ 令牌可经启动参数注入，无需环境变量 |
 
-**设计取舍**（已写入第 0、5 节）：CC 用 `list_changed` 动态加载；Codex 用固定核心集 + `crew_search` 返回调用方式 + `crew_call`。没有采用“两种载体都只用 `crew_call`”：CC 侧会丢失逐个工具的只读 / 破坏性注解和 CC 自带的逐工具权限与延迟加载，而 CC 的动态加载已实测可用。
+**追加实验：载体是否原生延迟加载 MCP 工具**（受 t3code 用 Codex `omit_tools_from: ["deferred"]` 的启发补做）。服务端加 `--many N` 参数：启动即暴露 N 个工具，每个说明约 600 字（60 个共 41,194 字符）。
 
-**未验证**：Crew 默认 `approvalPolicy=on-request` 时，Codex 对带 `destructiveHint` 的 MCP 工具是否发 `mcpServer/elicitation/request`（实验用的是 `never` 与只读工具）；R5 落地时用产品端点补测，`codex_client.py:269–300` 已有该请求的处理分支。CC 会话在非 `-p` 的流式长会话里收到 `list_changed` 的行为只测了 `-p` 单轮，产品落地时按 Crew 的实际启动参数复测。
+| # | 载体 | 条件 | 结果 |
+| --- | --- | --- | --- |
+| 12 | Codex luna low · exec · stdio | “只回复 OK，不要调用任何工具”，额外工具 0 个 vs 60 个 | 输入 token 19706 vs 19511（缓存 11904 相同）→ 工具定义不进上下文，**原生延迟加载** |
+| 13 | Codex 同上 | 60 个工具下要求调用 `crew_op_37` | 调用成功，回复 `OP-37-OK`（本轮输入 59502 token，含搜索与调用往返） |
+| 14 | CC Haiku 5.5 · stdio | 同 12 的对照 | 输入（缓存读 + 写）29678 vs 30578，只多约 900 token（init 列出 61 个工具名）→ **原生延迟加载** |
+| 15 | CC 同上 | 60 个工具下要求调用 `crew_op_37` | 先 `ToolSearch select:mcp__dyn__crew_op_37`，再调用成功，花费 $0.0032 |
+
+**设计取舍**（已写入第 0、5 节）：采用“权限即工具集 + 载体原生延迟加载”，两种载体同一工具面；Codex 用双服务名把核心工具直出。`list_changed` 动态加载与 Codex `crew_call` 作为被否决方案记在 5.4。实验 1–11 仍然有效：它证明了 Codex 不能靠 `list_changed` 中途加工具，所以设计里不让任何能力依赖中途改工具列表。
+
+**未验证**：Crew 默认 `approvalPolicy=on-request` 时，Codex 对带 `destructiveHint` 的 MCP 工具是否发 `mcpServer/elicitation/request`（实验用的是 `never` 与只读工具）；R5 落地时用产品端点补测，`codex_client.py:269–300` 已有该请求的处理分支。延迟加载只测了 `-p` / `exec` 单轮与 60 个工具；Crew 实际是 CC 流式长会话与 Codex app-server，且真实清单约 200 个操作，R5 落地时按产品启动参数复测 token 代价与可调用性。Codex 的 `disabled_tools` / `enabled_tools` / `omit_tools_from` 三个键尚未在本机 0.172 上实测（5.2 已注明）。
 
 ---
 
@@ -590,3 +619,4 @@ CODEX_HOME=<临时> codex exec --skip-git-repo-check --json "$PROMPT"
 | 2 | 生成 CLI 的调用者固定为 `human` | 是。CLI 给人和脚本用；AI 不再经 shell 调 Crew |
 | 3 | `usage` 系列保持主机命令，不进清单 | 是，它读本机原生日志目录，与业务数据无关 |
 | 4 | 迁移期旧 URL 作为清单绑定保留，前端按领域逐步改 `/api/op` | 是，避免一次性改 40 多个前端调用点 |
+| 5 | 用“权限即工具集 + 载体原生延迟加载”代替用户裁决 7 字面上的“默认只开放核心工具 + `crew_search` 按需加载” | 采用。目标（不撑大上下文、按需加载）不变，由载体完成，实测有效；`crew_search` 保留为用法指南。需记入决策日志 |
