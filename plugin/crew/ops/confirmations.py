@@ -37,7 +37,7 @@ def view(row):
 
 def request(service, caller, op, args, request_id, digest, now):
     """Record (or find again) the confirmation an AI call needs; the operation does not run."""
-    with closing(store.connect(service.home)) as conn, board.transaction(conn):
+    with service.write_lock, closing(store.connect(service.home)) as conn, board.transaction(conn):
         row = conn.execute('SELECT * FROM interaction_requests WHERE caller_key=? AND request_id=?',
                            (caller.key, request_id)).fetchone()
         if row is None:
@@ -93,7 +93,7 @@ def resolve(service, identity, approve, now):
             status, error = 'approved', None
         except (OpError, board.BoardError, ValueError) as exc:
             status, result, error = 'failed', None, str(exc)
-    with closing(store.connect(service.home)) as conn, board.transaction(conn):
+    with service.write_lock, closing(store.connect(service.home)) as conn, board.transaction(conn):
         conn.execute('UPDATE interaction_requests SET status=?, result=?, error=?, decided_at=? WHERE id=?',
                      (status, json.dumps(result, ensure_ascii=False, default=str) if result is not None else None,
                       error, now, identity))
