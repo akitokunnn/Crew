@@ -1,0 +1,40 @@
+"""Goals and report preview HTTP routes."""
+from contextlib import closing
+
+from .. import board, goal_api, goals, store
+
+
+def post_report_worker(service, path, data, project_name):
+    return service.report_previews.action(path.rsplit('/', 1)[-1], data)
+
+
+def post_agent_report_preview(service, path, data, project_name):
+    # This read-like operation waits on a desktop worker. Keep the
+    # shared write lock free for that worker and unrelated projects.
+    with closing(store.connect(service.home)) as conn:
+        project = service.selected_project(conn, project_name)
+        return goal_api.post(service, conn, project, path, data)
+
+
+def post_goals(service, path, data, project_name, conn, now, project):
+    return goal_api.post(service, conn, project, path, data)
+
+
+def get_goals(handler, service, url, query):
+    with closing(store.connect(service.home)) as conn:
+        project = service.selected_project(conn, query.get('project', [None])[0])
+        if url.path == '/api/goals':
+            handler._send(200, {'goals': [goal_api.card(conn, goal) for goal in goals.list_goals(conn, project)]})
+        elif url.path == '/api/goal':
+            handler._send(200, goal_api.detail(conn, project, query.get('id', [''])[0],
+                                          context_state=service.chat.context_state))
+        else:
+            goal_id = query.get('goal_id', [''])[0]
+            goals.get(conn, goal_id, project)
+            report = goals.get_report(conn, query.get('report_id', [''])[0])
+            if report['goal_id'] != goal_id:
+                raise board.BoardError('报告不属于此目标')
+            if query.get('format') == ['json']:
+                handler._send(200, {key: value for key, value in report.items() if key != 'html'})
+            else:
+                handler.send_file_content(report['html'].encode('utf-8'), 'text/html; charset=utf-8', interactive_report=True)
