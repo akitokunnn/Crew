@@ -23,9 +23,8 @@ class UsageMixin:
     def _poll_usage(self, after):
         """Scan steps every USAGE_TICK_SECONDS once `after` is set.
 
-        The first full scan holds the database writer for as long as it reads, so the agents worker's first
-        pass (auto-resuming natives that died with the last service) goes first, as it did when the first
-        page poll drove the scan.
+        The agents worker's first pass (auto-resuming natives that died with the last service) still goes
+        first, as it did when the first page poll drove the scan.
         """
         while not after.wait(0.5):
             if self.stop.is_set():
@@ -50,26 +49,32 @@ class UsageMixin:
     def scan_usage(self):
         """One background usage step; the snapshot only reads what it leaves behind.
 
-        The scan commits on its own, so dispatch receipts keep flowing even while the page values below
-        cannot be built (a Claude quota cache in an unknown format, a bad prices file). Then, in a second
-        transaction, a full scan stores the weekly estimate and the budget, and the `limits` change is
-        recorded when the value the page shows differs from the last one recorded. A crash between the two
-        loses nothing: after a restart nothing is recorded yet, so the first step records the value.
+        The scan commits file by file, so dispatch receipts keep flowing even while the page values below
+        cannot be built (a Claude quota cache in an unknown format, a bad prices file), and other writers
+        never wait for more than one transcript. Then a full scan stores the weekly estimate and the
+        budget, and the `limits` change is recorded when the value the page shows differs from the last one
+        recorded. A crash in between loses nothing: the scan resumes from the saved offsets, and after a
+        restart nothing is recorded yet, so the first step records the value.
         """
         now = self.now()
         full = self.scanned_at is None or (now - self.scanned_at).total_seconds() >= FULL_SCAN_SECONDS
-        with self.write_lock, closing(store.connect(self.home)) as conn:
-            with board.transaction(conn):
-                counts = usage.scan(conn, self.claude_root, self.codex_root, self.runs_file, receipts_only=not full)
+        with self.usage_scan_lock, closing(store.connect(self.home)) as conn:
+            # Each transcript commits on its own under the write lock; a first scan of every transcript on
+            # the machine takes many seconds, and holding the database for all of it made chat delivery
+            # receipts, the change feed and operation receipts fail on the busy timeout meanwhile.
+            counts = usage.scan(conn, self.claude_root, self.codex_root, self.runs_file, receipts_only=not full,
+                                writer=self.write_lock)
+            with self.write_lock:
                 if counts['inserted'] or counts['updated']:
-                    # Dispatch receipts and the settings observed in transcripts show on the cards.
-                    for project in board.projects(conn):
-                        change_feed.touch(conn, 'conversations', project['name'], project['name'])
-            crew_usage, budget, scanned_at = self.crew_usage, self.claude_budget, self.scanned_at
-            with board.transaction(conn):
-                if full:
-                    crew_usage, budget, scanned_at = self._crew_usage(conn, now), self._budget(conn, now), now
-                value = self._record_usage(conn, crew_usage, budget, scanned_at, None)
+                    with board.transaction(conn):
+                        # Dispatch receipts and the settings observed in transcripts show on the cards.
+                        for project in board.projects(conn):
+                            change_feed.touch(conn, 'conversations', project['name'], project['name'])
+                crew_usage, budget, scanned_at = self.crew_usage, self.claude_budget, self.scanned_at
+                with board.transaction(conn):
+                    if full:
+                        crew_usage, budget, scanned_at = self._crew_usage(conn, now), self._budget(conn, now), now
+                    value = self._record_usage(conn, crew_usage, budget, scanned_at, None)
         with self.scan_lock:
             if full:
                 self.crew_usage, self.claude_budget, self.scanned_at = crew_usage, budget, scanned_at

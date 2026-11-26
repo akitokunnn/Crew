@@ -91,6 +91,8 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
         self.codex_root = native_home.codex_sessions() if codex_root is None else Path(codex_root)
         self.runs_file = self.home / "codex_runs.jsonl" if runs_file is None else Path(runs_file)
         self.agents_lock, self.scan_lock, self.write_lock = threading.Lock(), threading.Lock(), threading.Lock()
+        # One usage scan at a time; the scan itself takes write_lock only per transcript (UsageMixin.scan_usage).
+        self.usage_scan_lock = threading.Lock()
         self.channel_digest = channel_digest.Manager(home, self.write_lock, self.chat.changes, process_factory)
         self.agents, self.agents_at = [], None
         self.agents_error = "\u6b63\u5728\u83b7\u53d6\u8fdb\u7a0b\u72b6\u6001"

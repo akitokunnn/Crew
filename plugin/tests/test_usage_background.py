@@ -1,5 +1,6 @@
 """Usage scanning runs in the background; the workspace snapshot only reads (docs/ARCHITECTURE_REVIEW.md stage 2)."""
 import tests
+from contextlib import closing
 import json
 import re
 import threading
@@ -9,6 +10,7 @@ from unittest import mock
 from crew import change_feed, claude_budget, store, usage, web
 from crew.web_service import usage as usage_steps
 from test_shell import NOW, PLUGIN, ShellFixture
+from test_usage import assistant
 
 WRITES = re.compile(r'\s*(INSERT|UPDATE|DELETE|REPLACE|BEGIN|SAVEPOINT)\b', re.I)
 
@@ -54,6 +56,33 @@ class UsageBackgroundTests(ShellFixture, unittest.TestCase):
         self.assertEqual(statements, [])
         self.assertIsNone(self.conn.execute("SELECT 1 FROM codex_runs WHERE run_id='late-receipt'").fetchone(),
                           'the receipt waits for the next background step')
+
+    def test_a_long_first_scan_never_keeps_other_writers_past_the_busy_timeout(self):
+        # Writers outside the service write lock (chat delivery receipts, the change feed) give up after the
+        # busy timeout; the scan commits whole transcripts in short batches and pauses in between, so they
+        # wait for one batch at most even though the whole scan runs longer than their timeout.
+        for index in range(12):
+            self.write(self.claude / 'project' / ('session-%d.jsonl' % index), [assistant('a%d' % index)])
+        original, started = usage._lines, threading.Event()
+
+        def slow(path, offset):
+            started.set()
+            threading.Event().wait(.12)
+            return original(path, offset)
+        scanner = threading.Thread(target=self.service.scan_usage)
+        with mock.patch.object(usage, '_lines', slow), mock.patch.object(store, 'BUSY_TIMEOUT_MS', 1000):
+            scanner.start()
+            self.assertTrue(started.wait(5))
+            for _ in range(6):
+                with closing(store.connect(self.home)) as conn:
+                    conn.execute('BEGIN IMMEDIATE')
+                    conn.execute("INSERT INTO events (ts, kind, detail) VALUES (?, 'test:writer', '')", (NOW,))
+                    conn.execute('COMMIT')
+                threading.Event().wait(.15)
+            scanner.join(10)
+        self.assertFalse(scanner.is_alive())
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events WHERE kind='test:writer'").fetchone()[0], 6)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM usage_files").fetchone()[0], 13)  # twelve and the runs file
 
     def test_each_step_reads_receipts_records_limits_only_when_they_change_and_matches_the_snapshot(self):
         start = change_feed.latest_seq(self.conn)
