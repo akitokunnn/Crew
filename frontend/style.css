@@ -1128,6 +1128,7 @@ body{background:var(--studio-frame)}
 .leader-row-name>strong{font-size:calc(13px * var(--fs))}
 .leader-row-name>.context-ring{padding:2px 5px;border-radius:999px;background:color-mix(in srgb,var(--panel) 72%,transparent);border:1px solid var(--line)}
 .leader-row-sub{margin-top:2px;gap:6px}
+.leader-row-sub>:is(.st,.group-work-label):first-child{margin-left:0}
 .leader-row .goal{font-size:calc(11.5px * var(--fs))}
 .leader-branches{margin-top:4px;gap:3px}
 .leader-branch{font-size:calc(10.5px * var(--fs));line-height:17px;border-radius:6px}
