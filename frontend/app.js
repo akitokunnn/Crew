@@ -273,7 +273,17 @@
     }
   }
   function applyFontScale() { document.documentElement.style.setProperty("--fs", String(fontScale)); }
-  function setFontScale(value) { fontScale = value; applyFontScale(); try { localStorage.setItem("crew.fontScale", String(value)); } catch (error) { toast(error.message); } }
+  // Inside the Crew desktop the font size is desktop-wide like the display mode; browsers keep their own.
+  function setFontScale(value, save = true) {
+    fontScale = value; applyFontScale();
+    if (!save) return;
+    if (desktopTheme) void desktopTheme.setFontScale(value).catch(error => toast(error.message));
+    else try { localStorage.setItem("crew.fontScale", String(value)); } catch (error) { toast(error.message); }
+  }
+  function adoptDesktopFont(value) {
+    if (typeof value?.fontScale !== "number" || value.fontScale === fontScale) return;
+    fontScale = value.fontScale; applyFontScale(); renderSettings();
+  }
   function renderSettings() {
     const pct = value => `${Math.round(value * 100)}%`;
     const themes = state !== null && project !== null ? `<section class="settings-section"><h4 id="project-theme-title">主题</h4><div class="theme-options" role="group" aria-labelledby="project-theme-title">${state.themes.map(item => `<button type="button" class="theme-option" data-act="project-theme" data-theme-id="${esc(item.id)}" aria-pressed="${state.project.theme === item.id}"><span class="theme-swatches" aria-hidden="true"><i style="background:${item.light["--accent"]}"></i><i style="background:${item.dark["--accent"]}"></i></span><span>${esc(item.name)}</span>${state.project.theme === item.id ? ic("check", "sm") : ""}</button>`).join("")}</div><p class="settings-hint">左浅右深 · 为这个项目保存</p></section>` : "";
@@ -843,7 +853,7 @@
   }
   function renderAll() {
     if (allTab === "overview") {
-      replace($("main"), CrewWorkspaceHome.render({name:projectDisplay(state.project), git_assistant:state.git_assistant, leaders:state.leaders,
+      replace($("main"), CrewWorkspaceHome.render({name:projectDisplay(state.project), project:state.project.name, git_assistant:state.git_assistant, leaders:state.leaders,
         members:state.members, goals:state.goals || [], todos:state.todos || [], decisions:state.decisions},
         {taskCards:items => CrewGoals.cards(items, state.leaders), decisionCards:items => items.map(decisionCard).join(""), todoCards:items => items.map(todoCard).join(""), todoTint,
           approvalCount:nativeApprovals?.count() || 0, settingsIcon:ic("settings", "sm")}));
@@ -1463,10 +1473,22 @@
         sounds:host => window.CrewSoundSettings.mount(host,{read:()=>api("/api/settings"),save:body=>api("/api/settings",body),api,toast}),
         ...(hostAdmin() ? {remote:host => window.CrewRemoteAccess.mount(host,{read:()=>api("/api/remote-access"),action:body=>api("/api/remote-access",body)})} : {}),prompts:host => window.CrewBehaviorPrompts.mount(host,{read:query => api("/api/behavior-prompts?"+new URLSearchParams(query)),save:body => api("/api/behavior-prompts",body),project,session:behaviorSession || (view === "chat" ? readOnlyId || leaderId : null),execution:goals?.executionFor(behaviorSession || readOnlyId || leaderId)?.id}),appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections, storage:settingsStorage}});
     if (desktopTheme) {
-      desktopTheme.onChange(value => { if (["system", "light", "dark"].includes(value?.mode)) { theme = value.mode; applyTheme(); renderSettings(); if (state !== null && project !== null) renderSidebar(); } });
-      void desktopTheme.get().then(value => { if (["system", "light", "dark"].includes(value?.mode)) { theme = value.mode; renderSettings(); if (state !== null && project !== null) renderSidebar(); } }).catch(error => toast(error.message));
-    } else try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
-    try { const stored = Number(localStorage.getItem("crew.fontScale")); if (stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { toast(error.message); }
+      desktopTheme.onChange(value => { adoptDesktopFont(value); if (["system", "light", "dark"].includes(value?.mode)) { theme = value.mode; applyTheme(); renderSettings(); if (state !== null && project !== null) renderSidebar(); } });
+      void desktopTheme.get().then(async value => {
+        // First desktop-wide reading: carry over the size this page chose before the desktop kept one.
+        if (!value.fontStored) {
+          let legacy = null;
+          try { legacy = localStorage.getItem("crew.fontScale"); } catch (error) { toast(error.message); }
+          if (legacy !== null && Number(legacy) >= FONT_MIN && Number(legacy) <= FONT_MAX) value = await desktopTheme.setFontScale(Number(legacy));
+        }
+        try { localStorage.removeItem("crew.fontScale"); } catch (error) { toast(error.message); }
+        adoptDesktopFont(value);
+        if (["system", "light", "dark"].includes(value?.mode)) { theme = value.mode; renderSettings(); if (state !== null && project !== null) renderSidebar(); }
+      }).catch(error => toast(error.message));
+    } else {
+      try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
+      try { const stored = Number(localStorage.getItem("crew.fontScale")); if (stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { toast(error.message); }
+    }
     try { leadersOpen = !narrowLayout() && localStorage.getItem("crew.leadersOpen") !== "false"; } catch { leadersOpen = !narrowLayout(); }
     $("leader-panel").dataset.open = String(leadersOpen); $("leader-panel").inert = !leadersOpen;
     CrewChat.initFiles(api, toast);
@@ -1696,6 +1718,8 @@
       else if (act === "member-history") { const item = member(id); if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id, null); }
     });
     document.addEventListener("change", event => {
+      // The desktop keeps the size once the slider is released; dragging only previews it on this page.
+      if (event.target.dataset.setting === "font" && desktopTheme) { setFontScale(Number(event.target.value)); return; }
       if (!event.target.closest("#leader-settings-form") || lookDraft === null) return;
       if (event.target.matches("[data-look-color]")) { lookDraft.color = event.target.value; lookDraft.error = ""; renderLeaderSettings(); }
       else if (event.target.matches("[data-look-avatar]")) void pickLeaderAvatar(event.target);
@@ -1708,7 +1732,7 @@
       const todoForm = event.target.closest("[data-todo-form]");
       if (todoForm && event.target.name === "note") { const draft = todoActions.get(todoForm.dataset.todoForm); if (draft) draft.note = event.target.value; return; }
       // Update only the readout while dragging; re-rendering would steal the slider from the pointer.
-      if (event.target.dataset.setting === "font") { setFontScale(Number(event.target.value)); $("font-scale-value").textContent = `${Math.round(fontScale * 100)}%`; $("settings").querySelector('[data-act="font-reset"]').disabled = fontScale === 1; return; }
+      if (event.target.dataset.setting === "font") { setFontScale(Number(event.target.value), !desktopTheme); $("font-scale-value").textContent = `${Math.round(fontScale * 100)}%`; $("settings").querySelector('[data-act="font-reset"]').disabled = fontScale === 1; return; }
  });
     document.addEventListener("submit", event => {
       const form = event.target;

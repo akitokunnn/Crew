@@ -1,0 +1,137 @@
+/* First-run guide: a studio sheet over the home page, steps on the left like the settings sidebar. */
+.onboarding{font-size:13px;top:var(--crew-desktop-chrome-height,0px);width:min(840px,calc(100vw - 32px));height:min(600px,calc(100vh - 32px - var(--crew-desktop-chrome-height,0px)));max-width:none;max-height:none;padding:0;border:1px solid var(--studio-border);border-radius:18px;background:var(--studio-sheet);color:var(--text);box-shadow:var(--studio-shadow-float);font-family:var(--font-ui);overflow:hidden}
+.onboarding::backdrop{background:var(--backdrop);backdrop-filter:blur(3px)}
+/* Zero specificity, so each control's own size below still applies. */
+:where(.onboarding) :where(button,select,input){font:inherit}
+.onboarding button{cursor:pointer}
+.onboarding button:disabled{cursor:default;opacity:.5}
+.onboarding :focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:2px}
+.ob-sheet{display:grid;grid-template-columns:212px minmax(0,1fr);height:100%}
+
+/* Step rail */
+.ob-rail{display:flex;flex-direction:column;min-height:0;padding:20px 12px 18px;border-right:1px solid var(--line);background:var(--studio-frame)}
+.ob-brand{display:flex;align-items:center;gap:9px;padding:0 8px 18px;font-size:14px;font-weight:500;letter-spacing:-.2px}
+.ob-brand .mark{width:24px;height:24px;border-radius:7px}
+.ob-steps{display:flex;flex-direction:column;gap:3px;margin:0;padding:0;list-style:none}
+.ob-step{display:flex;align-items:center;gap:10px;width:100%;height:40px;padding:0 10px;border:1px solid transparent;border-radius:10px;background:transparent;color:var(--text-2);font-size:13px;text-align:left;transition:background-color var(--motion) ease,border-color var(--motion) ease,color var(--motion) ease}
+.ob-step:hover{background:color-mix(in srgb,var(--surface-2) 66%,transparent);border-color:var(--line);color:var(--text)}
+.ob-step i{display:grid;place-items:center;flex:none;width:22px;height:22px;border:1px solid var(--line-strong);border-radius:50%;font-style:normal;font-size:11px;font-variant-numeric:tabular-nums;color:var(--text-2)}
+.ob-step[data-done=true] i{border-color:transparent;background:var(--accent-soft);color:var(--accent-text)}
+.ob-step[aria-current=step]{border-color:var(--studio-border);background:var(--studio-sheet);box-shadow:var(--studio-shadow-sm);color:var(--text);font-weight:500}
+.ob-step[aria-current=step] i{border-color:var(--accent);background:var(--accent);color:var(--on-accent)}
+.ob-rail-note{margin:auto 0 0;padding:0 8px;font-size:11px;line-height:1.7;color:var(--text-2)}
+
+/* Content */
+.ob-main{display:flex;flex-direction:column;min-width:0;min-height:0}
+.ob-head{padding:24px 28px 6px}
+.ob-eyebrow{margin:0;font-size:11.5px;letter-spacing:.3px;color:var(--accent-text)}
+.ob-head h2{margin:5px 0 5px;font-size:20px;line-height:1.4;font-weight:500;letter-spacing:-.4px}
+/* The title takes focus on each step so screen readers announce it; it is not a control. */
+.onboarding #ob-title:focus,.onboarding #ob-title:focus-visible{outline:none}
+.ob-lead{margin:0;font-size:12.5px;line-height:1.75;color:var(--text-2)}
+.ob-body{flex:1;min-height:0;overflow-y:auto;padding:14px 28px 18px}
+.ob-label{font-size:12px;color:var(--text-2)}
+.ob-muted{margin:6px 0 0;font-size:11.5px;line-height:1.7;color:var(--text-2)}
+.ob-link{padding:2px 4px;border:0;border-radius:6px;background:none;color:var(--accent-text);font-size:12px;text-decoration:underline;text-decoration-color:transparent;text-underline-offset:3px}
+.ob-link:hover:not(:disabled){text-decoration-color:currentColor}
+.ob-alert{margin:0 0 12px;padding:9px 12px;border:1px solid var(--danger-line);border-radius:10px;background:var(--danger-soft);color:var(--danger);font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+.ob-foot-alert{margin:0 28px 10px}
+.ob-notice{margin:14px 0 0;padding:11px 14px;border:1px solid var(--warn-line);border-radius:12px;background:var(--warn-soft);color:var(--text);font-size:12px;line-height:1.75}
+.ob-loading{display:flex;align-items:center;gap:12px;padding:28px 4px;font-size:12.5px;color:var(--text-2)}
+.ob-loading i{width:18px;height:18px;flex:none;border:2px solid var(--line-strong);border-top-color:var(--accent);border-radius:50%;animation:ob-spin .8s linear infinite}
+@keyframes ob-spin{to{transform:rotate(360deg)}}
+
+/* Step 1: execution tools */
+.ob-runtimes-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.ob-runtimes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.ob-runtime{display:flex;flex-direction:column;align-items:stretch;gap:6px;min-width:0;padding:14px 14px 12px;border:1px solid var(--studio-border);border-radius:14px;background:var(--studio-card);box-shadow:var(--studio-shadow-sm);color:var(--text);text-align:left;transition:border-color var(--motion) ease,box-shadow var(--motion) ease}
+.ob-runtime:hover:not([aria-disabled=true]){border-color:var(--line-strong)}
+.ob-runtime[aria-checked=true]{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.ob-runtime[aria-disabled=true]{cursor:default;background:var(--hover-2);box-shadow:none}
+.ob-runtime-top{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.ob-runtime-top strong{font-size:13.5px;font-weight:500}
+.ob-runtime-hint{font-size:11.5px;line-height:1.65;color:var(--text-2);overflow-wrap:anywhere}
+.ob-runtime-pick{margin-top:2px;font-size:11.5px;color:var(--text-2)}
+.ob-runtime[aria-checked=true] .ob-runtime-pick{color:var(--accent-text);font-weight:500}
+.ob-pill{display:inline-flex;align-items:center;flex:none;gap:6px;padding:2px 9px;border-radius:999px;background:var(--hover);color:var(--text-2);font-size:11px;line-height:1.6;white-space:nowrap}
+.ob-pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.ob-pill[data-tone=ok]{background:color-mix(in srgb,var(--working) 14%,transparent);color:var(--working-text)}
+.ob-pill[data-tone=warn]{background:var(--warn-soft);color:var(--warn)}
+.ob-pill[data-tone=error]{background:var(--danger-soft);color:var(--danger)}
+.ob-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:18px}
+.ob-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ob-field select{width:100%;height:36px;padding:0 10px;border:1px solid var(--studio-border);border-radius:9px;background:var(--studio-sheet);color:var(--text);font-size:12.5px}
+.ob-field .ob-muted{margin:0}
+.ob-more{margin-top:14px}
+
+/* Segmented choices (speed, display mode) */
+.ob-seg{display:flex;flex-wrap:wrap;gap:3px;padding:3px;border:1px solid var(--studio-border);border-radius:10px;background:var(--hover-2)}
+.ob-seg button{flex:1 1 auto;min-height:30px;padding:4px 12px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--text-2);font-size:12.5px;white-space:nowrap}
+.ob-seg button:hover{color:var(--text)}
+.ob-seg button[aria-checked=true]{border-color:var(--studio-border);background:var(--studio-sheet);box-shadow:var(--studio-shadow-sm);color:var(--text);font-weight:500}
+.ob-seg-wide{max-width:420px}
+
+/* Step 2: appearance */
+.ob-group+.ob-group{margin-top:22px}
+.ob-group h3{margin:0 0 9px;font-size:13px;font-weight:500}
+.ob-row{display:flex;align-items:center;gap:10px;max-width:420px;margin-bottom:6px}
+.ob-row h3{margin:0}
+.ob-row output{font-size:12px;font-variant-numeric:tabular-nums;color:var(--text-2)}
+.ob-row .ob-link{margin-left:auto}
+.ob-range{width:100%;max-width:420px;accent-color:var(--accent)}
+.ob-preview{--ob-fs:1;max-width:420px;margin-top:10px;padding:12px 14px;border:1px solid var(--studio-border);border-radius:12px;background:var(--studio-card)}
+.ob-preview-kicker{display:block;margin-bottom:4px;font-size:10.5px;letter-spacing:.4px;color:var(--text-2)}
+.ob-preview strong{display:block;font-size:calc(14px * var(--ob-fs));font-weight:500;line-height:1.5}
+.ob-preview p{margin:4px 0 0;font-size:calc(13px * var(--ob-fs));line-height:1.7;color:var(--text-2)}
+
+/* Step 3: features */
+.ob-features{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.ob-feature{display:flex;gap:12px;min-width:0;padding:14px;border:1px solid var(--studio-border);border-radius:14px;background:var(--studio-card);box-shadow:var(--studio-shadow-sm)}
+.ob-feature-mark,.ob-choice-mark{display:grid;place-items:center;flex:none;width:36px;height:36px;border-radius:11px;background:var(--accent-soft);color:var(--accent-text)}
+.ob-glyph{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.ob-feature h3{margin:1px 0 4px;font-size:13.5px;font-weight:500}
+.ob-feature p{margin:0;font-size:12px;line-height:1.75;color:var(--text-2)}
+
+/* Step 4: first workspace */
+.ob-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.ob-choice{display:flex;flex-direction:column;align-items:flex-start;gap:8px;min-width:0;padding:16px;border:1px solid var(--studio-border);border-radius:14px;background:var(--studio-card);box-shadow:var(--studio-shadow-sm);color:var(--text);text-align:left;transition:border-color var(--motion) ease,box-shadow var(--motion) ease}
+.ob-choice:hover{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-softer)}
+.ob-choice strong{margin-top:4px;font-size:14px;font-weight:500}
+.ob-choice>span:last-child{font-size:12px;line-height:1.7;color:var(--text-2)}
+.ob-after{display:flex;flex-direction:column;gap:3px;margin-top:16px;padding:12px 14px;border-left:3px solid var(--accent);border-radius:10px;background:var(--accent-softer);font-size:12px;line-height:1.7;color:var(--text-2)}
+.ob-after strong{color:var(--text);font-size:12.5px;font-weight:500}
+
+/* Footer */
+.ob-foot{display:flex;align-items:center;gap:8px;padding:14px 28px 18px;border-top:1px solid var(--line)}
+.ob-foot-space{flex:1}
+.ob-skip{min-height:32px;padding:0 6px;border:0;border-radius:8px;background:none;color:var(--text-2);font-size:12.5px}
+.ob-skip:hover:not(:disabled){color:var(--text)}
+
+/* Narrow: steps become a row of numbered dots above the content. */
+@media(max-width:760px){
+  .ob-sheet{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+  .ob-rail{flex-direction:row;align-items:center;gap:8px;padding:10px 14px;border-right:0;border-bottom:1px solid var(--line)}
+  .ob-brand{padding:0;flex:none}
+  .ob-brand span,.ob-rail-note{display:none}
+  .ob-steps{flex-direction:row;flex:1;min-width:0;gap:4px;justify-content:flex-end}
+  .ob-step{width:auto;height:34px;padding:0 8px}
+  .ob-step:not([aria-current=step]) span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+  .ob-head{padding:16px 20px 4px}
+  .ob-body{padding:12px 20px 16px}
+  .ob-foot{padding:12px 20px 14px}
+  .ob-foot-alert{margin:0 20px 10px}
+}
+@media(max-width:620px){
+  .onboarding{width:calc(100vw - 16px);height:calc(100vh - 16px - var(--crew-desktop-chrome-height,0px));border-radius:14px}
+  .ob-brand{display:none}
+  .ob-steps{justify-content:flex-start}
+  .ob-head h2{font-size:18px}
+  .ob-runtimes,.ob-fields,.ob-features,.ob-choices{grid-template-columns:minmax(0,1fr)}
+  .ob-runtime,.ob-choice{padding:13px 14px}
+  .ob-seg button{min-height:36px}
+  .ob-foot{flex-wrap:wrap}
+  .ob-foot .button{flex:1 1 auto;min-height:40px}
+  .ob-foot-space{display:none}
+  .ob-skip{order:3;width:100%;min-height:36px}
+}
+@media(prefers-reduced-motion:reduce){.ob-loading i{animation:none}}
