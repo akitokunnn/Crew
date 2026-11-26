@@ -114,7 +114,7 @@ const CrewGit = (() => {
       return;
     }
     const fetchMeta = data === null ? "" : `<div class="git-fetch-meta">${data.last_fetch_at === null ? "尚未 fetch" : `上次 fetch · ${esc(at(data.last_fetch_at))}`}</div><button type="button" class="btn" data-git-act="fetch" title="执行 git fetch --prune origin" ${operation !== null || loading ? "disabled" : ""}>${operation === "fetch" ? "正在拉取…" : "拉取远端"}</button>`;
-    const header = `<div><div class="title">${esc(assistant.name)} <span class="git-heading-label">Git</span></div><div class="sub">${data === null ? "" : esc(data.repository)}${readStatus()}</div></div><div class="right">${refreshButton()}${settingsButton()}${fetchMeta}</div>`;
+    const header = `<div><div class="title git-assistant-title"><span>${esc(assistant.name)} <span class="git-heading-label">Git</span></span>${options.contextControls(assistant, true)}</div><div class="sub">${data === null ? "" : esc(data.repository)}${readStatus()}</div></div><div class="right">${refreshButton()}${settingsButton()}${fetchMeta}</div>`;
     const access = options.chatAccess(assistant), identity = `${assistant.session_id}:${access.readonly}:${access.readonlyReason ?? ""}`;
     const summary = `<span class="git-assistant-branches">主干 <b>${esc(assistant.base)}</b>${assistant.integration === null ? "" : ` · 本地集成 <b>${esc(assistant.integration)}</b>`}</span><span>进行中 ${assistant.requests.active}</span><span>等你 ${assistant.requests.waiting_user}</span><span>合并中 ${assistant.requests.merging}</span><span>排队 ${assistant.requests.queued}</span>`;
     const repository = data === null
@@ -127,7 +127,8 @@ const CrewGit = (() => {
         beforeStop:() => options.beforeStop(assistant), onRouted:options.onRouted});
       chatIdentity = identity;
     } else CrewChat.update(options.state);
-    for (const [selector, markup] of [[".git-head",header],[".git-assistant-summary",summary],[".git-page-in",repository],[".git-operation-error",errorText === "" || data === null ? "" : `<pre class="git-error" role="alert">${esc(errorText)}</pre>`]]) {
+    options.replace(host.querySelector(".git-head"), header);
+    for (const [selector, markup] of [[".git-assistant-summary",summary],[".git-page-in",repository],[".git-operation-error",errorText === "" || data === null ? "" : `<pre class="git-error" role="alert">${esc(errorText)}</pre>`]]) {
       const element = host.querySelector(selector);
       if (written.get(element) !== markup) { element.innerHTML = markup; written.set(element, markup); }
     }

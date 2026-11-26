@@ -539,8 +539,10 @@ test("offline conversations with history keep a usable compact ring without show
 });
 
 test("a ring queues only its own session, suppresses duplicate clicks, and clears on actual completion",async()=>{
-  for(const runtime of ["claude","codex"])for(const id of ["lead","member"]){
-    const {ui}=harness(contextState(runtime)),writes=[],toasts=[];let watcher,release;
+  for(const runtime of ["claude","codex"])for(const id of ["lead","member","git"]){
+    const state=contextState(runtime),writes=[],toasts=[];let watcher,release;
+    state.git_assistant={...state.leaders[0],session_id:"git",name:"Git 助手",builtin:true};
+    const {ui}=harness(state);
     ui.services({render(){},loadState:async()=>{},toast:text=>toasts.push(text),
       watchCompact:async(sid,options)=>{assert.equal(sid,id);watcher=options;return()=>{};},
       api:async(path,data)=>{writes.push({path,...data});return new Promise(resolve=>{release=resolve;});}});
@@ -549,9 +551,12 @@ test("a ring queues only its own session, suppresses duplicate clicks, and clear
     assert.equal(writes.length,1);assert.deepEqual(plain(writes[0]),{path:"/api/session/compact",session_id:id,after_turn:true});
     release({ok:true,queued:true,message:"这一轮说完后压缩"});await pending;
     assert.equal(ui.compactions.get(id).phase,"queued");
-    const own=ui.contextRing({...contextState(runtime).leaders[0],session_id:id});
+    const item=[...state.leaders,...state.members,state.git_assistant].find(person=>person.session_id===id);
+    const own=ui.contextRing(item,id==="git");
     assert(own.includes('aria-busy="true" aria-disabled="true"'));assert(!own.includes(" disabled"),"stays focusable for keyboard users");assert(own.includes("已排队"));assert(own.includes("is-queued"));
+    if(id==="git") assert.match(own,/>等待压缩<\/span>/);
     watcher.onFinish({type:"compact",seq:3});assert.equal(ui.compactions.size,0);
+    if(id==="git") assert.match(ui.contextControls(item,true),/>压缩上下文<\/span>/);
     assert(toasts.some(text=>text.includes("这一轮说完后压缩")));
   }
 });

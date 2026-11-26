@@ -168,12 +168,12 @@
   const memberModel = item => item.where === "bg" ? `<span class="member-model">${esc(optionsLabel(item))}</span>` : "";
   const memberActivity = item => item.where === "bg" ? CrewActivity.markup(item, true) : "";
 
-  const contextRing = item => CrewContext.ring(item.context, {id:item.session_id, name:item.name, busy:item.busy, failed:compactFailures.get(item.session_id) || null,
+  const contextRing = (item, showAction = false) => CrewContext.ring(item.context, {id:item.session_id, name:item.name, busy:item.busy, failed:compactFailures.get(item.session_id) || null, showAction,
     showUnknown:item.web_chat && item.where !== "vscode",
     external:item.where === "vscode", phase:compactions.get(item.session_id)?.phase || (item.activity?.phase === "compacting" ? "compacting" : null)});
   const compactBusy = item => item.busy || item.status === "working";
-  function contextControls(item) {
-    const ring = contextRing(item);
+  function contextControls(item, showAction = false) {
+    const ring = contextRing(item, showAction);
     return ring === "" ? "" : `<span class="context-controls">${ring}</span>`;
   }
 
@@ -1125,7 +1125,7 @@
     $("backdrop").classList.add("show"); $("backdrop").querySelector('[data-act="modal-close"]').focus();
   }
   async function compactContext(id) {
-    const item = sessionItem(id);
+    const item = state.git_assistant?.session_id === id ? state.git_assistant : sessionItem(id);
     const key = id;
     if (!item || compactions.has(key)) return;
     if (item.where === "vscode") { toast(`「${item.name}」正在原工具中运行，请在那边输入 /compact。`); return; }
@@ -1266,7 +1266,7 @@
     if (view !== "channel" && mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
     if (view !== "git") CrewGit.unmount();
     if (view !== "architecture") CrewArchitecture.unmount();
-    if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "todos") renderTodos(); if (view === "channel") renderChannel(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); if (view === "architecture") renderArchitecture(); if (view === "git") CrewGit.mount($("main"), {project, root:state.project.root, state, api, toast, chatAccess, beforeStop:confirmIdentityStop, onRouted:async id => { await loadState(true); const target = state.goals.find(item => String(item.id) === String(id)); if (target) navigate("chat", target.leader_session_id, null, target.id); else toast("目标已不在当前工作区中，请刷新。"); }, catalog:runtimeList, defaultRuntime:() => taskRuntime("git"), onChanged:() => loadState(true), onSettings:() => gitSettings.open(project), avatar:av, tint}); }
+    if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "todos") renderTodos(); if (view === "channel") renderChannel(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); if (view === "architecture") renderArchitecture(); if (view === "git") CrewGit.mount($("main"), {project, root:state.project.root, state, api, toast, chatAccess, contextControls, replace, beforeStop:confirmIdentityStop, onRouted:async id => { await loadState(true); const target = state.goals.find(item => String(item.id) === String(id)); if (target) navigate("chat", target.leader_session_id, null, target.id); else toast("目标已不在当前工作区中，请刷新。"); }, catalog:runtimeList, defaultRuntime:() => taskRuntime("git"), onChanged:() => loadState(true), onSettings:() => gitSettings.open(project), avatar:av, tint}); }
     if (view !== "chat") renderRight();
     renderCard(); document.title = `(${state.decisions.length}) ${projectDisplay(state.project)} · Crew`;
   }
