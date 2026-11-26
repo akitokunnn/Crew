@@ -145,7 +145,7 @@ t3code（Node/TypeScript、Effect、React、React Native/Expo、WebSocket RPC）
 
 ### 5.5 手机端承接现有交互
 
-手机端 = 同一份 `frontend/`（PWA），在 `<=760px` 断点下已有底部胶囊标签栏（`mobile-shell.js`）与手机专用样式。按交接文档第 4 节的硬门禁逐类说明：
+手机端 = 同一份 `frontend/`（PWA），在 `<=760px` 断点下已有底部胶囊标签栏（`mobile-shell.js`）与手机专用样式。下表按交接文档第 4 节的硬门禁逐类说明；逐条验收以 [交互清单](INTERACTION_INVENTORY.md)（774 条，含 375×812 视口与粗指针条件）为准，手机端每推进一步都按该清单的手机视口条目勾验。
 
 | 交互类（交接文档 §4） | 手机端承接方式 | 需要新增的 |
 | --- | --- | --- |
