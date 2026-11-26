@@ -1,0 +1,131 @@
+"""Incremental changes behind the workspace snapshot (docs/EVENT_STREAM_DESIGN.md).
+
+A business write records the new value of every snapshot entity it changed with `updated` /
+`removed`, on the same connection and inside the same transaction, so the change and the write
+commit or roll back together. Readers take a snapshot together with the sequence it covers, then
+`read` everything after it. When the history a reader needs is gone, or it fell too far behind,
+`read` raises `SnapshotRequired` and the reader starts over from a new snapshot.
+"""
+import datetime as dt
+import json
+from contextlib import closing
+
+from . import store
+
+# Initial values from docs/ARCHITECTURE_REVIEW.md §6.2, to be tuned with real workspaces.
+RETAIN_ROWS = 10000
+RETAIN_SECONDS = 24 * 3600
+RESUME_LIMIT = 1000
+PRUNE_EVERY = 256
+
+GLOBAL = 'global'
+_WORKSPACE = 'workspace:'
+# Every kind a client knows how to merge; the frontend registry (frontend/app-data.js) mirrors it.
+KINDS = frozenset({'todo'})
+
+
+class SnapshotRequired(Exception):
+    """The reader cannot continue from its sequence and must take a new snapshot."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def workspace(project):
+    if not isinstance(project, str) or not project:
+        raise ValueError('工作区名必须是非空文本')
+    return _WORKSPACE + project
+
+
+def scopes(project):
+    """What a subscriber sees: global changes, plus its workspace when it has one."""
+    return (GLOBAL,) if project is None else (GLOBAL, workspace(project))
+
+
+def updated(conn, scope, kind, entity, data, now=None):
+    if data is None:
+        raise ValueError('更新事件必须带上实体的新值')
+    return _record(conn, scope, kind + '.updated', kind, entity, json.dumps(data, ensure_ascii=False), now)
+
+
+def removed(conn, scope, kind, entity, now=None):
+    return _record(conn, scope, kind + '.removed', kind, entity, None, now)
+
+
+def _record(conn, scope, change_type, kind, entity, data, now):
+    if not conn.in_transaction:
+        raise RuntimeError('增量变更必须在业务写入的同一事务里记录')
+    if kind not in KINDS:
+        raise ValueError('未登记的增量实体类型：%s' % kind)
+    if scope != GLOBAL and not (scope.startswith(_WORKSPACE) and len(scope) > len(_WORKSPACE)):
+        raise ValueError('增量范围必须是 global 或 workspace:<工作区名>：%s' % scope)
+    at = store.now_iso() if now is None else now
+    seq = conn.execute('INSERT INTO change_log(at,scope,type,entity,data) VALUES(?,?,?,?,?)',
+                       (at, scope, change_type, str(entity), data)).lastrowid
+    if seq % PRUNE_EVERY == 0:
+        prune(conn, at)
+    return seq
+
+
+def latest_seq(conn):
+    """The last sequence ever assigned; pruning never lowers it."""
+    row = conn.execute("SELECT seq FROM sqlite_sequence WHERE name='change_log'").fetchone()
+    return 0 if row is None else row['seq']
+
+
+def pruned_through(conn):
+    row = conn.execute('SELECT MIN(seq) AS first FROM change_log').fetchone()
+    return latest_seq(conn) if row['first'] is None else row['first'] - 1
+
+
+def prune(conn, now=None):
+    """Drop the oldest rows beyond the retention window, always as one contiguous prefix of seq."""
+    if not conn.in_transaction:
+        raise RuntimeError('裁剪增量记录必须在写事务里进行')
+    cutoff = store.parse_iso(store.now_iso() if now is None else now) - dt.timedelta(seconds=RETAIN_SECONDS)
+    cutoff = cutoff.astimezone(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.') + '%03dZ' % (cutoff.microsecond // 1000)
+    aged = conn.execute('SELECT MAX(seq) AS seq FROM change_log WHERE at < ?', (cutoff,)).fetchone()['seq']
+    boundary = max(0 if aged is None else aged, latest_seq(conn) - RETAIN_ROWS)
+    if boundary > 0:
+        conn.execute('DELETE FROM change_log WHERE seq <= ?', (boundary,))
+    return boundary
+
+
+def read(conn, visible, after, limit=RESUME_LIMIT):
+    """Changes in `visible` scopes after `after`, oldest first, from one consistent read.
+
+    Raises SnapshotRequired when `after` is older than the pruned history ('pruned'), newer than
+    anything ever assigned ('ahead'), or when more than `limit` visible changes wait ('backlog').
+    """
+    if type(after) is not int or after < 0:
+        raise ValueError('after 必须是非负整数')
+    if conn.in_transaction:
+        raise RuntimeError('读取增量需要独立的读事务')
+    conn.execute('BEGIN')
+    try:
+        if after < pruned_through(conn):
+            raise SnapshotRequired('pruned')
+        if after > latest_seq(conn):
+            raise SnapshotRequired('ahead')
+        rows = conn.execute('SELECT seq,at,type,entity,data FROM change_log WHERE seq > ? AND scope IN (%s) '
+                            'ORDER BY seq LIMIT ?' % ','.join('?' * len(visible)),
+                            (after, *visible, limit + 1)).fetchall()
+    finally:
+        conn.rollback()
+    if len(rows) > limit:
+        raise SnapshotRequired('backlog')
+    return [{'seq': row['seq'], 'at': row['at'], 'type': row['type'], 'entity': row['entity'],
+             'data': None if row['data'] is None else json.loads(row['data'])} for row in rows]
+
+
+def snapshot(home, build):
+    """`{seq, data}` where `data` reflects at least every change up to `seq`.
+
+    The sequence is read before the snapshot is built: changes committed meanwhile may already be
+    in `data` and are delivered again after `seq`; replacing an entity with its newer value is
+    idempotent, so nothing is lost and nothing goes backwards once the stream catches up.
+    """
+    with closing(store.connect(home)) as conn:
+        seq = latest_seq(conn)
+    return {'seq': seq, 'data': build()}

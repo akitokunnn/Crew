@@ -1,5 +1,5 @@
 """Deliver human answers once to each explicitly associated task execution."""
-from . import board, codex_client, goals, messaging
+from . import board, codex_client, goals, messaging, todo
 
 
 @goals.atomic
@@ -25,6 +25,9 @@ def bind(conn, kind, item_id, execution_id, *, associate=False):
         raise board.Conflict('拍板事项已经关联其他执行')
     conn.execute('INSERT OR IGNORE INTO goal_links(kind,item_id,goal_id,round,requirement_version,execution_id) VALUES(?,?,?,?,?,?)',
                  (kind, item_id, execution['goal_id'], execution['round'], execution['requirement_version'], execution_id))
+    if kind == 'todo':
+        # The open action lists its links.
+        todo.publish_change(conn, item['project'], item_id)
 
 
 def get(conn, kind, item_id):
@@ -62,6 +65,9 @@ def _mark_delivered(conn, link, version):
                  (version,link['kind'],link['item_id'],link['execution_id']))
     if link['kind'] == 'decision':
         conn.execute('UPDATE decisions SET delivered_at=? WHERE id=?',(board._time(None),link['item_id']))
+    else:
+        # The open action lists its links, delivered version included.
+        todo.publish_change(conn, goals.get(conn, link['goal_id'])['project'], link['item_id'])
 
 
 def deliver(controller, conn):
@@ -89,6 +95,8 @@ def deliver(controller, conn):
                 board._event(conn,'goal:human-answer-archived',goal['project'],board.HUMAN,
                              {'kind':link['kind'],'id':link['item_id'],'version':version,'goal_id':goal['id'],
                               'reason':'原轮次已经失效或目标已经结束'},None)
+                if link['kind'] == 'todo':
+                    todo.publish_change(conn, goal['project'], link['item_id'])
             continue
         if goal['status'] in ('paused', 'pausing') or goal['manual_pause']:
             continue

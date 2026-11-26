@@ -22,7 +22,7 @@ import time
 import uuid
 from contextlib import closing
 
-from . import board, codex_client, codex_runtime, git_admin, goal_context, goals, runtimes, session_ops, store
+from . import board, codex_client, codex_runtime, git_admin, goal_context, goals, runtimes, session_ops, store, todo
 
 COMPACT_TIMEOUT = 900   # seconds a native compaction may take before the item fails
 CONFIRM_GRACE = 30      # seconds to wait for the compact event after the native request has ended
@@ -807,9 +807,12 @@ class Manager:
                 session_ops._archive(conn, session, False, now)
         conn.execute('UPDATE groups SET note=NULL WHERE project=?', (project,))
         note = '工作区清理：旧工作已归档'
+        open_todos = [row['id'] for row in conn.execute("SELECT id FROM todos WHERE project=? AND status='open'", (project,))]
         counts['todos'] = conn.execute("UPDATE todos SET status='cancelled',note=CASE WHEN note IS NULL OR note='' THEN ? "
                                        "ELSE note||char(10)||? END,resolved_by=?,resolved_at=?,updated_at=?,version=version+1 "
                                        "WHERE project=? AND status='open'", (note, note, board.HUMAN, now, now, project)).rowcount
+        for todo_id in open_todos:
+            todo.publish_change(conn, project, todo_id, now)
         counts['decisions'] = conn.execute("UPDATE decisions SET status='withdrawn' WHERE project=? AND status='open'", (project,)).rowcount
         counts['claims'] = conn.execute('UPDATE claims SET released_at=? WHERE project=? AND released_at IS NULL', (now, project)).rowcount
         counts['leases'] = conn.execute('UPDATE leases SET released_at=?,released_by=?,release_note=? WHERE project=? AND released_at IS NULL',
