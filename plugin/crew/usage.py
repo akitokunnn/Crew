@@ -123,8 +123,10 @@ def session_titles(root, session_ids, cache):
                     elif not record.get("isSidechain"):
                         if record["type"] == "assistant":
                             message = record["message"]
-                            if "usage" in message and message["model"] != "<synthetic>":
-                                maximum = windows.get(message["model"])
+                            model = message["model"]
+                            if "usage" in message and isinstance(model, str) and model != "<synthetic>":
+                                # A provider can report the same model as anthropic/claude-opus-5.5.
+                                maximum = windows.get(model) or windows.get(model.removeprefix("anthropic/").replace(".", "-"))
                                 tokens = message["usage"]
                                 context = None if maximum is None else {
                                     "used": tokens["input_tokens"] + tokens["cache_read_input_tokens"]

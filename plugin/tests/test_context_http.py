@@ -49,11 +49,12 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, result)
         return {row["session_id"]: row for row in result["leaders"] + result["members"]}
 
-    def transcript(self, sid, used, model="claude-opus-5-5"):
-        self.main_file([{"type": "assistant", "timestamp": NOW,
-                         "message": {"id": "usage-" + sid, "model": model, "content": [],
-                                     "usage": {"input_tokens": used, "cache_read_input_tokens": 0,
-                                               "cache_creation_input_tokens": 0}}}], session=sid)
+    def transcript(self, sid, used, model="claude-opus-5-5", *, append=False):
+        self.write(self.claude / "project" / (sid + ".jsonl"), [
+            {"type": "assistant", "timestamp": NOW,
+             "message": {"id": "usage-" + sid, "model": model, "content": [],
+                         "usage": {"input_tokens": used, "cache_read_input_tokens": 0,
+                                   "cache_creation_input_tokens": 0}}}], append=append)
 
     def start_session(self, role="leader"):
         route = "/api/leader" if role == "leader" else "/api/spawn"
@@ -86,6 +87,17 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(state["s3"]["where"], "offline")
         self.assertFalse(state["s1"]["running"])
         self.assertFalse(state["s1"]["busy"])
+
+    def test_offline_claude_uses_the_latest_reading_with_a_provider_model_id(self):
+        sid = "s3"
+        self.transcript(sid, 401000)
+        self.transcript(sid, 344826, "anthropic/claude-opus-5.5", append=True)
+
+        expected = {"used": 344826, "max": 1000000, "source": "transcript"}
+        state = self.state()[sid]
+        self.assertEqual(state["where"], "offline")
+        self.assertEqual(state["context"], expected)
+        self.assertEqual(self.request("/api/chat/history?project=demo&session_id=" + sid)[1]["context"], expected)
 
     def test_state_keeps_last_live_claude_reading_when_the_process_exits(self):
         sid, process = self.start_session()
