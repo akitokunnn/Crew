@@ -16,6 +16,8 @@
   // later activity never switches the record under the reader.
   const memberScopes = new Map();
   let mountedChannel = false;
+  // The war room view: roomId comes from #war-room=<id>; mountedRoom is the room currently mounted.
+  let roomId = null, mountedRoom = null;
   // One-shot landing spots when jumping between a channel post and the private chat it points at.
   let channelFocus = null, chatFocus = null;
   let settingsUI = null, settingsOpen = false, settingsReturn = null;
@@ -845,9 +847,21 @@
       mountedChannel = true;
       const focus = channelFocus; channelFocus = null;
       CrewChannel.mount({host:$("channel-host"), state, api, toast, focus, avatar:av, onRead:channel => { Object.assign(state.channel, {unread:channel.unread, latest_id:channel.latest_id}); renderSidebar(); },
-        openChat(id, target) { if (leader(id) === undefined) { toast("这位 leader 已不在列表里，看不到它的私聊"); return; } chatFocus = {session:id, ...target}; navigate("chat", id, null, null); }});
+        openChat(id, target) { if (leader(id) === undefined) { toast("这位 leader 已不在列表里，看不到它的私聊"); return; } chatFocus = {session:id, ...target}; navigate("chat", id, null, null); },
+        openRoom(id) { roomId = id; navigate("war-room"); }});
     }
     CrewChannel.update(state);
+  }
+  function renderWarRoom() {
+    if (mountedRoom !== roomId) {
+      $("main").innerHTML = '<div id="war-room-host" class="cx-host wr-host"></div>';
+      delete $("main").dataset.render;
+      mountedRoom = roomId;
+      CrewWarRoom.mount({host:$("war-room-host"), id:roomId, state, api, toast, avatar:av, ring:item => contextRing(item), onChanged:() => loadState(true),
+        openChannel(id) { channelFocus = id; navigate("channel"); },
+        openChat(id, target) { if (leader(id) === undefined) { toast("这位 leader 已不在列表里，看不到它的私聊"); return; } chatFocus = {session:id, ...target}; navigate("chat", id, null, null); }});
+    }
+    CrewWarRoom.update(state);
   }
   function renderAll() {
     if (allTab === "overview") {
@@ -1150,6 +1164,7 @@
     settingsReturn = document.activeElement; settingsOpen = true;
     if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; }
     if (mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
+    if (mountedRoom !== null) { CrewWarRoom.unmount(); mountedRoom = null; }
     CrewGit.unmount(); goals?.closeReport(); if (cardId !== null) closeCard(); hideMenu();
     $("app").inert = false; $("leader-panel").inert = true; $("main").inert = true;
     if (state !== null) { if (project !== null) renderSidebar(); else renderEntrySidebar(); }
@@ -1181,6 +1196,7 @@
     workspaceOpen = true;
     if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; }
     if (mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
+    if (mountedRoom !== null) { CrewWarRoom.unmount(); mountedRoom = null; }
     CrewGit.unmount(); goals?.closeReport(); if (cardId !== null) closeCard(); hideMenu();
     void workspaceSettings.open(project);
   }
@@ -1302,7 +1318,7 @@
     void saveBudget({amount_usd:Number(form.elements.amount.value), cycle, start:cycle === "once" ? form.elements.start.value : null});
   }
   function syncRoute() {
-    const hash = view === "chat" ? (readOnlyId === null ? `leader=${encodeURIComponent(leaderId)}` : `history=${encodeURIComponent(readOnlyId)}${leaderId === null ? "" : `&leader=${encodeURIComponent(leaderId)}`}`) + (goalId == null ? "" : `&goal=${encodeURIComponent(goalId)}`) : view;
+    const hash = view === "chat" ? (readOnlyId === null ? `leader=${encodeURIComponent(leaderId)}` : `history=${encodeURIComponent(readOnlyId)}${leaderId === null ? "" : `&leader=${encodeURIComponent(leaderId)}`}`) + (goalId == null ? "" : `&goal=${encodeURIComponent(goalId)}`) : view === "war-room" ? `war-room=${roomId}` : view;
     if (location.hash.slice(1) !== hash) history.replaceState(null, "", `${location.pathname}${location.search}#${hash}`);
     if (project !== null) {
       const targetHash = view === "chat" && leaderId ? `leader=${encodeURIComponent(leaderId)}` : "all";
@@ -1331,6 +1347,7 @@
     goalId = params.get("goal");
     if (params.has("history")) { readOnlyId = params.get("history"); const item = member(readOnlyId); leaderId = item === undefined ? null : item.leader_session_id; view = "chat"; }
     else if (params.has("leader")) { leaderId = params.get("leader"); readOnlyId = null; view = "chat"; }
+    else if (params.has("war-room")) { roomId = Number(params.get("war-room")); view = "war-room"; leaderId = null; readOnlyId = null; }
     else if (["all", "channel", "adopt", "usage", "git", "todos", "architecture"].includes(hash)) { view = hash; leaderId = null; readOnlyId = null; }
     else { view = "all"; leaderId = null; readOnlyId = null; }
     if (view === "chat" && (readOnlyId === null ? leader(leaderId) === undefined : member(readOnlyId) === undefined)) { view = "all"; leaderId = null; readOnlyId = null; }
@@ -1342,9 +1359,10 @@
     if (view !== "chat") { taskListScope = null; CrewChat.setTask(null); goals?.sync(null, null); }
     $("app").classList.toggle("wide", view !== "chat" || leaderId === null); renderSidebar();
     if (view !== "channel" && mountedChannel) { CrewChannel.unmount(); mountedChannel = false; }
+    if (view !== "war-room" && mountedRoom !== null) { CrewWarRoom.unmount(); mountedRoom = null; }
     if (view !== "git") CrewGit.unmount();
     if (view !== "architecture") CrewArchitecture.unmount();
-    if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "todos") renderTodos(); if (view === "channel") renderChannel(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); if (view === "architecture") renderArchitecture(); if (view === "git") CrewGit.mount($("main"), {project, root:state.project.root, state, api, toast, chatAccess, contextControls, replace, beforeStop:confirmIdentityStop, onRouted:async id => { await loadState(true); const target = state.goals.find(item => String(item.id) === String(id)); if (target) navigate("chat", target.leader_session_id, null, target.id); else toast("目标已不在当前工作区中，请刷新。"); }, catalog:runtimeList, defaultRuntime:() => taskRuntime("git"), onChanged:() => loadState(true), onSettings:() => gitSettings.open(project), avatar:av, tint}); }
+    if (view === "chat") renderChat(); else { if (mountedChat !== null) { CrewChat.unmount(); mountedChat = null; } if (view === "all") renderAll(); if (view === "todos") renderTodos(); if (view === "channel") renderChannel(); if (view === "war-room") renderWarRoom(); if (view === "adopt") renderAdopt(); if (view === "usage") renderUsage(); if (view === "architecture") renderArchitecture(); if (view === "git") CrewGit.mount($("main"), {project, root:state.project.root, state, api, toast, chatAccess, contextControls, replace, beforeStop:confirmIdentityStop, onRouted:async id => { await loadState(true); const target = state.goals.find(item => String(item.id) === String(id)); if (target) navigate("chat", target.leader_session_id, null, target.id); else toast("目标已不在当前工作区中，请刷新。"); }, catalog:runtimeList, defaultRuntime:() => taskRuntime("git"), onChanged:() => loadState(true), onSettings:() => gitSettings.open(project), avatar:av, tint}); }
     if (view !== "chat") renderRight();
     renderCard(); document.title = `(${state.decisions.length}) ${projectDisplay(state.project)} · Crew`;
   }
@@ -1402,7 +1420,10 @@
     else if (view === "chat" && goalId != null && !(state.goals || []).some(item => String(item.id) === String(goalId) && item.leader_session_id === leaderId)) { navigate("chat",leaderId,readOnlyId,null); toast("目标已不在本组，已回到总对话。"); }
     else { render(); syncRoute(); }
     // Channel posts are not in the snapshot: a change replaces a shown post, a snapshot has the channel re-read its newest page.
-    if (mountedChannel) CrewChannel.changed(meta.source === "snapshot" ? null : meta.changes.filter(change => change.type.startsWith("channel_message.")));
+    const live = meta.source === "snapshot" ? null : meta.changes, rooms = live === null || live.some(change => change.type.startsWith("war_room."));
+    if (mountedChannel) { CrewChannel.changed(live === null ? null : live.filter(change => change.type.startsWith("channel_message."))); if (rooms) CrewChannel.roomsChanged(); }
+    // War rooms are not in the snapshot either: the open room takes its own changes and its posts' badges.
+    if (mountedRoom !== null) CrewWarRoom.changed(live === null ? null : live.filter(change => change.type.startsWith("war_room.") || change.type.startsWith("channel_message.")));
     if (pendingSettingsHash) { pendingSettingsHash = false; openSettings("ai"); }
     refreshUsage();
     if (previous !== null) notifySounds(previous, meta.source === "snapshot" || meta.catchUp, meta.source === "snapshot" ? snapshotGeneration : soundGeneration);

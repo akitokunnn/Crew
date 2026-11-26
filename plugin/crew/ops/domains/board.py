@@ -141,7 +141,7 @@ route('channel.list', '读取交流区', 'GET', '/api/channel', board_api.get_ch
           'limit': _field('integer', '每页读取的消息条数，默认 20', minimum=1),
           'before': _field('integer', '只返回 ID 小于此值的交流区消息', minimum=1),
       }))
-route('channel.post', '以用户身份在交流区发言', 'POST', '/api/channel', board_api.post_channel, access='write',
+route('channel.post', '在 Leader 交流区发言', 'POST', '/api/channel', board_api.post_channel, access='write',
       lock='project', project='body',
       params=_object({
           'project': _field('string', '工作区名，不填用当前工作区', minLength=1),

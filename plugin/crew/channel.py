@@ -46,6 +46,11 @@ def _message(conn, row):
                           "speaker_name": quoted["speaker_name"], "excerpt": _excerpt(quoted["body"])}
     else:
         value["reply"] = None
+    room = conn.execute("SELECT id,title,status,opened_message_id FROM war_rooms WHERE opened_message_id=? "
+                        "OR closed_message_id=?", (value["id"], value["id"])).fetchone()
+    # A main-channel post that opened or closed a war room links to it.
+    value["room"] = None if room is None else {"id": room["id"], "title": room["title"], "status": room["status"],
+                                               "event": "opened" if room["opened_message_id"] == value["id"] else "closed"}
     return value
 
 
@@ -130,7 +135,12 @@ def _named_in_body(conn, project_name, body, actor):
 
 
 @board.atomic
-def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_to=None, detail=False):
+def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_to=None, detail=False, room_id=None,
+         generated=False):
+    """``room_id`` puts the post in a war room's timeline; a reply always lands where the answered post is.
+
+    ``generated`` marks Crew's own wording (war room notices), which may run past the leader length limit.
+    """
     board.project(conn, project_name)
     if not isinstance(body, str):
         raise board.BoardError("Leader 交流区正文必须是字符串")
@@ -139,6 +149,18 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
     if reply_to is not None and (type(reply_to) is not int or conn.execute(
             "SELECT 1 FROM channel_messages WHERE project=? AND id=?", (project_name, reply_to)).fetchone() is None):
         raise board.BoardError("要回复的交流区发言不存在: " + str(reply_to))
+    if reply_to is not None:
+        answered_room = conn.execute("SELECT room_id FROM channel_messages WHERE id=?", (reply_to,)).fetchone()[0]
+        if room_id is None:
+            room_id = answered_room
+        elif answered_room != room_id:
+            raise board.BoardError("回复要和原发言在同一个地方：原发言 #%d 不在这个作战室" % reply_to)
+    room = None
+    if room_id is not None:
+        from . import war_room
+        room = war_room.open_room(conn, room_id, project_name)
+        if actor != board.HUMAN and not war_room.is_member(conn, room_id, actor):
+            raise board.BoardError("你不是作战室《%s》的成员；有事在交流区说，或请牵头邀请你" % room["title"])
     if type(detail) is not bool:
         raise board.BoardError("detail 必须是 true 或 false")
     if actor == board.HUMAN:
@@ -155,13 +177,17 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
     body = body.strip()
     if not body:
         raise board.BoardError("Leader 交流区发言不能为空")
-    if actor != board.HUMAN:
+    if actor != board.HUMAN and not generated:
         _check_short(body)
     elif detail:
         raise board.BoardError("用户发言不标私聊详情")
     targets = []
     names = [name for name in to if name != '*']
-    if '*' in to:
+    if '*' in to and room is not None:
+        # In a war room "everyone" means its members.
+        names = [member["crew_name"] for member in war_room.members(conn, room_id)
+                 if member["session_id"] != actor] + names
+    elif '*' in to:
         # "Everyone" means the ordinary leaders; the built-in Git assistant is only reached by name.
         # The global assistant has no workspace and is never a project leader.
         config = board.git_config(conn, project_name)
@@ -175,9 +201,13 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
     names += _named_in_body(conn, project_name, body, actor)
     identities = set()
     for name in dict.fromkeys(names):
-        target = board.named_session(conn, project_name, name)
+        # A leader's session id names it as well as its name does (AI callers often only have the id).
+        by_id = _leader(conn, project_name, name)
+        target = by_id if by_id is not None else board.named_session(conn, project_name, name)
         if _leader(conn, project_name, target["session_id"]) is None:
             raise board.BoardError("点名对象不是本项目的 leader: " + name)
+        if room is not None and not war_room.is_member(conn, room_id, target["session_id"]):
+            raise board.BoardError("%s 不是作战室《%s》的成员；请牵头先邀请" % (name, room["title"]))
         if target['session_id'] not in identities:
             targets.append(target)
             identities.add(target['session_id'])
@@ -190,10 +220,13 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
             if leader is not None:
                 told.append((leader, "reply"))
     message_id = conn.execute(
-        "INSERT INTO channel_messages(project,speaker_session_id,speaker_name,body,created_at,reply_to,detail) "
-        "VALUES(?,?,?,?,?,?,?)",
-        (project_name, actor, speaker_name, body, board._time(now), reply_to, int(detail))).lastrowid
+        "INSERT INTO channel_messages(project,speaker_session_id,speaker_name,body,created_at,reply_to,detail,room_id) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (project_name, actor, speaker_name, body, board._time(now), reply_to, int(detail), room_id)).lastrowid
     change_feed.touch(conn, 'channel', project_name, project_name)
+    if room_id is not None:
+        # Every room post (also a channel_post reply into a room) changes the room's unread and latest post.
+        change_feed.touch(conn, 'war_room', project_name, room_id)
     if reply_to is not None:
         # A leader answering a post it was told about turns that post's badge to replied.
         change_feed.touch(conn, 'channel_message', project_name, reply_to)
@@ -205,11 +238,12 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
             if actor == board.HUMAN:
                 # The user's own mention is the same explicit wake as typing to that leader directly.
                 messaging.clear_stop(conn, target["session_id"])
-            what = "点名你" if reason == "mention" else "回复了你的交流区发言 #%d" % reply_to
-            text = ("交流区：用户%s（交流区发言 #%d）：\n%s\n\n（这是用户本人的话）%s" % (what, message_id, body, _reply_hint(message_id))
+            where, kind = ("交流区", "交流区") if room is None else ("作战室 #%d《%s》" % (room_id, room["title"]), "作战室")
+            what = "点名你" if reason == "mention" else "回复了你的%s发言 #%d" % (kind, reply_to)
+            text = ("%s：用户%s（%s发言 #%d）：\n%s\n\n（这是用户本人的话）%s" % (where, what, kind, message_id, body, _reply_hint(message_id))
                     if actor == board.HUMAN else
-                    '交流区：「%s」%s（交流区发言 #%d）：\n%s\n\n回复用 Crew 工具 `channel_post`（参数 `text`、`reply_to=%d`）；只是回“收到”就不用回。' %
-                    (speaker_name, what, message_id, body, message_id))
+                    '%s：「%s」%s（%s发言 #%d）：\n%s\n\n回复用 Crew 工具 `channel_post`（参数 `text`、`reply_to=%d`）；只是回“收到”就不用回。' %
+                    (where, speaker_name, what, kind, message_id, body, message_id))
             notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now)
         conn.execute("INSERT INTO channel_mentions(message_id,session_id,name,notice_id,await_reply,reason) "
                      "VALUES(?,?,?,?,?,?)", (message_id, target["session_id"], target["crew_name"], notice_id,
@@ -271,14 +305,17 @@ def digest(conn, project_name):
     return dict(row) if row is not None else None
 
 
-def messages(conn, project_name, limit=20, before=None, after=0):
+def messages(conn, project_name, limit=20, before=None, after=0, room_id=None):
+    """The main channel, or one war room's timeline when ``room_id`` is given."""
     board.project(conn, project_name)
     if type(limit) is not int or limit < 1:
         raise board.BoardError("--limit 必须大于 0")
     if before is not None and (type(before) is not int or before < 1):
         raise board.BoardError("before 必须是正整数")
-    sql = "SELECT * FROM channel_messages WHERE project=? AND id>?"
+    sql = "SELECT * FROM channel_messages WHERE project=? AND id>? AND " + ("room_id IS NULL" if room_id is None else "room_id=?")
     args = [project_name, max(after, board.cleanup_boundary(conn, project_name)["channel_after"])]
+    if room_id is not None:
+        args.append(room_id)
     if before is not None:
         sql += " AND id<?"
         args.append(before)
@@ -302,7 +339,8 @@ def state(conn, project_name, reader=board.HUMAN):
 def counts(conn, project_name, reader=board.HUMAN):
     """Unread posts and the latest id, without asking whether the workspace is still open."""
     after = max(_read_id(conn, project_name, reader), board.cleanup_boundary(conn, project_name)["channel_after"])
-    unread = conn.execute("SELECT COUNT(*) FROM channel_messages WHERE project=? AND id>? AND speaker_session_id<>?",
+    unread = conn.execute("SELECT COUNT(*) FROM channel_messages WHERE project=? AND id>? AND speaker_session_id<>? "
+                          "AND room_id IS NULL",
                           (project_name, after, reader)).fetchone()[0]
     return {"unread": unread, "latest_id": _latest(conn, project_name)}
 
@@ -350,7 +388,7 @@ def preview(conn, session_id):
     after = card["upto_message_id"] if show_card else read_id
     rows = conn.execute(
         "SELECT m.* FROM channel_messages m WHERE m.project=? AND m.id>? AND m.speaker_session_id<>? "
-        "AND NOT EXISTS (SELECT 1 FROM channel_mentions t "
+        "AND m.room_id IS NULL AND NOT EXISTS (SELECT 1 FROM channel_mentions t "
         "WHERE t.message_id=m.id AND t.session_id=? AND t.notice_id IS NOT NULL) ORDER BY m.id",
         (s["project"], after, session_id, session_id)).fetchall()
     blocks = ["[Crew 交流区要点]\n" + card["body"]] if show_card else []
@@ -366,13 +404,24 @@ def preview(conn, session_id):
             lines.append("还有 %d 条" % (len(rows) - 10))
         lines.append("全文用 Crew 工具 `channel_consume` 查看；要接话用 `channel_post`（参数 `text`，`reply_to` 填发言编号）。")
         blocks.append("\n".join(lines))
-    return ("\n\n".join(blocks) if blocks else None), _latest(conn, s["project"])
+    from . import war_room
+    rooms = war_room.blocks(conn, session_id)
+    blocks += [text for text, _, _ in rooms]
+    upto = {"channel": _latest(conn, s["project"]), "rooms": {room: last for _, room, last in rooms}}
+    return ("\n\n".join(blocks) if blocks else None), upto
 
 
 @board.atomic
 def seen(conn, session_id, upto, now=None):
-    """The leader's input carrying a preview was accepted; its cursor moves past what that preview covered."""
-    _mark_read(conn, board.session(conn, session_id)["project"], session_id, upto, now)
+    """The leader's input carrying a preview was accepted; its cursors move past what that preview covered."""
+    _seen(conn, session_id, upto, now)
+
+
+def _seen(conn, session_id, upto, now):
+    from . import war_room
+    _mark_read(conn, board.session(conn, session_id)["project"], session_id, upto["channel"], now)
+    for room, last in upto["rooms"].items():
+        war_room.mark_seen(conn, room, session_id, last, now)
 
 
 @board.atomic
@@ -387,7 +436,7 @@ def summary(conn, session_id, now=None, carry_pending=False):
         return None
     carried = _carry_pending(conn, session_id, now) if carry_pending else []
     text, upto = preview(conn, session_id)
-    _mark_read(conn, s["project"], session_id, upto, now)
+    _seen(conn, session_id, upto, now)
     blocks = (["[Crew 交流区点名] 以下点名之前没送到你这里，现在送达：\n" +
                "\n".join("%d. %s" % (index, item) for index, item in enumerate(carried, 1))] if carried else [])
     return "\n\n".join(blocks + ([text] if text else [])) or None
