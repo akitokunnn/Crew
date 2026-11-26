@@ -130,6 +130,17 @@
 - 主会话按完成顺序逐个合入集成分支；后合入的会话先并入最新集成分支并复验。
 - 共享契约（操作清单格式、投递状态枚举、事件格式）由主会话定稿后才开工，各会话不自行修改。
 
+### 4.1 阶段三文件归属（2026-11-27，主会话定）
+
+| 主题 | 归属文件 | 不得修改 |
+| --- | --- | --- |
+| 消息可靠性（R2 第二部分） | `chat_delivery.py`、`channel.py`、`messaging.py`、`message_receipts.py`、`web_api/board.py` 中交流区与私聊相关函数、`frontend/channel.js`、`app.js` 的 `renderChannel` 一段、交流区样式 | `web_api/routes.py`、`cli.py`、`codex_tools.py`（工具说明文字的改动写成清单交给操作清单主题合入） |
+| 操作清单与助手（R5） | 新清单模块与 MCP 服务、`web_api/routes.py`、`cli.py`、`codex_tools.py`、`chat_personal.py`、`personal*.py`、`plugin/skills/`、`hooks.py` 中身份相关部分 | `chat_delivery.py`、`change_feed.py`、`app.js` 数据层 |
+| 增量事件流 | `change_feed.py`、`web_service/events.py`、`web_service/snapshot.py`、`web_service/workers.py`、`frontend/app-data.js`、`app.js` 数据层与轮询、`chat_status.py` / `chat_journal.py` 中的状态生产点 | `chat_delivery.py`、`routes.py`（接线由主会话做） |
+| 样式并入 | `frontend/*.css`（交流区样式除外）、`desktop/src/*.css` | 任何 `.js` 与 `.py` |
+
+路由登记统一由主会话或操作清单主题在 `routes.py` 里做，其余主题把“待接线”写进交付。
+
 ## 5. 验收口径
 
 - 每次合入：相关测试通过且新增失败差集为空；看 diff 有无越界、防御性代码、残留旧路径；对照交互清单抽查受影响的交互。
