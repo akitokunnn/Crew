@@ -288,6 +288,8 @@ python Temp/split/same_route_blocks.py HEAD plugin/crew/web.py (Get-ChildItem pl
 
 行号是建议切点，施工时以“完整顶层语句”为准微调，交付中给出最终行号表。
 
+**本会话原型验证**：按上表切点把基线 `app.js` 实切成 15 段（脚本只放在本会话 `Temp/split/a1_proto.js`，逻辑即“按行号切 → 每段 `new vm.Script` 解析 → 加外壳拼回比较”）：15 段全部能单独解析，切点连续覆盖第 3–1745 行，拼回结果与原文**逐字节相同**（统一换行后 184,617 字符）。因此 8 个 JS 测试读取拼接源码时得到的就是原文，注入点与点击处理切片位置不变。
+
 **A1 验证（逐字节）**：
 
 ```powershell
