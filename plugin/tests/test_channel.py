@@ -53,7 +53,8 @@ class ChannelTests(unittest.TestCase):
         message = self.post("**plan**\nsecond line", to=["beta"])
         self.assertEqual(message["speaker_session_id"], "a")
         self.assertEqual(message["speaker_name"], "alpha")
-        self.assertEqual(message["mentions"], [{"session_id": "b", "name": "beta", "replied": False, "delivery": "queued"}])
+        self.assertEqual([{key: item[key] for key in ("session_id", "name", "replied", "delivery")} for item in message["mentions"]],
+                         [{"session_id": "b", "name": "beta", "replied": False, "delivery": "queued"}])
         notice = board.pending_notices(self.conn, "b")[0]
         self.assertEqual(notice["source"], "crew")
         self.assertEqual(notice["text"], '交流区：「alpha」点名你（交流区发言 #%d）：\n**plan**\nsecond line\n\n'
@@ -152,7 +153,9 @@ class ChannelTests(unittest.TestCase):
     def test_cli_say_with_at_name_wakes_the_leader(self):
         result, output, error = self.run_cli(["say", "@beta 合并前先 rebase", "--json"])
         self.assertEqual(result, 0, error)
-        self.assertEqual(json.loads(output)["mentions"], [{"session_id": "b", "name": "beta", "replied": False, "delivery": "queued"}])
+        self.assertEqual([{key: item[key] for key in ("session_id", "name", "replied", "delivery")}
+                          for item in json.loads(output)["mentions"]],
+                         [{"session_id": "b", "name": "beta", "replied": False, "delivery": "queued"}])
         self.assertEqual(len(board.pending_notices(self.conn, "b")), 1)
 
     def test_human_post_uses_web_notice(self):
@@ -313,18 +316,18 @@ class ChannelTests(unittest.TestCase):
 
     def test_settle_points_to_private_only_after_the_mention_was_delivered(self):
         asked = channel.post(self.conn, "demo", board.HUMAN, "进度怎样", ["alpha"], source="web", now=NOW)
-        self.assertEqual(channel.settle(self.conn, "a", now=NOW), [])
+        self.assertEqual(channel.settle(self.conn, "a", {asked["id"]}, now=NOW), [])
         board.mark_notice_sent(self.conn, board.pending_notices(self.conn, "a")[0]["id"], now=NOW)
-        [stub_id] = channel.settle(self.conn, "a", now=NOW)
+        [stub_id] = channel.settle(self.conn, "a", {asked["id"]}, now=NOW)
         stub = channel.messages(self.conn, "demo")["messages"][-1]
         self.assertEqual((stub["id"], stub["body"], stub["reply_to"], stub["detail"], stub["auto"]),
                          (stub_id, "回复在私聊里", asked["id"], True, True))
-        self.assertEqual(channel.settle(self.conn, "a", now=NOW), [])
+        self.assertEqual(channel.settle(self.conn, "a", {asked["id"]}, now=NOW), [])
         # Answering in the channel first means no pointer is needed.
         again = channel.post(self.conn, "demo", board.HUMAN, "再问一次", ["alpha"], source="web", now=NOW)
         board.mark_notice_sent(self.conn, board.pending_notices(self.conn, "a")[0]["id"], now=NOW)
         self.run_cli(["say", "好了", "--reply-to", str(again["id"])])
-        self.assertEqual(channel.settle(self.conn, "a", now=NOW), [])
+        self.assertEqual(channel.settle(self.conn, "a", {again["id"]}, now=NOW), [])
 
     def test_older_database_gains_reply_columns_and_keeps_posts(self):
         message = self.post("before upgrade", to=["beta"])

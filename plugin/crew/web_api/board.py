@@ -119,7 +119,7 @@ def post_project_theme(service, path, data, project_name, conn, now, project):
 
 def post_channel(service, path, data, project_name, conn, now, project):
     message = channel.post(conn, project, board.HUMAN, _text(data, 'body'),
-                           data.get('to', []), source='web', now=now)
+                           data.get('to', []), source='web', now=now, reply_to=data.get('reply_to'))
     return {'message': message}
 
 

@@ -157,7 +157,7 @@ class LeaderWakeTests(ShellFixture, unittest.TestCase):
         self.assertEqual(output.strip(), '已排进对方的通知，对方空闲时送达')
 
 
-class ChannelHttpTests(ShellFixture, unittest.TestCase):
+class ChannelHttpFixture(ShellFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
         poll = mock.patch.object(web.Service, '_poll_notices', return_value=None)
@@ -196,6 +196,7 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, result)
         return result
 
+class ChannelHttpTests(ChannelHttpFixture):
     def test_member_wakes_only_own_leader_through_http(self):
         code, result = self.request('/api/wake', {'name': 'lead', 'text': '请处理我的汇报',
                                                 'caller_session_id': 's1'}, project='demo')
@@ -213,7 +214,9 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
         message = result['message']
         self.assertEqual(message['speaker_session_id'], board.HUMAN)
         self.assertEqual(message['speaker_name'], '用户')
-        self.assertEqual(message['mentions'], [{'session_id': 's3', 'name': 'lead', 'replied': False, 'delivery': 'queued'}])
+        self.assertEqual([{key: item[key] for key in ('session_id', 'name', 'replied', 'delivery', 'queued_at')}
+                          for item in message['mentions']],
+                         [{'session_id': 's3', 'name': 'lead', 'replied': False, 'delivery': 'queued', 'queued_at': NOW}])
         notice = board.pending_notices(self.conn, 's3')[0]
         self.assertEqual(notice['source'], 'web')
         self.assertIn('用户点名你', notice['text'])
@@ -422,6 +425,11 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(channel.messages(self.conn, 'demo')['messages'][-1]['id'], post['id'])
         service.chat.journal(sid).set_status('idle')
         service.deliver_notices()
+        # Idle alone is no proof the leader answered: the pointer waits for its turn to finish.
+        self.assertEqual(channel.messages(self.conn, 'demo')['messages'][-1]['id'], post['id'])
+        service.chat.journal(sid).emit('turn_result', status='completed', success=True)
+        service.chat.journal(sid).set_status('idle')
+        service.deliver_notices()
         stub = channel.messages(self.conn, 'demo')['messages'][-1]
         self.assertEqual((stub['speaker_session_id'], stub['reply_to'], stub['auto']), (sid, post['id'], True))
         self.assertEqual(board.pending_notices(self.conn, sid), [])
@@ -440,3 +448,73 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
         self.assertIn('ordinary', summary)
         self.assertNotIn('must remain', summary)
 
+
+
+class DeliveryHttpTests(ChannelHttpFixture):
+    """Delivery states behind the channel page: who waits and why, and the user's replies."""
+
+    def managed_leader(self):
+        service = self.server.service
+        with mock.patch('crew.chat.shutil.which', return_value='claude.exe'):
+            sid = service.chat.start(self.conn, 'demo', 'receiver', '协调', role='leader', now=NOW)['session_id']
+        service.chat.journal(sid).set_status('idle')
+        return service, sid
+
+    def test_user_replies_to_a_leader_post_and_its_author_is_told(self):
+        question = channel.post(self.conn, 'demo', 's3', '要不要先冻结 develop？', now=NOW)
+        code, result = self.request('/api/channel', {'body': '先别冻结', 'reply_to': question['id']}, project='demo')
+        self.assertEqual(code, 200, result)
+        message = result['message']
+        self.assertEqual(message['reply']['id'], question['id'])
+        self.assertEqual([(item['session_id'], item['delivery']) for item in message['notified']], [('s3', 'queued')])
+        [notice] = board.pending_notices(self.conn, 's3')
+        self.assertIn('用户回复了你的交流区发言 #%d' % question['id'], notice['text'])
+
+    def test_failed_turn_never_gets_a_private_reply_pointer(self):
+        service, sid = self.managed_leader()
+        code, result = self.request('/api/channel', {'body': '进度？', 'to': ['receiver']}, project='demo')
+        self.assertEqual(code, 200, result)
+        service.deliver_notices()
+        journal = service.chat.journal(sid)
+        journal.emit('turn_result', status='failed', success=False)
+        journal.set_status('idle')
+        service.deliver_notices()
+        journal.emit('turn_result', status='completed', success=True)
+        service.deliver_notices()
+        latest = channel.messages(self.conn, 'demo')['messages'][-1]
+        self.assertEqual(latest['id'], result['message']['id'])
+        self.assertEqual(latest['mentions'][0]['delivery'], 'delivered')
+
+    def test_leader_running_elsewhere_shows_why_its_mention_waits(self):
+        service = self.server.service
+        self.assertTrue(service.agents_ready.wait(3))
+        with service.agents_lock:
+            service.agents = [{'sessionId': 's3', 'name': 'lead'}]
+        code, result = self.request('/api/channel', {'body': '看一下', 'to': ['lead']}, project='demo')
+        self.assertEqual(code, 200, result)
+        service.deliver_notices()
+        mention = channel.messages(self.conn, 'demo')['messages'][-1]['mentions'][0]
+        self.assertEqual((mention['delivery'], mention['waiting']), ('queued', 'external'))
+        self.assertEqual(len(board.pending_notices(self.conn, 's3')), 1)
+
+    def test_batch_claim_is_recorded_before_the_input_is_written(self):
+        service, sid = self.managed_leader()
+        channel.post(self.conn, 'demo', 's3', 'ping', to=['receiver'], now=NOW)
+        seen = []
+
+        def send(session, text, **kwargs):
+            seen.append(tuple(self.conn.execute('SELECT batch_id,sent_at FROM leader_notices WHERE session_id=?',
+                                                (sid,)).fetchone()))
+            raise OSError('fixture send failed')
+
+        with mock.patch.object(service.chat, 'send', side_effect=send):
+            service.deliver_notices()
+        [(batch_id, sent_at)] = seen
+        self.assertTrue(batch_id.startswith('leader-notices:'))
+        self.assertIsNone(sent_at)
+        # Retrying reuses the same batch rather than building a second one.
+        with mock.patch.object(service.chat, 'send', side_effect=send):
+            service.deliver_notices()
+        self.assertEqual(seen[1], (batch_id, None))
+        batches = [event for event in service.chat.journal(sid).events if event['type'] == 'leader_notice_batch']
+        self.assertEqual([event['id'] for event in batches], [batch_id])

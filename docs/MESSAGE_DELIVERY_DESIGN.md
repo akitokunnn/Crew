@@ -50,10 +50,12 @@
 | `replied` | 对方已回复 | **派生，不存储**：交流区存在对方 `reply_to` 本帖的发言；私聊存在对方 `reply_to` 本消息的协作消息 |
 | `failed` | 投递失败，带原因 | `peer_messages.error` 非 `DeliveryWaiting:`、meta `failed` |
 
+已落地（第二部分）：交流区通知的状态机在 `chat_delivery.py` 顶部——`notice_state` 读状态，`claim_batch` / `claim_for_hook` 两个认领者，`note_waiting` 记等待原因，`_first_turn_succeeded` 判回合证据；`DeliveryMixin.deliver_leader_notices` / `settle_channel_mentions` 是两个驱动循环（原在 `web_service/workers.py`，现在那里只取外部进程列表后委托）。
+
 规则：
 
 1. **单调**：`queued → delivered → replied` 只前进。认领一律用带条件的更新（`UPDATE … SET sent_at=? WHERE id=? AND sent_at IS NULL`，看 `rowcount`），谁先标记谁投递，并发的钩子和网页服务不会重复送达。
-2. **同一条通知只有一个投递者**：网页服务一旦把通知写进 `leader_notice_batch`，该批就独占这些通知（重试用同一批编号）；钩子只认领**不在任何批次里**的通知。
+2. **同一条通知只有一个投递者**：网页服务在写 journal 批次**之前**先用带条件的更新把通知记到 `leader_notices.batch_id`（`WHERE sent_at IS NULL AND (batch_id IS NULL OR batch_id=?)`），该批就独占这些通知（重试按 `batch_id` 找回同一批，journal 里没写成就按同一编号重建）；钩子只认领 `batch_id IS NULL` 的通知。归属只看数据库，`channel.py` 不再读 chat 日志。
 3. **“已回复”只看回复记录**：送达、回合结束、代发占位都不是回复证据。`replied` 不落库，避免两处写入。
 4. **兼容现有字段**：私聊回执保留 `status` 的 `delivered` / `accepted`（任务内消息、目标验收依赖它们），新增 `replied` 与 `replied_by`；`accepted` 布尔在 `replied` 时仍如实反映原生输入是否接受过。定稿后对外统一成结构 `delivery: {state, via, at, error, replied_by}`，旧字段在下一次大版本删除。
 
@@ -73,12 +75,14 @@
 
 ## 5. 数据模型与迁移
 
-本阶段新增两列（`schema.sql` 与 `store._migrate_channel_replies`）：
+新增四列（`schema.sql` 与 `store._migrate_channel_replies`；前两列第一部分、后两列第二部分）：
 
 | 表.列 | 定义 | 旧数据含义 |
 | --- | --- | --- |
 | `channel_mentions.reason` | `TEXT NOT NULL DEFAULT 'mention' CHECK (reason IN ('mention','reply'))` | 旧行都是显式点名 → `mention` |
 | `leader_notices.delivered_via` | `TEXT CHECK (delivered_via IN ('hook'))` | `NULL` = 写进输入（含全部旧通知）；`hook` = 外部会话提示词钩子带上 |
+| `leader_notices.batch_id` | `TEXT` | 网页服务输入批次的编号（`leader-notices:<摘要>` 或 `channel:<发言>:<摘要>`），认领即写；旧通知为 `NULL` |
+| `leader_notices.waiting` | `TEXT CHECK (waiting IN ('external','busy','stopped'))` | 还在排队的原因，网页服务每轮看到原因变化才写；送出后不再读取 |
 
 - **保留历史**：只加列，不改不删旧行；旧点名的 `delivery` 由现有 `notice_id` / `sent_at` / 回复记录直接推出。
 - **幂等**：沿用迁移函数先查后改；重复打开数据库为空操作（测试 `test_older_mentions_gain_a_reason_and_keep_their_notices` 连开两次）。
@@ -86,7 +90,7 @@
 - 不新增“状态”列：`queued/delivered` 由现有时间戳决定，`replied` 派生；避免同一事实两处写入。
 - 后续（定稿后）如需对外统一 `delivery.at`，`leader_notices.sent_at`、`peer_messages.delivered_at` 已能提供，不必迁移。
 
-## 6. 本阶段已落地（只改非拆分文件）
+## 6. 已落地
 
 | 提交 | 内容 |
 | --- | --- |
@@ -96,32 +100,34 @@
 
 验证：`test_message_delivery`、`test_channel`、`test_message_receipts`、`test_mixed_messaging`、`test_leader_channel_http`、`test_channel_digest(_codex)`、`test_cards_notices`、`test_notice_noise`、`test_goal_messages`、`test_codex_tools` 共 209 例通过；钩子相关 `test_core`、`test_hook_project`、`test_inactive_runtime`、`test_session_ops`、`test_trust_mode`、`test_workspace_activity` 165 例通过；`test_channel_runtime_ui.js` 通过。三条既有断言因新增 `delivery` 字段改写（`test_channel` 两处、`test_leader_channel_http` 一处，旧断言只缺新字段）。
 
-## 7. 待拆分后施工（`web.py`、`chat.py`、`frontend/app.js`、`frontend/chat.js`、`frontend/channel.js`）
+**第二部分（阶段二拆分合入后）**：
 
-阶段二拆分合入后按顺序做；每条先补失败测试。模块名按 [拆分边界](SPLIT_BOUNDARIES.md)：`deliver_notices` / `settle_channel_mentions` → `web_service/workers.py`；`_send` / `_deliver_messages` → `chat_delivery.py`（`DeliveryMixin`）；`/api/channel`、`/api/messages` → `web_api/board.py`；`renderChannel` → `frontend/app/45-todos-channel-all.js`。
+- `chat_delivery.py`：交流区通知状态机（见第 3 节）；`deliver_leader_notices` 先认领后写批次，外部运行 / 正忙 / 被停止时记 `waiting`；`settle_channel_mentions` 只在承载该点名的批次输入 `accepted` 后**第一个**结束的回合成功时代发“回复在私聊里”（P4），回合失败、被停止、进程丢失都不代发，徽章保持“已送达，未回复”；Codex 的交流区摘要改为 `channel.preview` + 输入接受后 `channel.seen`（P5）。
+- `channel.py`：去掉读 chat 日志的 `_batched`；点名 / 回复通知多给 `queued_at`、`delivered_at`、`via`、`waiting`、`reply_id`；`settle` 改为只处理投递模块给出的、有回合证据的发言。
+- `web_api/board.py`：`POST /api/channel` 接受用户的 `reply_to`。
+- `web_service/workers.py`（增量事件流主题的文件，只动了这一处）：`deliver_notices` 改为取外部进程列表后委托给 `chat.deliver_leader_notices`，`settle_channel_mentions` 搬进投递模块。
+- 前端交流区按第 8 节重做：`frontend/channel.js`、新增 `frontend/channel.css`（`index.html` 引用，`web.py` 的 `STATIC` 登记一行）、`app.js` 只改 `renderChannel()`。
 
-1. **P4 代发“回复在私聊里”要有回合证据**（`web_service/workers.py` 的 `settle_channel_mentions`）：只有在 leader journal 里、承载该通知的 `leader_notice_batch` 输入 `accepted` 之后出现**成功结束的回合**（`result` 非错误、且有助手正文）才代发；回合失败、被停止、进程退出时保持 `await_reply=1`，徽章显示“已送达，未回复”。测试：通知已送出 + 进程退出 / 回合报错 → `settle` 不发。
-2. **P5 Codex 摘要两阶段**（`chat_delivery.py` 的 `_send`）：`channel.summary` 拆成“预览”（算出文本和目标游标，不写库）与“确认”（输入 `accepted` 后推游标）；`rejected` / `unknown` 不推。Codex 路径不传 `carry_pending`（托管会话的点名由通知投递负责）。
-3. **外部运行的 leader 排队原因可见**（`web_service/workers.py` 的 `deliver_notices`）：遇到外部进程时，在通知上记录等待原因（复用 `events` 的 `leader:notice_blocked`，或给 `leader_notices` 加 `waiting_reason` 列），`_message` 的 `delivery` 附 `reason`：“对方在外部窗口运行，下次提示时送达”。
-4. **用户在网页回复某条发言**（`web_api/board.py` 的 `/api/channel`）：接受 `reply_to`，后端已支持用户回复 Leader 发言时按用户点名通知原帖作者（清除停止标记、`await_reply=1`、私聊显示为用户气泡）。
-5. **前端交流区重做**（`channel.js`、`frontend/app/45-todos-channel-all.js`、`style.css`、手机样式）：按第 8 节定稿实现徽章、引用脉络、私聊直达；`mentionHTML` 改为渲染所有点名与 `notified` 的 `delivery`，不再只看用户发言。
-6. **私聊气泡投递状态**（`chat.js`）：用户在私聊里看到的 `crew send` 消息、交流区转来的用户原话，显示同一套徽章；数据取 `peer_messages` 回执与 `leader_notices`。
-7. **侧栏 / 头部排队提示**（`app.js`）：`/api/state` 已有 `notices_pending`，leader 行显示“N 条通知排队中”，点击打开交流区并定位。
-8. **事件**：通知送出、钩子认领、回复产生时写 `leader:notice_sent` / `channel:replied` 事件，供增量事件流推送徽章变化（见第 9 节）。
+## 7. 拆分后施工清单（状态）
 
-不依赖拆分、可在本会话后续直接做的：
+| # | 内容 | 状态 |
+| --- | --- | --- |
+| 1 | P4 代发“回复在私聊里”要有回合证据 | 已做（`chat_delivery.settle_channel_mentions`） |
+| 2 | P5 Codex 摘要两阶段 | 已做（`channel.preview` / `channel.seen`） |
+| 3 | 外部运行等排队原因可见，`delivery` 带 `queued_at` | 已做（`leader_notices.waiting`，三种原因） |
+| 4 | 用户在网页回复某条发言 | 已做（`/api/channel` 的 `reply_to`，前端引用条） |
+| 5 | 前端交流区重做 | 已做（见第 8 节） |
+| 6 | 私聊气泡投递徽章、“待送达：交流区 #id”标记（`chat.js`） | 未做：`chat.js` 不在本主题归属，见第 12 节待接线 |
+| 7 | 侧栏 / 头部“N 条通知排队中”（`app.js` 数据层） | 未做：`app.js` 数据层归增量事件流，见第 12 节 |
+| 8 | 徽章变化的增量事件 | 未做：`change_feed` 尚未合入集成分支，生产点列在第 12 节 |
 
-- **P6** PreToolUse 钩子也认领外部 leader 的待送交流区通知（与 `peer_messages` 同一热路径：先只读检查 `leader_notices` 有无待送，再写库认领），使外部 leader 回合中途也能收到点名。是否打断正在进行的工作需主会话拍板；默认建议做，和私聊消息行为一致。
+**P6**（外部 leader 回合中途经 PreToolUse 收点名）：仍待主会话拍板，未做。
 
 ## 8. 交流区界面重设计（定稿）
 
-视觉稿由 CLI Claude Code（claude-dispatch，`claude-opus-5-5`，effort high）产出，主题会话看过 6 张截图后验收定稿。原型、截图与逐项规格在 [`prototypes/channel-delivery/`](../prototypes/channel-delivery/README.md)（`DESIGN.md` 为色值与尺寸全表）；前端实施并验收后整个目录删除。
+视觉稿由 CLI Claude Code（claude-dispatch，`claude-opus-5-5`，effort high）产出，主题会话看过 6 张截图后验收定稿；实现同样派 CLI Claude Code 按原型移植到 `frontend/channel.js` / `frontend/channel.css`，主题会话审核并在真实后端上走查后，原型目录 `prototypes/channel-delivery/` 已删除（原型、截图与色值全表见提交 `3df4e99`）。
 
-| 视口 | 截图 |
-| --- | --- |
-| 1280 | `prototypes/channel-delivery/shots/1280-light.png`、`1280-dark.png` |
-| 758 | `758-light.png`、`758-dark.png` |
-| 375 | `375-light.png`、`375-dark.png` |
+实现与原型的差异：不画原型自带的左侧栏（应用有自己的侧栏）；手机发言框底部不再加安全区（底栏已留）；详情卡不显示字数（`detail` 只是布尔）；“新发言”分隔线按未读数定位到第一条未读；状态说明里的示例徽章写“@leader”且不可点。
 
 **版式**：玻璃页头（标题、`整理`、预留的虚线禁用 `作战室·后续`）→ 要点卡（可折叠）→ 发言流（顶部“已整理的 N 条原始发言”折叠区，“新发言”分隔线，打开时停在分隔线）→ 发言框（引用条、点名、输入）。≥1024 右侧常驻 288px“投递追踪”栏：成员 2×2（载体、在线 / 在跑任务 / 离线）、按 Leader 合并的“等待回应”（排队最久的在前）、状态说明。≤760 收成页头下一条“N 位 leader 待回应 · 语音 排队 14 分钟 · 投递追踪 ›”，点开为底部单。
 
@@ -178,7 +184,7 @@
 - “回复通知原帖作者”保证线程内的来回对话不会因为忘了 `@` 而断；作战室的“统一拍板卡”复用现有拍板，不走交流区。
 - 界面上的“升级为作战室”入口挂在话题线程上（第 8 节已预留位置）；交流区与作战室的边界（设计文档第 7 节待定项 1）建议按“同一话题来回超过 3 轮或涉及 3 个以上 leader 时提示升级”，由主会话定。
 
-## 10. 真实 AI 实测计划（拆分后统一做）
+## 10. 真实 AI 实测
 
 隔离 `--home`、独立端口、临时项目目录；CC 用 `claude-haiku-5-5`，Codex 用 `gpt-6-luna`（reasoning low）。逐条记录模型、实际行为、不符合预期之处。
 
@@ -189,8 +195,40 @@
 5. 用户在交流区点名外部 leader → 不出现 Crew 代发的“回复在私聊里”。
 6. （第 7 节 P4 落地后）leader 回合失败或被停止 → 不代发“回复在私聊里”。
 
+### 实测结果（2026-11-27，第二部分）
+
+隔离 `CREW_HOME`（临时目录）、临时项目、PATH 去掉正式 `~/.crew/bin` 只留临时 `crew` 包装；网页服务不参与，“送达”由脚本代替网页服务把通知写成 `[Crew]` 输入；Claude 用 `claude-haiku-5-5`（`--setting-sources project --strict-mcp-config`），Codex 用 `gpt-6-luna`（reasoning low，`codex exec`）。两个 leader：支付、语音。
+
+| 场景 | 模型 | 实际行为 | 结论 |
+| --- | --- | --- | --- |
+| 1 点名后用户要对方答复 | haiku（支付） | `crew say "@语音 …"`，回执“@语音：已排队，对方尚未收到；送达后才会看到”；又查 `crew channel` 看到“已排队”；回答“语音组还没有回复……回复后我再把原话告诉你” | 符合，没有编造对方答复 |
+| 1 同上 | luna（支付） | 同样发出点名，答“消息还在排队，对方尚未收到，所以目前还没有回复” | 符合 |
+| 2 收到点名并回复 | luna（语音） | 只用 `crew say --reply-to 1 "…"`，没写 `@支付`；支付随即排上“「语音」回复了你的交流区发言 #1”通知，#1 徽章变“已回复” | 符合 |
+| 2b 原帖作者收到回复通知 | haiku（支付） | 读交流区后 `--reply-to 2` 回了一句实质内容（不是“收到”），语音因此又被通知 | 符合规则；来回两轮后自然停止，没出现刷屏 |
+| 3 外部窗口 leader 的待送点名 | haiku（语音） | 钩子上下文出现“以下点名之前没送到你这里，现在送达”，带上 2 条（一条回复通知、一条点名），第二次钩子为空；模型回复了点名那条，回复通知那条没回（内容不需要回） | 符合；两条通知 `delivered_via=hook`，徽章“已送达” |
+
+不符合预期 / 要留意：
+
+- luna 开局会大范围摸环境（列目录、读 `--help`、找 `rg`），还读了本机 `~/.codex/memories/MEMORY.md`（Codex 自身的记忆文件，只读，没写）。实测只隔离了 Crew 数据，没隔离 Codex 自己的 HOME；以后实测可给 Codex 单独的 `CODEX_HOME`（需另行登录）。
+- haiku 第一次找不到点名用的名字时试了不存在的 `crew leaders` 命令，随后用 `crew status` 找到。属于既有 CLI 可发现性问题，不是本次改动引入。
+- “回复自己不叫醒自己”、P4 回合证据、P5 Codex 游标都是后端行为，没有让模型去触发，由自动测试覆盖。
+
 ## 11. 已知限制
 
-- Codex 路径的摘要仍在输入接受前推游标（P5），到拆分后修。
-- 钩子认领与网页批次之间理论上仍有一个窄窗口：网页服务读出待送通知、尚未写 journal 批次时，外部会话恰好提交提示词。此时网页服务因该 leader 在外部运行本就不会发送（`leader:notice_blocked`），批次不会产生，不会重复；若该 leader 恰在同一刻从外部退出并被网页服务接管，可能重复一次。概率极低，拆分后可让网页服务在发送前用同样的条件更新先认领再发送来消除。
+- 迁移不回填 `batch_id`：升级那一刻若某条通知已写进旧 journal 批次但还没送出，而该 leader 恰好转到外部窗口运行，钩子可能再送一次。需要“曾托管、批次投递失败、随后转外部”三件事同时发生，不为它读全部旧 journal。
+- 升级前已送出、仍等待回复的用户点名没有 `batch_id`，不会再代发“回复在私聊里”，徽章停在“已送达，未回复”，直到 leader 在交流区回复。
+- 外部窗口运行的 leader 回合是否结束 Crew 看不到，所以钩子送达的用户点名永远不代发“回复在私聊里”。
 - 外部会话中途（PreToolUse）仍收不到 Leader 通知（P6，待拍板）。
+- 投递追踪栏的“等待回应”只统计当前已加载的发言；更早的排队点名要往上加载才会出现。
+
+## 12. 待接线（交给主会话 / 其他主题）
+
+| 归属 | 位置 | 要做的事 |
+| --- | --- | --- |
+| 主会话（合并时留意） | `plugin/crew/web.py` 的 `STATIC` | 本分支已加一行 `/channel.css`；若主会话统一管静态表，按原样保留或挪到统一位置 |
+| 增量事件流 | `web_service/workers.py` | 本分支把 `deliver_notices` 的通知投递与代发委托给 `chat_delivery`；rebase 时以本分支为准，事件生产写在 `chat_delivery` 的这几处 |
+| 增量事件流 | `change_feed` 生产点 | 登记 `channel_message` 类实体，在同一事务里 `updated` 整条发言（`channel._message` 的结果）：`channel.post`、`channel.settle`、`chat_delivery.claim_for_hook`（钩子认领）、`deliver_leader_notices` 里 `mark_notice_sent` 之后、`note_waiting` 实际改了行时；前端 `CrewChannel.update` 收到后按 id 合并即可，不必整页刷新 |
+| 增量事件流 | `app.js` 数据层 / 侧栏 | leader 行显示 `notices_pending`（“N 条通知排队中”），点击 `openChannel()` 定位到最早一条排队点名 |
+| 前端私聊（`chat.js` 归属方） | 私聊气泡 | 交流区转来的用户原话（`channel:<id>:` 开头的消息）和 `crew send` 消息显示同一套徽章；对方私聊底部加“待送达：交流区 #id”标记，交流区排队徽章的私聊按钮落到这里 |
+| 操作清单（R5） | `codex_tools.py` / `cli.py` | 本轮不需要改工具说明；`crew_channel` 的 JSON 自动多出 `queued_at`、`delivered_at`、`via`、`waiting`、`reply_id`，若清单对输出字段有登记，补上这五个 |
+| 操作清单（R5） | `hooks.py` 身份 | 钩子用“进程里有没有 `CREW_SESSION_ID`”判断外部会话并传 `carry_pending`；改成 MCP 令牌绑定身份时同步改这里，否则外部 leader 的待送点名会丢 |
