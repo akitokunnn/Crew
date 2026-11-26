@@ -822,11 +822,11 @@
   }
   function renderChannel() {
     if (!mountedChannel) {
-      $("main").innerHTML = `<div class="head channel-head"><div><div class="title">${ic("msg")}Leader 交流区</div><div class="sub">所有 leader 和用户的公共频道 · 点名才叫醒</div></div><button id="channel-digest-button" class="btn">整理</button></div><div id="channel-host" class="chat-host"></div>`;
+      $("main").innerHTML = '<div id="channel-host" class="cx-host"></div>';
       delete $("main").dataset.render;
       mountedChannel = true;
       const focus = channelFocus; channelFocus = null;
-      CrewChannel.mount({host:$("channel-host"), digestButton:$("channel-digest-button"), state, api, toast, focus, onRead:channel => { Object.assign(state.channel, {unread:channel.unread, latest_id:channel.latest_id}); renderSidebar(); },
+      CrewChannel.mount({host:$("channel-host"), state, api, toast, focus, avatar:av, onRead:channel => { Object.assign(state.channel, {unread:channel.unread, latest_id:channel.latest_id}); renderSidebar(); },
         openChat(id, target) { if (leader(id) === undefined) { toast("这位 leader 已不在列表里，看不到它的私聊"); return; } chatFocus = {session:id, ...target}; navigate("chat", id, null, null); }});
     }
     CrewChannel.update(state);

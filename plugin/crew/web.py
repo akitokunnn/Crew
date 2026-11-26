@@ -268,6 +268,7 @@ STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8
 STATIC['/leader-look.js'] = ('leader-look.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/architecture.js': ('architecture.js', 'text/javascript; charset=utf-8'),
                '/architecture.css': ('architecture.css', 'text/css; charset=utf-8')})
+STATIC['/channel.css'] = ('channel.css', 'text/css; charset=utf-8')
 POST_PATHS.add('/api/remote-access')
 POST_PATHS.update(report_preview.WORKER_PATHS)
 POST_PATHS.update(('/api/host/workspace/existing', '/api/host/workspace/new'))
