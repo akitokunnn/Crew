@@ -52,10 +52,10 @@ class MaintenanceFixture(ShellFixture):
         return result
 
     def department(self):
-        leader = self.ok('/api/leader?project=demo', {'name': 'boss', 'task': 'lead the department'})
+        leader = self.ok('/api/op/leader.create?project=demo', {'name': 'boss', 'task': 'lead the department'})
         boss, boss_process = leader['session_id'], self.processes[-1]
         self.finish_turn(boss, boss_process)
-        member = self.ok('/api/spawn?project=demo', {'name': 'worker', 'task': 'do the work', 'group': 'boss'})
+        member = self.ok('/api/op/execution.spawn?project=demo', {'name': 'worker', 'task': 'do the work', 'group': 'boss'})
         worker, worker_process = member['session_id'], self.processes[-1]
         self.finish_turn(worker, worker_process)
         return boss, boss_process, worker, worker_process
@@ -72,21 +72,21 @@ class MaintenanceFixture(ShellFixture):
         return goals.get(self.conn, value['id']), goals.get_execution(self.conn, execution['id'])
 
     def preview(self, leader):
-        return self.ok('/api/maintenance/department/preview?project=demo', {'project': 'demo', 'leader_session_id': leader})
+        return self.ok('/api/op/maintenance.department.preview?project=demo', {'project': 'demo', 'leader_session_id': leader})
 
     def contexts(self, preview):
         return {entry['target']: entry for person in preview['people'] for entry in person['contexts']}
 
     def start(self, leader, preview, targets=None):
         targets = [target for target, entry in self.contexts(preview).items() if entry['available']] if targets is None else targets
-        return self.ok('/api/maintenance/department/compact?project=demo', {
+        return self.ok('/api/op/maintenance.department.compact?project=demo', {
             'project': 'demo', 'leader_session_id': leader, 'preview_id': preview['preview_id'], 'targets': targets})
 
     def job(self, job_id, kind='department_compact', leader=None):
         query = {'project': 'demo', 'kind': kind}
         if leader is not None:
             query['leader_session_id'] = leader
-        result = self.ok('/api/maintenance/jobs?' + urlencode(query))
+        result = self.ok('/api/op/maintenance.jobs?' + urlencode(query))
         return next(item for item in result['jobs'] if item['id'] == job_id)
 
     def item(self, job_id, target, leader=None, kind='department_compact'):
@@ -146,11 +146,9 @@ class DepartmentCompactTests(MaintenanceFixture, unittest.TestCase):
         self.complete_claude(general, boss)
         first = self.new_process(known + 1)
         self.assertIsNotNone(general.poll(), 'The temporary general native stops before the next context of the same person')
-        self.assertEqual(first.options['env']['CREW_EXECUTION_ID'], finished_execution['id'])
         self.assertEqual(first.command[first.command.index('--resume') + 1], 'native-' + finished_execution['id'])
         self.complete_claude(first, 'native-' + finished_execution['id'])
         second = self.new_process(known + 2)
-        self.assertEqual(second.options['env']['CREW_EXECUTION_ID'], paused_execution['id'])
         # The service's own goal sync neither interrupts nor resumes the paused goal during compaction.
         with closing(store.connect(self.home)) as conn, self.chat.lock:
             self.chat.goal_controller.sync(conn)
@@ -192,11 +190,11 @@ class DepartmentCompactTests(MaintenanceFixture, unittest.TestCase):
         job = self.start(boss, self.preview(boss), [worker, execution['id']])
         member = self.new_process(known, worker)
         native = self.new_process(known, 'native-' + execution['id'])
-        code, refused, _ = self.request('/api/chat/send?project=demo', {'session_id': worker, 'text': 'hello during maintenance'})
+        code, refused, _ = self.request('/api/op/chat.send?project=demo', {'session_id': worker, 'text': 'hello during maintenance'})
         self.assertEqual((code, refused['error']), (409, chat.MAINTENANCE_HELD))
         self.assertFalse(any(event.get('text') == 'hello during maintenance' for event in self.chat.journal(worker).events))
         self.complete_claude(member, worker)
-        code, refused, _ = self.request('/api/chat/send?project=demo', {'session_id': boss, 'goal_id': running['id'], 'text': 'continue the goal'})
+        code, refused, _ = self.request('/api/op/chat.send?project=demo', {'session_id': boss, 'goal_id': running['id'], 'text': 'continue the goal'})
         self.assertEqual((code, refused['error']), (409, chat.MAINTENANCE_HELD))
         self.assertEqual(dict(self.conn.execute('SELECT * FROM goals WHERE id=?', (running['id'],)).fetchone()), goal_row)
         self.assertEqual(dict(self.conn.execute('SELECT * FROM goal_executions WHERE id=?', (execution['id'],)).fetchone()), execution_row)
@@ -207,7 +205,7 @@ class DepartmentCompactTests(MaintenanceFixture, unittest.TestCase):
 
     def test_busy_external_and_unconfirmed_contexts_fail_with_real_reasons_while_others_continue(self):
         boss, boss_process, worker, worker_process = self.department()
-        self.ok('/api/chat/send?project=demo', {'session_id': worker, 'text': 'keep working'})
+        self.ok('/api/op/chat.send?project=demo', {'session_id': worker, 'text': 'keep working'})
         preview = self.preview(boss)
         contexts = self.contexts(preview)
         self.assertEqual((contexts[worker]['available'], contexts[worker]['kind']), (False, 'busy'))
@@ -246,7 +244,7 @@ class DepartmentCompactTests(MaintenanceFixture, unittest.TestCase):
         preview = self.preview(boss)
         contexts = self.contexts(preview)
         self.assertTrue(contexts[execution['id']]['available'], 'An idle conversation need not block maintenance')
-        self.ok('/api/chat/send?project=demo', {'session_id': boss, 'text': 'Continue the current work'})
+        self.ok('/api/op/chat.send?project=demo', {'session_id': boss, 'text': 'Continue the current work'})
         known = len(self.processes)
         job = self.start(boss, preview, [execution['id']])
         result = self.settled(job['id'], boss)
@@ -299,9 +297,9 @@ class DepartmentCompactTests(MaintenanceFixture, unittest.TestCase):
         self.assertTrue(item['error'].startswith('压缩已原生确认，但本次临时启动的原生进程未能确认停止'), item['error'])
         self.assertEqual(item['detail']['post_tokens'], 5100)
         self.assertTrue(self.chat.maintenance_held(worker), 'An unconfirmed stop keeps ordinary input out')
-        code, refused, _ = self.request('/api/chat/send?project=demo', {'session_id': worker, 'text': 'after maintenance'})
+        code, refused, _ = self.request('/api/op/chat.send?project=demo', {'session_id': worker, 'text': 'after maintenance'})
         self.assertEqual((code, refused['error']), (409, chat.MAINTENANCE_HELD))
-        self.ok('/api/session/stop?project=demo', {'session_id': worker})
+        self.ok('/api/op/session.stop?project=demo', {'session_id': worker})
         self.assertIsNotNone(member.poll(), 'The explicit person stop still ends it')
 
     def test_restart_marks_unfinished_items_interrupted_without_resending(self):
@@ -327,19 +325,19 @@ class DepartmentCompactTests(MaintenanceFixture, unittest.TestCase):
         other.mkdir()
         board.init_project(self.conn, 'other', other, now=NOW)
         board.join(self.conn, 'x1', 'other', 'outsider', other, other, 'main', role='leader', now=NOW)
-        code, result, _ = self.request('/api/maintenance/department/preview?project=demo', {'project': 'demo', 'leader_session_id': 'x1'})
+        code, result, _ = self.request('/api/op/maintenance.department.preview?project=demo', {'project': 'demo', 'leader_session_id': 'x1'})
         self.assertEqual(code, 400, result)
-        code, result, _ = self.request('/api/maintenance/department/preview?project=other', {'project': 'demo', 'leader_session_id': 's3'})
+        code, result, _ = self.request('/api/op/maintenance.department.preview?project=other', {'project': 'demo', 'leader_session_id': 's3'})
         self.assertEqual(code, 400, result)
         preview = self.preview('s3')
-        code, result, _ = self.request('/api/maintenance/department/compact?project=demo', {
+        code, result, _ = self.request('/api/op/maintenance.department.compact?project=demo', {
             'project': 'demo', 'leader_session_id': 's3', 'preview_id': preview['preview_id'], 'targets': ['x1']})
         self.assertEqual(code, 400, result)
         self.service.maintenance.previews[preview['preview_id']]['deadline'] = 0
-        code, result, _ = self.request('/api/maintenance/department/compact?project=demo', {
+        code, result, _ = self.request('/api/op/maintenance.department.compact?project=demo', {
             'project': 'demo', 'leader_session_id': 's3', 'preview_id': preview['preview_id'], 'targets': ['s3']})
         self.assertEqual(code, 409, result)
-        code, result, _ = self.request('/api/maintenance/jobs?' + urlencode({'project': 'other', 'kind': 'department_compact',
+        code, result, _ = self.request('/api/op/maintenance.jobs?' + urlencode({'project': 'other', 'kind': 'department_compact',
                                                                               'leader_session_id': 's3'}))
         self.assertEqual(code, 400, result)
 
@@ -384,10 +382,10 @@ class WorkspaceCleanupTests(MaintenanceFixture, unittest.TestCase):
                 'crew_rule': crew_rule}
 
     def cleanup_preview(self):
-        return self.ok('/api/maintenance/cleanup/preview?project=demo', {'project': 'demo'})
+        return self.ok('/api/op/maintenance.cleanup.preview?project=demo', {'project': 'demo'})
 
     def cleanup(self, preview):
-        return self.ok('/api/maintenance/cleanup?project=demo', {'project': 'demo', 'preview_id': preview['preview_id'], 'confirm': True})
+        return self.ok('/api/op/maintenance.cleanup.run?project=demo', {'project': 'demo', 'preview_id': preview['preview_id'], 'confirm': True})
 
     def test_cleanup_archives_old_work_and_a_new_same_name_leader_inherits_nothing(self):
         data = self.populate()
@@ -400,7 +398,7 @@ class WorkspaceCleanupTests(MaintenanceFixture, unittest.TestCase):
         self.assertEqual([goal['title'] for goal in preview['goals']['unfinished']], ['Unfinished feature'])
         self.assertEqual((preview['kept']['documents'], preview['kept']['crew_rules']), (1, 1))
         self.assertEqual(preview['running']['processes'], 2)
-        code, refused, _ = self.request('/api/maintenance/cleanup?project=demo', {'project': 'demo', 'preview_id': preview['preview_id']})
+        code, refused, _ = self.request('/api/op/maintenance.cleanup.run?project=demo', {'project': 'demo', 'preview_id': preview['preview_id']})
         self.assertEqual(code, 400, refused)
         job = self.cleanup(preview)
         self.assertEqual(self.cleanup(preview)['id'], job['id'], 'A repeated confirmation never runs twice')
@@ -430,8 +428,8 @@ class WorkspaceCleanupTests(MaintenanceFixture, unittest.TestCase):
 
         self.assertEqual(channel.messages(conn, 'demo')['messages'], [])
         self.assertIsNone(channel.digest(conn, 'demo'))
-        self.assertEqual(self.ok('/api/state?project=demo')['channel']['unread'], 0)
-        fresh = self.ok('/api/leader?project=demo', {'name': 'boss', 'task': 'start over'})
+        self.assertEqual(self.ok('/api/op/workspace.state?project=demo')['channel']['unread'], 0)
+        fresh = self.ok('/api/op/leader.create?project=demo', {'name': 'boss', 'task': 'start over'})
         new = fresh['session_id']
         self.finish_turn(new, self.processes[-1])
         self.assertNotEqual(new, data['boss'])
@@ -451,14 +449,14 @@ class WorkspaceCleanupTests(MaintenanceFixture, unittest.TestCase):
         self.assertEqual([m['body'] for m in channel.messages(conn, 'other')['messages']], ['other workspace post'])
         self.assertEqual([h['body'] for h in board.handoffs(conn, 'x1')], ['other workspace broadcast'])
 
-        history = self.ok('/api/maintenance/jobs?project=demo&kind=workspace_cleanup')
+        history = self.ok('/api/op/maintenance.jobs?project=demo&kind=workspace_cleanup')
         self.assertEqual(history['cleanups'], 1)
-        archived = self.ok('/api/maintenance/archive?' + urlencode({'project': 'demo', 'job_id': job['id'], 'kind': 'channel'}))
+        archived = self.ok('/api/op/maintenance.archive.get?' + urlencode({'project': 'demo', 'job_id': job['id'], 'kind': 'channel'}))
         self.assertEqual([m['body'] for m in archived['messages']], ['old leader post', 'old user post'])
         self.assertIn('old card', archived['digest']['body'])
-        handoffs = self.ok('/api/maintenance/archive?' + urlencode({'project': 'demo', 'job_id': job['id'], 'kind': 'handoffs'}))
+        handoffs = self.ok('/api/op/maintenance.archive.get?' + urlencode({'project': 'demo', 'job_id': job['id'], 'kind': 'handoffs'}))
         self.assertEqual([h['body'] for h in handoffs['handoffs']], ['old broadcast', 'old handoff to boss'])
-        code, result, _ = self.request('/api/maintenance/archive?' + urlencode({'project': 'other', 'job_id': job['id'], 'kind': 'channel'}))
+        code, result, _ = self.request('/api/op/maintenance.archive.get?' + urlencode({'project': 'other', 'job_id': job['id'], 'kind': 'channel'}))
         self.assertEqual(code, 400, result)
 
     def test_external_identity_keeps_real_partial_state_and_no_boundary(self):
@@ -483,20 +481,20 @@ class WorkspaceCleanupTests(MaintenanceFixture, unittest.TestCase):
         self.populate()
         preview = self.cleanup_preview()
         self.service.maintenance.previews[preview['preview_id']]['deadline'] = 0
-        code, result, _ = self.request('/api/maintenance/cleanup?project=demo', {'project': 'demo', 'preview_id': preview['preview_id'], 'confirm': True})
+        code, result, _ = self.request('/api/op/maintenance.cleanup.run?project=demo', {'project': 'demo', 'preview_id': preview['preview_id'], 'confirm': True})
         self.assertEqual(code, 409, result)
         self.assertIn('请重新预览', result['error'])
         preview = self.cleanup_preview()
-        self.ok('/api/spawn?project=demo', {'name': 'late', 'task': 'joined after preview', 'group': 'boss'})
-        code, result, _ = self.request('/api/maintenance/cleanup?project=demo', {'project': 'demo', 'preview_id': preview['preview_id'], 'confirm': True})
+        self.ok('/api/op/execution.spawn?project=demo', {'name': 'late', 'task': 'joined after preview', 'group': 'boss'})
+        code, result, _ = self.request('/api/op/maintenance.cleanup.run?project=demo', {'project': 'demo', 'preview_id': preview['preview_id'], 'confirm': True})
         self.assertEqual((code, result['error']), (409, '工作区在预览后发生了变化，请重新预览'))
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM maintenance_jobs').fetchone()[0], 0)
         empty = self.root / 'empty'
         empty.mkdir()
         board.init_project(self.conn, 'empty', empty, now=NOW)
-        preview = self.ok('/api/maintenance/cleanup/preview?project=empty', {'project': 'empty'})
+        preview = self.ok('/api/op/maintenance.cleanup.preview?project=empty', {'project': 'empty'})
         self.assertTrue(preview['empty'])
-        code, result, _ = self.request('/api/maintenance/cleanup?project=empty', {'project': 'empty', 'preview_id': preview['preview_id'], 'confirm': True})
+        code, result, _ = self.request('/api/op/maintenance.cleanup.run?project=empty', {'project': 'empty', 'preview_id': preview['preview_id'], 'confirm': True})
         self.assertEqual(code, 400, result)
 
     def test_digest_generated_before_cleanup_is_discarded_instead_of_returning(self):
@@ -510,7 +508,7 @@ class WorkspaceCleanupTests(MaintenanceFixture, unittest.TestCase):
 
         channel.post(self.conn, 'demo', board.HUMAN, 'post after the old card', source='web')
         with mock.patch('crew.channel_digest.generate', side_effect=slow):
-            self.ok('/api/channel/digest?project=demo', {'project': 'demo'})
+            self.ok('/api/op/channel.digest.start?project=demo', {'project': 'demo'})
             self.assertTrue(started.wait(5))
             result = self.settled(self.cleanup(self.cleanup_preview())['id'], kind='workspace_cleanup')
             self.assertEqual(result['status'], 'completed', result)

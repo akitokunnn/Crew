@@ -7,6 +7,9 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import tests
+from contextlib import closing
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
 from crew import board, goals, remote_routes, report_preview, store, web
 import test_chat_http
 from test_report_preview import png
@@ -32,10 +35,8 @@ class ReportPreviewHttpTests(ShellFixture, unittest.TestCase):
         self.goal = goals.create(self.conn, 'demo', 's3', 'Synthetic report', 'Render a synthetic report only.', ['Readable'])
 
     def post_action(self, data, *, actor='s3', execution=None):
-        body = {'action': 'report.preview', 'actor_session_id': actor, 'data': data}
-        if execution:
-            body['execution_id'] = execution
-        return self.request('/api/goals/agent?project=demo', body)
+        with closing(store.connect(self.home)) as conn:
+            return ai_call(self.server.service, conn, actor, 'goal.report.preview', data, execution_id=execution)
 
     def capture(self, data, *, actor='s3', execution=None):
         result = []
@@ -63,15 +64,14 @@ class ReportPreviewHttpTests(ShellFixture, unittest.TestCase):
         self.server.service.write_lock.release()
         self.assertTrue(self.server.service.chat.lock.acquire(timeout=.2))
         self.server.service.chat.lock.release()
-        self.assertEqual(self.request('/api/state?project=demo')[0], 200)
+        self.assertEqual(self.request('/api/op/workspace.state?project=demo')[0], 200)
         code, response, _ = self.request(report_preview.WORKER_PREFIX + 'result', {
             **worker, 'job_id': job['id'], 'png_base64': base64.b64encode(png(390, 844)).decode('ascii'),
             'console_errors': ['Synthetic warning retained']})
         self.assertEqual(code, 200, response)
         thread.join(3)
         self.assertFalse(thread.is_alive())
-        self.assertEqual(result[0][0], 200, result)
-        preview = result[0][1]['preview']
+        preview = result[0]['preview']
         self.assertEqual(Path(preview['path']).parent, report_preview.image_directory(self.home, 's3'))
         self.assertEqual(Path(preview['path']).read_bytes(), png(390, 844))
         self.assertEqual(preview['console_errors'], ['Synthetic warning retained'])
@@ -81,17 +81,16 @@ class ReportPreviewHttpTests(ShellFixture, unittest.TestCase):
 
     def test_permissions_cross_goal_reports_and_unsafe_input_are_rejected_before_queueing(self):
         payload = {'goal_id': self.goal['id'], 'document_html': '<p>Synthetic only</p>'}
-        code, response, _ = self.post_action(payload, actor='s2')
-        self.assertEqual(code, 400, response)
+        with self.assertRaises((board.BoardError, OpError, ValueError)):
+            self.post_action(payload, actor='s2')
         for extra in ({'path': 'other.html'}, {'url': 'https://example.invalid'}, {'script': 'anything'},
                       {'report_id': 'another-report'}, {'viewport': 'arbitrary'}):
-            code, response, _ = self.post_action({**payload, **extra})
-            self.assertEqual(code, 400, response)
+            with self.assertRaises((board.BoardError, OpError, ValueError)):
+                self.post_action({**payload, **extra})
         other = goals.create(self.conn, 'demo', 's3', 'Other synthetic goal', 'A separate report.', ['Readable'])
         execution = goals.create_execution(self.conn, self.goal['id'], 's3', runtime='codex')
-        code, response, _ = self.post_action({**payload, 'goal_id': other['id']}, execution=execution['id'])
-        self.assertEqual(code, 400, response)
-        self.assertIn('当前执行目标', response['error'])
+        with self.assertRaisesRegex((board.BoardError, OpError, ValueError), '自己所在'):
+            self.post_action({**payload, 'goal_id': other['id']}, execution=execution['id'])
         self.assertFalse((self.home / 'report-previews').exists())
         self.assertEqual(self.processes, [])
 
@@ -102,14 +101,12 @@ class ReportPreviewHttpTests(ShellFixture, unittest.TestCase):
             'document_html': '<h1>Saved synthetic report</h1>', 'artifacts': [], 'tradeoffs': [], 'follow_up': 'Inspect',
             'investment': {'elapsed_seconds': None, 'usage': None, 'roles': []}}
         saved = goals.save_report(self.conn, self.goal['id'], report)
-        code, response, _ = self.post_action({'goal_id': self.goal['id'], 'report_id': saved['id']})
-        self.assertEqual(code, 200, response)
+        response = self.post_action({'goal_id': self.goal['id'], 'report_id': saved['id']})
         self.assertFalse(response['ok'])
         self.assertIn('打开 Crew 桌面', response['error'])
         other = goals.create(self.conn, 'demo', 's3', 'Other task', 'Other report', ['Readable'])
-        code, response, _ = self.post_action({'goal_id': other['id'], 'report_id': saved['id']})
-        self.assertEqual(code, 400, response)
-        self.assertIn('报告不属于', response['error'])
+        with self.assertRaisesRegex((board.BoardError, OpError, ValueError), '报告不属于'):
+            self.post_action({'goal_id': other['id'], 'report_id': saved['id']})
 
     def test_worker_endpoints_are_local_authenticated_and_close_pending_capture(self):
         for route in report_preview.WORKER_PATHS:
@@ -129,5 +126,5 @@ class ReportPreviewHttpTests(ShellFixture, unittest.TestCase):
         code, _, _ = self.request(report_preview.WORKER_PREFIX + 'close', worker)
         self.assertEqual(code, 200)
         thread.join(3)
-        self.assertIn('桌面已关闭', result[0][1]['error'])
+        self.assertIn('桌面已关闭', result[0]['error'])
         self.assertFalse((self.home / 'report-previews').exists())

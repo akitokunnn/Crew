@@ -45,7 +45,7 @@ function Start-Process {
     }
     return $fake
 }
-& __SCRIPT__ -TaskFile __TASK__ -WorkDir __ROOT__ -Mode __MODE__ -NoWatch
+& __SCRIPT__ -TaskFile __TASK__ -WorkDir __ROOT__ -Mode __MODE__ -CrewSession owner -CrewExecution execution -NoWatch
 exit $LASTEXITCODE
 '''.replace('__SCRIPT__', literal(SCRIPT)).replace('__TASK__', literal(task))
                        .replace('__ROOT__', literal(root)).replace('__MODE__', literal(mode)), encoding='utf-8-sig')

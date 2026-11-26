@@ -31,12 +31,12 @@ class LeaderAppearanceHttpTests(ShellFixture, unittest.TestCase):
         self.url = self.server.url
 
     def leader(self):
-        code, state, _ = self.request('/api/state?project=demo')
+        code, state, _ = self.request('/api/op/workspace.state?project=demo')
         self.assertEqual(code, 200, state)
         return next(item for item in state['leaders'] if item['session_id'] == 's3')
 
     def save(self, body):
-        return self.request('/api/session/appearance?project=demo', {'session_id': 's3', **body})
+        return self.request('/api/op/session.appearance.set?project=demo', {'session_id': 's3', **body})
 
     def test_color_and_avatar_show_in_state_and_the_avatar_is_served_by_version(self):
         self.assertEqual((self.leader()['color'], self.leader()['avatar_version']), (None, None))
@@ -44,7 +44,7 @@ class LeaderAppearanceHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, value)
         leader = self.leader()
         self.assertEqual((leader['color'], leader['avatar_version']), ('#A07A3A', 1))
-        code, content, headers = self.request('/api/session/avatar?session_id=s3&v=1', raw=True)
+        code, content, headers = self.request('/api/op/session.avatar.get?session_id=s3&v=1', raw=True)
         self.assertEqual((code, content, headers['Content-Type']), (200, WEBP, 'image/webp'))
         self.assertIn('immutable', headers['Cache-Control'])
         # Changing only the color keeps the picture and its cache version.
@@ -52,11 +52,11 @@ class LeaderAppearanceHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual((code, value), (200, {'color': None, 'avatar_version': 1}))
         code, value, _ = self.save({'color': None, 'avatar': {'data': encoded(PNG)}})
         self.assertEqual(value['avatar_version'], 2)
-        code, content, headers = self.request('/api/session/avatar?session_id=s3&v=2', raw=True)
+        code, content, headers = self.request('/api/op/session.avatar.get?session_id=s3&v=2', raw=True)
         self.assertEqual((content, headers['Content-Type']), (PNG, 'image/png'))
         code, value, _ = self.save({'color': None, 'avatar': None})
         self.assertEqual(value, {'color': None, 'avatar_version': None})
-        code, _, _ = self.request('/api/session/avatar?session_id=s3&v=3', raw=True)
+        code, _, _ = self.request('/api/op/session.avatar.get?session_id=s3&v=3', raw=True)
         self.assertNotEqual(code, 200)
 
     def test_rejects_large_unknown_or_malformed_pictures_bad_colors_and_members(self):
@@ -69,7 +69,7 @@ class LeaderAppearanceHttpTests(ShellFixture, unittest.TestCase):
             code, value, _ = self.save(body)
             self.assertEqual(code, 400, body)
             self.assertIn(message, value['error'])
-        code, value, _ = self.request('/api/session/appearance?project=demo', {'session_id': 's1', 'color': '#000000'})
+        code, value, _ = self.request('/api/op/session.appearance.set?project=demo', {'session_id': 's1', 'color': '#000000'})
         self.assertEqual(code, 400)
         self.assertIn('leader', value['error'])
         self.assertEqual(self.leader()['color'], None)
@@ -78,8 +78,8 @@ class LeaderAppearanceHttpTests(ShellFixture, unittest.TestCase):
         appearance.save(self.conn, 's3', {'color': '#112233', 'avatar': {'data': encoded(WEBP)}}, NOW)
         session_ops.delete(self.conn, 's3', now=NOW)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM session_appearance').fetchone()[0], 0)
-        self.assertTrue(remote_routes.permitted('POST', '/api/session/appearance', (), 'browser'))
-        self.assertTrue(remote_routes.permitted('GET', '/api/session/avatar', (), 'browser'))
+        self.assertTrue(remote_routes.permitted('POST', '/api/op/session.appearance.set', (), 'browser'))
+        self.assertTrue(remote_routes.permitted('GET', '/api/op/session.avatar.get', (), 'browser'))
 
 
 if __name__ == '__main__':

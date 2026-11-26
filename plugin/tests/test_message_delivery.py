@@ -1,16 +1,15 @@
 """Delivery states that leaders and the user can trust: queued, delivered and replied are told apart."""
 import tests  # Install the production-service connection guard.
-import contextlib
 from contextlib import closing
-import io
-import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
-from crew import board, channel, chat, chat_delivery, cli, hooks, messaging, rules, runtimes, store
+from test_core import operation_service
+from tests.ops_helpers import ai_call
+from crew.ops import tokens
+from crew import board, channel, chat, chat_delivery, hooks, messaging, runtimes, store
 import test_codex_runtime as codex_fixtures
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -30,14 +29,13 @@ class DeliveryFixture(unittest.TestCase):
         board.init_project(self.conn, "demo", self.root, now=NOW)
         for sid, name, role in (("a", "alpha", "leader"), ("b", "beta", "leader"), ("m", "member", "member")):
             board.join(self.conn, sid, "demo", name, self.root, None, None, role=role, now=NOW)
-            rules.record_read(self.conn, sid, role, PLUGIN, now=NOW)
 
     def post(self, body="hello", actor="a", to=(), reply_to=None):
         return channel.post(self.conn, "demo", actor, body, to, now=NOW, reply_to=reply_to)
 
-    def hook(self, sid="b", environ=None):
+    def hook(self, sid="b"):
         return hooks.handle("user-prompt-submit", {"session_id": sid, "cwd": str(self.root), "prompt": "continue"},
-                            self.home, PLUGIN, {} if environ is None else environ, now=NOW)
+                            self.home, PLUGIN, now=NOW)
 
     def context(self, result):
         return result["hookSpecificOutput"]["additionalContext"] if result else ""
@@ -59,7 +57,7 @@ class PendingMentionTests(DeliveryFixture):
     def test_external_leader_gets_the_pending_mention_in_full_instead_of_losing_it(self):
         message = self.post("登录接口要改签名，看下影响", to=["beta"])
         self.post("ordinary chatter")
-        # An external Claude Code leader (no CREW_SESSION_ID) never gets notices from the web service.
+        # An external Claude Code leader (no active token) never gets notices from the web service.
         text = self.context(self.hook("b")[1])
         self.assertIn("「alpha」点名你（交流区发言 #%d）" % message["id"], text)
         self.assertIn("登录接口要改签名，看下影响", text)
@@ -74,7 +72,8 @@ class PendingMentionTests(DeliveryFixture):
 
     def test_managed_leader_leaves_the_pending_mention_to_input_delivery(self):
         self.post("pending", to=["beta"])
-        self.assertIsNone(self.hook("b", {"CREW_SESSION_ID": "b"})[1])
+        tokens.issue(self.conn, session_id='b', runtime='claude', now=NOW)
+        self.assertIsNone(self.hook("b")[1])
         [notice] = self.notices("b")
         self.assertIsNone(notice["sent_at"])
 
@@ -191,15 +190,10 @@ class DeliveryStateTests(DeliveryFixture):
         self.assertNotIn("（", channel.line(own).split("@alpha", 1)[1])
 
     def test_say_receipt_tells_queued_from_received(self):
-        out, err = io.StringIO(), io.StringIO()
-        real_get = os.environ.get
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(
-                os.environ, "get", side_effect=lambda key, default=None: None if key == "CLAUDE_CODE_SESSION_ID" else real_get(key, default)):
-            code = cli.main(["--home", str(self.home), "--session", "a", "say", "@beta 看下"], cwd=self.root,
-                            agents_provider=lambda: [], plugin_root=PLUGIN)
-        self.assertEqual(code, 0, err.getvalue())
-        self.assertIn("已发到交流区 #", out.getvalue())
-        self.assertIn("beta：已排队，对方尚未收到；送达后才会看到", out.getvalue())
+        service = operation_service(self, self.root)
+        post = ai_call(service, self.conn, 'a', 'channel.post', {'text': '@beta 看下'})
+        self.assertEqual(post['mentions'][0]['delivery'], 'queued')
+        self.assertIn('beta', str(post['receipt']))
 
     def test_peer_receipt_reports_reply_only_after_the_target_answers(self):
         sent = messaging.queue(self.conn, "a", "b", "把登录慢的原因查一下", kind="task", now=NOW)

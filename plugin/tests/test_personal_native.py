@@ -1,15 +1,15 @@
 """Complete assistant input/tool paths through fake CC and Codex carriers."""
 import tests
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
 from contextlib import closing
-import io
 import json
-import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
 
-from crew import board, chat, cli, codex_runtime, codex_tools, personal, runtimes, settings, store, workspace_execution
+from crew import board, web, personal, runtimes, settings, store, workspace_execution
 from crew.web_api import personal as personal_api
 from test_chat import FakeProcess
 from test_codex_runtime import FakeClient
@@ -21,20 +21,16 @@ class PersonalNativeTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.home = Path(temporary.name) / 'home'
         self.plugin = Path(__file__).resolve().parents[1]
-        self.environment = mock.patch.dict(os.environ)
-        self.environment.start()
-        self.addCleanup(self.environment.stop)
-        for key in ('CREW_SESSION_ID', 'CLAUDE_CODE_SESSION_ID', 'CREW_EXECUTION_ID', 'CREW_GOAL_ID'):
-            os.environ.pop(key, None)
+        self.service = web.Service(self.home, self.plugin, cwd=self.home.parent, agents_provider=lambda: [],
+                                   process_factory=FakeProcess, isolated_sources=True)
+        self.addCleanup(self.service.close)
 
     def assistant(self, runtime):
         with closing(store.connect(self.home)) as conn:
             return personal.ensure_assistant(conn, self.home, selection={'runtime': runtime, 'model': None, 'effort': None})
 
     def manager(self):
-        manager = chat.Manager(self.home, self.plugin, lambda: [], process_factory=FakeProcess)
-        self.addCleanup(manager.close)
-        return manager
+        return self.service.chat
 
     def test_assistant_execution_is_independent_of_workspace_and_missing_cwd_is_visible(self):
         value = self.assistant('codex')
@@ -58,24 +54,21 @@ class PersonalNativeTests(unittest.TestCase):
         self.assertTrue(result['accepted'])
         client = clients[0]
         start = next(data for method, data in client.calls if method == 'thread/start')
-        self.assertEqual({tool['name'] for tool in start['dynamicTools']}, {'crew_personal', 'crew_whoami'})
+        self.assertNotIn('dynamicTools', start)
         self.assertIn('整个 Crew', start['developerInstructions'])
         self.assertFalse(start['config']['agents']['enabled'])
         turn = next(data for method, data in client.calls if method == 'turn/start')
         self.assertIn('user-1', json.dumps(turn, ensure_ascii=False))
         event = next(event for event in manager.history(assistant['session_id'])['events'] if event['type'] == 'message')
         self.assertEqual(event['text'], '记下我想做一个健身应用')
-        handler = client.kwargs['tool_handler']
-        response = handler({'threadId': client.thread_id, 'callId': 'capture', 'tool': 'crew_personal',
-            'arguments': {'action': 'note.capture', 'message_id': 'user-1', 'request_id': 'capture-1',
-                          'data': {'text': '想做一个健身应用'}}})
-        self.assertTrue(response['success'], response)
         with closing(store.connect(self.home)) as conn:
+            ai_call(self.service, conn, assistant['session_id'], 'note.capture',
+                    {'data': {'text': '想做一个健身应用'}}, message_id='user-1', runtime='codex')
             self.assertEqual(personal.list_notes(conn)[0]['text'], '想做一个健身应用')
             self.assertEqual(personal.projects(conn), [])
-        denied = handler({'threadId': client.thread_id, 'callId': 'spawn', 'tool': 'crew_spawn',
-                          'arguments': {'name': 'child', 'task': '绕开 leader'}})
-        self.assertFalse(denied['success'])
+            with self.assertRaises(OpError):
+                ai_call(self.service, conn, assistant['session_id'], 'execution.spawn',
+                        {'name': 'child', 'task': '绕开 leader'}, runtime='codex')
         client.finish()
 
     def test_claude_chat_loads_assistant_rules_and_keeps_original_journal(self):
@@ -88,7 +81,7 @@ class PersonalNativeTests(unittest.TestCase):
         process = manager.processes[assistant['session_id']].process
         self.assertIn('--append-system-prompt', process.command)
         prompt = process.command[process.command.index('--append-system-prompt') + 1]
-        self.assertIn('crew personal', prompt)
+        self.assertIn('workspace_state', prompt)
         self.assertIn('整个 Crew', prompt)
         inputs = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
         user = next(value for value in inputs if value['type'] == 'user')
@@ -106,9 +99,9 @@ class PersonalNativeTests(unittest.TestCase):
             board.register_session(conn, 'member', 'folder', root, None, None, name='member')
             from crew import runtimes
             runtimes.set(conn, 'member', 'codex')
-        handler = codex_tools.CodexTools(self.home, 'member', personal_handler=mock.Mock())
-        result = handler({'tool': 'crew_personal', 'arguments': {'action': 'summary'}})
-        self.assertFalse(result['success'])
+            with self.assertRaises(OpError) as denied:
+                ai_call(self.service, conn, 'member', 'session.detail', {'session_id': 'member'}, runtime='codex')
+            self.assertEqual(denied.exception.code, 'forbidden')
 
     def test_claude_assistant_first_reply_confirms_identity_then_next_launch_resumes_it(self):
         assistant = self.assistant('claude')
@@ -162,8 +155,6 @@ class PersonalNativeTests(unittest.TestCase):
         command=manager.processes[sid].process.command
         self.assertEqual(command[command.index('--resume')+1],sid)
         self.assertNotIn('--session-id',command)
-        self.assertNotIn('crew_personal', {item['name'] for item in codex_tools.tool_specs()})
-        self.assertIn('crew_whoami', {item['name'] for item in codex_tools.tool_specs()})
 
     def test_authorized_assistant_starts_one_real_leader_flow_in_a_plain_folder(self):
         assistant = self.assistant('claude')
@@ -178,10 +169,14 @@ class PersonalNativeTests(unittest.TestCase):
                     'data': {'project': 'fitness', 'message': '讨论简单的健身打卡应用', 'name': 'fitness-plan'}}
         with mock.patch('crew.settings.shutil.which', return_value='fake-claude'), \
                 mock.patch('crew.chat.claude_executable', return_value='fake-claude'):
-            first = manager.personal_action('leader.create', envelope, assistant['session_id'])
-            again = manager.personal_action('leader.create', envelope, assistant['session_id'])
+            with closing(store.connect(self.home)) as conn:
+                def create():
+                    return ai_call(self.service, conn, assistant['session_id'], 'leader.create', envelope['data'],
+                                   message_id=envelope['message_id'], request_id=envelope['request_id'])
+                first = create()
+                again = create()
         sid = first['result']['session_id']
-        self.assertTrue(again['duplicate'])
+        self.assertTrue(again['replayed'])
         self.assertEqual(again['result']['session_id'], sid)
         self.assertEqual(len(manager.processes), 1)
         with closing(store.connect(self.home)) as conn:
@@ -194,24 +189,16 @@ class PersonalNativeTests(unittest.TestCase):
         self.assertIn('请在 fitness 新开一个对话讨论健身打卡应用', briefing)
         self.assertFalse((root / '.git').exists())
 
-    def test_cli_reads_without_project_and_mutations_go_to_bound_host(self):
-        assistant = self.assistant('claude')
-        os.environ['CREW_SESSION_ID'] = assistant['session_id']
-        output = io.StringIO()
-        with mock.patch('sys.stdout', output):
-            code = cli.main(['--home', str(self.home), 'personal', 'summary', '--json'])
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(output.getvalue())['projects'], [])
-        request = mock.Mock(return_value={'ok': True})
-        with mock.patch('crew.spawn.request_start', request), mock.patch('sys.stdout', io.StringIO()):
-            code = cli.main(['--home', str(self.home), 'personal', 'note.capture', '--message-id', 'u',
-                             '--request-id', 'r', '--data', '{"text":"想法"}'])
-        self.assertEqual(code, 0)
-        self.assertEqual(request.call_args.args[2], '/api/assistant/native-action')
-        self.assertEqual(request.call_args.args[3]['actor_session_id'], assistant['session_id'])
-        with mock.patch('sys.stderr', io.StringIO()):
-            code = cli.main(['--home', str(self.home), '--session', 'other', 'personal', 'summary'])
-        self.assertNotEqual(code, 0)
+    def test_assistant_reads_without_project_and_mutations_bind_to_original_message(self):
+        sid = self.assistant('claude')['session_id']
+        self.service.chat.journal(sid).message('u', '请记下想法')
+        with closing(store.connect(self.home)) as conn:
+            self.assertEqual(ai_call(self.service, conn, sid, 'workspace.state')['projects'], [])
+            args = {'data': {'text': '想法'}}
+            with self.assertRaises((OpError, board.BoardError)):
+                ai_call(self.service, conn, sid, 'note.capture', args, message_id='missing')
+            ai_call(self.service, conn, sid, 'note.capture', args, message_id='u', request_id='r')
+            self.assertEqual([n['text'] for n in personal.list_notes(conn)], ['想法'])
 
     def test_api_open_and_state_do_not_resolve_or_launch_native(self):
         with mock.patch('crew.settings.shutil.which', side_effect=AssertionError('opening must not discover CLI')):

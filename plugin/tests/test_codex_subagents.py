@@ -131,7 +131,7 @@ class NativeChildHttpTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
         self.addCleanup(close)
         def state():
-            with urlopen('http://127.0.0.1:%d/api/state?project=demo' % server.server_port, timeout=10) as response:
+            with urlopen('http://127.0.0.1:%d/api/op/workspace.state?project=demo' % server.server_port, timeout=10) as response:
                 return json.loads(response.read())
         return server, state
 

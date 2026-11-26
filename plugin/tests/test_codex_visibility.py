@@ -45,7 +45,7 @@ class CodexVisibilityTests(unittest.TestCase):
              mock.patch('crew.codex_app_server.command', return_value=standalone):
             journal = chat.Journal(self.home / 'chat' / 'worker.jsonl')
             for resume in (False, True):
-                running = codex_runtime.CodexRunning(self.home, self.plugin, session, {}, {}, journal, None,
+                running = codex_runtime.CodexRunning(self.home, self.plugin, session, {}, {}, journal,
                                                      process_factory=spawn, resume=resume)
                 try:
                     self.assertEqual(running.thread_id, 'native-1')
@@ -119,12 +119,12 @@ class CodexVisibilityTests(unittest.TestCase):
             return client
         with mock.patch('crew.codex_runtime._ObservedClient', side_effect=factory):
             journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'))
-            first = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {}, {}, journal, None, execution=execution)
+            first = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {}, {}, journal, execution=execution)
             first.close(); self.assertTrue(first.reader_done.wait(2))
             self.assertEqual(archived, {'native-1'})
             with closing(store.connect(self.home)) as conn:
                 execution = goals.get_execution(conn, execution['id'])
-            second = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {}, {}, journal, None, execution=execution, resume=True)
+            second = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {}, {}, journal, execution=execution, resume=True)
             self.assertEqual(archived, set())
             self.assertEqual(second.thread_id, 'native-1')
             methods = [name for name, _ in self.clients[-1].calls]
@@ -159,7 +159,7 @@ class CodexVisibilityTests(unittest.TestCase):
             goal = goals.create(conn, 'demo', 'worker', 'Inspect', 'Request', ['Works'])
             execution = goals.create_execution(conn, goal['id'], 'worker', runtime='codex')
         running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {}, {},
-            chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl')), None, execution=execution)
+            chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl')), execution=execution)
         client = self.clients[-1]
         client.request = mock.Mock(side_effect=codex_client.CodexError('native archive rejected'))
         running.close(); self.assertTrue(running.reader_done.wait(2))
@@ -177,7 +177,7 @@ class CodexVisibilityTests(unittest.TestCase):
             execution = goals.create_execution(conn, goal['id'], 'worker', runtime='codex')
         manager = chat.Manager(self.home, self.plugin, agents_provider=lambda: [])
         journal = manager.journal(execution['id'])
-        running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {}, {}, journal, None, execution=execution)
+        running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {}, {}, journal, execution=execution)
         self.addCleanup(running.close)
         manager.processes[execution['id']] = running
         journal.set_status('working')

@@ -1,6 +1,7 @@
 """File APIs with isolated data, a random port and fake desktop calls."""
 import tests
 import json
+import uuid
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
@@ -65,9 +66,11 @@ class FileLinksTests(ShellFixture, unittest.TestCase):
             data['raw'] = '1'
         post = action != 'content'
         headers = {'X-Crew': '1'}
+        if post:
+            headers['X-Crew-Request-Id'] = uuid.uuid4().hex
         if host is not None:
             headers['Host'] = host
-        url = 'http://127.0.0.1:%d/api/files/%s' % (self.server.server_port, action)
+        url = 'http://127.0.0.1:%d/api/op/files.%s' % (self.server.server_port, action)
         req = Request(url + ('' if post else '?' + urlencode(data)),
                       json.dumps(data).encode() if post else None, headers)
         try:

@@ -22,7 +22,7 @@ function harness(){
       return {ok:true,headers,body:{getReader:()=>({read:()=>{stream.reads++;return queue.length?Promise.resolve(queue.shift()):new Promise((resolve,reject)=>{pending={resolve,reject};});}})}};}};
   sandbox.window=sandbox;vm.createContext(sandbox);
   for(const file of ["vendor/markdown-it.min.js","browser-utils.js","skill-picker.js","chat.js","goal-work-ui.js"])vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend",file),"utf8"),sandbox);
-  function mount(id,api,extra={},options={}){const target=host(),session={session_id:id,name:id,busy:false,last_seq:0,activity:null,where:"bg",...extra};const client=async(url,data)=>{const value=await api(url,data);if(url.startsWith("/api/chat/history?"))journals.set(journalKey(new URLSearchParams(url.split("?")[1])),{executionId:value.execution_id??"",latestSeq:value.events.at(-1)?.seq||0});return value;};sandbox.CrewChat.mount({host:target,session,state:{project:{name:"fixture"},leaders:[session],members:[]},api:client,toast(){},...options});return target;}
+  function mount(id,api,extra={},options={}){const target=host(),session={session_id:id,name:id,busy:false,last_seq:0,activity:null,where:"bg",...extra};const client=async(url,data)=>{const value=await api(url,data);if(url.startsWith("/api/op/chat.history?"))journals.set(journalKey(new URLSearchParams(url.split("?")[1])),{executionId:value.execution_id??"",latestSeq:value.events.at(-1)?.seq||0});return value;};sandbox.CrewChat.mount({host:target,session,state:{project:{name:"fixture"},leaders:[session],members:[]},api:client,toast(){},...options});return target;}
   function update(id,extra={}){const session={session_id:id,name:id,busy:false,last_seq:1,activity:null,where:"bg",...extra};sandbox.CrewChat.update({project:{name:"fixture"},leaders:[session],members:[]});}
   function visibility(visible,desktop=false){const type=desktop?"crew-tab-visibility":"visibilitychange";if(desktop)sandbox.crewTabVisible=visible;else sandbox.document.visibilityState=visible?"visible":"hidden";for(const fn of handlers.get(type)||[])fn({type,detail:{visible}});}
   return {chat:sandbox.CrewChat,mount,update,visibility,timers,saved,streams,connections,handlers,sandbox,motion,setJournal(id,value,project="fixture"){journals.set(JSON.stringify([project,id]),value);},flushFrames(){for(const [id,fn] of frames){frames.delete(id);fn();}}};
@@ -65,7 +65,7 @@ test("optimistic input is visible before send starts and merges a same-ID receip
   for(const runtime of ["claude","codex"])for(const bound of [false,true]){
     const h=harness();let target,finish,payload;
     h.saved.set("crew.draft:fixture:leader",JSON.stringify({text:"",images:[{media_type:"image/png",data:"AAAA"}]}));
-    target=h.mount("leader",async(url,data)=>{if(url!=="/api/chat/send")return history();payload=data;assert.match(rendered(target).join(""),/m-user pending/);assert.match(rendered(target).join(""),/立即可见/);return new Promise(resolve=>{finish=resolve;});},{runtime});await tick();
+    target=h.mount("leader",async(url,data)=>{if(url!=="/api/op/chat.send")return history();payload=data;assert.match(rendered(target).join(""),/m-user pending/);assert.match(rendered(target).join(""),/立即可见/);return new Promise(resolve=>{finish=resolve;});},{runtime});await tick();
     if(bound){h.chat.setTask({id:"goal",title:"任务甲",leader_session_id:"leader"});target.querySelector(".chat-task-binding").onclick();}
     target.querySelector("textarea").value="立即可见";target.querySelector("textarea").oninput();target.querySelector("form").onsubmit({preventDefault(){}});
     assert.match(rendered(target).join(""),/待确认/);assert.match(rendered(target).join(""),/data:image\/png;base64,AAAA/);
@@ -82,7 +82,7 @@ test("optimistic input is visible before send starts and merges a same-ID receip
 test("rejected and uncertain sends retain their draft, true reason and one marked message without automatic retry",async()=>{
   for(const accepted of [false,"unknown"])for(const bound of [false,true]){
     const h=harness();let sends=0;
-    const target=h.mount("leader",async url=>url==="/api/chat/send"?(sends++,{accepted,error:"明确的投递原因"}):history());await tick();
+    const target=h.mount("leader",async url=>url==="/api/op/chat.send"?(sends++,{accepted,error:"明确的投递原因"}):history());await tick();
     if(bound){h.chat.setTask({id:"goal",title:"任务甲",leader_session_id:"leader"});target.querySelector(".chat-task-binding").onclick();}
     target.querySelector("textarea").value="保留的输入";target.querySelector("textarea").oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();h.flushFrames();
     const html=rendered(target).join("");assert.match(html,accepted==="unknown"?/m-user pending/:/m-user failed/);assert.match(html,/明确的投递原因/);
@@ -124,14 +124,14 @@ test("an unread anchor evicted from the new tail window positions the reader at 
 test("task binding follows the selected task, resets on switch and only scopes a highlighted send",async()=>{
   for(const runtime of ["claude","codex"]){
     const h=harness(),calls=[],toasts=[];
-    const target=h.mount("leader",async(url,data)=>{calls.push({url,data});return url==="/api/chat/send"?{accepted:true}:history();},{runtime},{toast:text=>toasts.push(text)});
+    const target=h.mount("leader",async(url,data)=>{calls.push({url,data});return url==="/api/op/chat.send"?{accepted:true}:history();},{runtime},{toast:text=>toasts.push(text)});
     await tick();const chip=target.querySelector(".chat-task-binding"),input=target.querySelector("textarea");
     h.chat.setTask({id:"a",title:"任务甲",leader_session_id:"leader"});assert(chip.innerHTML.includes("<span>任务甲</span>"));assert(chip.innerHTML.includes("<svg"));assert.equal(chip.getAttribute("aria-pressed"),"false");chip.onclick();assert.equal(chip.getAttribute("aria-pressed"),"true");
     h.chat.setTask({id:"b",title:"任务乙",leader_session_id:"leader"});assert(chip.innerHTML.includes("<span>任务乙</span>"));assert.equal(chip.getAttribute("aria-pressed"),"false");
-    input.value="普通交流";input.oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();assert(!Object.hasOwn(calls.find(call=>call.url==="/api/chat/send").data,"goal_id"));
+    input.value="普通交流";input.oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();assert(!Object.hasOwn(calls.find(call=>call.url==="/api/op/chat.send").data,"goal_id"));
     chip.onclick();assert.equal(input.placeholder,"补充给任务「任务乙」的要求");input.value="补充要求";input.oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();h.flushFrames();
-    const send=calls.filter(call=>call.url==="/api/chat/send").at(-1).data;assert.equal(send.session_id,"leader");assert.equal(send.goal_id,"b");assert(send.message_id);assert(toasts.includes("已补充到任务，AI 会按新要求继续"));assert(rendered(target).join("").includes("→ 任务乙"));
-    assert(calls.filter(call=>call.url.includes("/api/chat/history")).every(call=>!call.url.includes("goal_id=")));assert(h.streams.every(url=>!url.includes("goal_id=")));
+    const send=calls.filter(call=>call.url==="/api/op/chat.send").at(-1).data;assert.equal(send.session_id,"leader");assert.equal(send.goal_id,"b");assert(send.message_id);assert(toasts.includes("已补充到任务，AI 会按新要求继续"));assert(rendered(target).join("").includes("→ 任务乙"));
+    assert(calls.filter(call=>call.url.includes("/api/op/chat.history")).every(call=>!call.url.includes("goal_id=")));assert(h.streams.every(url=>!url.includes("goal_id=")));
     h.chat.setTask(null);assert.equal(chip.hidden,true);h.chat.unmount();
   }
 });
@@ -139,8 +139,8 @@ test("task binding follows the selected task, resets on switch and only scopes a
 test("an idea from the wall rides on exactly one send as note_id, prefilling only an empty composer",async()=>{
   for(const runtime of ["claude","codex"]){
     const h=harness(),calls=[],cleared=[];
-    const target=h.mount("assistant",async(url,data)=>{calls.push({url,data});return url==="/api/chat/send"?{accepted:true}:history();},{runtime},{onNoteCleared:()=>cleared.push("cleared")});
-    await tick();const chip=target.querySelector(".chat-note-chip"),input=target.querySelector("textarea"),sends=()=>calls.filter(call=>call.url==="/api/chat/send").map(call=>call.data);
+    const target=h.mount("assistant",async(url,data)=>{calls.push({url,data});return url==="/api/op/chat.send"?{accepted:true}:history();},{runtime},{onNoteCleared:()=>cleared.push("cleared")});
+    await tick();const chip=target.querySelector(".chat-note-chip"),input=target.querySelector("textarea"),sends=()=>calls.filter(call=>call.url==="/api/op/chat.send").map(call=>call.data);
     h.chat.setNote({id:"note-1",title:"想法墙 <b>"},"帮我把这个想法想清楚");
     assert.equal(chip.hidden,false);assert(chip.innerHTML.includes("想法：想法墙 &lt;b&gt;"));assert.match(chip.getAttribute("aria-label"),/点按移除/);
     assert.equal(input.value,"帮我把这个想法想清楚");assert.equal(sends().length,0,"attaching an idea never sends");
@@ -164,7 +164,7 @@ test("an idea from the wall rides on exactly one send as note_id, prefilling onl
 
 test("a rejected task supplement keeps the exact backend reason, draft and target on retry",async()=>{
   const h=harness(),toasts=[],sent=[];let fail=true;
-  const target=h.mount("leader",async(url,data)=>{if(url!=="/api/chat/send")return history();sent.push(data);if(fail)throw Error("该目标已暂停，请先恢复");return {accepted:true};},{},{toast:text=>toasts.push(text)});
+  const target=h.mount("leader",async(url,data)=>{if(url!=="/api/op/chat.send")return history();sent.push(data);if(fail)throw Error("该目标已暂停，请先恢复");return {accepted:true};},{},{toast:text=>toasts.push(text)});
   await tick();h.chat.setTask({id:"a",title:"任务甲",leader_session_id:"leader"});target.querySelector(".chat-task-binding").onclick();
   const input=target.querySelector("textarea");input.value="保留输入";input.oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();
   assert.equal(toasts.at(-1),"该目标已暂停，请先恢复");assert.equal(input.value,"保留输入");fail=false;target.querySelector("form").onsubmit({preventDefault(){}});await tick();assert.equal(sent[0].message_id,sent[1].message_id);assert.equal(input.value,"");h.chat.unmount();
@@ -231,7 +231,7 @@ test("Claude and Codex chats render live tokens without a page-level activity sy
 
 test("a pending send uses the server clock and a later token report starts with a real number",async()=>{
   const h=harness(),clientNow=Date.now(),serverNow=new Date(clientNow+600000).toISOString();let finish;
-  const target=h.mount("assistant",async(url)=>url==="/api/chat/send"?new Promise(resolve=>{finish=resolve;}):history(),{},
+  const target=h.mount("assistant",async(url)=>url==="/api/op/chat.send"?new Promise(resolve=>{finish=resolve;}):history(),{},
     {state:{now:serverNow,leaders:[],members:[]}});await tick();h.flushFrames();
   target.querySelector("textarea").value="Wait for this reply";target.querySelector("textarea").oninput();
   target.querySelector("form").onsubmit({preventDefault(){}});h.flushFrames();
@@ -348,7 +348,7 @@ test("compact watchers use finite history reads and finish once on a new native 
     events=[...events,{seq:2,type:"turn_result",success:true}];await poll();assert.equal(finished.length,0);
     events=[...events,{...terminal,seq:3}];await poll();assert.equal(finished.length,1);close();
     assert.equal(h.timers.size,0);assert.equal(h.connections.length,0);
-    assert(calls.every(url=>url.startsWith("/api/chat/history?")&&url.includes("session_id=member")&&!url.includes("goal_id=")));
+    assert(calls.every(url=>url.startsWith("/api/op/chat.history?")&&url.includes("session_id=member")&&!url.includes("goal_id=")));
     assert.equal(toasts.length,terminal.type==="compact"?1:0);
   }
 });
@@ -373,7 +373,7 @@ test("compact history transport failures report the real cause and retry reads w
   const close=await h.chat.watchCompact("member",{state:{project:{name:"fixture"}},api:async url=>{calls.push(url);if(fail)throw Error("temporary connection failure");return history();},toast:text=>toasts.push(text),onFinish:event=>finished.push(event)});
   const poll=async()=>{const entry=[...h.timers.entries()].find(([,timer])=>timer.ms===3000);assert(entry);h.timers.delete(entry[0]);await entry[1].fn();await tick();};
   fail=true;await poll();await poll();assert.equal(toasts.length,1);assert.match(toasts[0],/temporary connection failure/);assert.match(toasts[0],/自动重试/);assert.equal(finished.length,0);
-  fail=false;await poll();fail=true;await poll();assert.equal(toasts.length,2);assert(calls.every(url=>url.startsWith("/api/chat/history?")));close();assert.equal(h.timers.size,0);
+  fail=false;await poll();fail=true;await poll();assert.equal(toasts.length,2);assert(calls.every(url=>url.startsWith("/api/op/chat.history?")));close();assert.equal(h.timers.size,0);
 });
 
 test("general conversation unread dividers follow reply text, excluding tools and unchanged snapshots",async()=>{
@@ -415,10 +415,10 @@ test("a goal-start tool followed by identity handoff and native interruption ren
   const html=target.querySelector(".chat-inner").children.map(item=>item.innerHTML).join("");
   assert(!html.includes("正在执行…"),"the former general turn has already ended");
   assert(!html.includes('aria-label="执行中"'));assert(html.includes("已转交"));
-  assert(!html.includes("执行失败"));assert(calls.every(url=>url.startsWith("/api/chat/history?")));
+  assert(!html.includes("执行失败"));assert(calls.every(url=>url.startsWith("/api/op/chat.history?")));
   assert(html.includes('data-chat-goal="goal"'));
   await target.querySelector(".chat-inner").onclick({target:{closest:selector=>selector==="[data-chat-goal]"?{dataset:{chatGoal:"goal"}}:null}});
-  assert.deepEqual(routed,["goal"]);assert(calls.every(url=>url.startsWith("/api/chat/history?")));
+  assert.deepEqual(routed,["goal"]);assert(calls.every(url=>url.startsWith("/api/op/chat.history?")));
   h.chat.unmount();
 });
 
@@ -536,12 +536,12 @@ test("starting a queued goal retains the leader transcript, stream, draft and re
   h.sandbox.CrewContext=h.sandbox.window.CrewContext;
   const api=async(url,data)=>{
     calls.push({url,data});
-    if(url==="/api/goals/action"){
-      assert.equal(data.action,"start");Object.assign(goal,{status:"running",version:goal.version+1});
+    if(url==="/api/op/goal.start"){
+      assert(!Object.hasOwn(data,"action"));Object.assign(goal,{status:"running",version:goal.version+1});
       execution={id:"execution-1",session_id:"leader",runtime:"codex",model:null,effort:null,round:1,requirement_version:1,generation:1};return {goal:{...goal}};
     }
-    if(url.startsWith("/api/goal?"))return {goal:{...goal},executions:execution?[{...execution}]:[],context:{items:[],manifest:{}},reports:[]};
-    if(url.startsWith("/api/chat/history?"))return {...history(),execution_id:execution?.id??null};
+    if(url.startsWith("/api/op/goal.get?"))return {goal:{...goal},executions:execution?[{...execution}]:[],context:{items:[],manifest:{}},reports:[]};
+    if(url.startsWith("/api/op/chat.history?"))return {...history(),execution_id:execution?.id??null};
     throw Error("Unexpected request: "+url);
   };
   const appSource=fs.readFileSync(path.join(__dirname,"../../frontend/app.js"),"utf8").replace(/\r\n/g,"\n");
@@ -557,7 +557,7 @@ test("starting a queued goal retains the leader transcript, stream, draft and re
   for(const handler of h.handlers.get("click")||[])await handler({target:{closest:selector=>selector==="[data-goal-act]"?button:null}});
   await tick();
   assert.equal(emptyStream.signal.aborted,false);assert.equal(h.connections.length,1);
-  assert.equal(calls.filter(call=>call.url.startsWith("/api/chat/history?")).length,1);
+  assert.equal(calls.filter(call=>call.url.startsWith("/api/op/chat.history?")).length,1);
   const runningHost=nodes.get("chat-host");assert.equal(runningHost,queuedHost,"execution metadata must not replace the conversation");
   assert.equal(runningHost.querySelector("textarea").value,"目标开始后仍要保留的草稿");assert.equal(runningHost.querySelector(".chat-scroll").scrollTop,123);
   h.connections[0].emit({seq:1,type:"text",id:"native-reply",text:"已经从真实 execution 接到回复"});await tick();h.flushFrames();
@@ -571,7 +571,7 @@ test("starting a queued goal retains the leader transcript, stream, draft and re
   await goalUI.refresh();await tick();assert.equal(h.connections[0].signal.aborted,false);assert.equal(h.connections.length,1);
   assert.equal(nodes.get("chat-host"),runningHost,"a round without an execution also keeps the conversation mounted");
   assert.equal(nodes.get("chat-host").querySelector("textarea").value,"目标开始后仍要保留的草稿");
-  assert.equal(calls.filter(call=>call.url==="/api/goals/action").length,1);assert(!calls.some(call=>/chat\/send|wake/.test(call.url)));
+  assert.equal(calls.filter(call=>call.url==="/api/op/goal.start").length,1);assert(!calls.some(call=>["/api/op/chat.send","/api/op/session.wake"].includes(call.url)));
   assert(h.connections.every(stream=>!stream.url.includes("goal_id=")));h.chat.unmount();
 });
 
@@ -584,7 +584,7 @@ test("initial history failure retries, recovers the connection and preserves a t
   const [id,timer]=[...h.timers][0];assert.equal(timer.ms,3000);h.timers.delete(id);timer.fn();await tick();
   assert.equal(attempts,2);assert.equal(h.streams.length,1);assert.equal(target.querySelector(".chat-connection-error").hidden,true);
   assert.equal(target.querySelector("textarea").value,"重连时继续写的草稿");assert.equal(target.querySelector(".send").disabled,false);
-  assert(calls.every(call=>call.url.startsWith("/api/chat/history?")&&call.data===undefined));h.chat.unmount();
+  assert(calls.every(call=>call.url.startsWith("/api/op/chat.history?")&&call.data===undefined));h.chat.unmount();
 });
 
 test("unmount cancels the pending retry and even an already queued callback cannot load a different leader",async()=>{
@@ -609,11 +609,11 @@ test("a late history response from an unmounted leader cannot render into or con
 
 test("the general stop waits for its process-exit receipt and then confirms the identity is stopped",async()=>{
   const h=harness(),calls=[];let acknowledge;
-  const target=h.mount("a",async(url,data)=>{calls.push({url,data});if(url==="/api/session/stop")return new Promise(resolve=>{acknowledge=resolve;});return {...history(),busy:true};},{busy:true});await tick();
+  const target=h.mount("a",async(url,data)=>{calls.push({url,data});if(url==="/api/op/session.stop")return new Promise(resolve=>{acknowledge=resolve;});return {...history(),busy:true};},{busy:true});await tick();
   assert(target.innerHTML.includes('class="chat-stop"'));const stop=target.querySelector(".chat-stop");assert.equal(stop.hidden,false);assert.equal(stop.disabled,false);
   target.querySelector("textarea").value="中断后继续编辑的草稿";target.querySelector("textarea").oninput();
   stop.onclick();await tick();assert.equal(stop.disabled,true);assert.equal(stop.textContent,"");assert.equal(stop.getAttribute("aria-busy"),"true");assert.equal(target.querySelector(".chat-interrupt-status").hidden,true);
-  const sent=calls.find(call=>call.url==="/api/session/stop");assert.deepEqual(JSON.parse(JSON.stringify(sent.data)),{session_id:"a"});
+  const sent=calls.find(call=>call.url==="/api/op/session.stop");assert.deepEqual(JSON.parse(JSON.stringify(sent.data)),{session_id:"a"});
   acknowledge({ok:true});await tick();assert.equal(stop.disabled,true);assert.equal(stop.hidden,true);assert.equal(target.querySelector(".send").disabled,false);
   h.update("a",{busy:false});assert.equal(stop.hidden,true);assert.equal(target.querySelector(".send").disabled,false);
   assert.equal(stop.getAttribute("aria-busy"),"false");assert.equal(target.querySelector(".chat-interrupt-status").hidden,true);assert.equal(target.querySelector("textarea").value,"中断后继续编辑的草稿");
@@ -621,20 +621,20 @@ test("the general stop waits for its process-exit receipt and then confirms the 
 });
 
 test("the general stop confirmation locks repeated clicks and cancellation sends no stop request",async()=>{
-  const h=harness(),calls=[];let resolve,confirmations=0;const target=h.mount("leader",async(url)=>{calls.push(url);return history();},{busy:true},{beforeStop:()=>{confirmations++;return new Promise(done=>{resolve=done;});}});await tick();h.update("leader",{busy:true});const button=target.querySelector(".chat-stop");button.onclick();button.onclick();assert.equal(confirmations,1);assert.equal(button.disabled,true);assert.equal(button.getAttribute("aria-busy"),"true");resolve(false);await tick();assert(!calls.includes("/api/session/stop"));assert.equal(button.disabled,false);assert.equal(button.getAttribute("aria-busy"),"false");h.chat.unmount();
+  const h=harness(),calls=[];let resolve,confirmations=0;const target=h.mount("leader",async(url)=>{calls.push(url);return history();},{busy:true},{beforeStop:()=>{confirmations++;return new Promise(done=>{resolve=done;});}});await tick();h.update("leader",{busy:true});const button=target.querySelector(".chat-stop");button.onclick();button.onclick();assert.equal(confirmations,1);assert.equal(button.disabled,true);assert.equal(button.getAttribute("aria-busy"),"true");resolve(false);await tick();assert(!calls.includes("/api/op/session.stop"));assert.equal(button.disabled,false);assert.equal(button.getAttribute("aria-busy"),"false");h.chat.unmount();
 });
 
 
 test("an accepted general send opens the task only after acceptance and preserves a failed draft",async()=>{
   const h=harness(),calls=[],routed=[];let failed=true;
-  const general=h.mount("leader",async(url,data)=>{calls.push({url,data});if(url!=="/api/chat/send")return history();if(failed)throw Error("连接失败");return {accepted:true,goal_id:"goal",delivery:"steered"};},{},{onRouted:id=>routed.push(id)});await tick();
+  const general=h.mount("leader",async(url,data)=>{calls.push({url,data});if(url!=="/api/op/chat.send")return history();if(failed)throw Error("连接失败");return {accepted:true,goal_id:"goal",delivery:"steered"};},{},{onRouted:id=>routed.push(id)});await tick();
   general.querySelector("textarea").value="开始了吗";general.querySelector("textarea").oninput();general.querySelector("form").onsubmit({preventDefault(){}});await tick();assert.deepEqual(routed,[]);assert.equal(general.querySelector("textarea").value,"开始了吗");
   failed=false;general.querySelector("form").onsubmit({preventDefault(){}});await tick();assert.deepEqual(routed,["goal"]);assert.equal(JSON.parse(h.saved.get("crew.draft:fixture:leader")).text,"");
-  const sends=calls.filter(call=>call.url==="/api/chat/send");assert.equal(sends.length,2);assert.equal(sends[0].data.message_id,sends[1].data.message_id);assert(!("goal_id" in sends[0].data));assert.equal(h.connections.length,1);h.chat.unmount();
+  const sends=calls.filter(call=>call.url==="/api/op/chat.send");assert.equal(sends.length,2);assert.equal(sends[0].data.message_id,sends[1].data.message_id);assert(!("goal_id" in sends[0].data));assert.equal(h.connections.length,1);h.chat.unmount();
 });
 test("interrupt failure is explicit and can be retried without discarding a draft",async()=>{
   const h=harness();let stops=0;
-  const target=h.mount("a",async url=>{if(url==="/api/session/stop"){if(++stops===1)throw Error("temporary stop failure");return {ok:true};}return {...history(),busy:true};},{busy:true});await tick();
+  const target=h.mount("a",async url=>{if(url==="/api/op/session.stop"){if(++stops===1)throw Error("temporary stop failure");return {ok:true};}return {...history(),busy:true};},{busy:true});await tick();
   const stop=target.querySelector(".chat-stop");stop.onclick();await tick();assert.equal(stop.disabled,false);assert.match(target.querySelector(".chat-interrupt-status").textContent,/temporary stop failure/);
   stop.onclick();await tick();assert.equal(stops,2);assert.equal(stop.disabled,true);h.chat.unmount();
 });
@@ -643,17 +643,17 @@ test("external busy sessions explain why Crew cannot interrupt and idle sessions
   const h=harness(),calls=[];
   const target=h.mount("external",async url=>{calls.push(url);return {...history(),busy:true};},{busy:true,where:"vscode"});await tick();
   const stop=target.querySelector(".chat-stop");assert.equal(stop.hidden,false);assert.equal(stop.disabled,true);assert.match(target.querySelector(".chat-interrupt-status").textContent,/原工具/);
-  stop.onclick();await tick();assert(!calls.includes("/api/session/stop"));h.update("external",{busy:false,where:"vscode"});assert.equal(stop.hidden,true);h.chat.unmount();
+  stop.onclick();await tick();assert(!calls.includes("/api/op/session.stop"));h.update("external",{busy:false,where:"vscode"});assert.equal(stop.hidden,true);h.chat.unmount();
 });
 
 test("busy input sends a stable idempotent message and keeps failed drafts until actual acceptance",async()=>{
   const h=harness(),calls=[];let sends=0;
-  const target=h.mount("worker",async(url,data)=>{calls.push({url,data});if(url==="/api/chat/send"){if(++sends===1)throw Error("connection lost after send");return {accepted:true,delivery:"steered",message_id:data.message_id};}return {...history(),busy:true};},{busy:true});await tick();
+  const target=h.mount("worker",async(url,data)=>{calls.push({url,data});if(url==="/api/op/chat.send"){if(++sends===1)throw Error("connection lost after send");return {accepted:true,delivery:"steered",message_id:data.message_id};}return {...history(),busy:true};},{busy:true});await tick();
   const input=target.querySelector("textarea");input.value="改为先验证短句";input.oninput();
   assert.equal(target.querySelector(".send").disabled,false);assert.equal(target.querySelector(".send").hidden,false);assert.equal(target.querySelector(".hint").textContent,"");
   target.querySelector("form").onsubmit({preventDefault(){}});await tick();assert.equal(input.value,"改为先验证短句");
   target.querySelector("form").onsubmit({preventDefault(){}});await tick();
-  const sent=calls.filter(call=>call.url==="/api/chat/send");assert.equal(sent.length,2);assert.equal(sent[0].data.message_id,sent[1].data.message_id);assert(sent[0].data.message_id);
+  const sent=calls.filter(call=>call.url==="/api/op/chat.send");assert.equal(sent.length,2);assert.equal(sent[0].data.message_id,sent[1].data.message_id);assert(sent[0].data.message_id);
   assert(!("goal_id" in sent[0].data));assert.equal(input.value,"");assert.equal(target.querySelector(".chat-delivery-status").hidden,true);assert.equal(target.querySelector(".send").hidden,true);h.chat.unmount();
 });
 
@@ -668,7 +668,7 @@ test("readonly status transitions preserve the same conversation draft and readi
   assert(paused.innerHTML.includes('class="readonly-note"'));assert(!paused.innerHTML.includes('class="composer-wrap"'));assert.equal(paused.querySelector(".chat-scroll").scrollTop,123);
   const resumed=h.mount("member",api,{web_chat:false,where:"offline"},{readonly:false});await tick();
   assert.equal(resumed.querySelector("textarea").value,"恢复后继续编辑的草稿");assert.equal(resumed.querySelector(".chat-scroll").scrollTop,123);
-  assert(calls.every(url=>url.startsWith("/api/chat/history?")));h.chat.unmount();
+  assert(calls.every(url=>url.startsWith("/api/op/chat.history?")));h.chat.unmount();
 });
 
 test("a detached conversation scroll event cannot reset the reading position while the same chat remounts",async()=>{
@@ -685,7 +685,7 @@ test("opening readonly first restores a persisted draft when work is explicitly 
 });
 
 test("an accepted in-flight send can finish after readonly remount without restoring an already sent draft",async()=>{
-  const h=harness();let release,sends=0;const api=async(url)=>{if(url==="/api/chat/send"){sends++;return new Promise(resolve=>{release=resolve;});}return history();};
+  const h=harness();let release,sends=0;const api=async(url)=>{if(url==="/api/op/chat.send"){sends++;return new Promise(resolve=>{release=resolve;});}return history();};
   const target=h.mount("member",api,{},{readonly:false});await tick();target.querySelector("textarea").value="这条已经提交";target.querySelector("textarea").oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();
   h.mount("member",api,{},{readonly:true});await tick();release({accepted:true,delivery:"started"});await tick();
   assert.equal(JSON.parse(h.saved.get("crew.draft:fixture:member")).text,"");
@@ -694,7 +694,7 @@ test("an accepted in-flight send can finish after readonly remount without resto
 
 test("a busy turn has one progress row and swaps send for the icon stop until a follow-up draft is ready",async()=>{
   const h=harness(),calls=[];let accept;
-  const target=h.mount("worker",async(url,data)=>{calls.push({url,data});if(url==="/api/chat/send")return new Promise(resolve=>{accept=resolve;});return {...history(),busy:true};},{busy:true});await tick();h.flushFrames();
+  const target=h.mount("worker",async(url,data)=>{calls.push({url,data});if(url==="/api/op/chat.send")return new Promise(resolve=>{accept=resolve;});return {...history(),busy:true};},{busy:true});await tick();h.flushFrames();
   const input=target.querySelector("textarea"),send=target.querySelector(".send"),stop=target.querySelector(".chat-stop");
   const progress=()=>target.querySelector(".chat-inner").children.filter(child=>child.className==="chat-activity");
   assert.equal(progress().length,1,"busy without provider activity still shows a single progress row");
@@ -703,14 +703,14 @@ test("a busy turn has one progress row and swaps send for the icon stop until a 
   input.value="先检查复现步骤";input.oninput();assert.equal(send.hidden,false);assert.equal(send.disabled,false);assert.equal(stop.hidden,false);
   target.querySelector("form").onsubmit({preventDefault(){}});assert.equal(send.disabled,true);await tick();
   accept({accepted:true,delivery:"steered"});await tick();h.flushFrames();
-  assert.equal(calls.filter(call=>call.url==="/api/chat/send").length,1);assert.equal(input.value,"");assert.equal(send.hidden,true);
+  assert.equal(calls.filter(call=>call.url==="/api/op/chat.send").length,1);assert.equal(input.value,"");assert.equal(send.hidden,true);
   assert.equal(progress().length,1);assert.equal(target.querySelector(".hint").textContent,"");assert.equal(target.querySelector(".chat-delivery-status").hidden,true);assert.equal(target.querySelector(".chat-interrupt-status").hidden,true);
   h.update("worker",{busy:false});h.flushFrames();assert.equal(progress().length,0);assert.equal(stop.hidden,true);assert.equal(send.hidden,false);h.chat.unmount();
 });
 
 test("a member page can show one task execution record and talk to that task",async()=>{
   const h=harness(),calls=[],toasts=[];let routed=0;
-  const api=async(url,data)=>{calls.push([url,data]);if(url==="/api/chat/send")return {accepted:true,goal_id:"goal-a",execution_id:"exec-a"};if(url==="/api/chat/read")return {read_seq:data.seq};
+  const api=async(url,data)=>{calls.push([url,data]);if(url==="/api/op/chat.send")return {accepted:true,goal_id:"goal-a",execution_id:"exec-a"};if(url==="/api/op/chat.read")return {read_seq:data.seq};
     return {...history(),execution_id:"exec-a",events:[{seq:1,type:"message",id:"task",source:"crew",text:"计算 1 + 1"},{seq:2,type:"assistant",id:"reply",content:[{type:"text",text:"1 + 1 = 2"}]},{seq:3,type:"turn_result",status:"completed",success:true}]};};
   const target=h.mount("member",api,{},{goalId:"goal-a",goalTitle:"算术A",toast:text=>toasts.push(text),onRouted(){routed++;}});await tick();h.flushFrames();
   assert.match(calls[0][0],/goal_id=goal-a/);assert.match(h.connections[0].url,/goal_id=goal-a/);
@@ -718,7 +718,7 @@ test("a member page can show one task execution record and talk to that task",as
   assert.match(target.innerHTML,/placeholder="在任务「算术A」里跟 member 说…"/);
   h.chat.setTask(null);assert.match(target.querySelector("textarea").placeholder,/在任务「算术A」里跟 member 说/);
   target.querySelector("textarea").value="再算 2 + 2";target.querySelector("textarea").oninput();target.querySelector("form").onsubmit({preventDefault(){}});await tick();
-  const sent=calls.find(([url])=>url==="/api/chat/send")[1];
+  const sent=calls.find(([url])=>url==="/api/op/chat.send")[1];
   assert.equal(sent.session_id,"member");assert.equal(sent.goal_id,"goal-a");assert.equal(routed,0,"staying on the member page, not jumping to the leader task");
   assert(h.saved.has("crew.draft:fixture:member:goal:goal-a"),"the task record keeps its own draft");
   h.connections[0].emit({seq:4,type:"native_replaced",lost_native:"old",native_id:"new",text:"这是新开的原生会话：原会话 old 已丢失"});await tick();h.flushFrames();

@@ -22,7 +22,7 @@ test("task documents render only the explicit task list, preserve ordering and e
 });
 
 test("task document actions bind numeric document IDs and retain the important mark without a hidden center",async()=>{
-  const calls=[],h=documentsHarness(async(url,body)=>{calls.push({url,body:plain(body)});return {document:{id:7,title:"任务文档",kind:"summary",important:body.important}};});const list=[{id:7,title:"任务文档",kind:"summary",important:false}];h.client.taskCards(list,"goal");await h.click("pin",7);assert(h.client.taskCards(list,"goal").includes('aria-pressed="true"'));await h.click("open",7);assert.deepEqual(calls[1],{url:"/api/files/open",body:{document_id:7}});assert(!calls.some(call=>call.url==="/api/documents"));
+  const calls=[],h=documentsHarness(async(url,body)=>{calls.push({url,body:plain(body)});return {document:{id:7,title:"任务文档",kind:"summary",important:body.important}};});const list=[{id:7,title:"任务文档",kind:"summary",important:false}];h.client.taskCards(list,"goal");await h.click("pin",7);assert(h.client.taskCards(list,"goal").includes('aria-pressed="true"'));await h.click("open",7);assert.deepEqual(calls[1],{url:"/api/op/files.open",body:{document_id:7}});assert(!calls.some(call=>call.url==="/api/op/document.list"));
 });
 
 test("task documents keep independent action scopes without a global material surface",async()=>{
@@ -35,7 +35,7 @@ test("task documents keep independent action scopes without a global material su
   await h.click("pin",8,"goal:a");assert(h.client.taskCards(a,"a").includes('aria-pressed="true"'));
   assert(!h.client.taskCards(b,"b").includes("A任务文档"));
   assert.equal(h.client.mount,undefined);assert.equal(h.client.refresh,undefined);
-  assert(calls.every(call=>call.url==="/api/documents/pin"));
+  assert(calls.every(call=>call.url==="/api/op/document.pin"));
 });
 
 test("sidebar has no materials overview and old document routes return to the workspace",()=>{
@@ -80,13 +80,13 @@ function filesHarness(reader) {
 }
 test("document preview carries a numeric ID through resolve, content, open and reveal", async () => {
   const harness = filesHarness(); await harness.click("12");
-  assert.deepEqual(harness.calls[0], ["/api/files/resolve", {document_id:12}]);
+  assert.deepEqual(harness.calls[0], ["/api/op/files.resolve", {document_id:12}]);
   const params = new URL(harness.fetches[0], "http://fixture").searchParams;
   assert.equal(params.get("project"), "alpha"); assert.equal(params.get("document_id"), "12");
   assert(!params.has("path")); assert(!params.has("session_id"));
   assert(harness.panel.innerHTML.includes('data-file-session="trusted-owner"'));
   await harness.actions[".file-open"].onclick(); await harness.actions[".file-reveal"].onclick();
-  assert.deepEqual(harness.calls.slice(1), [["/api/files/open", {document_id:12}], ["/api/files/reveal", {document_id:12}]]);
+  assert.deepEqual(harness.calls.slice(1), [["/api/op/files.open", {document_id:12}], ["/api/op/files.reveal", {document_id:12}]]);
 });
 test("beside a conversation a document opens in the reading pane and names itself for the composer", async () => {
   const opened = [], reader = {canHost:() => true, chatButton:() => "", open:(host, options) => { opened.push({host, options}); return host; }, close(){}};
@@ -101,6 +101,6 @@ test("invalid or rejected document IDs never fall back to a supplied file path",
   for (const value of ["", "0", "12oops", "9007199254740993"]) await harness.click(value);
   assert.equal(harness.calls.length, 0); assert.equal(harness.fetches.length, 0);
   await harness.click("13");
-  assert.deepEqual(harness.calls, [["/api/files/resolve", {document_id:13}]]);
+  assert.deepEqual(harness.calls, [["/api/op/files.resolve", {document_id:13}]]);
   assert.equal(harness.fetches.length, 0); assert(!harness.classes.has("show"));
 });

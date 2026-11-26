@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import unittest
 
-from crew import board, goals, guard, hooks, rules
+from crew import board, goals, guard, hooks
 from test_core import CoreCase, NOW
 
 
@@ -54,13 +54,6 @@ class RegisteredProjectTests(CoreCase):
                 self.assertEqual(self.hook(event, sid="unknown", cwd=str(self.outside), **extra), (0, None))
                 self.assertEqual(self.conn.serialize(), before)
 
-    def test_registered_skill_read_outside_project_is_recorded(self):
-        self.conn.execute("DELETE FROM rule_reads WHERE session_id='s1'")
-        self.assertEqual(self.hook("guard", cwd=str(self.outside), tool_name="Skill",
-                                   tool_input={"skill": "crew:member"}), (0, None))
-        read = self.conn.execute("SELECT * FROM rule_reads WHERE session_id='s1'").fetchone()
-        self.assertIsNotNone(read)
-        self.assertEqual(read["digest"], rules.digest(self.fake_plugin, "member"))
 
     def test_registered_project_wins_over_another_project_cwd(self):
         board.init_project(self.conn, "other", self.outside, now=NOW)
@@ -77,7 +70,7 @@ class RegisteredProjectTests(CoreCase):
                 reason = guard.check(self.home, self.data(cwd=str(self.outside), tool_name="Bash",
                                                          tool_input={"command": command}), now=NOW)
                 self.assertIsNotNone(reason)
-                self.assertIn("crew git request", reason)
+                self.assertIn("git_request_add", reason)
 
     def test_registered_member_device_outside_project_is_blocked(self):
         board.add_resource(self.conn, "demo", "phone", guard_regex=r"\badb\b", now=NOW)
@@ -125,8 +118,7 @@ class ClaudeBranchClaimTests(CoreCase):
 
     def goal_hook(self, execution, native, tool, command):
         return hooks.handle('guard', self.data(native, tool_name=tool, tool_input={'command': command}),
-                            self.home, self.fake_plugin,
-                            {'CREW_EXECUTION_ID': execution['id'], 'CREW_SESSION_ID': execution['session_id']}, now=NOW)
+                            self.home, self.fake_plugin, now=NOW)
 
     def test_allowed_shells_record_leaders_and_members(self):
         expected = []
@@ -148,7 +140,7 @@ class ClaudeBranchClaimTests(CoreCase):
                 with contextlib.redirect_stderr(err):
                     self.assertEqual(self.hook('guard', tool_name=tool,
                                                tool_input={'command': 'git push; git switch -c blocked'}), (2, None))
-                self.assertIn('crew git request', err.getvalue())
+                self.assertIn('git_request_add', err.getvalue())
                 self.assertEqual(self.claims(), [])
 
     def test_non_shell_tool_does_not_record_command_like_content(self):
@@ -190,7 +182,7 @@ class ClaudeBranchClaimTests(CoreCase):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             self.assertEqual(self.goal_hook(execution, native, 'Bash', 'git push; git switch -c blocked'), (2, None))
-        self.assertIn('crew git request', err.getvalue())
+        self.assertIn('git_request_add', err.getvalue())
         self.assertEqual(self.goal_hook(execution, native, 'Read', 'git branch non-shell'), (0, None))
         self.assertEqual(self.claims(), [])
 

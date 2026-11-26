@@ -152,13 +152,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertEqual(env["CLAUDE_API_KEY"], "keep")
         self.assertEqual(env["CLAUDE_CONFIG_DIR"], "isolated-profile")
         self.assertEqual(env["MSYS_NO_PATHCONV"], "1")
-        self.assertEqual((env["CREW_NAME"], env["CREW_GROUP"], env["CREW_ROLE"]), ("boss", "boss", "leader"))
-
-    def test_ungrouped_member_environment_does_not_inherit_group(self):
-        env = chat.child_environment({"name": "member", "group": None, "role": "member", "id": "spawn-1"},
-                                     {"CREW_GROUP": "old-group"}, set())
-        self.assertEqual(env["CREW_ROLE"], "member")
-        self.assertNotIn("CREW_GROUP", env)
+        self.assertTrue({"CREW_NAME", "CREW_ROLE", "CREW_GROUP"}.isdisjoint(env))
 
     def manager_with_process(self, status="idle"):
         board.init_project(self.conn, "demo", self.root)

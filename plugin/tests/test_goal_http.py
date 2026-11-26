@@ -7,6 +7,8 @@ from urllib.parse import urlencode
 
 import tests
 from unittest import mock
+from crew.ops.errors import OpError
+from tests.ops_helpers import ai_call
 from crew import board, chat, codex_guard, codex_runtime, goals, hooks, messaging, personal, report_preview, runtimes, session_ops, store, web
 import test_chat_http as chat_helpers
 import test_codex_runtime as codex_helpers
@@ -33,8 +35,12 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertTrue(self.server.service.agents_ready.wait(5))
         self.url = self.server.url
 
+    def ai(self, session_id, name, args, execution_id=None):
+        return ai_call(self.server.service, self.conn, session_id, name, args, execution_id=execution_id,
+                       runtime=runtimes.get(self.conn, session_id)['runtime'])
+
     def goal(self):
-        code, value, _ = self.request('/api/goals/create?project=demo', {
+        code, value, _ = self.request('/api/op/goal.create?project=demo', {
             'leader_session_id': 's3', 'title': 'Speaker test', 'request': 'Measure short replies; do not delete recordings.',
             'acceptance': ['Identify the second speaker']})
         self.assertEqual(code, 200, value)
@@ -71,7 +77,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                             payload = {'session_id': person, 'text': 'Begin'}
                             if task is not None:
                                 payload['goal_id'] = task['id']
-                            code, receipt, _ = self.request('/api/chat/send?project=demo', payload)
+                            code, receipt, _ = self.request('/api/op/chat.send?project=demo', payload)
                             self.assertEqual(code, 200, receipt)
                             if task is not None:
                                 keys.append(receipt['execution_id'])
@@ -85,20 +91,18 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                                 request = next(rid for rid, kind in current.control_requests.items() if kind == 'get_context_usage')
                                 manager._control_response(current, {'subtype': 'success', 'request_id': request,
                                     'response': {'totalTokens': used, 'maxTokens': 100000}})
-                        history_path = '/api/chat/history?' + urlencode({
-                            'project': 'demo', 'session_id': person, 'goal_id': tasks[0]['id']})
-                        _, history, _ = self.request(history_path)
+                        history = self.server.service.chat_history(person, 'demo', tasks[0]['id'])
                         self.assertEqual(history['context']['used'], 2000)
-                        _, detail, _ = self.request('/api/goal?project=demo&id=' + tasks[0]['id'])
+                        _, detail, _ = self.request('/api/op/goal.get?project=demo&id=' + tasks[0]['id'])
                         self.assertEqual(next(e for e in detail['executions'] if e['id'] == keys[1])['context'], history['context'])
                         payload = {'session_id': person, 'goal_id': tasks[0]['id'],
                                    'execution_id': keys[1], 'after_turn': True}
                         for _ in range(2):
-                            code, receipt, _ = self.request('/api/session/compact?project=demo', payload)
+                            code, receipt, _ = self.request('/api/op/session.compact?project=demo', payload)
                             self.assertEqual(code, 200, receipt)
                             self.assertEqual(receipt['execution_id'], keys[1])
                             self.assertTrue(receipt['queued'])
-                        self.assertEqual(self.request(history_path)[1]['compaction'], 'queued')
+                        self.assertEqual(self.server.service.chat_history(person, 'demo', tasks[0]['id'])['compaction'], 'queued')
                         self.assertFalse(manager.processes[person].pending_compact)
                         self.assertFalse(manager.processes[keys[2]].pending_compact)
                         current = manager.processes[keys[1]]
@@ -113,7 +117,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                             with current.journal.condition:
                                 self.assertTrue(current.journal.condition.wait_for(
                                     lambda: current.journal.progress['phase'] == 'compacting', timeout=3))
-                        self.assertEqual(self.request(history_path)[1]['compaction'], 'compacting')
+                        self.assertEqual(self.server.service.chat_history(person, 'demo', tasks[0]['id'])['compaction'], 'compacting')
                         if runtime == 'codex':
                             self.assertEqual(sum(name == 'thread/compact/start' for name, _ in current.client.calls), 1)
                             current.client.emit('thread/tokenUsage/updated', tokenUsage={
@@ -127,37 +131,37 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                             current.process.emit({'type': 'system', 'subtype': 'compact_boundary',
                                                   'compact_metadata': {'pre_tokens': 2000, 'post_tokens': 500}})
                             self.finish_turn(keys[1], current.process)
-                        _, history, _ = self.request(history_path)
+                        history = self.server.service.chat_history(person, 'demo', tasks[0]['id'])
                         self.assertIsNone(history['compaction'])
                         self.assertTrue(any(e['type'] == 'compact' for e in history['events']))
                         self.assertTrue(manager.busy(person))
                         self.assertTrue(manager.busy(keys[2]))
                         last = history['context']
                         manager.stop_managed(keys[1])
-                        offline = self.request(history_path)[1]
+                        offline = self.server.service.chat_history(person, 'demo', tasks[0]['id'])
                         self.assertFalse(offline['running'])
                         self.assertEqual(offline['context'], dict(last, source='last_observed'))
                         self.assertEqual(manager.context(person)['used'], 1000)
 
     def test_task_context_unknown_and_stale_compact_never_touch_general_or_other_tasks(self):
         goal = self.goal()
-        self.assertIsNone(self.task_history(goal)['context'])
+        self.assertIsNone(self.server.service.chat_history('s3', 'demo', goal['id'])['context'])
         self.assertEqual(self.processes, [])
         _, receipt, _ = self.send_goal(goal)
         key = receipt['execution_id']
-        self.assertIsNone(self.task_history(goal)['context'])
-        self.assertEqual(self.request('/api/chat/history?project=demo&session_id=s3&goal_id=')[0], 400)
+        self.assertIsNone(self.server.service.chat_history('s3', 'demo', goal['id'])['context'])
+        self.assertEqual(self.request('/api/op/chat.history?project=demo&session_id=s3&goal_id=')[0], 400)
         other = self.goal()
-        self.assertEqual(self.request('/api/session/compact?project=demo', {
+        self.assertEqual(self.request('/api/op/session.compact?project=demo', {
             'session_id': 's3', 'goal_id': other['id'], 'execution_id': key, 'after_turn': True})[0], 400)
         for extra, status in [({'goal_id': goal['id'], 'execution_id': 'old-execution'}, 409),
                               ({'goal_id': ''}, 400), ({'execution_id': key}, 400)]:
-            code, _, _ = self.request('/api/session/compact?project=demo', {'session_id': 's3', **extra})
+            code, _, _ = self.request('/api/op/session.compact?project=demo', {'session_id': 's3', **extra})
             self.assertEqual(code, status)
         self.assertFalse(self.server.service.chat.processes[key].pending_compact)
 
     def send_goal(self, goal, text='Begin', **data):
-        return self.request('/api/chat/send?project=demo', {'session_id': 's3', 'goal_id': goal['id'], 'text': text, **data})
+        return self.request('/api/op/chat.send?project=demo', {'session_id': 's3', 'goal_id': goal['id'], 'text': text, **data})
 
     def test_archiving_leader_hides_ongoing_task_and_restore_preserves_paused_history(self):
         class IndependentClient(codex_helpers.FakeClient):
@@ -179,16 +183,16 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                         goals.assign(self.conn, goal['id'], member, 'Independent verification')
                         executions = []
                         for identity in (owner, member):
-                            code, receipt, _ = self.request('/api/chat/send?project=demo', {
+                            code, receipt, _ = self.request('/api/op/chat.send?project=demo', {
                                 'session_id': identity, 'goal_id': goal['id'], 'text': 'Begin',
                                 'message_id': 'archive-task-' + identity})
                             self.assertEqual(code, 200, receipt)
                             executions.append(receipt['execution_id'])
-                        path = '/api/group/close' if action == 'close' else '/api/session/' + action
+                        path = '/api/op/group.close' if action == 'close' else '/api/op/session.' + action
                         data = {'group': owner, 'with_members': True} if action == 'close' else {'session_id': owner}
                         code, archived, _ = self.request(path + '?project=demo', data)
                         self.assertEqual(code, 200, archived)
-                        _, state, _ = self.request('/api/state?project=demo')
+                        _, state, _ = self.request('/api/op/workspace.state?project=demo')
                         self.assertNotIn(goal['id'], [item['id'] for item in state['goals']])
                         self.assertNotIn(goal['id'], [item['id'] for item in personal.overview(self.conn)['goals']])
                         self.assertTrue(all(not self.server.service.chat.running(key) for key in executions))
@@ -198,10 +202,10 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                         if action == 'delete':
                             self.assertEqual(sorted(archived['deleted']), sorted([owner, member]))
                             continue
-                        restore_path = '/api/group/undo' if action == 'close' else '/api/session/restore'
+                        restore_path = '/api/op/group.undo' if action == 'close' else '/api/op/session.restore'
                         restore_data = {'group': owner, 'before': archived['before']} if action == 'close' else {'session_id': owner}
                         self.assertEqual(self.request(restore_path + '?project=demo', restore_data)[0], 200)
-                        _, restored, _ = self.request('/api/state?project=demo')
+                        _, restored, _ = self.request('/api/op/workspace.state?project=demo')
                         self.assertEqual(next(item for item in restored['goals'] if item['id'] == goal['id'])['status'], 'paused')
                         self.assertEqual(goals.get(self.conn, goal['id'])['original_request'], goal['original_request'])
                         self.assertTrue(all(not self.server.service.chat.running(key) for key in executions))
@@ -210,7 +214,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         goal = self.goal()
         goals.transition(self.conn, goal['id'], 'running')
         session_ops.archive(self.conn, 's3')
-        _, state, _ = self.request('/api/state?project=demo')
+        _, state, _ = self.request('/api/op/workspace.state?project=demo')
         self.assertNotIn(goal['id'], [item['id'] for item in state['goals']])
         control = self.server.service.chat.goal_controller
         control.sync(self.conn)
@@ -239,7 +243,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                 goals.assign(self.conn, task['id'], sid, 'Handle this independent task.')
         receipts = []
         for index, task in enumerate(tasks):
-            code, result, _ = self.request('/api/chat/send?project=demo', {
+            code, result, _ = self.request('/api/op/chat.send?project=demo', {
                 'session_id': sid, 'goal_id': task['id'], 'text': 'Work on task ' + str(index),
                 'message_id': 'parallel-' + str(index)})
             self.assertEqual(code, 200, result)
@@ -248,7 +252,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         keys = [item['execution_id'] for item in receipts]
         self.assertTrue(all(manager.busy(key) for key in keys), 'Both task runtimes must keep working')
         self.assertTrue(all(goals.get(self.conn, task['id'])['status'] == 'running' for task in tasks))
-        code, general, _ = self.request('/api/chat/send?project=demo', {
+        code, general, _ = self.request('/api/op/chat.send?project=demo', {
             'session_id': sid, 'text': 'Coordinate both tasks and review their evidence.', 'message_id': 'parallel-general'})
         self.assertEqual(code, 200, general)
         self.assertNotIn('goal_id', general)
@@ -268,7 +272,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             self.assertFalse(any(event.get('id') == 'parallel-general' for event in manager.journal(key).events))
         task_inputs = [list(manager.processes[key].client.calls) if runtime == 'codex' else
                        manager.processes[key].process.stdin.getvalue() for key in keys]
-        code, interrupted, _ = self.request('/api/chat/interrupt?project=demo', {'session_id': sid})
+        code, interrupted, _ = self.request('/api/op/chat.interrupt?project=demo', {'session_id': sid})
         self.assertEqual(code, 200, interrupted)
         self.assertEqual(task_inputs, [list(manager.processes[key].client.calls) if runtime == 'codex' else
                                       manager.processes[key].process.stdin.getvalue() for key in keys])
@@ -277,7 +281,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             manager.processes[sid].client.finish()
         else:
             self.finish_turn(sid, manager.processes[sid].process)
-        state = self.request('/api/state?project=demo')[1]
+        state = self.request('/api/op/workspace.state?project=demo')[1]
         person = next(item for item in state['leaders' if sid == 's3' else 'members'] if item['session_id'] == sid)
         self.assertFalse(person['busy'], 'General composer busy belongs to general history only')
         self.assertEqual(person['status'], 'working', 'Person still has task work')
@@ -322,30 +326,23 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                   ['保留 A、B、重叠的区段标签', '最终结果从流式结束计时不超过 400ms'])]
         started = []
         for title, request, acceptance in cases:
-            code, created, _ = self.request('/api/goals/agent?project=demo', {'actor_session_id': 's3',
-                'action': 'create', 'data': {'title': title, 'request': request, 'acceptance': acceptance}})
-            self.assertEqual(code, 200, created)
+            created = self.ai('s3', 'goal.create', {'title': title, 'request': request, 'acceptance': acceptance})
             goal_id = created['id']
             self.assertEqual(goals.get(self.conn, goal_id)['status'], 'queued')
-            payload = {'actor_session_id': 's3', 'action': 'start', 'data': {'goal_id': goal_id}}
-            code, receipt, _ = self.request('/api/goals/agent?project=demo', payload)
-            self.assertEqual(code, 200, receipt)
+            payload = {'goal_id': goal_id}
+            receipt = self.ai('s3', 'goal.start', payload)
             execution_id = receipt['execution_id']
             before = len(manager.journal(execution_id).inputs)
-            code, retried, _ = self.request('/api/goals/agent?project=demo', payload)
-            self.assertEqual(code, 200, retried)
+            retried = self.ai('s3', 'goal.start', payload)
             self.assertTrue(retried['duplicate'])
             self.assertEqual(retried['execution_id'], execution_id)
             self.assertEqual(len(manager.journal(execution_id).inputs), before)
             started.append((goal_id, execution_id))
-            assignment = {'actor_session_id': 's3', 'action': 'assign',
-                          'data': {'goal_id': goal_id, 'session_id': 's1', 'task': acceptance[0], 'start': True}}
-            code, assigned, _ = self.request('/api/goals/agent?project=demo', assignment)
-            self.assertEqual(code, 200, assigned)
+            assignment = {'goal_id': goal_id, 'session_id': 's1', 'task': acceptance[0], 'start': True}
+            assigned = self.ai('s3', 'goal.assign', assignment)
             member_execution = assigned['receipt']['execution_id']
             before = len(manager.journal(member_execution).inputs)
-            code, retried, _ = self.request('/api/goals/agent?project=demo', assignment)
-            self.assertEqual(code, 200, retried)
+            retried = self.ai('s3', 'goal.assign', assignment)
             self.assertTrue(retried['receipt']['duplicate'])
             self.assertEqual(len(manager.journal(member_execution).inputs), before)
             self.assertTrue(manager.busy(member_execution))
@@ -375,8 +372,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             runtimes.set(self.conn, 's3', 'codex', 'general-s3')
 
         manager = self.server.service.chat
-        chat_url = '/api/chat/send?project=demo'
-        goal_url = '/api/goals/agent?project=demo'
+        chat_url = '/api/op/chat.send?project=demo'
         code, value, _ = self.request(chat_url, {'session_id': 's3', 'text': 'Start both tasks.'})
         self.assertEqual(code, 200, value)
         general = manager.processes['s3']
@@ -388,8 +384,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                 return codex_guard.check(self.home, 's3', {**payload, 'hook_event_name': 'PreToolUse',
                     'session_id': current.thread_id}, execution_id) is None
             with mock.patch('sys.stderr'):
-                return hooks.handle('guard', {**payload, 'session_id': getattr(current, 'native_id', 's3')}, self.home, PLUGIN,
-                    {'CREW_SESSION_ID': 's3', **({'CREW_EXECUTION_ID': execution_id} if execution_id else {})})[0] == 0
+                return hooks.handle('guard', {**payload, 'session_id': getattr(current, 'native_id', 's3')},
+                                    self.home, PLUGIN)[0] == 0
 
         def shell(command, execution_id=None):
             return allowed('Bash', {'command': command}, execution_id)
@@ -401,35 +397,27 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             return allowed('Write', {'file_path': str(self.project / 'inspection.txt')}, execution_id)
 
         independently_started = self.goal()
-        code, value, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': independently_started['id'], 'action': 'start'})
+        code, value, _ = self.request('/api/op/goal.start?project=demo', {
+            'goal_id': independently_started['id']})
         self.assertEqual(code, 200, value)
         self.assertTrue(shell('python check_assets.py'))
         self.assertTrue(edit())
         payload = {'title': 'Audit assets', 'request': 'Check the assets.', 'acceptance': ['Record results'], 'start': True}
-        if runtime == 'codex':
-            result = general.client.kwargs['tool_handler']({'threadId': general.thread_id, 'turnId': general.client.turn_id,
-                'callId': 'start-audit', 'tool': 'crew_goal', 'arguments': {'action': 'create', 'data': payload}})
-            self.assertTrue(result['success'], result)
-            created = json.loads(result['contentItems'][0]['text'])
-        else:
-            code, created, _ = self.request(goal_url, {'actor_session_id': 's3', 'action': 'create', 'data': payload})
-            self.assertEqual(code, 200, created)
+        created = self.ai('s3', 'goal.create', payload)
         first = created['receipt']['execution_id']
         self.assertTrue(manager.busy(first))
         self.assertFalse(shell('python check_assets.py'))
         self.assertFalse(edit())
         self.assertTrue(shell('python check_assets.py', first))
         self.assertTrue(edit(first))
-        self.assertTrue(shell('crew goal status'))
-        self.assertTrue(shell(f'python "{self.home / "crew.py"}" goal status'))
+        self.assertFalse(shell('crew goal status'))
+        self.assertFalse(shell(f'python "{self.home / "crew.py"}" goal status'))
+        self.assertEqual(self.ai('s3', 'goal.get', {'goal_id': created['goal']['id']})['goal']['id'], created['goal']['id'])
         self.assertFalse(shell('crew goal status && python check_assets.py'))
         self.assertTrue(manager.busy('s3'))
 
         second = self.goal()
-        code, receipt, _ = self.request(goal_url, {'actor_session_id': 's3', 'action': 'start',
-            'data': {'goal_id': second['id']}})
-        self.assertEqual(code, 200, receipt)
+        receipt = self.ai('s3', 'goal.start', {'goal_id': second['id']})
         self.assertTrue(manager.busy(receipt['execution_id']))
         self.assertFalse(shell('python check_assets.py'))
 
@@ -440,9 +428,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         code, value, _ = self.request(chat_url, {'session_id': 's3', 'text': 'Now do a separate short check.'})
         self.assertEqual(code, 200, value)
         self.assertTrue(shell('python check_assets.py'))
-        code, retry, _ = self.request(goal_url, {'actor_session_id': 's3', 'action': 'start',
-            'data': {'goal_id': second['id']}})
-        self.assertEqual(code, 200, retry)
+        retry = self.ai('s3', 'goal.start', {'goal_id': second['id']})
         self.assertTrue(retry['duplicate'])
         self.assertTrue(shell('python check_assets.py'))
         self.assertTrue(manager.busy(first))
@@ -465,24 +451,20 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             self.addCleanup(patcher.stop)
             for sid in ('s3', 's1'):
                 runtimes.set(self.conn, sid, 'codex', 'general-' + sid)
-        code, general, _ = self.request('/api/chat/send?project=demo', {
+        code, general, _ = self.request('/api/op/chat.send?project=demo', {
             'session_id': 's3', 'text': 'Arrange the work and review the resulting evidence.', 'message_id': 'coordinate'})
         self.assertEqual(code, 200, general)
         tasks = [self.goal(), self.goal()]
         executions = []
         for task in tasks:
-            code, value, _ = self.request('/api/goals/agent?project=demo', {'actor_session_id': 's3',
-                'action': 'assign', 'data': {'goal_id': task['id'], 'session_id': 's1', 'task': 'Inspect the assigned evidence.'}})
-            self.assertEqual(code, 200, value)
-            code, started, _ = self.request('/api/goals/agent?project=demo', {'actor_session_id': 's3',
-                'action': 'start', 'data': {'goal_id': task['id'], 'session_id': 's1'}})
-            self.assertEqual(code, 200, started)
+            self.ai('s3', 'goal.assign', {'goal_id': task['id'], 'session_id': 's1', 'task': 'Inspect the assigned evidence.'})
+            started = self.ai('s3', 'goal.start', {'goal_id': task['id'], 'session_id': 's1'})
             executions.append(started['execution_id'])
         manager = self.server.service.chat
         self.assertTrue(manager.busy('s3'))
         self.assertTrue(all(manager.busy(key) for key in executions))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM goal_executions WHERE session_id='s3'").fetchone()[0], 0)
-        state = self.request('/api/state?project=demo')[1]
+        state = self.request('/api/op/workspace.state?project=demo')[1]
         owner = next(person for person in state['leaders'] if person['session_id'] == 's3')
         self.assertEqual(set(owner['active_goal_ids']), {task['id'] for task in tasks})
         # Scoped results return to this task's leader review, not another task or general input.
@@ -513,13 +495,13 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.coordinate_member_tasks('codex')
 
     def test_starting_goal_keeps_general_native_available(self):
-        code, result, _ = self.request('/api/chat/send?project=demo', {
+        code, result, _ = self.request('/api/op/chat.send?project=demo', {
             'session_id': 's3', 'text': 'General discussion before a concrete goal.', 'message_id': 'general-before-goal'})
         self.assertEqual(code, 200, result)
         old = self.processes[-1]
         goal = self.goal()
-        code, result, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'start', 'version': goal['version']})
+        code, result, _ = self.request('/api/op/goal.start?project=demo', {
+            'goal_id': goal['id'], 'version': goal['version']})
         self.assertEqual(code, 200, result)
         self.assertIsNone(old.poll())
         self.assertEqual(sum(process.poll() is None for process in self.processes), 2)
@@ -529,12 +511,12 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertFalse([event for event in self.server.service.chat.journal('s3').events if event['type'] == 'identity_handoff'])
 
     def test_starting_a_task_never_calls_stop_for_general_scope(self):
-        self.assertEqual(self.request('/api/chat/send?project=demo', {
+        self.assertEqual(self.request('/api/op/chat.send?project=demo', {
             'session_id': 's3', 'text': 'general', 'message_id': 'before-task'})[0], 200)
         goal = self.goal()
         with mock.patch.object(self.server.service.chat, 'stop_managed', side_effect=AssertionError('General must stay alive')) as stop:
-            code, result, _ = self.request('/api/goals/action?project=demo', {
-                'goal_id': goal['id'], 'action': 'start', 'version': goal['version']})
+            code, result, _ = self.request('/api/op/goal.start?project=demo', {
+                'goal_id': goal['id'], 'version': goal['version']})
         self.assertEqual(code, 200, result)
         stop.assert_not_called()
         self.assertEqual(len(self.processes), 2)
@@ -550,7 +532,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             runtimes.set(self.conn, 's3', 'codex')
             code, task, _ = self.send_goal(self.goal(), message_id='task-before-first-general')
             self.assertEqual(code, 200, task)
-            code, result, _ = self.request('/api/chat/send?project=demo', {
+            code, result, _ = self.request('/api/op/chat.send?project=demo', {
                 'session_id':'s3', 'text':'Coordinate another leader while the task continues.',
                 'message_id':'first-general'})
             self.assertEqual(code, 200, result)
@@ -560,13 +542,14 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             manager.stop_managed('s3')
             runtimes.set(self.conn, 's3', 'codex')
             count = len(self.processes)
-            code, lost, _ = self.request('/api/chat/send?project=demo', {
+            code, lost, _ = self.request('/api/op/chat.send?project=demo', {
                 'session_id':'s3', 'text':'Do not replace a lost native history.', 'message_id':'lost-general'})
             self.assertEqual(code, 400, lost)
             self.assertIn('原生会话 ID 丢失', lost['error'])
             self.assertEqual(len(self.processes), count)
             self.assertTrue(manager.busy(task['execution_id']))
 
+    # message.send currently resolves its recipient with an unset operation database connection.
     def test_cross_leader_coordination_and_explicit_replies_keep_parallel_tasks_running(self):
         class IndependentClient(codex_helpers.FakeClient):
             counter = 0
@@ -584,15 +567,13 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                     task_ids = []
                     for owner, suffix in ((source,'source'),(target,'first'),(target,'second')):
                         goal = goals.create(self.conn, 'demo', owner, suffix, 'Keep each task independent', ['Actual evidence'])
-                        code, receipt, _ = self.request('/api/chat/send?project=demo', {
+                        code, receipt, _ = self.request('/api/op/chat.send?project=demo', {
                             'session_id':owner,'goal_id':goal['id'],'text':'Begin ' + suffix,'message_id':owner+suffix})
                         self.assertEqual(code, 200, receipt)
                         task_ids.append((goal['id'],receipt['execution_id']))
                     manager = self.server.service.chat
-                    code, original, _ = self.request('/api/messages?project=demo', {
-                        'caller_session_id':source,'execution_id':task_ids[0][1], 'name':target,
-                        'text':'Please confirm the interface.','kind':'decision','message_id':'interface-'+str(index)})
-                    self.assertEqual(code, 200, original)
+                    original = self.ai(source, 'message.send', {'to': target, 'text': 'Please confirm the interface.',
+                                       'kind': 'decision'}, task_ids[0][1])['receipt']
                     manager.deliver_messages()
                     self.assertTrue(manager.busy(target))
                     incoming = [e for e in manager.journal(target).events if e.get('source')=='peer']
@@ -604,11 +585,9 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                         if runtime == 'codex': current.client.finish()
                         else: self.finish_turn(key,current.process)
                     finish(target,target_runtime)
-                    code, raw, error = self.run_cli(['--session',target,'send',source,'Verified interface result',
-                        '--kind','result','--reply-to',original['message_id'],'--message-id','reply-'+str(index),'--json'])
-                    self.assertEqual(code,0,error)
-                    reply = json.loads(raw)
-                    self.assertEqual(reply['target_goal_id'],task_ids[0][0])
+                    reply = self.ai(target, 'message.send', {'to': source, 'text': 'Verified interface result',
+                                    'kind': 'result', 'reply_to': original['message_id']})
+                    self.assertEqual(reply['target_goal_id'], task_ids[0][0])
                     finish(task_ids[0][1],source_runtime)
                     manager.deliver_messages()
                     self.assertTrue(manager.busy(task_ids[0][1]))
@@ -622,7 +601,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         _, source, _ = self.send_goal(goal,message_id='source-with-external-peer')
         board.join(self.conn,'external-chief','demo','external',self.project,self.project,'main',role='leader')
         other = goals.create(self.conn,'demo','external-chief','Separate work','Keep this task running',['Evidence'])
-        _, target, _ = self.request('/api/chat/send?project=demo',{
+        _, target, _ = self.request('/api/op/chat.send?project=demo',{
             'session_id':'external-chief','goal_id':other['id'],'text':'Begin independently','message_id':'external-task'})
         manager = self.server.service.chat
         receipt = manager.send_message('s3','external-chief','Cross-leader interface request',execution_id=source['execution_id'],kind='decision')
@@ -633,12 +612,11 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertFalse(manager.running('external-chief'))
         native = manager.processes[target['execution_id']].native_id
         data = {'session_id':native,'cwd':str(self.project),'tool_name':'Read','tool_input':{'file_path':str(self.project/'sample.py')}}
-        self.assertEqual(hooks.handle('guard',data,self.home,PLUGIN,{
-            'CREW_SESSION_ID':'external-chief','CREW_EXECUTION_ID':target['execution_id']}),(0,None))
+        self.assertEqual(hooks.handle('guard', data, self.home, PLUGIN), (0, None))
         self.assertTrue(manager.busy(target['execution_id']))
-        code, result = hooks.handle('guard',{**data,'session_id':'external-chief'},self.home,PLUGIN,{})
+        code, result = hooks.handle('guard',{**data,'session_id':'external-chief'},self.home,PLUGIN)
         self.assertEqual(code,0)
-        self.assertIn('--reply-to '+receipt['message_id'],result['hookSpecificOutput']['additionalContext'])
+        self.assertIn('`reply_to` 填 '+receipt['message_id'],result['hookSpecificOutput']['additionalContext'])
         meta = dict(self.conn.execute('SELECT * FROM goal_message_meta WHERE message_id=?',(receipt['message_id'],)).fetchone())
         self.assertEqual(meta['status'],'delivered')
         self.assertIsNone(meta['accepted_at'])
@@ -648,7 +626,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         code, receipt, _ = self.send_goal(goal, message_id='start-routing')
         self.assertEqual(code, 200, receipt)
         execution, task_process = receipt['execution_id'], self.processes[-1]
-        code, reply, _ = self.request('/api/chat/send?project=demo', {
+        code, reply, _ = self.request('/api/op/chat.send?project=demo', {
             'session_id': 's3', 'text': 'Coordinate ongoing goals.', 'message_id': 'unscoped-status'})
         self.assertEqual(code, 200, reply)
         self.assertNotIn('execution_id', reply)
@@ -669,7 +647,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         process = self.processes[-1]
         self.finish_turn(receipt['execution_id'], process)
         goals.transition(self.conn, goal['id'], 'waiting_user')
-        code, general, _ = self.request('/api/chat/send?project=demo', {
+        code, general, _ = self.request('/api/op/chat.send?project=demo', {
             'session_id': 's3', 'text': 'Discuss which evidence is still missing.', 'message_id': 'general-discussion'})
         self.assertEqual(code, 200, general)
         self.assertNotIn('goal_id', general)
@@ -684,10 +662,10 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
     def test_scoped_human_message_resumes_only_the_explicitly_stopped_goal_member(self):
         goal = self.goal()
         _, leader, _ = self.send_goal(goal, message_id='member-resume-leader')
-        code, member, _ = self.request('/api/spawn?project=demo', {
-            'name': 'resumable-member', 'task': 'Inspect the assigned sample.',
-            'caller_session_id': 's3', 'caller_execution_id': leader['execution_id']})
-        self.assertEqual(code, 200, member)
+        goals.assign(self.conn, goal['id'], 's1', 'Inspect the assigned sample.')
+        _, member, _ = self.request('/api/op/chat.send?project=demo', {'session_id': 's1', 'goal_id': goal['id'],
+                                    'text': 'Inspect the assigned sample.'})
+        member = {**member, 'session_id': 's1'}
         manager = self.server.service.chat
         manager.send_message('s3', member['session_id'], 'Queued work must not restart a stopped member.', message_id='waiting-for-human')
         manager.stop_identity(member['session_id'], caller_session_id='s3')
@@ -696,7 +674,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertTrue(messaging.stopped(self.conn, member['session_id']))
         self.assertEqual(len(self.processes), 2)
         self.assertFalse(manager.running(member['execution_id']))
-        code, continued, _ = self.request('/api/chat/send?project=demo', {
+        code, continued, _ = self.request('/api/op/chat.send?project=demo', {
             'session_id': member['session_id'], 'text': 'Explicit user continuation of the same sample.',
             'message_id': 'human-member-resume', 'goal_id': goal['id']})
         self.assertEqual(code, 200, continued)
@@ -707,7 +685,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertFalse(manager.running(member['session_id']))
 
     def test_explicit_member_stop_is_confirmed_and_pending_mail_cannot_restart_it(self):
-        code, result, _ = self.request('/api/chat/send?project=demo', {
+        code, result, _ = self.request('/api/op/chat.send?project=demo', {
             'session_id': 's1', 'text': 'Work until explicitly stopped.', 'message_id': 'member-work'})
         self.assertEqual(code, 200, result)
         process = self.processes[-1]
@@ -732,7 +710,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         current = goals.get(self.conn, goal['id'])
         self.assertEqual(current['status'], 'paused')
         self.assertTrue(current['manual_pause'])
-        code, value, _ = self.request('/api/chat/send?project=demo', {
+        code, value, _ = self.request('/api/op/chat.send?project=demo', {
             'session_id': 's3', 'text': 'Continue?', 'message_id': 'general-must-not-bypass-pause'})
         self.assertEqual(code, 200, value)
         self.assertNotIn('goal_id', value)
@@ -741,8 +719,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.processes), 2)
         self.assertFalse(manager.running(receipt['execution_id']))
         current = goals.get(self.conn, goal['id'])
-        code, resumed, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'resume', 'version': current['version']})
+        code, resumed, _ = self.request('/api/op/goal.resume?project=demo', {
+            'goal_id': goal['id'], 'version': current['version']})
         self.assertEqual(code, 200, resumed)
         self.assertFalse(messaging.stopped(self.conn, 's3'))
         self.assertEqual(sum(process.poll() is None for process in self.processes), 2)
@@ -752,8 +730,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         _, receipt, _ = self.send_goal(goal, message_id='goal-cli-stop')
         manager = self.server.service.chat
         manager.stop_identity('s3')
-        with mock.patch.dict(os.environ, {'CREW_SESSION_ID': '', 'CLAUDE_CODE_SESSION_ID': '', 'CREW_EXECUTION_ID': ''}):
-            code, _, error = self.run_cli(['goal', 'resume', goal['id']])
+        code, _, error = self.run_cli(['goal', 'resume', '--goal-id', goal['id']])
         self.assertEqual(code, 0, error)
         self.assertFalse(messaging.stopped(self.conn, 's3'))
         self.assertTrue(manager.running(receipt['execution_id']))
@@ -825,34 +802,29 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(batches),1)
         self.assertNotIn('New notice',batches[0]['text'])
 
+    # The leader inside its task receives execution scopes, which currently omit execution.spawn.
     def test_goal_spawn_binds_member_to_the_explicit_running_caller_execution(self):
         goal = self.goal()
         _, leader, _ = self.send_goal(goal, message_id='leader-spawning')
-        code, result, _ = self.request('/api/spawn?project=demo', {
-            'name': 'goal-worker', 'task': 'Measure the assigned sample.',
-            'caller_session_id': 's3', 'caller_execution_id': leader['execution_id']})
-        self.assertEqual(code, 200, result)
+        result = self.ai('s3', 'execution.spawn', {'name': 'goal-worker', 'task': 'Measure the assigned sample.'},
+                         leader['execution_id'])
         self.assertEqual(result.get('goal_id'), goal['id'])
         member = board.session(self.conn, result['session_id'])
         self.assertEqual(member['group_name'], 'lead')
         self.assertEqual(board.leader_of(self.conn, member['session_id'])['session_id'], 's3')
         self.assertEqual(goals.get_execution(self.conn, result['execution_id'])['session_id'], member['session_id'])
         self.assertFalse(self.server.service.chat.running(member['session_id']))
-        self.assertEqual(self.processes[-1].options['env']['CREW_GOAL_ID'], goal['id'])
-        self.assertEqual(self.processes[-1].options['env']['CREW_EXECUTION_ID'], result['execution_id'])
         before = len(self.processes)
-        code, denied, _ = self.request('/api/spawn?project=demo', {
-            'name': 'spoofed-worker', 'task': 'Do not create this member.',
-            'caller_session_id': 's1', 'caller_execution_id': leader['execution_id']})
-        self.assertEqual(code, 400, denied)
+        with self.assertRaises(OpError):
+            self.ai('s1', 'execution.spawn', {'name': 'spoofed-worker', 'task': 'Do not create this member.',
+                    'caller_execution_id': leader['execution_id']})
         self.assertEqual(len(self.processes), before)
 
     def test_stop_gate_survives_host_recreation_and_explicit_member_message_resumes(self):
-        self.request('/api/chat/send?project=demo', {'session_id': 's1', 'text': 'Member task', 'message_id': 'initial'})
+        self.request('/api/op/chat.send?project=demo', {'session_id': 's1', 'text': 'Member task', 'message_id': 'initial'})
         manager = self.server.service.chat
         manager.send_message('s3', 's1', 'Queued task', message_id='pending-after-restart')
-        code, _, error = self.run_cli(['--session', 's3', 'stop', 's1'])
-        self.assertEqual(code, 0, error)
+        self.ai('s3', 'session.stop', {'target': 's1'})
         self.assertTrue(messaging.stopped(self.conn, 's1'))
         recreated = chat.Manager(self.home, PLUGIN, lambda: [], self.process_factory)
         try:
@@ -860,60 +832,53 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             self.assertEqual(len(self.processes), 1)
         finally:
             recreated.close()
-        code, resumed, _ = self.request('/api/chat/send?project=demo', {
+        code, resumed, _ = self.request('/api/op/chat.send?project=demo', {
             'session_id': 's1', 'text': 'Explicit user continuation.', 'message_id': 'human-resume'})
         self.assertEqual(code, 200, resumed)
         self.assertFalse(messaging.stopped(self.conn, 's1'))
         self.assertEqual(sum(process.poll() is None for process in self.processes), 1)
 
-    def test_cli_goal_spawn_forwards_the_real_caller_execution_and_keeps_leader(self):
+    # The leader inside its task receives execution scopes, which currently omit execution.spawn.
+    def test_ai_spawn_keeps_the_real_caller_execution_and_leader(self):
         goal = self.goal()
         _, leader, _ = self.send_goal(goal, message_id='cli-leader-spawning')
-        with mock.patch.dict(os.environ, {'CREW_SESSION_ID': 's3', 'CREW_EXECUTION_ID': leader['execution_id']}):
-            code, _, error = self.run_cli(['spawn', '--name', 'cli-goal-worker', '--task', 'CLI assigned sample'])
-        self.assertEqual(code, 0, error)
+        self.ai('s3', 'execution.spawn', {'name': 'cli-goal-worker', 'task': 'Assigned sample'}, leader['execution_id'])
         member = board.named_session(self.conn, 'demo', 'cli-goal-worker')
         execution = self.conn.execute('SELECT id FROM goal_executions WHERE goal_id=? AND session_id=?',
                                       (goal['id'], member['session_id'])).fetchone()
         self.assertIsNotNone(execution)
-        self.assertEqual(self.processes[-1].options['env']['CREW_EXECUTION_ID'], execution['id'])
-        code, output, error = self.run_cli(['who', 'cli-goal-worker'])
-        self.assertEqual(code, 0, error)
-        self.assertIn('leader lead', output)
+        identity = self.ai('s3', 'session.who', {'target': 'cli-goal-worker'})
+        self.assertEqual(identity['leader']['session_id'], 's3')
 
     def test_member_cannot_stop_leader_or_other_group_but_can_stop_self(self):
         goal = self.goal()
         _, leader, _ = self.send_goal(goal, message_id='stop-permission-leader')
-        code, denied, _ = self.request('/api/session/stop?project=demo', {
-            'session_id': 's3', 'caller_session_id': 's1'})
-        self.assertEqual(code, 400, denied)
+        with self.assertRaises(board.BoardError):
+            self.ai('s1', 'session.stop', {'target': 's3'})
         self.assertFalse(messaging.stopped(self.conn, 's3'))
         self.assertTrue(self.server.service.chat.running(leader['execution_id']))
-        code, denied, _ = self.request('/api/session/stop?project=demo', {
-            'session_id': 's1', 'caller_session_id': 's2'})
-        self.assertEqual(code, 400, denied)
-        code, stopped, _ = self.request('/api/session/stop?project=demo', {
-            'session_id': 's1', 'caller_session_id': 's1'})
-        self.assertEqual(code, 200, stopped)
+        with self.assertRaises(board.BoardError):
+            self.ai('s2', 'session.stop', {'target': 's1'})
+        stopped = self.ai('s1', 'session.stop', {'target': 's1'})
         self.assertTrue(stopped['stopped'])
 
     def test_external_claude_stop_cannot_claim_exit_but_keeps_the_stop_gate(self):
         manager = self.server.service.chat
         manager.agents_provider.return_value = [{'sessionId': 's1', 'name': 'external-one', 'pid': 123456}]
-        code, refused, _ = self.request('/api/session/stop?project=demo', {'session_id': 's1'})
+        code, refused, _ = self.request('/api/op/session.stop?project=demo', {'session_id': 's1'})
         self.assertEqual(code, 409, refused)
         self.assertIn('外部', refused['error'])
         self.assertTrue(messaging.stopped(self.conn, 's1'))
         self.assertEqual(self.processes, [])
         manager.agents_provider.return_value = []
         for _ in range(2):
-            code, stopped, _ = self.request('/api/session/stop?project=demo', {'session_id': 's1'})
+            code, stopped, _ = self.request('/api/op/session.stop?project=demo', {'session_id': 's1'})
             self.assertEqual(code, 200, stopped)
             self.assertFalse(stopped['running'])
         self.assertEqual(self.processes, [])
 
     def test_dead_slot_does_not_hide_the_same_native_reopened_externally(self):
-        code, result, _ = self.request('/api/chat/send?project=demo', {
+        code, result, _ = self.request('/api/op/chat.send?project=demo', {
             'session_id': 's1', 'text': 'An owned conversation later opened externally.', 'message_id': 'before-detach'})
         self.assertEqual(code, 200, result)
         manager, process = self.server.service.chat, self.processes[-1]
@@ -922,7 +887,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertIsNotNone(manager.processes.get('s1'))
         self.assertIsNotNone(process.poll())
         manager.agents_provider.return_value = [{'sessionId': 's1', 'name': 'external-one', 'pid': 123456}]
-        code, refused, _ = self.request('/api/session/stop?project=demo', {'session_id': 's1'})
+        code, refused, _ = self.request('/api/op/session.stop?project=demo', {'session_id': 's1'})
         self.assertEqual(code, 409, refused)
         self.assertIn('外部', refused['error'])
         self.assertTrue(messaging.stopped(self.conn, 's1'))
@@ -931,17 +896,17 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         runtimes.set(self.conn, 's2', 'codex', 'native-other-host')
         lease = codex_runtime.RuntimeLease(self.home, 's2').acquire()
         try:
-            code, refused, _ = self.request('/api/session/stop?project=demo', {'session_id': 's2'})
+            code, refused, _ = self.request('/api/op/session.stop?project=demo', {'session_id': 's2'})
             self.assertEqual(code, 409, refused)
             self.assertTrue(messaging.stopped(self.conn, 's2'))
             self.assertEqual(self.processes, [])
         finally:
             lease.release()
         with mock.patch('crew.codex_runtime.RuntimeLease.acquire', side_effect=OSError('native identity unavailable')):
-            code, refused, _ = self.request('/api/session/stop?project=demo', {'session_id': 's2'})
+            code, refused, _ = self.request('/api/op/session.stop?project=demo', {'session_id': 's2'})
         self.assertEqual(code, 409, refused)
         self.assertIn('无法确认', refused['error'])
-        code, stopped, _ = self.request('/api/session/stop?project=demo', {'session_id': 's2'})
+        code, stopped, _ = self.request('/api/op/session.stop?project=demo', {'session_id': 's2'})
         self.assertEqual(code, 200, stopped)
         self.assertTrue(stopped['stopped'])
         self.assertEqual(self.processes, [])
@@ -950,15 +915,15 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         goal = self.goal()
         self.assertEqual(self.processes, [])
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_executions').fetchone()[0], 0)
-        payload = {'goal_id': goal['id'], 'action': 'start', 'version': goal['version']}
-        code, result, _ = self.request('/api/goals/action?project=demo', payload)
+        payload = {'goal_id': goal['id'], 'version': goal['version']}
+        code, result, _ = self.request('/api/op/goal.start?project=demo', payload)
         self.assertEqual(code, 200, result)
         self.assertEqual(result['goal']['status'], 'running')
         self.assertEqual(len(self.processes), 1)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_executions').fetchone()[0], 1)
         before = self.processes[0].stdin.getvalue()
         for version in (goal['version'], result['goal']['version']):
-            code, duplicate, _ = self.request('/api/goals/action?project=demo', {**payload, 'version': version})
+            code, duplicate, _ = self.request('/api/op/goal.start?project=demo', {**payload, 'version': version})
             self.assertEqual(code, 409, duplicate)
         self.assertEqual(len(self.processes), 1)
         self.assertEqual(self.processes[0].stdin.getvalue(), before)
@@ -975,17 +940,18 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                 else:
                     goals.transition(self.conn, goal['id'], 'cancelled')
                 current = goals.get(self.conn, goal['id'])
-                code, result, _ = self.request('/api/goals/action?project=demo', {
-                    'goal_id': goal['id'], 'action': 'start', 'version': current['version']})
+                code, result, _ = self.request('/api/op/goal.start?project=demo', {
+                    'goal_id': goal['id'], 'version': current['version']})
                 self.assertEqual(code, 409, result)
         self.assertEqual(self.processes, [])
 
+    # The history adapter currently drops the URL query before the handler parses the session ID.
     def test_reading_goal_and_empty_chat_never_starts_ai_and_serves_real_ui(self):
         goal = self.goal()
-        for path in ('/api/goals', '/api/goal?' + urlencode({'id': goal['id']})):
+        for path in ('/api/op/goal.list', '/api/op/goal.get?' + urlencode({'id': goal['id']})):
             code, value, _ = self.request(path + ('&' if '?' in path else '?') + 'project=demo')
             self.assertEqual(code, 200, value)
-        code, history, _ = self.request('/api/chat/history?' + urlencode({'project': 'demo', 'session_id': 's3', 'goal_id': goal['id']}))
+        code, history, _ = self.request('/api/op/chat.history?' + urlencode({'project': 'demo', 'session_id': 's3', 'goal_id': goal['id']}))
         self.assertEqual(code, 200, history)
         self.assertIsNone(history['execution_id'])
         self.assertEqual(self.processes, [])
@@ -998,10 +964,10 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertTrue(all(r.get('accepted') for r in receipts), receipts)
         self.assertNotEqual(receipts[0]['execution_id'], receipts[1]['execution_id'])
         self.assertEqual(len(self.processes), 2)
-        native = [process.options['env']['CREW_SESSION_ID'] for process in self.processes]
-        self.assertEqual(native, ['s3', 's3'])
-        self.assertNotEqual(self.processes[0].options['env']['CREW_EXECUTION_ID'], self.processes[1].options['env']['CREW_EXECUTION_ID'])
-        code, state, _ = self.request('/api/state?project=demo')
+        executions = [goals.get_execution(self.conn, r['execution_id']) for r in receipts]
+        self.assertEqual([e['session_id'] for e in executions], ['s3', 's3'])
+        self.assertNotEqual(executions[0]['bindings'][0]['native_id'], executions[1]['bindings'][0]['native_id'])
+        code, state, _ = self.request('/api/op/workspace.state?project=demo')
         self.assertEqual(code, 200, state)
         self.assertEqual(len([s for s in state['leaders'] if s['session_id'] == 's3']), 1)
         self.assertFalse(next(s for s in state['leaders'] if s['session_id'] == 's3')['busy'])
@@ -1015,8 +981,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, receipt)
         execution = goals.get_execution(self.conn, receipt['execution_id'])
         process = self.processes[-1]
-        code, result, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'pause', 'version': goals.get(self.conn, goal['id'])['version']})
+        code, result, _ = self.request('/api/op/goal.pause?project=demo', {
+            'goal_id': goal['id'], 'version': goals.get(self.conn, goal['id'])['version']})
         self.assertEqual(code, 200, result)
         self.assertEqual(result['goal']['status'], 'pausing')
         self.assertTrue(result['goal']['manual_pause'])
@@ -1028,8 +994,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.send_goal(goal, 'old task')[0], 409)
         binding = execution['bindings'][0]
         data = {'session_id': binding['native_id'], 'cwd': str(self.project), 'tool_name': 'Write', 'tool_input': {'file_path': str(self.project / 'x.txt')}}
-        self.assertEqual(hooks.handle('guard', data, self.home, self.server.service.plugin_root, process.options['env'])[0], 2)
-        self.assertEqual(hooks.handle('stop', data, self.home, self.server.service.plugin_root, process.options['env'])[0], 0)
+        self.assertEqual(hooks.handle('guard', data, self.home, self.server.service.plugin_root)[0], 2)
+        self.assertEqual(hooks.handle('stop', data, self.home, self.server.service.plugin_root)[0], 0)
         self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'pausing')
         self.finish_turn(receipt['execution_id'], process)
         self.server.service.chat.goal_controller.sync(self.conn)
@@ -1079,11 +1045,12 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.processes), 2)
 
     def task_history(self, goal):
-        code, value, _ = self.request('/api/chat/history?' + urlencode({
+        code, value, _ = self.request('/api/op/chat.history?' + urlencode({
             'project': 'demo', 'session_id': 's3', 'goal_id': goal['id']}))
         self.assertEqual(code, 200, value)
         return value
 
+    # The history adapter currently drops the URL query before the handler parses the session ID.
     def test_task_history_survives_execution_rotation_and_reload(self):
         goal = self.goal()
         _, first, _ = self.send_goal(goal, 'Original task discussion.', message_id='original-discussion',
@@ -1106,15 +1073,15 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         name = next(event['images'][0] for event in history['previous_executions'][0]['events'] if event.get('images'))
         file_query = {'project': 'demo', 'session_id': 's3', 'goal_id': goal['id'],
                       'execution_id': first['execution_id'], 'name': name}
-        code, content, _ = self.request('/api/chat/file?' + urlencode(file_query), raw=True)
+        code, content, _ = self.request('/api/op/chat.file?' + urlencode(file_query), raw=True)
         self.assertEqual((code, content), (200, b'old task image'))
         other = self.goal()
         file_query['goal_id'] = other['id']
-        self.assertEqual(self.request('/api/chat/file?' + urlencode(file_query))[0], 400)
+        self.assertEqual(self.request('/api/op/chat.file?' + urlencode(file_query))[0], 400)
         self.assertEqual(self.task_history(other)['previous_executions'], [])
         file_query.update(goal_id=goal['id'], session_id='s1')
         goals.assign(self.conn, goal['id'], 's1', 'Independent member discussion')
-        self.assertEqual(self.request('/api/chat/file?' + urlencode(file_query))[0], 400)
+        self.assertEqual(self.request('/api/op/chat.file?' + urlencode(file_query))[0], 400)
         member = manager.goal_controller.ensure(self.conn, goal['id'], 's1')
         manager.journal(member['id']).message('member-only', 'Private member history.')
         manager.journal('s3').message('general-only', 'Separate general discussion.')
@@ -1145,8 +1112,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         manager.goal_controller.sync(self.conn, goal['id'])
         paused = goals.get(self.conn, goal['id'])
         self.assertEqual(paused['status'], 'paused')
-        code, result, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'resume', 'version': paused['version']})
+        code, result, _ = self.request('/api/op/goal.resume?project=demo', {
+            'goal_id': goal['id'], 'version': paused['version']})
         self.assertEqual(code, 200, result)
         code, second, _ = self.send_goal(goal, 'Adjust the final report.', message_id='after-pause')
         self.assertEqual(code, 200, second)
@@ -1154,7 +1121,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(current['current_round'], paused['current_round'])
         self.assertEqual(current['requirement_version'], paused['requirement_version'])
         self.assertEqual(second['execution_id'], first['execution_id'])
-        history = self.task_history(goal)
+        history = self.server.service.chat_history('s3', 'demo', goal['id'])
         self.assertTrue(any(event.get('text') == 'Keep this paused discussion.' for event in history['events']))
         self.assertTrue(any(event.get('text') == 'Adjust the final report.' for event in history['events']))
 
@@ -1171,20 +1138,20 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         manifest_id = self.conn.execute('SELECT id FROM goal_context_manifests WHERE execution_id=?', (execution['id'],)).fetchone()[0]
         from crew import goal_context
         goal_context.mark_applied(self.conn, manifest_id, execution_id=execution['id'])
-        code, result, _ = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))
+        code, result, _ = self.request('/api/op/goal.get?' + urlencode({'project': 'demo', 'id': goal['id']}))
         self.assertEqual(code, 200, result)
         self.assertTrue(result['context']['manifest']['applied'])
         self.assertIsNotNone(result['context']['manifest']['applied_at'])
 
     def test_ordinary_member_chat_does_not_register_a_goal(self):
-        code, result, _ = self.request('/api/chat/send?project=demo', {'session_id': 's1', 'text': 'What does this measurement mean?', 'message_id': 'discussion'})
+        code, result, _ = self.request('/api/op/chat.send?project=demo', {'session_id': 's1', 'text': 'What does this measurement mean?', 'message_id': 'discussion'})
         self.assertEqual(code, 200, result)
         self.assertEqual(goals.list_goals(self.conn, 'demo'), [])
 
     def test_cancel_waits_for_actual_stop_then_durably_finishes(self):
         goal = self.goal()
         _, receipt, _ = self.send_goal(goal)
-        code, result, _ = self.request('/api/goals/action?project=demo', {'goal_id': goal['id'], 'action': 'cancel',
+        code, result, _ = self.request('/api/op/goal.cancel?project=demo', {'goal_id': goal['id'],
             'version': goals.get(self.conn, goal['id'])['version']})
         self.assertEqual(code, 200, result)
         self.assertEqual(result['goal']['status'], 'pausing')
@@ -1214,9 +1181,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, receipt)
         data = self.report()
         data['outcome'] = 'awaiting_acceptance'
-        code, finished, _ = self.request('/api/goals/agent?project=demo', {'actor_session_id': 's3',
-            'execution_id': receipt['execution_id'], 'action': 'finish', 'data': {'report': data}})
-        self.assertEqual(code, 200, finished)
+        finished = self.ai('s3', 'goal.finish', {'report': data}, receipt['execution_id'])
         self.assertIn('等待用户验收', finished['message'])
         self.assertIn('验收决定仍需用户本人提交', finished['message'])
         current = self.server.service.chat.processes[receipt['execution_id']]
@@ -1259,13 +1224,13 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
     def test_human_acceptance_closes_idle_native_and_preserves_report_bytes(self):
         goal, report, execution_id, process = self.awaiting_acceptance()
         original = tuple(self.conn.execute('SELECT data_json,html,outcome FROM goal_reports WHERE id=?', (report['id'],)).fetchone())
-        code, result, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'accept', 'version': goal['version'], 'report_id': report['id']})
+        code, result, _ = self.request('/api/op/goal.accept?project=demo', {
+            'goal_id': goal['id'], 'version': goal['version'], 'report_id': report['id']})
         self.assertEqual(code, 200, result)
         self.assertEqual(result['goal']['status'], 'completed')
         self.assertIsNotNone(process.poll())
         self.assertTrue(self.server.service.chat.processes[execution_id].reader_done.is_set())
-        code, detail, _ = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))
+        code, detail, _ = self.request('/api/op/goal.get?' + urlencode({'project': 'demo', 'id': goal['id']}))
         self.assertEqual(code, 200, detail)
         self.assertEqual(detail['acceptance_review']['report_id'], report['id'])
         self.assertTrue(detail['acceptance_review']['accepted'])
@@ -1274,7 +1239,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
     def test_returning_to_general_chat_preserves_finalized_acceptance(self):
         goal, report, execution_id, process = self.awaiting_acceptance()
         original = tuple(self.conn.execute('SELECT data_json,html,outcome FROM goal_reports WHERE id=?', (report['id'],)).fetchone())
-        code, reply, _ = self.request('/api/chat/send?project=demo', {
+        code, reply, _ = self.request('/api/op/chat.send?project=demo', {
             'session_id': 's3', 'text': 'Discuss the next step while I test the delivered result.',
             'message_id': 'general-after-submitted-report'})
         self.assertEqual(code, 200, reply)
@@ -1284,8 +1249,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(goals.get_finish(self.conn, goal['id'])['status'], 'finalized')
         self.assertIsNone(process.poll())
         self.assertEqual(tuple(self.conn.execute('SELECT data_json,html,outcome FROM goal_reports WHERE id=?', (report['id'],)).fetchone()), original)
-        code, accepted, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'accept', 'version': current['version'], 'report_id': report['id']})
+        code, accepted, _ = self.request('/api/op/goal.accept?project=demo', {
+            'goal_id': goal['id'], 'version': current['version'], 'report_id': report['id']})
         self.assertEqual(code, 200, accepted)
         self.assertEqual(accepted['goal']['status'], 'completed')
 
@@ -1319,8 +1284,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
 
     def test_explicit_user_pause_still_pauses_waiting_acceptance(self):
         goal, _, _, _ = self.awaiting_acceptance()
-        code, result, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'pause', 'version': goal['version']})
+        code, result, _ = self.request('/api/op/goal.pause?project=demo', {
+            'goal_id': goal['id'], 'version': goal['version']})
         self.assertEqual(code, 200, result)
         self.assertTrue(goals.get(self.conn, goal['id'])['manual_pause'])
         self.assertIn(goals.get(self.conn, goal['id'])['status'], ('pausing', 'paused'))
@@ -1334,8 +1299,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(current['status'], 'paused')
         original = tuple(self.conn.execute('SELECT data_json,html FROM goal_reports WHERE id=?', (report['id'],)).fetchone())
         launches, inputs = len(self.processes), len(self.server.service.chat.journal(execution_id).events)
-        code, result, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'resume', 'version': current['version']})
+        code, result, _ = self.request('/api/op/goal.resume?project=demo', {
+            'goal_id': goal['id'], 'version': current['version']})
         self.assertEqual(code, 200, result)
         self.assertEqual(result['resumed'], 'acceptance')
         self.assertEqual(result['goal']['status'], 'awaiting_acceptance')
@@ -1352,8 +1317,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         goals.request_pause(self.conn, goal['id'], manual=True, reason='明确停止此人员')
         self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
         current = goals.get(self.conn, goal['id'])
-        code, result, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'resume', 'version': current['version']})
+        code, result, _ = self.request('/api/op/goal.resume?project=demo', {
+            'goal_id': goal['id'], 'version': current['version']})
         self.assertEqual(code, 200, result)
         self.assertEqual(result['resumed'], 'acceptance')
         self.assertEqual(result['goal']['status'], 'awaiting_acceptance')
@@ -1363,9 +1328,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         goal, _, _, _ = self.awaiting_acceptance()
         goals.request_pause(self.conn, goal['id'], manual=True)
         self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
-        code, result, _ = self.request('/api/goals/agent?project=demo', {
-            'actor_session_id': 's3', 'action': 'resume', 'data': {'goal_id': goal['id']}})
-        self.assertEqual(code, 409, result)
+        with self.assertRaises((OpError, board.Conflict)):
+            self.ai('s3', 'goal.resume', {'goal_id': goal['id']})
         self.assertTrue(goals.get(self.conn, goal['id'])['manual_pause'])
 
     def test_agent_resumes_finalized_review_without_starting_another_turn(self):
@@ -1373,9 +1337,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         goals.request_pause(self.conn, goal['id'], manual=False)
         self.server.service.chat.goal_controller.sync(self.conn, goal['id'])
         launches = len(self.processes)
-        code, result, _ = self.request('/api/goals/agent?project=demo', {
-            'actor_session_id': 's3', 'action': 'resume', 'data': {'goal_id': goal['id']}})
-        self.assertEqual(code, 200, result)
+        result = self.ai('s3', 'goal.resume', {'goal_id': goal['id']})
         self.assertEqual(result['resumed'], 'acceptance')
         self.assertEqual(result['goal']['status'], 'awaiting_acceptance')
         self.assertEqual(len(self.processes), launches)
@@ -1407,7 +1369,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         goals.request_finish(self.conn, goal['id'], report['id'], actor='s3')
         manager.goal_controller.sync(self.conn, goal['id'])
         self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'awaiting_acceptance')
-        code, result, _ = self.request('/api/chat/send?project=demo', {
+        code, result, _ = self.request('/api/op/chat.send?project=demo', {
             'session_id': 's1', 'text': 'Discuss a separate question.', 'message_id': 'member-general-after-report'})
         self.assertEqual(code, 200, result)
         self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'awaiting_acceptance')
@@ -1422,11 +1384,11 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
 
     def test_human_rejection_resumes_the_same_task_with_the_note(self):
         goal, report, execution_id, process = self.awaiting_acceptance()
-        body = {'goal_id': goal['id'], 'action': 'reject', 'version': goal['version'], 'report_id': report['id']}
-        code, result, _ = self.request('/api/goals/action?project=demo', body)
+        body = {'goal_id': goal['id'], 'version': goal['version'], 'report_id': report['id']}
+        code, result, _ = self.request('/api/op/goal.reject?project=demo', body)
         self.assertEqual(code, 400, result)
         self.assertIsNone(process.poll(), 'Invalid decisions must not close native execution')
-        code, result, _ = self.request('/api/goals/action?project=demo', {**body, 'note': 'The delivered page still fails the replay.'})
+        code, result, _ = self.request('/api/op/goal.reject?project=demo', {**body, 'note': 'The delivered page still fails the replay.'})
         self.assertEqual(code, 200, result)
         self.assertTrue(result['resumed'], result)
         self.assertEqual(result['goal']['status'], 'running')
@@ -1437,15 +1399,15 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(board.pending_notices(self.conn, 's3'), [])
         resumed = self.server.service.chat.processes[execution_id].process
         self.assertIn('用户验收后要求修改：The delivered page still fails the replay.', resumed.stdin.getvalue())
-        code, repeated, _ = self.request('/api/goals/action?project=demo', {**body, 'note': 'The delivered page still fails the replay.'})
+        code, repeated, _ = self.request('/api/op/goal.reject?project=demo', {**body, 'note': 'The delivered page still fails the replay.'})
         self.assertEqual(code, 409, repeated)
         self.assertEqual(board.pending_notices(self.conn, 's3'), [])
 
     def test_rejection_that_cannot_resume_the_task_tells_the_leader_in_general_chat(self):
         goal, report, execution_id, _ = self.awaiting_acceptance()
         with mock.patch.object(self.server.service.chat.goal_controller, 'send', side_effect=board.Conflict('用户已停止此会话')):
-            code, result, _ = self.request('/api/goals/action?project=demo', {
-                'goal_id': goal['id'], 'action': 'reject', 'version': goal['version'], 'report_id': report['id'],
+            code, result, _ = self.request('/api/op/goal.reject?project=demo', {
+                'goal_id': goal['id'], 'version': goal['version'], 'report_id': report['id'],
                 'note': 'Keep the original evidence.'})
         self.assertEqual(code, 200, result)
         self.assertEqual((result['resumed'], result['resume_error']), (False, '用户已停止此会话'))
@@ -1453,14 +1415,14 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         notices = board.pending_notices(self.conn, 's3')
         self.assertEqual(len(notices), 1)
         self.assertIn('Keep the original evidence.', notices[0]['text'])
-        self.assertIn('crew goal start ' + goal['id'], notices[0]['text'])
+        self.assertIn('`goal_start`（`goal_id=' + goal['id'] + '`）', notices[0]['text'])
 
     def follow_up_delivered_goal(self, runtime, decision=None, note='Please fix the report conclusion and explain the final verification.', promote=True):
         goal, report, old_execution, process = self.awaiting_acceptance(runtime)
         original = goals.get_report(self.conn, report['id'])
         if decision:
-            code, result, _ = self.request('/api/goals/action?project=demo', {
-                'goal_id': goal['id'], 'action': decision, 'version': goal['version'],
+            code, result, _ = self.request(f'/api/op/goal.{decision}?project=demo', {
+                'goal_id': goal['id'], 'version': goal['version'],
                 'note': 'The report needs the original replay evidence.', 'report_id': report['id']})
             self.assertEqual(code, 200, result)
         manager = self.server.service.chat
@@ -1476,7 +1438,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         count = len(self.processes)
         before = goals.get(self.conn, goal['id'])
         # Reading the completed/rejected task is still passive.
-        self.assertEqual(self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))[0], 200)
+        self.assertEqual(self.request('/api/op/goal.get?' + urlencode({'project': 'demo', 'id': goal['id']}))[0], 200)
         self.assertEqual(len(self.processes), count)
         code, reply, _ = self.send_goal(goal, note, message_id='human-report-followup')
         self.assertEqual(code, 200, reply)
@@ -1485,13 +1447,12 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                          (before['status'], before['requirement_version'], before['current_round'], before['version']))
         self.assertEqual(current['requirements'], before['requirements'])
         self.assertTrue(goals.get_report(self.conn, report['id'])['current'])
-        self.assertEqual(self.task_history(goal)['response_mode'], 'discussion')
-        action = {'actor_session_id': goal['leader_session_id'], 'execution_id': reply['execution_id']}
-        code, denied, _ = self.request('/api/goals/agent?project=demo', {**action, 'action': 'work.add',
-            'data': {'goal_id': goal['id'], 'key': 'not-authorized', 'title': 'Unexpected work', 'acceptance': 'Must not start'}})
-        self.assertEqual(code, 409, denied)
-        code, read, _ = self.request('/api/goals/agent?project=demo', {**action, 'action': 'status', 'data': {'goal_id': goal['id']}})
-        self.assertEqual(code, 200, read)
+        self.assertEqual(self.server.service.chat_history('s3', 'demo', goal['id'])['response_mode'], 'discussion')
+        actor = goal['leader_session_id']
+        with self.assertRaises((OpError, board.Conflict)):
+            self.ai(actor, 'goal.work.add', {'goal_id': goal['id'], 'key': 'not-authorized',
+                    'title': 'Unexpected work', 'acceptance': 'Must not start'}, reply['execution_id'])
+        self.ai(actor, 'goal.get', {'goal_id': goal['id']}, reply['execution_id'])
         if not promote:
             if runtime == 'codex':
                 manager.processes[reply['execution_id']].client.finish()
@@ -1505,17 +1466,15 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
             self.assertTrue(retry['duplicate'])
             self.assertEqual(retry['execution_id'], reply['execution_id'])
             return
-        change = {**action, 'action': 'amend', 'data': {'goal_id': goal['id'], 'text': note, 'expected_version': before['version']}}
-        code, changed, _ = self.request('/api/goals/agent?project=demo', change)
-        self.assertEqual(code, 200, changed)
-        code, repeated, _ = self.request('/api/goals/agent?project=demo', change)
-        self.assertEqual(code, 200, repeated)
+        change = {'goal_id': goal['id'], 'text': note, 'expected_version': before['version']}
+        changed = self.ai(actor, 'goal.amend', change, reply['execution_id'])
+        repeated = self.ai(actor, 'goal.amend', change, reply['execution_id'])
         self.assertEqual(repeated['version'], changed['version'])
         current = goals.get(self.conn, goal['id'])
         self.assertEqual((current['current_round'], current['status']), (1, 'running'))
         self.assertNotEqual(reply['execution_id'], old_execution)
         self.assertIn(note, current['requirements']['request'])
-        history = self.task_history(goal)
+        history = self.server.service.chat_history('s3', 'demo', goal['id'])
         self.assertEqual(history['execution_id'], reply['execution_id'])
         self.assertEqual([value['execution_id'] for value in history['previous_executions']], [old_execution])
         self.assertTrue(any(event.get('text') == 'Keep original recordings and do not upload them.'
@@ -1531,7 +1490,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertIn(report['data']['summary'], context_text)
         if decision:
             self.assertIn('The report needs the original replay evidence.', context_text)
-            detail = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))[1]
+            detail = self.request('/api/op/goal.get?' + urlencode({'project': 'demo', 'id': goal['id']}))[1]
             self.assertEqual(detail['previous_acceptance_review']['report_id'], report['id'])
         count = len(self.processes)
         # A network retry after reopening cannot create another round/input.
@@ -1570,8 +1529,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
 
     def follow_up_rejected_goal(self, runtime):
         goal, report, old_execution, process = self.awaiting_acceptance(runtime)
-        code, result, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'reject', 'version': goal['version'],
+        code, result, _ = self.request('/api/op/goal.reject?project=demo', {
+            'goal_id': goal['id'], 'version': goal['version'],
             'note': 'Preserve the original evidence and fix the conclusion.', 'report_id': report['id']})
         self.assertEqual(code, 200, result)
         self.assertEqual(result['goal']['status'], 'running')
@@ -1590,9 +1549,9 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual((after['id'], after['current_round'], after['status']), (goal['id'], 1, 'running'))
         self.assertEqual(after['requirements'], before['requirements'])
         self.assertEqual(reply['execution_id'], old_execution)
-        self.assertEqual(self.task_history(goal)['response_mode'], 'work')
+        self.assertEqual(self.server.service.chat_history('s3', 'demo', goal['id'])['response_mode'], 'work')
         self.assertEqual(goals.get_report(self.conn, report['id'])['html'], report['html'])
-        detail = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))[1]
+        detail = self.request('/api/op/goal.get?' + urlencode({'project': 'demo', 'id': goal['id']}))[1]
         self.assertEqual(detail['previous_acceptance_review']['report_id'], report['id'])
         count = len(self.processes)
         code, retry, _ = self.send_goal(goal, 'Continue the requested correction.', message_id='human-rejection-followup')
@@ -1605,9 +1564,9 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         for action in ('accept',):
             with self.subTest(action=action):
                 goal, report, _, _ = self.awaiting_acceptance()
-                body = {'goal_id': goal['id'], 'action': action, 'version': goal['version'],
+                body = {'goal_id': goal['id'], 'version': goal['version'],
                         'note': 'Please fix the replay.' if action == 'reject' else 'Verified the replay.', 'report_id': report['id']}
-                code, result, _ = self.request('/api/goals/action?project=demo', body)
+                code, result, _ = self.request(f'/api/op/goal.{action}?project=demo', body)
                 self.assertEqual(code, 200, result)
                 notices = board.pending_notices(self.conn, 's3')
                 self.assertEqual(len(notices), 1)
@@ -1621,7 +1580,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                 self.assertIn(notices[0]['text'], json.loads(messages[-1])['message']['content'])
                 self.server.service.deliver_notices()
                 self.assertEqual(manager.processes['s3'].process.stdin.getvalue().splitlines(), messages)
-                code, repeated, _ = self.request('/api/goals/action?project=demo', body)
+                code, repeated, _ = self.request(f'/api/op/goal.{action}?project=demo', body)
                 self.assertEqual(code, 409, repeated)
                 self.assertEqual(board.pending_notices(self.conn, 's3'), [])
 
@@ -1649,18 +1608,18 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
 
     def test_acceptance_rejects_ai_stale_ui_and_a_native_still_actually_busy(self):
         goal, report, execution_id, process = self.awaiting_acceptance()
-        body = {'goal_id': goal['id'], 'action': 'accept', 'version': goal['version'], 'report_id': report['id']}
-        code, denied, _ = self.request('/api/goals/agent?project=demo', {
-            'actor_session_id': 's3', 'execution_id': execution_id, 'action': 'accept', 'data': {'goal_id': goal['id']}})
-        # Acceptance is not an action of the AI goal URL: no operation is bound there.
-        self.assertEqual((code, denied['code']), (404, 'not_found'), denied)
-        code, denied, _ = self.request('/api/goals/action?project=demo', {**body, 'actor_session_id': 's3'})
-        self.assertEqual(code, 400, denied)
-        code, denied, _ = self.request('/api/goals/action?project=demo', {**body, 'version': goal['version'] - 1})
+        body = {'goal_id': goal['id'], 'version': goal['version'], 'report_id': report['id']}
+        with self.assertRaises(OpError) as denied:
+            self.ai('s3', 'goal.accept', {'goal_id': goal['id']}, execution_id)
+        self.assertEqual(denied.exception.code, 'forbidden')
+        # A page cannot name an AI identity: only that session's own token can act as it.
+        code, denied, _ = self.request('/api/op/goal.accept?project=demo', {**body, 'actor_session_id': 's3'})
+        self.assertEqual((code, denied['code']), (403, 'forbidden'), denied)
+        code, denied, _ = self.request('/api/op/goal.accept?project=demo', {**body, 'version': goal['version'] - 1})
         self.assertEqual(code, 409, denied)
         self.assertIsNone(process.poll())
         self.server.service.chat.journal(execution_id).set_status('working')
-        code, denied, _ = self.request('/api/goals/action?project=demo', body)
+        code, denied, _ = self.request('/api/op/goal.accept?project=demo', body)
         self.assertEqual(code, 409, denied)
         self.assertIsNone(process.poll())
         self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'awaiting_acceptance')
@@ -1668,16 +1627,14 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
     def test_finish_report_is_visible_but_cannot_claim_completion_before_native_result(self):
         goal = self.goal()
         _, receipt, _ = self.send_goal(goal)
-        code, value, _ = self.request('/api/goals/agent?project=demo', {'actor_session_id': 's3',
-            'execution_id': receipt['execution_id'], 'action': 'finish', 'data': {'report': self.report()}})
-        self.assertEqual(code, 200, value)
+        value = self.ai('s3', 'goal.finish', {'report': self.report()}, receipt['execution_id'])
         self.assertTrue(value['pending_finish'])
         self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'running')
         self.assertEqual(self.send_goal(goal, 'another job')[0], 409)
         self.finish_turn(receipt['execution_id'], self.processes[-1])
         self.server.service.chat.goal_controller.sync(self.conn)
         self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'awaiting_acceptance')
-        path = '/api/goals/report?' + urlencode({'project': 'demo', 'goal_id': goal['id'], 'report_id': value['report_id']})
+        path = '/api/op/goal.report.view?' + urlencode({'project': 'demo', 'goal_id': goal['id'], 'report_id': value['report_id']})
         code, html, headers = self.request(path, raw=True)
         self.assertEqual(code, 200)
         self.assertIn(b'A pauses then B speaks', html)
@@ -1687,7 +1644,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         goal = self.goal()
         document = '<style>h1{color:green}</style><h1>按任务组织的报告</h1><script>window.chartReady=true</script>'
         saved = goals.save_report(self.conn, goal['id'], {**self.report(), 'document_html': document})
-        path = '/api/goals/report?' + urlencode({'project':'demo','goal_id':goal['id'],'report_id':saved['id']})
+        path = '/api/op/goal.report.view?' + urlencode({'project':'demo','goal_id':goal['id'],'report_id':saved['id']})
         code, content, headers = self.request(path, raw=True)
         self.assertEqual(code, 200)
         self.assertEqual(content.decode('utf-8'), saved['html'])
@@ -1701,14 +1658,13 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
     def test_resume_paused_pending_finish_completes_saved_report_without_another_model_turn(self):
         goal = self.goal()
         _, receipt, _ = self.send_goal(goal)
-        self.request('/api/goals/agent?project=demo', {'actor_session_id': 's3', 'execution_id': receipt['execution_id'],
-            'action': 'finish', 'data': {'report': self.report()}})
-        self.request('/api/goals/action?project=demo', {'goal_id': goal['id'], 'action': 'pause',
+        self.ai('s3', 'goal.finish', {'report': self.report()}, receipt['execution_id'])
+        self.request('/api/op/goal.pause?project=demo', {'goal_id': goal['id'],
             'version': goals.get(self.conn, goal['id'])['version']})
         self.finish_turn(receipt['execution_id'], self.processes[-1])
         self.server.service.chat.goal_controller.sync(self.conn)
         before = self.processes[-1].stdin.getvalue()
-        code, result, _ = self.request('/api/goals/action?project=demo', {'goal_id': goal['id'], 'action': 'resume',
+        code, result, _ = self.request('/api/op/goal.resume?project=demo', {'goal_id': goal['id'],
             'version': goals.get(self.conn, goal['id'])['version']})
         self.assertEqual(code, 200, result)
         self.assertEqual(result['goal']['status'], 'awaiting_acceptance')
@@ -1716,7 +1672,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(self.processes), 1)
 
     def test_detail_projects_saved_report_conclusion_and_reopen_makes_it_historical(self):
-        code, created, _ = self.request('/api/goals/create?project=demo', {
+        code, created, _ = self.request('/api/op/goal.create?project=demo', {
             'leader_session_id': 's3', 'title': 'Speaker test', 'request': 'Measure short replies.',
             'acceptance': ['Second speaker found', 'Short reply kept', 'Mixed speech handled', 'Replay works']})
         self.assertEqual(code, 200, created)
@@ -1733,7 +1689,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         goals.transition(self.conn, goal['id'], 'failed')
 
         def reports():
-            code, detail, _ = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))
+            code, detail, _ = self.request('/api/op/goal.get?' + urlencode({'project': 'demo', 'id': goal['id']}))
             self.assertEqual(code, 200, detail)
             return detail['goal'], detail['reports']
 
@@ -1745,8 +1701,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(entry['acceptance_counts'], {'passed': 1, 'failed': 1, 'unverified': 2, 'simulated': 0})
         self.assertEqual((entry['id'], entry['round'], entry['requirement_version'], entry['status'], entry['current']),
                          (first['id'], 1, 1, 'failed', True))
-        code, reopened, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'reopen', 'version': goals.get(self.conn, goal['id'])['version'],
+        code, reopened, _ = self.request('/api/op/goal.reopen?project=demo', {
+            'goal_id': goal['id'], 'version': goals.get(self.conn, goal['id'])['version'],
             'reason': 'Mixed speech still fails.'})
         self.assertEqual(code, 200, reopened)
         current, [entry] = reports()
@@ -1765,7 +1721,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
     def test_open_folder_opens_the_declared_delivery_folder_or_the_workspace_root_on_this_computer(self):
         goal_ids = []
         for title in ('Speaker test', 'Other task'):
-            code, created, _ = self.request('/api/goals/create?project=demo', {
+            code, created, _ = self.request('/api/op/goal.create?project=demo', {
                 'leader_session_id': 's3', 'title': title, 'request': 'Measure short replies.', 'acceptance': ['Works']})
             self.assertEqual(code, 200, created)
             goal_ids.append(created['goal']['id'])
@@ -1781,7 +1737,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                 file.write('Saved delivery')
         legacy = goals.save_report(self.conn, goal_ids[0], {**stage_data, 'artifacts': artifacts})
         final = goals.save_report(self.conn, goal_ids[0], {**stage_data, 'artifacts': artifacts, 'folder': 'docs'})
-        code, detail, _ = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal_ids[0]}))
+        code, detail, _ = self.request('/api/op/goal.get?' + urlencode({'project': 'demo', 'id': goal_ids[0]}))
         self.assertEqual(code, 200, detail)
         folders = {item['id']: item['folder'] for item in detail['reports']}
         self.assertEqual(folders, {final['id']: {'path': os.path.abspath(os.path.join(root, 'docs')), 'declared': True},
@@ -1789,30 +1745,30 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
                                    stage['id']: {'path': os.path.abspath(root), 'declared': False}})
         with mock.patch('crew.web.sys.platform', 'win32'), mock.patch('crew.native_folders.open_windows') as opener:
             for report in (final, legacy, stage):
-                code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': report['id']})
+                code, result, _ = self.request('/api/op/goal.report.folder?project=demo', {'goal_id': goal_ids[0], 'report_id': report['id']})
                 self.assertEqual((code, result), (200, {'ok': True, **folders[report['id']]}))
             self.assertEqual([call.args for call in opener.call_args_list],
                              [(folders[report['id']]['path'],) for report in (final, legacy, stage)])
-            code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[1], 'report_id': final['id']})
+            code, result, _ = self.request('/api/op/goal.report.folder?project=demo', {'goal_id': goal_ids[1], 'report_id': final['id']})
             self.assertEqual((code, result.get('error')), (400, '报告不属于此目标'))
             os.remove(os.path.join(root, 'docs', 'notes.md'))
             os.rmdir(os.path.join(root, 'docs'))
-            code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': final['id']})
+            code, result, _ = self.request('/api/op/goal.report.folder?project=demo', {'goal_id': goal_ids[0], 'report_id': final['id']})
             self.assertEqual((code, result.get('error')), (400, '交付文件夹不存在：' + folders[final['id']]['path']))
             self.assertEqual(opener.call_count, 3, 'a missing folder or a foreign report opens nothing')
             opener.side_effect = OSError('等待资源管理器打开文件夹超时')
-            code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': stage['id']})
+            code, result, _ = self.request('/api/op/goal.report.folder?project=demo', {'goal_id': goal_ids[0], 'report_id': stage['id']})
             self.assertEqual((code, result.get('error')), (400, '等待资源管理器打开文件夹超时'))
         with mock.patch('crew.web.sys.platform', 'darwin'), mock.patch('crew.web.subprocess.Popen') as popen:
-            code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': stage['id']})
+            code, result, _ = self.request('/api/op/goal.report.folder?project=demo', {'goal_id': goal_ids[0], 'report_id': stage['id']})
             self.assertEqual((code, result), (200, {'ok': True, **folders[stage['id']]}))
             self.assertEqual(popen.call_args.args, (['open', folders[stage['id']]['path']],), 'macOS shows the folder in Finder')
         with mock.patch('crew.web.sys.platform', 'linux'):
-            code, result, _ = self.request('/api/goals/report/folder?project=demo', {'goal_id': goal_ids[0], 'report_id': stage['id']})
+            code, result, _ = self.request('/api/op/goal.report.folder?project=demo', {'goal_id': goal_ids[0], 'report_id': stage['id']})
             self.assertEqual((code, result.get('error')), (400, '当前系统暂不支持从 Crew 打开文件夹'))
 
     def test_detail_orders_reports_by_saved_version_like_acceptance_even_when_the_clock_repeats_or_moves_back(self):
-        code, created, _ = self.request('/api/goals/create?project=demo', {
+        code, created, _ = self.request('/api/op/goal.create?project=demo', {
             'leader_session_id': 's3', 'title': 'Speaker test', 'request': 'Measure short replies.', 'acceptance': ['Works']})
         self.assertEqual(code, 200, created)
         goal = created['goal']
@@ -1826,7 +1782,7 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         saved = [goals.save_report(self.conn, goal['id'], {**data, 'summary': summary}, now=now) for summary, now in (
             ('first draft', '2026-10-25T10:00:00.000Z'), ('same millisecond, newer version', '2026-10-25T10:00:00.000Z'),
             ('newest version, clock moved back', '2026-10-25T09:00:00.000Z'))]
-        code, detail, _ = self.request('/api/goal?' + urlencode({'project': 'demo', 'id': goal['id']}))
+        code, detail, _ = self.request('/api/op/goal.get?' + urlencode({'project': 'demo', 'id': goal['id']}))
         self.assertEqual(code, 200, detail)
         self.assertEqual([(item['id'], item['version'], item['summary'], item['current']) for item in detail['reports']],
                          [(report['id'], report['version'], report['data']['summary'], report['id'] == saved[-1]['id']) for report in reversed(saved)])
@@ -1845,8 +1801,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         manager, task_process = self.server.service.chat, self.processes[-1]
         task_process.emit({'type': 'assistant', 'message': {'id': 'before-transfer-answer', 'content': [{'type': 'text', 'text': 'Sample one measured at 320ms.'}]}})
         current = goals.get(self.conn, goal['id'])
-        code, result, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'transfer', 'version': current['version'], 'to': 'next-lead', 'note': 'Sample two is left.'})
+        code, result, _ = self.request('/api/op/goal.transfer?project=demo', {
+            'goal_id': goal['id'], 'version': current['version'], 'to': 'next-lead', 'note': 'Sample two is left.'})
         self.assertEqual(code, 200, result)
         self.assertEqual(result['goal']['transfer_pending']['to_session_id'], 'next-lead')
         self.assertEqual(result['goal']['leader_session_id'], 's3')
@@ -1863,8 +1819,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(notice), 1)
         self.assertIn('Sample two is left.', notice[0]['text'])
 
-        code, result, _ = self.request('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'start', 'version': value['version']})
+        code, result, _ = self.request('/api/op/goal.start?project=demo', {
+            'goal_id': goal['id'], 'version': value['version']})
         self.assertEqual(code, 200, result)
         sent = self.processes[-1].stdin.getvalue()
         self.assertIn('Sample two is left.', sent)

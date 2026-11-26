@@ -1,5 +1,6 @@
 """An OS-selected listener must also be reachable by browser/Node Fetch."""
 import tests
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import tempfile
@@ -13,7 +14,8 @@ class BrowserPortTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='crew-browser-port-')
         self.addCleanup(temporary.cleanup)
-        self.service = mock.Mock(home=Path(temporary.name))
+        self.service = mock.Mock(home=Path(temporary.name), mcp_exposure='full')
+        self.service.now.return_value = datetime(2026, 10, 21, tzinfo=timezone.utc)
 
     def test_reject_os_assigned_bad_port_before_registration_or_workers(self):
         real_bind = web.Server.server_bind

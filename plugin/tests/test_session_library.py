@@ -86,7 +86,7 @@ class SessionLibraryTests(unittest.TestCase):
     def test_codex_join_preserves_native_thread_and_only_queues_one_notice(self):
         native, _ = self.codex()
         self.register(identity(1), 'lead', role='leader')
-        joined = self.service.post('/api/session-library/adopt', {'key': 'codex:' + native, 'name': 'native-member', 'group': 'lead'}, 'alpha')
+        joined = self.service.op('session_library.adopt', {'key': 'codex:' + native, 'name': 'native-member', 'group': 'lead'}, project='alpha', request_id='adopt-native')
         sid = joined['session_id']
         self.assertNotEqual(sid, native)
         self.assertEqual(runtimes.get(self.conn, sid), {'runtime': 'codex', 'native_id': native})

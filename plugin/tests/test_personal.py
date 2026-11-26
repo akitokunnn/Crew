@@ -1,14 +1,15 @@
 """Global identity and explicit user actions, with no native model processes."""
 import tests
+from test_core import operation_service
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
 from contextlib import closing
-import json
 from pathlib import Path
 import tempfile
 import threading
 import unittest
 from unittest import mock
-
-from crew import board, guard, personal, personal_actions, settings, store, todo
+from crew import board, guard, personal, settings, store, todo
 
 
 class PersonalTests(unittest.TestCase):
@@ -19,6 +20,7 @@ class PersonalTests(unittest.TestCase):
         self.home = self.root / 'home'
         self.conn = store.connect(self.home)
         self.addCleanup(self.conn.close)
+        self.service = operation_service(self, self.root)
 
     def assistant(self, **kwargs):
         return personal.ensure_assistant(self.conn, self.home, **kwargs)
@@ -93,7 +95,7 @@ class PersonalTests(unittest.TestCase):
             snapshot = personal.overview(conn)
         self.assertEqual({item['project'] for item in snapshot['leaders']}, {'fitness', 'mib'})
         self.assertEqual(snapshot['counts']['todos'], 2)
-        value = personal_actions.dispatch(self.home, assistant['session_id'], 'summary', {'data': {'project': 'mib'}})
+        value = ai_call(self.service, self.conn, assistant['session_id'], 'workspace.state', {'project': 'mib'}, runtime='codex')
         self.assertEqual(value['counts']['todos'], 1)
         self.assertEqual(value['todos'][0]['project'], 'mib')
 
@@ -113,7 +115,7 @@ class PersonalTests(unittest.TestCase):
             self.assertEqual(conn.total_changes, before)
         self.assertEqual({row['session_id'] for row in snapshot['leaders']}, {'ordinary', 'legacy'})
         self.assertEqual(snapshot['counts']['leaders'], 2)
-        scoped = personal_actions.dispatch(self.home, assistant['session_id'], 'summary', {'data': {'project': 'alpha'}})
+        scoped = ai_call(self.service, self.conn, assistant['session_id'], 'workspace.state', {'project': 'alpha'}, runtime='codex')
         self.assertEqual([row['session_id'] for row in scoped['leaders']], ['ordinary'])
         self.assertEqual(scoped['counts']['leaders'], 1)
 
@@ -130,15 +132,16 @@ class PersonalTests(unittest.TestCase):
         sid = self.assistant()['session_id']
         port = mock.Mock(return_value={'session_id': 'new-leader'})
         user = {'type': 'message', 'id': 'original', 'role': 'user', 'source': 'human', 'text': '给我做一个健身打卡应用'}
-        data = {'message_id': 'original', 'request_id': 'create',
-                'data': {'project': project['name'], 'message': '先讨论健身打卡应用'}}
-        personal_actions.dispatch(self.home, sid, 'leader.create', data, read_events=lambda _: [user], create_leader=port)
-        self.assertEqual(port.call_args.kwargs['instruction']['instruction'], user['text'])
-        self.assertEqual(port.call_args.kwargs['instruction']['context']['session_id'], sid)
-        member = self.leader(project, 'someone')
-        with self.assertRaisesRegex(board.BoardError, '全局助手身份'):
-            personal_actions.dispatch(self.home, member['session_id'], 'leader.create', data,
-                                      read_events=lambda _: [user], create_leader=port)
+        self.service.chat.journal(sid).message('original', user['text'])
+        args = {'project': project['name'], 'message': '先讨论健身打卡应用'}
+        with mock.patch.object(self.service.chat, '_personal_leader', port):
+            ai_call(self.service, self.conn, sid, 'leader.create', args, message_id='original', request_id='create')
+            self.assertEqual(port.call_args.kwargs['instruction']['instruction'], user['text'])
+            self.assertEqual(port.call_args.kwargs['instruction']['context']['session_id'], sid)
+            member = self.leader(project, 'someone')
+            with self.assertRaises(OpError) as denied:
+                ai_call(self.service, self.conn, member['session_id'], 'leader.create', args, message_id='original')
+            self.assertEqual(denied.exception.code, 'forbidden')
         self.assertEqual(port.call_count, 1)
 
     def test_create_requires_explicit_project_and_does_not_guess_current_tab(self):

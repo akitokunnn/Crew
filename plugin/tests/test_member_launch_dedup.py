@@ -1,9 +1,10 @@
 """A spawned member must not receive the same work again in a new goal thread."""
 import tests
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
+from crew.ops import registry
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-import json
-import os
 import threading
 import unittest
 from unittest import mock
@@ -88,25 +89,20 @@ class MemberLaunchDedupTests(ShellFixture, unittest.TestCase):
     def test_claude_bound_spawn_and_reverse_wake_only_start_one_process(self):
         self.goal_bound_spawn('claude')
 
-    def test_goal_spawn_cli_sends_explicit_goal_without_execution_environment(self):
+    def test_goal_spawn_sends_explicit_goal_from_general_session(self):
         goal = self.goal()
-        with mock.patch.dict(os.environ, {'CREW_SESSION_ID': 's3'}), \
-                mock.patch('crew.spawn.request_start', return_value={'ok': True}) as request:
-            code, _, errors = self.run_cli(['spawn', '--name', 'cli-worker', '--task', 'Run once', '--goal', goal['id']])
-        self.assertEqual(code, 0, errors)
-        self.assertEqual(request.call_args.args[-1]['goal_id'], goal['id'])
-        self.assertNotIn('caller_execution_id', request.call_args.args[-1])
+        service = web.Service(self.home, PLUGIN, cwd=self.project, agents_provider=lambda: [],
+                              isolated_sources=True, process_factory=self.process_factory)
+        self.addCleanup(service.close)
+        registry.operations()  # Register the real human handler before intercepting AI dispatch.
+        with mock.patch('crew.web_api.sessions.post_spawn', return_value={'ok': True}) as spawn:
+            ai_call(service, self.conn, 's3', 'execution.spawn', {
+                'name': 'worker', 'task': 'Run once', 'goal_id': goal['id']})
+        args = spawn.call_args.args[2]
+        self.assertEqual(args['goal_id'], goal['id'])
+        self.assertEqual(args['caller_session_id'], 's3')
+        self.assertNotIn('caller_execution_id', args)
 
-    def test_goal_spawn_dry_run_does_not_claim_a_general_native_command(self):
-        goal = self.goal()
-        code, output, errors = self.run_cli(['spawn', '--name', 'dry-worker', '--task', 'Run once',
-                                            '--goal', goal['id'], '--dry-run'])
-        self.assertEqual(code, 0, errors)
-        plan = json.loads(output)
-        self.assertEqual(plan['goal_id'], goal['id'])
-        self.assertEqual(plan['spec']['group'], 'lead')
-        self.assertIsNone(plan['command'])
-        self.assertEqual(self.manager.processes, {})
 
     def test_paused_goal_rejects_spawn_before_creating_member(self):
         goal = self.goal()
@@ -210,37 +206,29 @@ class MemberLaunchHttpTests(ShellFixture, unittest.TestCase):
     def test_cc_to_codex_duplicate_dispatch_returns_http_409_and_keeps_original(self):
         goal = goals.create(self.conn, 'demo', 's3', 'Experiment', 'Run once', ['Evidence'])
         goals.transition(self.conn, goal['id'], 'running')
-        code, first, _ = self.request('/api/spawn?project=demo', {'name': 'http-worker',
+        code, first, _ = self.request('/api/op/execution.spawn?project=demo', {'name': 'http-worker',
             'task': 'Run once', 'runtime': 'codex', 'leader_session_id': 's3'})
         self.assertEqual(code, 200, first)
-        code, second, _ = self.request('/api/goals/agent?project=demo', {'actor_session_id': 's3',
-            'action': 'assign', 'data': {'goal_id': goal['id'], 'to': 'http-worker', 'task': 'Run again', 'start': True}})
-        self.assertEqual(code, 409, second)
-        self.assertIn('总对话', second['error'])
-        self.assertEqual(len(self.clients), 1)
+        with self.assertRaisesRegex((board.Conflict, OpError), '总对话'):
+            ai_call(self.server.service, self.conn, 's3', 'goal.assign', {
+                'goal_id': goal['id'], 'to': first['session_id'], 'task': 'Run again', 'start': True})
         self.assertEqual(set(self.server.service.chat.processes), {first['session_id']})
-        with mock.patch.dict(os.environ, {'CREW_SESSION_ID': 's3'}):
-            code, _, errors = self.run_cli(['goal', 'assign', goal['id'], '--data', json.dumps({
-                'to': 'http-worker', 'task': 'Run again', 'start': True})])
-        self.assertEqual(code, 3, errors)
-        self.assertIn('总对话', errors)
         self.assertEqual(len(self.clients), 1)
 
     def test_explicit_goal_spawn_over_http_has_only_one_execution_and_retries_do_not_restart_it(self):
         goal = goals.create(self.conn, 'demo', 's3', 'Experiment', 'Run once', ['Evidence'])
         goals.transition(self.conn, goal['id'], 'running')
-        code, result, _ = self.request('/api/spawn?project=demo', {'name': 'bound-worker',
-            'task': 'Run once', 'runtime': 'codex', 'caller_session_id': 's3', 'goal_id': goal['id']})
-        self.assertEqual(code, 200, result)
+        result = ai_call(self.server.service, self.conn, 's3', 'execution.spawn',
+                         {'name': 'bound-worker', 'task': 'Run once', 'runtime': 'codex', 'goal_id': goal['id']})
         manager = self.server.service.chat
         key = result['execution_id']
         self.assertEqual(set(manager.processes), {key})
         self.clients[0].finish()
-        code, first, _ = self.request('/api/chat/send?project=demo', {'session_id': result['session_id'],
+        code, first, _ = self.request('/api/op/chat.send?project=demo', {'session_id': result['session_id'],
             'goal_id': goal['id'], 'text': 'Review current results', 'message_id': 'human-followup'})
         self.assertEqual(code, 200, first)
         for _ in range(3):
-            code, receipt, _ = self.request('/api/chat/send?project=demo', {'session_id': result['session_id'],
+            code, receipt, _ = self.request('/api/op/chat.send?project=demo', {'session_id': result['session_id'],
                 'goal_id': goal['id'], 'text': 'Review current results', 'message_id': 'human-followup'})
             self.assertEqual(code, 200, receipt)
             self.assertTrue(receipt['duplicate'])

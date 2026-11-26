@@ -109,8 +109,7 @@ class GoalAmendTests(ShellFixture, unittest.TestCase):
                     self.assertIsNone(codex_guard.check(self.home, 's3', payload, execution['id']))
                 else:
                     with redirect_stderr(io.StringIO()):
-                        code, _ = hooks.handle('guard', payload, self.home, PLUGIN,
-                            {'CREW_SESSION_ID': 's3', 'CREW_EXECUTION_ID': execution['id']})
+                        code, _ = hooks.handle('guard', payload, self.home, PLUGIN)
                     self.assertEqual(code, 0)
                 updated = self.control.agent_action('work.update', {'key': 'measure', 'version': work['version'],
                     'status': 'done', 'note': 'Original evidence: result.txt'}, 's3', execution['id'])
@@ -141,7 +140,7 @@ class GoalAmendTests(ShellFixture, unittest.TestCase):
                     after = goals.get(self.conn, goal['id'])
                     self.assertEqual((after['status'], after['current_round']), ('queued', delivered['current_round']))
                     self.assertEqual(after['requirement_version'], delivered['requirement_version'] + 1)
-                    self.assertIn('crew goal start ' + goal['id'], result['message'])
+                    self.assertIn('`goal_start`（`goal_id=' + goal['id'], result['message'])
                     goals.transition(self.conn, goal['id'], 'cancelled')
 
     def test_ai_amend_skips_its_own_execution_and_reaches_or_defers_the_others(self):

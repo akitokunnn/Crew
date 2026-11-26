@@ -21,7 +21,6 @@ print(json.dumps({'type': 'system', 'subtype': 'notice'}), flush=True)
 print(json.dumps({'type': 'control_response', 'response': {'subtype': 'success', 'request_id': request['request_id'],
     'response': {'commands': [
         {'name': 'compact', 'description': 'Free up context', 'argumentHint': '', 'builtin': True},
-        {'name': 'crew:leader', 'description': '(crew) role rules', 'argumentHint': ''},
         {'name': 'review', 'description': 'review a diff (user)', 'argumentHint': 'target'},
         {'name': 'Diagnose', 'description': 'debug loop (user)', 'argumentHint': ''}]}}}), flush=True)
 sys.stdin.read()
@@ -110,13 +109,13 @@ class ChatSkillsHttpTests(unittest.TestCase):
                 calls.append((runtime, cwd, options['refresh']))
                 return {'runtime': runtime, 'skills': [{'name': 'review', 'description': 'd', 'hint': '', 'token': '/review'}], 'cached': False}
             with mock.patch('crew.native_skills.list_skills', side_effect=fake):
-                code, value, _ = case.request('/api/chat/skills?' + urlencode({'session_id': sid, 'refresh': '1'}))
+                code, value, _ = case.request('/api/op/chat.skills?' + urlencode({'session_id': sid, 'refresh': '1'}))
             self.assertEqual(code, 200, value)
             self.assertEqual(value['skills'][0]['token'], '/review')
             from crew import board
             self.assertEqual(calls, [('claude', board.session(case.conn, sid)['cwd'], True)])
             self.assertEqual(case.processes, [])
-            code, value, _ = case.request('/api/chat/skills?' + urlencode({'session_id': 'missing'}))
+            code, value, _ = case.request('/api/op/chat.skills?' + urlencode({'session_id': 'missing'}))
             self.assertNotEqual(code, 200)
         finally:
             case.doCleanups()

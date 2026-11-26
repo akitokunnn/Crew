@@ -46,7 +46,7 @@ test("activity is fetched once per project set, read-only, throttled and skipped
   const entry = load();
   entry.render(state("a", "b"));
   assert.equal(entry.calls.length, 1);
-  assert.equal(entry.calls[0].url, "/api/workspaces/activity?project=a&project=b");
+  assert.equal(entry.calls[0].url, "/api/op/workspace.activity?project=a&project=b");
   assert.equal(entry.calls[0].init.headers["X-Crew"], "1");
   assert.equal(entry.calls[0].init.method, undefined);
   entry.render(state("a", "b"));

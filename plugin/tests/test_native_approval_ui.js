@@ -18,7 +18,7 @@ test("native approvals are scoped, escaped and only display a single-command cho
 test("failed human approval stays expanded and retryable, then successful receipt removes it",async()=>{
   let failed=true;const h=harness(async()=>{if(failed)throw Error("原生请求暂不可写，请重试");return{approval:{status:"approved"}};});h.click("allow");await tick();
   assert.equal(h.ui.count(),1);assert(h.ui.markup().includes("原生请求暂不可写，请重试"));assert(h.ui.markup().includes('role="alert"'));assert(!h.ui.markup().includes(" disabled"));
-  failed=false;h.click("allow");await tick();assert.equal(h.ui.count(),0);assert.deepEqual(h.calls[1],{url:"/api/native-approval",body:{id:"approval-a",allow:true}});
+  failed=false;h.click("allow");await tick();assert.equal(h.ui.count(),0);assert.deepEqual(h.calls[1],{url:"/api/op/approval.resolve",body:{id:"approval-a",allow:true}});
 });
 test("a pending approval cannot be submitted twice and ended native requests disappear without an API call",async()=>{
   let release;const h=harness(()=>new Promise(resolve=>{release=resolve;}));h.click("deny");h.click("allow");assert.equal(h.calls.length,1);assert.equal(h.calls[0].body.allow,false);assert(h.ui.markup().includes("正在提交…"));

@@ -1,14 +1,14 @@
-"""AI CLI answers use the question's fixed leader scope; humans stay unbound."""
+"""AI operation answers use the question's fixed leader scope; humans stay unbound."""
 import tests  # Install the production-service connection guard.
-import contextlib
-import io
-import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
+from test_shell import PLUGIN
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
+from crew.ops import executor, tokens
 
-from crew import board, cli, session_ops, store, trust_mode
+from crew import board, web, session_ops, store, trust_mode
 
 
 class CliAnswerTests(unittest.TestCase):
@@ -24,27 +24,26 @@ class CliAnswerTests(unittest.TestCase):
         for sid in ("a", "b"):
             board.join(self.conn, sid, "demo", sid, self.root, None, None, role="leader")
         board.join(self.conn, "member", "demo", "worker", self.root, None, None, group_name="a")
-        self.environment = mock.patch.dict(os.environ, {"CREW_SESSION_ID": "", "CLAUDE_CODE_SESSION_ID": ""})
-        self.environment.start()
-        self.addCleanup(self.environment.stop)
+        self.service = web.Service(self.home, PLUGIN, cwd=self.root, agents_provider=lambda: [],
+                                   isolated_sources=True)
+        self.addCleanup(self.service.close)
 
     def ask(self, sid="member"):
         return board.ask(self.conn, sid, "Which action should be taken?", ["Keep existing behavior", "Change behavior"])
 
-    def answer(self, decision, *, sid=None, expected=0):
-        arguments = ["--home", str(self.home)]
-        if sid is not None:
-            arguments += ["--session", sid]
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            result = cli.main(arguments + ["answer", str(decision), "Keep existing behavior"], cwd=self.root,
-                              agents_provider=lambda: self.fail("Answer must not discover/start a model"))
-        self.assertEqual(result, expected, err.getvalue())
+    def answer(self, decision, *, sid=None):
+        args = {"id": decision, "text": "Keep existing behavior"}
+        if sid is None:
+            self.service.op("decision.answer", args, project="demo")
+        else:
+            ai_call(self.service, self.conn, sid, "decision.answer", args)
         return dict(self.conn.execute("SELECT * FROM decisions WHERE id=?", (decision,)).fetchone())
 
     def assert_rejected(self, decision, sid=None):
         before = self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-        value = self.answer(decision, sid=sid, expected=1)
+        with self.assertRaises((OpError, board.BoardError)):
+            self.answer(decision, sid=sid)
+        value = self.conn.execute("SELECT * FROM decisions WHERE id=?", (decision,)).fetchone()
         self.assertEqual((value["status"], value["answer"], value["answered_by"]), ("open", None, None))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], before)
 
@@ -88,15 +87,24 @@ class CliAnswerTests(unittest.TestCase):
         self.assert_rejected(decision, "b")
         self.assertIsNone(trust_mode.decision_leader(self.conn, decision))
 
+    def assert_inactive_token_cannot_answer(self, token, decision):
+        with self.assertRaisesRegex(OpError, '已停止或归档'):
+            caller, grants = tokens.caller(self.conn, token)
+            executor.call(self.service, caller, 'decision.answer', {'id': decision, 'text': 'closed'},
+                          grants=grants, request_id='closed-answer')
+        self.assertEqual(board.decisions(self.conn, 'demo')[0]['status'], 'open')
+
     def test_archived_original_leader_cannot_answer(self):
         decision = self.ask()
+        token = tokens.issue(self.conn, session_id='a', runtime='claude', now=store.now_iso())
         session_ops.archive(self.conn, "a")
-        self.assert_rejected(decision, "a")
+        self.assert_inactive_token_cannot_answer(token, decision)
 
     def test_closed_original_leader_cannot_answer(self):
         decision = self.ask()
+        token = tokens.issue(self.conn, session_id='a', runtime='claude', now=store.now_iso())
         board.set_status(self.conn, "a", "closed")
-        self.assert_rejected(decision, "a")
+        self.assert_inactive_token_cannot_answer(token, decision)
 
     def test_closed_group_cannot_answer_even_with_idle_leader(self):
         decision = self.ask()
@@ -106,14 +114,13 @@ class CliAnswerTests(unittest.TestCase):
         self.assertEqual(board.session(self.conn, "a")["status"], "idle")
         self.assert_rejected(decision, "a")
 
-    def test_environment_binding_is_not_human_cli(self):
-        decision = self.ask()
-        for variable in ("CREW_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
-            with self.subTest(variable=variable), mock.patch.dict(os.environ, {variable: "member"}):
-                self.assert_rejected(decision)
 
     def test_explicit_human_actor_string_cannot_bypass_bound_identity(self):
-        self.assert_rejected(self.ask(), board.HUMAN)
+        decision = self.ask()
+        with self.assertRaises(OpError):
+            ai_call(self.service, self.conn, 'member', 'decision.answer',
+                    {'id': decision, 'text': 'Spoofed', 'actor_session_id': board.HUMAN})
+        self.assertEqual(board.decisions(self.conn, 'demo')[0]['status'], 'open')
 
 
 if __name__ == "__main__":

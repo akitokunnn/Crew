@@ -6,9 +6,11 @@ import sqlite3
 import threading
 import unittest
 from unittest import mock
+from uuid import uuid4
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from crew.ops.errors import OpError
 from crew import board, connections, notifications, personal, qq, store, web, workspace_settings
 from test_notifications import FakeQQ
 from test_shell import NOW, PLUGIN, ShellFixture
@@ -35,11 +37,11 @@ class ConnectionFixture(ShellFixture):
         self.addCleanup(patch.stop)
 
     def configure(self, channel='qq', **extra):
-        return self.service.post('/api/connections/configure',
+        return self.service.op('connections.configure',
             dict(channel=channel, app_id=channel+'-app', app_secret=channel+'-secret', enabled=True, **extra))
 
     def action(self, channel, action):
-        return self.service.post('/api/connections/action', dict(channel=channel, action=action))
+        return self.service.op('connections.action', dict(channel=channel, action=action))
 
     def state(self, channel):
         return self.manager.channel_state(channel)
@@ -72,7 +74,7 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
             self.configure(channel)
             self.bind(channel)
             self.clients[channel].sent.clear()
-        self.service.post('/api/connections/preferences', {'target': 'qq'})
+        self.service.op('connections.preferences.set', {'target': 'qq'})
         self.service.set_away(True)
         board.ask(self.conn, 's1', '请选择继续方式', ['继续', '停止'], now=NOW)
         for inbox in self.manager.inboxes.values():
@@ -83,7 +85,7 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
         self.assertTrue(self.clients['lark'].sent)
         for channel in ('qq', 'lark'):
             self.clients[channel].sent.clear()
-        self.service.post('/api/connections/preferences', {'target': 'lark'})
+        self.service.op('connections.preferences.set', {'target': 'lark'})
         self.manager.inboxes['lark'].push_now = True
         for inbox in self.manager.inboxes.values():
             inbox.tick()
@@ -92,7 +94,7 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
         restored = connections.Manager(self.service, lock_status=lambda: False)
         self.addCleanup(restored.close)
         self.assertEqual(restored.snapshot()['preferences'], {'target': 'lark'})
-        self.service.post('/api/connections/preferences', {'target': 'none'})
+        self.service.op('connections.preferences.set', {'target': 'none'})
         for channel in ('qq', 'lark'):
             self.clients[channel].sent.clear()
         board.ask(self.conn, 's1', '另一个选择', ['继续', '停止'], now=NOW)
@@ -103,10 +105,10 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
 
     def test_routing_default_keeps_both_and_invalid_settings_do_not_change_saved_value(self):
         self.assertEqual(self.manager.snapshot()['preferences'], {'target': 'both'})
-        self.service.post('/api/connections/preferences', {'target': 'qq'})
+        self.service.op('connections.preferences.set', {'target': 'qq'})
         for value in ({}, {'target':'auto'}, {'target':['qq']}, {'target':'qq','other':True}):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                self.service.post('/api/connections/preferences', value)
+            with self.subTest(value=value), self.assertRaises((ValueError, OpError)):
+                self.service.op('connections.preferences.set', value)
         self.assertEqual(self.manager.notification_target, 'qq')
 
     def test_new_user_can_save_bind_and_test_without_secret_in_snapshot(self):
@@ -191,16 +193,16 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
     def test_existing_qq_owner_and_secret_are_kept_unless_account_changes(self):
         self.configure()
         self.bind('qq')
-        self.service.post('/api/connections/configure', dict(channel='qq', app_id='qq-app', enabled=True))
+        self.service.op('connections.configure', dict(channel='qq', app_id='qq-app', enabled=True))
         self.assertTrue(self.state('qq')['bound'])
         before = (self.home/'qq.json').read_text(encoding='utf-8')
         for data in (dict(channel='qq', app_id='new-app', enabled=True),
                      dict(channel='qq', app_id='qq-app', app_secret='', enabled=True),
                      dict(channel='lark', app_id='a', app_secret='b', enabled=True, domain='other')):
-            with self.subTest(data=data), self.assertRaises(ValueError):
-                self.service.post('/api/connections/configure', data)
+            with self.subTest(data=data), self.assertRaises((ValueError, OpError)):
+                self.service.op('connections.configure', data)
         self.assertEqual((self.home/'qq.json').read_text(encoding='utf-8'), before)
-        self.service.post('/api/connections/configure', dict(channel='qq', app_id='new-app', app_secret='new-secret', enabled=True))
+        self.service.op('connections.configure', dict(channel='qq', app_id='new-app', app_secret='new-secret', enabled=True))
         self.assertFalse(self.state('qq')['bound'])
 
     def test_test_failure_reports_transport_error_without_success(self):
@@ -344,6 +346,8 @@ class ConnectionHttpTests(ConnectionFixture, unittest.TestCase):
         url = 'http://127.0.0.1:%s' % server.server_port
         def request(path, data=None, crew=True, extra_headers=None):
             headers = {'X-Crew': '1'} if crew else {}
+            if data is not None:
+                headers['X-Crew-Request-Id'] = uuid4().hex
             headers.update(extra_headers or {})
             payload = None if data is None else json.dumps(data).encode('utf-8')
             try:
@@ -352,23 +356,23 @@ class ConnectionHttpTests(ConnectionFixture, unittest.TestCase):
                 response = exc
             with response:
                 return response.status, json.load(response)
-        status, value = request('/api/connections')
+        status, value = request('/api/op/connections.get', {})
         self.assertEqual(status, 200)
         self.assertEqual(len(value['channels']), 2)
         config = dict(channel='qq', app_id='qq-app', app_secret='qq-secret', enabled=True)
-        self.assertEqual(request('/api/connections/configure', config, crew=False)[0], 403)
-        status, value = request('/api/connections/configure', config)
+        self.assertEqual(request('/api/op/connections.configure', config, crew=False)[0], 403)
+        status, value = request('/api/op/connections.configure', config)
         self.assertEqual(status, 200)
         self.assertNotIn('qq-secret', json.dumps(value))
-        self.assertEqual(request('/api/connections/action', dict(channel='qq', action='test'))[0], 400)
+        self.assertEqual(request('/api/op/connections.action', dict(channel='qq', action='test'))[0], 400)
         for headers in ({'Host': 'attacker.example', 'Origin': 'https://attacker.example'},
                         {'Origin': 'https://attacker.example'}, {'Host': 'localhost:1'},
                         {'Origin': 'null'}):
             with self.subTest(headers=headers):
-                self.assertEqual(request('/api/connections', extra_headers=headers)[0], 403)
-                self.assertEqual(request('/api/connections/configure', config, extra_headers=headers)[0], 403)
-                self.assertEqual(request('/api/connections/action', dict(channel='qq', action='disconnect'), extra_headers=headers)[0], 403)
-        self.assertEqual(request('/api/connections', extra_headers={'Origin': url})[0], 200)
+                self.assertEqual(request('/api/op/connections.get', {}, extra_headers=headers)[0], 403)
+                self.assertEqual(request('/api/op/connections.configure', config, extra_headers=headers)[0], 403)
+                self.assertEqual(request('/api/op/connections.action', dict(channel='qq', action='disconnect'), extra_headers=headers)[0], 403)
+        self.assertEqual(request('/api/op/connections.get', {}, extra_headers={'Origin': url})[0], 200)
         self.assertTrue(self.state('qq')['enabled'])
 
 

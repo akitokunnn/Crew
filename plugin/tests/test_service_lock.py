@@ -159,7 +159,10 @@ class ServiceLockTests(unittest.TestCase):
                 requests.append(self.path)
                 if incompatible:
                     data = {"other": True}
-                elif self.path == "/api/projects":
+                elif self.path.split("?", 1)[0] not in ("/api/op/workspace.state", "/api/op/workspace.list"):
+                    self.send_error(404)
+                    return
+                elif self.path == "/api/op/workspace.list":
                     if legacy:
                         self.send_error(404)
                         return
@@ -186,6 +189,7 @@ class ServiceLockTests(unittest.TestCase):
         (self.home / "web.json").write_text(json.dumps({"url": url}), encoding="utf-8")
         return url, nested / "src", requests
 
+    # 持锁复用流程仍从旧状态和工作区列表地址读数据，访问只提供新入口的后台得到 404。
     def test_open_reuses_registered_dynamic_port_and_cwd_project_without_sql_or_server(self):
         url, cwd, requests = self.registered_service()
         lock = HomeServiceLock(self.home)
@@ -199,11 +203,12 @@ class ServiceLockTests(unittest.TestCase):
             target = url + "/?" + urlencode({"project": "inner space"})
             browser.assert_called_once_with(target)
             self.assertEqual(output.getvalue().strip(), target)
-            self.assertIn("/api/projects", requests)
+            self.assertIn("/api/op/workspace.list", requests)
             self.assertFalse((self.home / "crew.db").exists())
         finally:
             lock.release()
 
+    # 相同的旧路径请求阻断了从状态读取项目根目录的回退流程。
     def test_open_reuses_legacy_http_state_roots_without_sql(self):
         url, cwd, requests = self.registered_service(legacy=True)
         lock = HomeServiceLock(self.home)

@@ -58,7 +58,7 @@ class EntryInstallTests(ShellFixture, unittest.TestCase):
         self.assertEqual(json.loads((fresh / "runtime.json").read_text(encoding="utf-8")), first)
         self.assertTrue((fresh / "bin" / "crew.cmd").is_file(), "missing launcher is initialized")
         # Session-start hooks use ensure: an older existing source is not overwritten.
-        self.assertEqual(hooks.handle("session-start", {"session_id": "other", "cwd": str(self.root)}, fresh, new, {}), (0, None))
+        self.assertEqual(hooks.handle("session-start", {"session_id": "other", "cwd": str(self.root)}, fresh, new), (0, None))
         self.assertEqual(json.loads((fresh / "runtime.json").read_text(encoding="utf-8")), first)
         switched = install.install(fresh, new)
         self.assertEqual(switched["plugin_root"], str(new.resolve()))
@@ -170,7 +170,7 @@ class UpdateGateTests(ShellFixture, unittest.TestCase):
         with self.assertRaises(chat.UpdatePaused):
             self.service.chat.send(board.session(self.conn, sid), "new work")
         with self.assertRaises(chat.UpdatePaused):
-            self.service.post("/api/spawn", {"name": "late", "task": "late task"}, "demo")
+            self.service.op("execution.spawn", {"name": "late", "task": "late task"}, project="demo", request_id="late")
         # Background workers leave queued work untouched while the gate holds.
         self.service.chat.deliver_messages()
         self.service.chat.auto_resume(self.conn, [], now=NOW)
@@ -220,7 +220,7 @@ class UpdateGateTests(ShellFixture, unittest.TestCase):
         ready = self.prepare()
         self.assertEqual(ready["status"], "ready")
         with self.assertRaisesRegex(chat.UpdatePaused, "正在准备更新"):
-            self.service.post("/api/leader", {"name": "late-leader", "task": "x"}, "demo")
+            self.service.op("leader.create", {"name": "late-leader", "task": "x"}, project="demo", request_id="late")
         self.assertIsNone(self.conn.execute("SELECT 1 FROM sessions WHERE crew_name='late-leader'").fetchone())
 
     def test_external_registered_sessions_unknown_state_codex_orphans_and_digests_block(self):

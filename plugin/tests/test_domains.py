@@ -1,5 +1,6 @@
 """Architecture board domain tree: isolated homes, temporary projects and an isolated HTTP service."""
 import tests  # Install the production-service connection guard.
+import uuid
 from contextlib import closing
 import json
 import sqlite3
@@ -236,7 +237,7 @@ class DomainHttpTests(ShellFixture, unittest.TestCase):
         self.assertFalse(self.thread.is_alive())
 
     def request(self, path, data=None):
-        req = Request(self.server.url + path, None if data is None else json.dumps(data).encode(), {'X-Crew': '1'})
+        req = Request(self.server.url + path, None if data is None else json.dumps(data).encode(), {'X-Crew': '1', 'X-Crew-Request-Id': uuid.uuid4().hex})
         try:
             response = self.opener.open(req, timeout=5)
         except HTTPError as exc:
@@ -245,30 +246,30 @@ class DomainHttpTests(ShellFixture, unittest.TestCase):
             return response.status, json.load(response)
 
     def test_board_round_trip_paths_in_state_and_conflicts(self):
-        code, body = self.request('/api/domains?project=demo')
+        code, body = self.request('/api/op/domains.get?project=demo')
         self.assertEqual((code, body['version'], body['direction'], body['parts']), (200, 0, 'TB', []))
-        code, body = self.request('/api/domains', {'project': 'demo', 'base_version': 0, 'ops': [
+        code, body = self.request('/api/op/domains.apply', {'project': 'demo', 'base_version': 0, 'ops': [
             {'op': 'create', 'id': 'sense01', 'name': '感知', 'parent_id': None, 'x': 0, 'y': 0},
             {'op': 'assign', 'session_id': 's3', 'domain_id': 'sense01'}, {'op': 'lead', 'session_id': 's3', 'lead': True}]})
         self.assertEqual(code, 200, body)
         self.assertEqual(body['board']['version'], 1)
-        code, state = self.request('/api/state?project=demo')
+        code, state = self.request('/api/op/workspace.state?project=demo')
         self.assertEqual(state['domains'], {'version': 1, 'paths': {'s3': [{'id': 'sense01', 'name': '感知'}]}})
-        code, body = self.request('/api/domains', {'project': 'demo', 'base_version': 0,
+        code, body = self.request('/api/op/domains.apply', {'project': 'demo', 'base_version': 0,
                                                    'ops': [{'op': 'rename', 'id': 'sense01', 'name': '旧'}]})
         self.assertEqual(code, 409)
         self.assertIn('别处改动', body['error'])
-        self.assertEqual(self.request('/api/domains?project=demo', {'project': 'other', 'ops': []})[0], 400)
-        self.assertEqual(self.request('/api/domains', {'project': 'demo', 'ops': [{'op': 'assign', 'session_id': 's1',
+        self.assertEqual(self.request('/api/op/domains.apply?project=demo', {'project': 'other', 'ops': []})[0], 400)
+        self.assertEqual(self.request('/api/op/domains.apply', {'project': 'demo', 'ops': [{'op': 'assign', 'session_id': 's1',
                                                                                     'domain_id': 'sense01'}]})[0], 400)
         with closing(store.connect(self.home)) as conn:
             self.assertEqual(domains.leader_paths(conn, 'demo'), {'s3': [{'id': 'sense01', 'name': '感知'}]})
 
     def test_page_assets_and_remote_routes(self):
-        self.assertIn('/api/domains', routes.post_paths())
+        self.assertTrue(routes.is_op_path('/api/op/domains.apply'))
         for kind in ('browser', 'desktop'):
-            self.assertTrue(remote_routes.permitted('GET', '/api/domains', (), kind))
-            self.assertTrue(remote_routes.permitted('POST', '/api/domains', (), kind))
+            self.assertTrue(remote_routes.permitted('GET', '/api/op/domains.get', (), kind))
+            self.assertTrue(remote_routes.permitted('POST', '/api/op/domains.apply', (), kind))
         for asset in ('/architecture.js', '/architecture.css'):
             with self.subTest(asset=asset):
                 with self.opener.open(self.server.url + asset, timeout=5) as response:

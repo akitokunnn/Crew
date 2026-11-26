@@ -1,7 +1,6 @@
 """Core integration tests: temporary homes only, no Claude or terminal launches."""
 import tests  # Install the production-service connection guard.
 import contextlib
-import hashlib
 import io
 import json
 import os
@@ -14,10 +13,23 @@ from pathlib import Path
 from unittest import mock
 from tests.fixture_cleanup import cleanup_directory
 
-from crew import board, cli, guard, hooks, install, rules, session_ops, settings, store
+from functools import cached_property
+from crew.ops import tokens
+from crew.ops.errors import OpError
+from tests.ops_helpers import ai_call
+from crew import board, guard, hooks, install, web, session_ops, settings, store
 
 PLUGIN = Path(__file__).resolve().parents[1]
 NOW = "2026-10-21T08:00:00.000Z"
+
+
+def operation_service(case, cwd):
+    service = web.Service(case.home, PLUGIN, cwd=cwd, agents_provider=lambda: [], isolated_sources=True,
+                          claude_root=case.home / 'claude', codex_root=case.home / 'codex',
+                          runs_file=case.home / 'runs.jsonl', vscode_state_db=case.home / 'state.vscdb',
+                          process_factory=mock.Mock(side_effect=AssertionError('Unexpected native launch')))
+    case.addCleanup(service.close)
+    return service
 
 
 class CoreCase(unittest.TestCase):
@@ -38,10 +50,6 @@ class CoreCase(unittest.TestCase):
         defaults.mkdir(parents=True)
         shutil.copyfile(PLUGIN / "defaults" / "blacklist.txt", defaults / "blacklist.txt")
         (defaults / "prices.json").write_text('{"fake-model": {"input": 1}}', encoding="utf-8")
-        for role in ("leader", "member"):
-            skill = self.fake_plugin / "skills" / role / "SKILL.md"
-            skill.parent.mkdir(parents=True)
-            skill.write_text("# " + role + " rules\n", encoding="utf-8")
         install.install(self.home, self.fake_plugin, now=NOW)
         self.conn = store.connect(self.home)
         self.addCleanup(self.conn.close)
@@ -49,38 +57,21 @@ class CoreCase(unittest.TestCase):
         board.init_project(self.conn, "demo", self.root, now=NOW)
         for sid, name in (("s1", "one"), ("s2", "two"), ("s3", "three")):
             board.join(self.conn, sid, "demo", name, self.root, store.norm_path(self.root), "main", cc_name="cc-" + name, now=NOW)
-            rules.record_read(self.conn, sid, "member", self.fake_plugin, now=NOW)
         self.agents = [{"sessionId": "s" + str(i), "name": "cc-" + name, "status": "idle", "pid": i,
                         "cwd": str(self.root), "kind": "cli"} for i, name in enumerate(("one", "two", "three"), 1)]
 
-    def run_cli(self, argv, sid="s1", provider=None, cwd=None):
-        out, err = io.StringIO(), io.StringIO()
-        prefix = ["--home", str(self.home)]
-        if sid is not None:
-            prefix += ["--session", sid]
-        # Explicitly remove ambient session identity without changing the process environment.
-        real_get = os.environ.get
-        def get(key, default=None):
-            return None if key == "CLAUDE_CODE_SESSION_ID" else real_get(key, default)
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(os.environ, "get", side_effect=get), \
-                mock.patch("crew.spawn.request_state", return_value={"leaders": [], "members": [], "git_assistant": None}):
-            try:
-                code = cli.main(prefix + argv, agents_provider=(lambda: self.agents) if provider is None else provider,
-                                cwd=self.root if cwd is None else cwd, plugin_root=self.fake_plugin)
-            except SystemExit as exc:
-                code = exc.code
-        return code, out.getvalue(), err.getvalue()
+    def agent(self, name, args=None, sid='s1'):
+        return ai_call(self.operations, self.conn, sid, name, args)
 
-    def assert_cli(self, argv, sid="s1", code=0):
-        result = self.run_cli(argv, sid)
-        self.assertEqual(result[0], code, result)
-        return result
+    @cached_property
+    def operations(self):
+        return operation_service(self, self.root)
 
     def data(self, sid="s1", **extra):
         return {"session_id": sid, "cwd": str(self.root), "hook_event_name": "test", **extra}
 
     def hook(self, event, sid="s1", **extra):
-        return hooks.handle(event, self.data(sid, **extra), self.home, self.fake_plugin, {},
+        return hooks.handle(event, self.data(sid, **extra), self.home, self.fake_plugin,
                             git_provider=lambda cwd: (store.norm_path(self.root), "main"), now=NOW)
 
     def guard(self, sid="s1", tool="Bash", **tool_input):
@@ -104,16 +95,28 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 sys.path.insert(0, sys.argv[1])
-from crew.cli import main
+from crew import board, store
+from crew.web import Service
+from tests.ops_helpers import ai_call
+from contextlib import closing
 while not Path(sys.argv[2]).exists():
     time.sleep(0.01)
-raise SystemExit(main(sys.argv[3:]))
+home, sid = Path(sys.argv[3]), sys.argv[4]
+service = Service(home, Path(sys.argv[1]), agents_provider=lambda: [], isolated_sources=True)
+try:
+    with closing(store.connect(home)) as conn:
+        ai_call(service, conn, sid, 'lease.take', {'resource': 'phone', 'purpose': 'race'})
+except board.Conflict as exc:
+    print(exc, file=sys.stderr)
+    sys.exit(3)
+finally:
+    service.close()
 """
         processes = []
         try:
             for sid in ("s1", "s2"):
                 processes.append(subprocess.Popen([sys.executable, "-c", code, str(PLUGIN), str(signal),
-                    "--home", str(self.home), "--session", sid, "lease", "take", "phone", "--for", "race"],
+                    str(self.home), sid],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", cwd=PLUGIN))
             signal.write_text("go", encoding="ascii")
             results = [p.communicate(timeout=20) for p in processes]
@@ -137,30 +140,36 @@ raise SystemExit(main(sys.argv[3:]))
         self.assertTrue(lease["until_at"].endswith("Z"))
 
     def test_only_holder_can_give(self):
-        board.take(self.conn, "s1", "phone", "test", now=NOW)
-        self.assert_cli(["lease", "give", "phone"], sid="s2", code=3)
-        self.assert_cli(["lease", "give", "phone", "--note", "clean"])
-        self.assertEqual(board.leases(self.conn, "demo"), [])
+        board.take(self.conn, 's1', 'phone', 'test')
+        with self.assertRaises(board.Conflict):
+            self.agent('lease.give', {'resource': 'phone'}, sid='s2')
+        self.agent('lease.give', {'resource': 'phone', 'note': 'clean'})
+        self.assertEqual(board.leases(self.conn, 'demo'), [])
 
+    # lease.give 不允许本机用户调用，无法验证用户凭原因强制归还及审计。
     def test_force_requires_reason_and_leader_or_human(self):
         board.take(self.conn, "s1", "phone", "test", now=NOW)
-        self.assert_cli(["lease", "give", "phone", "--force"], sid=None, code=1)
-        self.assert_cli(["lease", "give", "phone", "--force", "--reason", "recover"], sid="s2", code=1)
-        self.assert_cli(["lease", "give", "phone", "--force", "--reason", "recover", "--note", "reset"], sid=None)
+        with self.assertRaises((board.BoardError, OpError)):
+            self.operations.op('lease.give', {'resource': 'phone', 'force': True}, project='demo')
+        with self.assertRaises((board.BoardError, OpError)):
+            self.agent('lease.give', {'resource': 'phone', 'force': True, 'reason': 'recover'}, sid='s2')
+        self.operations.op('lease.give', {'resource': 'phone', 'force': True, 'reason': 'recover', 'note': 'reset'}, project='demo')
         event = board.events(self.conn, "demo", limit=1)[0]
         self.assertEqual(event["kind"], "lease:give")
         self.assertEqual(event["detail"]["reason"], "recover")
         self.assertTrue(event["detail"]["force"])
         self.assertEqual(event["session_id"], "user")
 
+    # lease.give 的 AI 参数缺 force 和 reason，leader 无法强制归还。
     def test_leader_force_give(self):
         board.join(self.conn, "s2", "demo", "two", self.root, str(self.root), "main", role="leader", now=NOW)
         board.take(self.conn, "s1", "phone", "test", now=NOW)
-        self.assert_cli(["lease", "give", "phone", "--force", "--reason", "recover"], sid="s2")
+        self.agent('lease.give', {'resource': 'phone', 'force': True, 'reason': 'recover'}, sid='s2')
 
     def test_cannot_remove_leased_resource(self):
         board.take(self.conn, "s1", "phone", "test", now=NOW)
-        self.assert_cli(["resource", "rm", "phone"], code=3)
+        with self.assertRaises(board.Conflict):
+            self.agent('resource.remove', {'name': 'phone'})
 
 
 class SessionTests(CoreCase):
@@ -170,60 +179,36 @@ class SessionTests(CoreCase):
         board.join(self.conn, "s1", "demo", "one", self.root, self.root, "main", now=NOW)
         self.assertEqual(board.session(self.conn, "s1")["spawn_id"], "crew-spawn")
 
-    def test_join_duplicate_online_then_reuse_offline(self):
-        self.assert_cli(["join", "one"], sid="s2", code=3)
-        self.assertEqual(board.session(self.conn, "s2")["crew_name"], "two")
-        board.set_status(self.conn, "s1", "offline", now=NOW)
-        self.assert_cli(["join", "one"], sid="s2")
-        self.assertEqual(board.named_session(self.conn, "demo", "one")["session_id"], "s2")
-
-    @mock.patch('crew.spawn.request_start')
-    def test_leader_join_roster_and_close(self, request):
-        request.side_effect = lambda home, project, path, data: session_ops.close_group(self.conn, project, data['group'], data['with_members'])
-        self.assert_cli(["join", "lead", "--role", "leader"])
-        self.assertEqual(board.groups(self.conn, "demo")[0]["leader_session_id"], "s1")
-        self.assert_cli(["roster", "add", "lead", "two", "three"])
-        me = json.loads(self.assert_cli(["whoami", "--json"], sid="s2")[1])
-        self.assertEqual(me["leader"]["cc_name"], "cc-one")
-        self.assert_cli(["roster", "remove", "lead", "three"])
-        self.assertIsNone(board.session(self.conn, "s3")["group_name"])
-        self.assert_cli(["join", "other", "--role", "leader"], sid="s3")
-        self.assert_cli(["roster", "move", "two", "--to", "other"])
-        self.assertEqual(board.session(self.conn, "s2")["group_name"], "other")
-        self.assert_cli(["leader", "close", "other"])
-        self.assertEqual(board.session(self.conn, "s2")["status"], "idle")
-        self.assertIsNone(board.session(self.conn, "s2")["group_name"])
-        self.assert_cli(["roster", "add", "lead", "two"])
-        self.assert_cli(["leader", "close", "lead", "--with-members"])
-        self.assertEqual(board.session(self.conn, "s1")["status"], "closed")
-        self.assertEqual(board.session(self.conn, "s2")["status"], "closed")
-        self.assertIsNotNone(board.groups(self.conn, "demo")[0]["closed_at"])
+    def test_leader_join_roster_and_close(self):
+        board.join(self.conn, 's1', 'demo', 'lead', self.root, self.root, 'main', role='leader', cc_name='cc-one')
+        op = self.operations.op
+        for sid in ('s2', 's3'):
+            op('roster.move', {'session_id': sid, 'to': 'lead'}, project='demo')
+        self.assertEqual(self.agent('session.whoami', sid='s2')['leader']['cc_name'], 'cc-one')
+        op('roster.remove', {'session_id': 's3', 'group': 'lead'}, project='demo')
+        self.assertIsNone(board.session(self.conn, 's3')['group_name'])
+        board.join(self.conn, 's3', 'demo', 'other', self.root, self.root, 'main', role='leader')
+        op('roster.move', {'session_id': 's2', 'to': 'other'}, project='demo')
+        self.assertEqual(board.session(self.conn, 's2')['group_name'], 'other')
+        op('group.close', {'group': 'other'}, project='demo')
+        self.assertEqual(board.session(self.conn, 's2')['status'], 'idle')
+        self.assertIsNone(board.session(self.conn, 's2')['group_name'])
+        op('roster.move', {'session_id': 's2', 'to': 'lead'}, project='demo')
+        op('group.close', {'group': 'lead', 'with_members': True}, project='demo')
+        for sid in ('s1', 's2'):
+            self.assertEqual(board.session(self.conn, sid)['status'], 'closed')
+        self.assertIsNotNone(board.groups(self.conn, 'demo')[0]['closed_at'])
 
     def test_status_uses_agent_liveness_without_writing(self):
         result = board.status(self.conn, "demo", self.agents[:1])
         self.assertEqual(next(s for s in result["ungrouped"] if s["session_id"] == "s2")["status"], "offline")
         self.assertEqual(board.session(self.conn, "s2")["status"], "idle")
 
-    def test_join_who_use_injected_agents(self):
-        self.assert_cli(["join", "new"])
-        self.assertEqual(board.session(self.conn, "s1")["cc_name"], "cc-one")
-        self.agents[0]["name"] = "renamed"
-        self.assertEqual(json.loads(self.assert_cli(["who", "new", "--json"])[1])["cc_name"], "renamed")
+    def test_who_returns_updated_native_address(self):
+        board.update_cc_name(self.conn, 's1', 'renamed')
+        self.assertEqual(self.agent('session.who', {'target': 'one'})['cc_name'], 'renamed')
 
-    def test_discovery_failure_explicitly_clears_cc_name(self):
-        def fail():
-            raise OSError("fake discovery failure")
-        for cmd in (["join", "one"], ["who", "one", "--json"]):
-            code, out, err = self.run_cli(cmd, provider=fail)
-            self.assertEqual(code, 0, err)
-            self.assertIn("OSError: fake discovery failure", err)
-            self.assertIsNone(board.session(self.conn, "s1")["cc_name"])
-        self.assertEqual(self.run_cli(["status"], provider=fail)[0], 1)
 
-    def test_missing_identity_exits_one(self):
-        code, out, err = self.run_cli(["task", "x"], sid=None)
-        self.assertEqual(code, 1)
-        self.assertIn("请在 Claude 会话里运行，或加 --session", err)
 
 
 class ProjectTests(CoreCase):
@@ -241,7 +226,7 @@ class ProjectTests(CoreCase):
         (self.home / "runtime.json").unlink()
         for event in hooks.EVENTS:
             data = {"session_id": "outside", "cwd": str(self.base), "tool_name": "Bash", "tool_input": {"command": "echo ok"}}
-            self.assertEqual(hooks.handle(event, data, self.home, self.fake_plugin, {}), (0, None))
+            self.assertEqual(hooks.handle(event, data, self.home, self.fake_plugin), (0, None))
         self.assertEqual(before, self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0])
         self.assertEqual(db_before, store.db_path(self.home).read_bytes())
         runtime = json.loads((self.home / "runtime.json").read_text(encoding="utf-8"))
@@ -251,7 +236,7 @@ class ProjectTests(CoreCase):
     def test_first_session_start_anywhere_installs_blacklist(self):
         fresh = self.base / "fresh-home"
         data = {"session_id": "first", "cwd": str(self.base)}
-        self.assertEqual(hooks.handle("session-start", data, fresh, self.fake_plugin, {}), (0, None))
+        self.assertEqual(hooks.handle("session-start", data, fresh, self.fake_plugin), (0, None))
         self.assertTrue((fresh / "blacklist.txt").is_file())
         reason = guard.check(fresh, {**data, "tool_name": "Bash", "tool_input": {"command": "echo ok"}})
         self.assertIsNone(reason)
@@ -263,7 +248,7 @@ class ProjectTests(CoreCase):
         plain = Path(outside.name)
         board.init_project(self.conn, "plain", plain, now=NOW)
         code, output = hooks.handle("session-start", {"session_id": "p1", "cwd": str(plain)}, self.home,
-                                    self.fake_plugin, {}, now=NOW)
+                                    self.fake_plugin, now=NOW)
         self.assertEqual(code, 0)
         row = board.session(self.conn, "p1")
         self.assertEqual((row["project"], row["worktree"], row["branch"]), ("plain", None, None))
@@ -280,7 +265,7 @@ class ProjectTests(CoreCase):
         empty_home = self.base / "empty"
         empty_home.mkdir()
         shutil.copyfile(self.home / "blacklist.txt", empty_home / "blacklist.txt")
-        self.assertEqual(hooks.handle("stop", self.data(), empty_home, self.fake_plugin, {}), (0, None))
+        self.assertEqual(hooks.handle("stop", self.data(), empty_home, self.fake_plugin), (0, None))
         self.assertIsNone(guard.check(empty_home, self.data(tool_name="Bash", tool_input={"command": "echo ok"})))
         self.assertFalse(store.db_path(empty_home).exists())
 
@@ -292,21 +277,26 @@ class ProjectTests(CoreCase):
 
 class ClaimTests(CoreCase):
     def test_directory_claim_and_offline_release(self):
-        self.assert_cli(["claim", "src/", "--note", "working"])
-        self.assert_cli(["claim", "src/a.py"], sid="s2", code=3)
-        self.assert_cli(["claim", "src/sub/"], sid="s2", code=3)
+        self.agent('claim.add', {'pattern': 'src/', 'note': 'working'})
+        with self.assertRaises(board.Conflict):
+            self.agent('claim.add', {'pattern': 'src/a.py'}, sid='s2')
+        with self.assertRaises(board.Conflict):
+            self.agent('claim.add', {'pattern': 'src/sub/'}, sid='s2')
         board.set_status(self.conn, "s1", "offline", now=NOW)
-        self.assert_cli(["claim", "src/a.py"], sid="s2")
+        self.agent('claim.add', {'pattern': 'src/a.py'}, sid='s2')
         self.assertEqual(len(board.claims(self.conn, "demo")), 1)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0], 2)
 
     def test_glob_claim_mutual_overlap(self):
-        self.assert_cli(["claim", "src/*.py"])
-        self.assert_cli(["claim", "src/a.py"], sid="s2", code=3)
-        self.assert_cli(["claim", "src/"], sid="s2", code=3)
-        self.assert_cli(["unclaim", "--all"])
-        self.assert_cli(["claim", "src/a.py"], sid="s2")
-        self.assert_cli(["claim", "src/**"], code=3)
+        self.agent('claim.add', {'pattern': 'src/*.py'})
+        with self.assertRaises(board.Conflict):
+            self.agent('claim.add', {'pattern': 'src/a.py'}, sid='s2')
+        with self.assertRaises(board.Conflict):
+            self.agent('claim.add', {'pattern': 'src/'}, sid='s2')
+        self.agent('claim.remove', {})
+        self.agent('claim.add', {'pattern': 'src/a.py'}, sid='s2')
+        with self.assertRaises(board.Conflict):
+            self.agent('claim.add', {'pattern': 'src/**'})
 
     def test_normalization_directory_boundaries_and_own_update(self):
         first = board.claim(self.conn, "s1", "src/", "first", now=NOW)
@@ -318,21 +308,24 @@ class ClaimTests(CoreCase):
         self.assertEqual(board.claims(self.conn, "demo"), [])
 
     def test_unclaim_ownership_and_all(self):
-        self.assert_cli(["claim", "a.py"])
-        self.assert_cli(["unclaim", "a.py"], sid="s2", code=1)
-        self.assert_cli(["unclaim", "a.py"])
-        self.assert_cli(["claim", "b.py"])
-        self.assert_cli(["unclaim", "--all"])
+        self.agent('claim.add', {'pattern': 'a.py'})
+        with self.assertRaises(board.BoardError):
+            self.agent('claim.remove', {'pattern': 'a.py'}, sid='s2')
+        self.agent('claim.remove', {'pattern': 'a.py'})
+        self.agent('claim.add', {'pattern': 'b.py'})
+        self.agent('claim.remove', {})
         self.assertEqual(board.claims(self.conn, "demo"), [])
 
     def test_crossing_globs_conflict_but_disjoint_suffixes_do_not(self):
-        self.assert_cli(["claim", "src/a*.py"])
-        self.assert_cli(["claim", "src/*b.py"], sid="s2", code=3)
-        self.assert_cli(["claim", "src/*.js"], sid="s2")
+        self.agent('claim.add', {'pattern': 'src/a*.py'})
+        with self.assertRaises(board.Conflict):
+            self.agent('claim.add', {'pattern': 'src/*b.py'}, sid='s2')
+        self.agent('claim.add', {'pattern': 'src/*.js'}, sid='s2')
 
     def test_directory_intersects_glob_above_it(self):
-        self.assert_cli(["claim", "*/special.py"])
-        self.assert_cli(["claim", "src/"], sid="s2", code=3)
+        self.agent('claim.add', {'pattern': '*/special.py'})
+        with self.assertRaises(board.Conflict):
+            self.agent('claim.add', {'pattern': 'src/'}, sid='s2')
 
     def test_glob_character_classes_and_non_overlaps(self):
         for a, b, expected in (("src/[ab].py", "src/[bc].py", True),
@@ -385,7 +378,6 @@ class DeliveryTests(CoreCase):
 
     def test_handoffs_name_group_star_each_session_once(self):
         board.join(self.conn, "s1", "demo", "lead", self.root, str(self.root), "main", role="leader", now=NOW)
-        rules.record_read(self.conn, "s1", "leader", self.fake_plugin, now=NOW)
         board.roster(self.conn, "demo", "add", "lead", ["two"], now=NOW)
         one = board.handoff(self.conn, "s3", "two", "named", now=NOW)
         group = board.handoff(self.conn, "s3", "lead", "group", now=NOW)
@@ -420,42 +412,39 @@ class DeliveryTests(CoreCase):
 
     def test_withdraw_own_open_question(self):
         d = board.ask(self.conn, "s1", "q", now=NOW)
-        self.assert_cli(["withdraw", str(d)], sid="s2", code=1)
-        self.assert_cli(["withdraw", str(d)])
+        with self.assertRaises((board.BoardError, OpError)):
+            self.agent('decision.withdraw', {'id': d}, sid='s2')
+        self.agent('decision.withdraw', {'id': d})
         self.assertEqual(board.decisions(self.conn, "demo"), [])
         self.assertEqual(board.decisions(self.conn, "demo", True)[0]["status"], "withdrawn")
 
 
 class HookTests(CoreCase):
-    def start_with_environment(self, sid, source, environ, now=NOW):
-        return hooks.handle("session-start", self.data(sid, source=source), self.home, self.fake_plugin, environ,
+    def start_hook(self, sid, source, now=NOW):
+        return hooks.handle("session-start", self.data(sid, source=source), self.home, self.fake_plugin,
                             git_provider=lambda cwd: (store.norm_path(self.root), "main"), now=now)
 
     def test_compact_preserves_archived_sessions_and_closed_group(self):
-        environments = {
-            "s1": {"CREW_NAME": "lead", "CREW_ROLE": "leader", "CREW_GROUP": "lead", "CREW_SPAWN_ID": "lead-spawn"},
-            "s2": {"CREW_NAME": "two", "CREW_ROLE": "member", "CREW_GROUP": "lead", "CREW_SPAWN_ID": "member-spawn"},
-        }
-        for sid, environ in environments.items():
-            self.start_with_environment(sid, "startup", environ)
+        board.join(self.conn, 's1', 'demo', 'lead', self.root, self.root, 'main', role='leader')
+        board.roster(self.conn, 'demo', 'move', 'lead', session_ids=['s2'])
+        for sid in ('s1', 's2'):
+            self.start_hook(sid, 'startup')
             board.set_task(self.conn, sid, "current task " + sid, now=NOW)
         session_ops.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
         fields = ("crew_name", "cc_name", "role", "group_name", "status", "status_note", "ended_at", "task", "spawn_id")
-        before = {sid: {field: board.session(self.conn, sid)[field] for field in fields} for sid in environments}
+        before = {sid: {field: board.session(self.conn, sid)[field] for field in fields} for sid in ('s1', 's2')}
         later = "2026-10-21T09:00:00.000Z"
-        for sid, environ in environments.items():
+        for sid in ('s1', 's2'):
             with self.subTest(sid=sid):
-                self.start_with_environment(sid, "compact", environ, now=later)
+                self.start_hook(sid, "compact", now=later)
                 session = board.session(self.conn, sid)
                 self.assertEqual({field: session[field] for field in fields}, before[sid])
                 self.assertEqual((session["last_event"], session["last_event_at"]), ("session-start", later))
                 self.assertEqual(board.groups(self.conn, "demo")[0]["closed_at"], NOW)
 
     def test_compact_keeps_current_identity_after_move_and_group_dissolution(self):
-        leader_env = {"CREW_NAME": "old", "CREW_ROLE": "leader", "CREW_GROUP": "old", "CREW_SPAWN_ID": "old-lead-spawn"}
-        member_env = {"CREW_NAME": "original", "CREW_ROLE": "member", "CREW_GROUP": "old", "CREW_SPAWN_ID": "old-member-spawn"}
-        self.start_with_environment("s1", "startup", leader_env)
-        self.start_with_environment("s2", "startup", member_env)
+        board.join(self.conn, 's1', 'demo', 'old', self.root, self.root, 'main', role='leader')
+        board.roster(self.conn, 'demo', 'move', 'old', session_ids=['s2'])
         board.join(self.conn, "s3", "demo", "new", self.root, self.root, "main", role="leader", now=NOW)
         board.roster(self.conn, "demo", "move", "new", session_ids=["s2"], now=NOW)
         board.join(self.conn, "s2", "demo", "renamed", self.root, self.root, "main", task="revised task",
@@ -465,29 +454,22 @@ class HookTests(CoreCase):
         session_ops.close_group(self.conn, "demo", "old", now=NOW)
         fields = ("crew_name", "cc_name", "role", "group_name", "status", "status_note", "ended_at", "task", "spawn_id")
         before = {sid: {field: board.session(self.conn, sid)[field] for field in fields} for sid in ("s1", "s2")}
-        for sid, environ in (("s1", leader_env), ("s2", member_env)):
+        for sid in ('s1', 's2'):
             with self.subTest(sid=sid):
-                self.start_with_environment(sid, "compact", environ)
+                self.start_hook(sid, "compact")
                 self.assertEqual({field: board.session(self.conn, sid)[field] for field in fields}, before[sid])
                 old = next(group for group in board.groups(self.conn, "demo") if group["name"] == "old")
                 self.assertEqual(old["closed_at"], NOW)
 
     def test_explicit_startup_and_resume_preserve_archive_control(self):
-        environ = {"CREW_NAME": "lead", "CREW_ROLE": "leader", "CREW_GROUP": "lead", "CREW_SPAWN_ID": "lead-spawn"}
-        self.start_with_environment("s1", "startup", environ)
+        board.join(self.conn, 's1', 'demo', 'lead', self.root, self.root, 'main', role='leader')
         session_ops.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
         for source in ("startup", "resume"):
             with self.subTest(source=source):
-                self.start_with_environment("s1", source, environ)
+                self.start_hook("s1", source)
                 session = board.session(self.conn, "s1")
                 self.assertEqual((session['status'], session['group_name']), ('closed', None))
                 self.assertEqual(board.groups(self.conn, 'demo')[0]['closed_at'], NOW)
-
-    def test_first_compact_still_registers_spawn_identity(self):
-        self.start_with_environment("new", "compact", {"CREW_NAME": "fresh", "CREW_ROLE": "member", "CREW_SPAWN_ID": "fresh-spawn"})
-        session = board.session(self.conn, "new")
-        self.assertEqual((session["crew_name"], session["role"], session["status"], session["spawn_id"]),
-                         ("fresh", "member", "idle", "fresh-spawn"))
 
     def test_each_event_state_and_truncation(self):
         steps = [("session-start", {}, "idle", None),
@@ -521,24 +503,25 @@ class HookTests(CoreCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] - before, len(steps) - 1)
 
     def test_start_context_preserves_name_and_leader_address(self):
-        self.assert_cli(["join", "lead", "--role", "leader"])
-        self.assert_cli(["roster", "add", "lead", "two"])
+        board.join(self.conn, 's1', 'demo', 'lead', self.root, self.root, 'main', role='leader', cc_name='cc-one')
+        tokens.issue(self.conn, session_id='s2', runtime='claude', now=NOW)
+        board.roster(self.conn, 'demo', 'move', 'lead', session_ids=['s2'])
         code, output = self.hook("session-start", "s2")
         text = output["hookSpecificOutput"]["additionalContext"]
-        for value in ("demo", "two", "lead", "cc-one", "/crew:member", "crew.py"):
+        for value in ("demo", "two", "lead", "cc-one", "[Crew member]", "message_send"):
             self.assertIn(value, text)
         self.assertEqual(board.session(self.conn, "s2")["crew_name"], "two")
-        self.assertIn("/crew:leader", self.hook("session-start")[1]["hookSpecificOutput"]["additionalContext"])
+        self.assertIn("[Crew leader]", self.hook("session-start")[1]["hookSpecificOutput"]["additionalContext"])
 
     def test_start_unclaimed_and_spawn_identity(self):
         data = self.data("new")
-        code, output = hooks.handle("session-start", data, self.home, self.fake_plugin, {}, git_provider=lambda cwd: (str(self.root), "main"), now=NOW)
-        self.assertIn("未收编（不要自己 crew join", output["hookSpecificOutput"]["additionalContext"])
+        code, output = hooks.handle("session-start", data, self.home, self.fake_plugin, git_provider=lambda cwd: (str(self.root), "main"), now=NOW)
+        self.assertIn("未收编（用户可在 Crew 的会话库里收编）", output["hookSpecificOutput"]["additionalContext"])
         (self.home / "spawn").mkdir(parents=True, exist_ok=True)
         (self.home / "spawn" / "spawn-id.json").write_text(json.dumps({"task": "\n  first line  \nsecond"}), encoding="utf-8")
-        hooks.handle("session-start", data, self.home, self.fake_plugin,
-                     {"CREW_NAME": "spawned", "CREW_ROLE": "leader", "CREW_GROUP": "spawned", "CREW_SPAWN_ID": "spawn-id"},
-                     git_provider=lambda cwd: (str(self.root), "main"), now=NOW)
+        board.join(self.conn, "new", "demo", "spawned", self.root, self.root, "main", role="leader", cc_name="spawned")
+        board.register_session(self.conn, "new", "demo", self.root, self.root, "main", spawn_id="spawn-id")
+        self.start_hook("new", "startup")
         s = board.session(self.conn, "new")
         self.assertEqual((s["crew_name"], s["role"], s["group_name"], s["spawn_id"], s["cc_name"], s["task"]),
                          ("spawned", "leader", "spawned", "spawn-id", "spawned", "first line"))
@@ -580,123 +563,6 @@ class HookTests(CoreCase):
         self.assertNotIn("tool_input", detail)
 
 
-class RuleReadTests(CoreCase):
-    def setUp(self):
-        super().setUp()
-        self.conn.execute("DELETE FROM rule_reads")
-
-    def read(self, sid="s1", role="member"):
-        self.assertEqual(self.hook("guard", sid, tool_name="Skill", tool_input={"skill": "crew:" + role}), (0, None))
-
-    def context(self, event="user-prompt-submit", sid="s1", **extra):
-        if event == "user-prompt-submit":
-            extra["prompt"] = "continue"
-        code, output = self.hook(event, sid, **extra)
-        self.assertEqual(code, 0)
-        return "" if output is None else output["hookSpecificOutput"]["additionalContext"]
-
-    def test_skill_guard_records_called_role_current_digest_and_time(self):
-        for sid, role in (("s1", "leader"), ("s2", "member")):
-            with self.subTest(role=role):
-                self.read(sid, role)
-                row = dict(self.conn.execute("SELECT * FROM rule_reads WHERE session_id=?", (sid,)).fetchone())
-                content = (self.fake_plugin / "skills" / role / "SKILL.md").read_bytes()
-                self.assertEqual(row, {"session_id": sid, "role": role, "digest": hashlib.sha256(content).hexdigest(), "read_at": NOW})
-
-    def test_other_skill_and_tool_calls_do_not_record_reads(self):
-        for tool, tool_input in (("Skill", {"skill": "review"}), ("Bash", {"command": "echo ok", "skill": "crew:member"})):
-            self.assertEqual(self.hook("guard", tool_name=tool, tool_input=tool_input), (0, None))
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM rule_reads").fetchone()[0], 0)
-
-    def test_skill_outside_project_or_without_registered_session_does_not_write(self):
-        data = {"session_id": "outside", "cwd": str(self.base), "tool_name": "Skill", "tool_input": {"skill": "crew:member"}}
-        before = store.db_path(self.home).read_bytes()
-        self.assertEqual(hooks.handle("guard", data, self.home, self.fake_plugin, {}), (0, None))
-        self.assertEqual(store.db_path(self.home).read_bytes(), before)
-        self.read("unregistered")
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM rule_reads").fetchone()[0], 0)
-        self.assertIsNone(self.conn.execute("SELECT 1 FROM sessions WHERE session_id='unregistered'").fetchone())
-
-    def test_prompt_missing_or_outdated_read_reminds_both_roles(self):
-        board.join(self.conn, "s1", "demo", "lead", self.root, self.root, "main", role="leader", now=NOW)
-        for sid, role in (("s1", "leader"), ("s2", "member")):
-            with self.subTest(role=role):
-                expected = "Crew 守则（/crew:%s）有更新，你上次读的不是最新版。先调用 /crew:%s 重读一遍，再处理这条消息。" % (role, role)
-                self.assertEqual(self.context(sid=sid).splitlines()[-1], expected)
-                self.read(sid, role)
-                self.assertNotIn('有更新', self.context(sid=sid))
-                self.conn.execute("UPDATE rule_reads SET digest='old' WHERE session_id=?", (sid,))
-                self.assertEqual(self.context(sid=sid).splitlines()[-1], expected)
-
-    def test_resume_and_compact_remind_until_current_rules_are_read(self):
-        for source in ("resume", "compact"):
-            with self.subTest(source=source):
-                self.conn.execute("DELETE FROM rule_reads WHERE session_id='s1'")
-                self.assertIn("有更新", self.context("session-start", source=source))
-                self.read()
-                self.assertNotIn("有更新", self.context("session-start", source=source))
-                self.conn.execute("UPDATE rule_reads SET digest='old' WHERE session_id='s1'")
-                self.assertIn("有更新", self.context("session-start", source=source))
-
-    def test_startup_never_adds_update_reminder(self):
-        self.assertNotIn("有更新", self.context("session-start", source="startup"))
-        self.read()
-        self.conn.execute("UPDATE rule_reads SET digest='old' WHERE session_id='s1'")
-        self.assertNotIn("有更新", self.context("session-start", source="startup"))
-
-    def test_editing_rules_repeats_reminder_and_read_refreshes_digest(self):
-        self.read()
-        path = self.fake_plugin / "skills" / "member" / "SKILL.md"
-        path.write_text("# revised member rules\n", encoding="utf-8")
-        self.assertIn("有更新", self.context())
-        self.read()
-        self.assertNotIn('有更新', self.context())
-        row = self.conn.execute("SELECT digest FROM rule_reads WHERE session_id='s1'").fetchone()
-        self.assertEqual(row["digest"], hashlib.sha256(path.read_bytes()).hexdigest())
-
-    def test_each_role_uses_its_own_file_and_role_changes_require_a_read(self):
-        self.read("s1", "member")
-        self.read("s2", "member")
-        board.join(self.conn, "s1", "demo", "lead", self.root, self.root, "main", role="leader", now=NOW)
-        self.assertIn("/crew:leader", self.context(sid="s1"))
-        self.read("s1", "leader")
-        (self.fake_plugin / "skills" / "leader" / "SKILL.md").write_text("# new leader rules\n", encoding="utf-8")
-        self.assertIn("有更新", self.context(sid="s1"))
-        self.assertNotIn('有更新', self.context(sid="s2"))
-
-    def test_unclaimed_archived_removed_and_closed_sessions_do_not_remind(self):
-        board.register_session(self.conn, "unclaimed", "demo", self.root, self.root, "main", now=NOW)
-        session_ops.archive(self.conn, "s1", now=NOW)
-        session_ops.archive(self.conn, "s2", removed=True, now=NOW)
-        board.set_status(self.conn, "s3", "closed", now=NOW)
-        for sid in ("unclaimed", "s1", "s2", "s3"):
-            for event, extra in (("user-prompt-submit", {}), ("session-start", {"source": "compact"}), ("session-start", {"source": "resume"})):
-                if sid == "s3" and extra.get("source") == "resume":
-                    continue
-                with self.subTest(sid=sid, event=event, extra=extra):
-                    if sid == "s3":
-                        board.set_status(self.conn, sid, "closed", now=NOW)
-                    self.assertNotIn("有更新", self.context(event, sid, **extra))
-
-    def test_unsupported_role_and_unregistered_outside_project_do_not_remind(self):
-        self.conn.execute("PRAGMA ignore_check_constraints=ON")
-        self.conn.execute("UPDATE sessions SET role='observer' WHERE session_id='s1'")
-        self.assertNotIn('有更新', self.context())
-        data = {"session_id": "s2", "cwd": str(self.base), "prompt": "continue"}
-        code, output = hooks.handle("user-prompt-submit", data, self.home, self.fake_plugin, {})
-        self.assertEqual(code, 0)
-        self.assertIn("有更新", output["hookSpecificOutput"]["additionalContext"])
-        data["session_id"] = "unregistered"
-        self.assertEqual(hooks.handle("user-prompt-submit", data, self.home, self.fake_plugin, {}), (0, None))
-
-    def test_missing_rule_file_is_an_error(self):
-        (self.fake_plugin / "skills" / "member" / "SKILL.md").unlink()
-        with self.assertRaises(FileNotFoundError):
-            self.context()
-        with self.assertRaises(FileNotFoundError):
-            self.read()
-
-
 class RuleTextTests(unittest.TestCase):
     def injected(self, role):
         # Shared rules live once in the catalog; assert what each role actually receives.
@@ -720,25 +586,23 @@ class RuleTextTests(unittest.TestCase):
         for path, content in self.roles():
             with self.subTest(path=path):
                 self.assertRegex(content, r"不再发 ACK|不再确认|不回复确认")
-                self.assertRegex(content, r"不(?:自动)?建目标")
+                self.assertRegex(content, r"不(?:自动)?建(?:目标|任务)")
                 self.assertIn("最终报告", content)
-                self.assertIn("HTML", content)
         leader = self.roles()[0][1]
+        self.assertIn("HTML", leader)
         self.assertIn("第一次出现时，就在旁边用一句白话解释", leader)
         self.assertIn("篇幅、章节和排版由你按任务决定", leader)
         self.assertIn("关键结论旁放最能说明它的证据", leader)
         member = self.roles()[1][1]
-        self.assertIn("--kind result|blocker|decision", member)
-        self.assertRegex(member, r"不再.*重复 report")
+        self.assertIn("kind 选 result、blocker 或 decision", member)
+        self.assertRegex(member, r"不另补一份重复汇报")
         self.assertNotIn("同时 `crew report", member)
 
-    def test_decisions_are_discussed_before_registration_and_rules_refresh_on_change(self):
+    def test_decisions_are_discussed_before_registration(self):
         for path, content in self.roles():
             with self.subTest(path=path):
                 self.assertRegex(content, r"先[^\n]*(?:说明|解释|讨论)[^\n]*拍板")
                 self.assertRegex(content, r"用户[^\n]*(?:指令|要求)|明确限制")
-                self.assertRegex(content, r"守则更新[^\n]*重读相关部分")
-                self.assertIn("不每轮整包重读", content)
                 self.assertRegex(content, r"todo")
 
     def test_user_facing_decisions_name_the_matter_and_keep_numbers_internal(self):
@@ -818,7 +682,7 @@ class GuardTests(CoreCase):
         board.set_status(self.conn, "s1", "offline", now=NOW)
         self.assertIsNone(self.guard(sid="s2", tool="Edit", file_path=str(self.root / "src" / "a.py")))
 
-    def test_database_failure_blocks_mutations_but_allows_crew(self):
+    def test_database_failure_blocks_mutations_including_crew(self):
         bad = self.base / "broken-db"
         bad.mkdir()
         shutil.copyfile(self.home / "blacklist.txt", bad / "blacklist.txt")
@@ -830,7 +694,7 @@ class GuardTests(CoreCase):
         for command in ('python "x/crew.py" doctor', 'python "x/crew_cli.py" status', "crew doctor"):
             result = subprocess.run([sys.executable, str(PLUGIN / "crew_hook.py"), "--home", str(bad), "guard"],
                 input=json.dumps(self.data(tool_name="Bash", tool_input={"command": command})), capture_output=True, text=True, encoding="utf-8", timeout=20)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 2, result.stderr)
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             self.assertIsNone(guard.check(bad, self.data(tool_name="Read", tool_input={"file_path": str(self.root / "a.py")})))
@@ -867,23 +731,6 @@ class GuardTests(CoreCase):
 
 
 class InstallAndCliTests(CoreCase):
-    def test_status_text_hides_closed_groups_and_ended_sessions(self):
-        def s(name, status, at="2026-10-21T07:00:00.000Z", role="member"):
-            return {"crew_name": name, "status": status, "last_event_at": at, "role": role, "status_note": None,
-                    "task": None, "cc_name": None, "session_id": "abcdef0123",
-                    "context": None, "context_reason": "网页服务没开"}
-        view = {"project": {"name": "demo", "root": "c:/demo"}, "open_decisions": 0, "leases": [], "claims": [],
-                "groups": [{"name": "old", "closed_at": NOW, "members": []},
-                           {"name": "live", "closed_at": None, "members": [s("lead", "idle", role="leader")]}],
-                "ungrouped": [s("recent", "offline"), s("stale", "offline", "2026-10-19T00:00:00.000Z"),
-                              s(None, "offline"), s("done", "closed"), s("busy", "working")]}
-        text = cli._status_text(view, now=store.parse_iso(NOW))
-        self.assertNotIn("[old]", text)
-        for name in ("[live]", "lead", "recent", "busy"):
-            self.assertIn(name, text)
-        for name in ("stale", "abcdef01", "done"):
-            self.assertNotIn(name, text)
-        self.assertIn("另有 3 个已结束的会话", text)
 
     def test_install_files_idempotent_preserves_custom_defaults(self):
         first = install.install(self.home, self.fake_plugin, now=NOW)
@@ -924,62 +771,47 @@ class InstallAndCliTests(CoreCase):
 
     def test_launcher_uses_own_home(self):
         install.install(self.home, PLUGIN)
-        result = subprocess.run([sys.executable, str(self.home / "crew.py"), "projects"], capture_output=True, text=True, encoding="utf-8", cwd=PLUGIN, timeout=20)
+        result = subprocess.run([sys.executable, str(self.home / "crew.py"), "doctor"], capture_output=True, text=True, encoding="utf-8", cwd=PLUGIN, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("demo", result.stdout)
+        self.assertEqual(json.loads(result.stdout)["插件目录"], str(PLUGIN))
 
     def test_entry_scripts_and_python_m(self):
-        result = self.process("crew_cli.py", ["--session", "s1", "whoami", "--json"])
+        result = self.process("crew_cli.py", ["doctor"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["session_id"], "s1")
-        result = subprocess.run([sys.executable, "-m", "crew", "--home", str(self.home), "--session", "s1", "whoami", "--json"], capture_output=True, text=True, encoding="utf-8", cwd=PLUGIN, timeout=20)
+        self.assertEqual(json.loads(result.stdout)["插件目录"], str(self.fake_plugin))
+        result = subprocess.run([sys.executable, "-m", "crew", "--home", str(self.home), "doctor"], capture_output=True, text=True, encoding="utf-8", cwd=PLUGIN, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["session_id"], "s1")
+        self.assertEqual(json.loads(result.stdout)["插件目录"], str(self.fake_plugin))
 
-    @mock.patch('crew.spawn.request_start')
-    def test_every_command_smoke(self, request):
-        request.side_effect = lambda home, project, path, data: session_ops.close_group(self.conn, project, data['group'], data['with_members'])
-        commands = [["install"], ["init", "--name", "demo", "--root", str(self.root)], ["projects"],
-                    ["resource", "add", "phone", "--kind", "device", "--desc", "test", "--guard", "adb"],
-                    ["resource", "list"], ["join", "lead", "--role", "leader", "--task", "plan"],
-                    ["whoami", "--json"], ["task", "work"], ["status", "--project", "demo", "--json"], ["who", "two", "--json"],
-                    ["lease", "take", "phone", "--for", "test", "--until", "23:59", "--overwrites", "package"],
-                    ["lease", "list", "--json"], ["lease", "give", "phone", "--note", "done"], ["resource", "rm", "phone"],
-                    ["claim", "src/", "--note", "edit"], ["claims", "--json"], ["unclaim", "src/"],
-                    ["ask", "choose", "--option", "a", "--option", "b", "--recommend", "a", "--blocking"],
-                    ["decisions", "--json"], ["answer", "1", "yes"], ["decisions", "--all", "--json"],
-                    ["ask", "later"], ["withdraw", "2"], ["handoff", "--to", "*", "read me"], ["handoffs", "--json"],
-                    ["report", "done"], ["reports", "--since", "2026-01-01", "--group", "lead", "--json"], ["group", "list", "--json"],
-                    ["roster", "add", "lead", "two"], ["roster", "remove", "lead", "two"], ["roster", "move", "two", "--to", "lead"],
-                    ["events", "--session", "lead", "--limit", "10"], ["doctor"], ["leader", "close", "lead", "--with-members"]]
-        for command in commands:
-            with self.subTest(command=command):
-                code, out, err = self.assert_cli(command)
-                if "--json" in command:
-                    json.loads(out)
-
+    # 资源守卫的非法正则应作为操作输入错误返回。
     def test_bad_args_and_invalid_regex(self):
-        self.assert_cli(["lease", "take", "missing"], code=2)
-        self.assert_cli(["resource", "add", "bad", "--guard", "["], code=1)
-        self.assert_cli(["unclaim"], code=2)
-        self.assert_cli(["events", "--limit", "0"], code=1)
-        self.assert_cli(["lease", "take", "missing", "--for", "test", "--until", "25:00"], code=1)
+        with self.assertRaises((board.BoardError, OpError, ValueError)):
+            self.agent('resource.add', {'name': 'bad', 'guard': '['})
+        self.assertEqual(board.resources(self.conn, 'demo'), [])
+
+    def test_invalid_lease_args_are_input_errors(self):
+        with self.assertRaisesRegex(OpError, 'purpose'):
+            self.agent('lease.take', {'resource': 'phone'})
+        with self.assertRaisesRegex(board.BoardError, 'HH:MM'):
+            self.agent('lease.take', {'resource': 'phone', 'purpose': 'test', 'until': '25:00'})
 
     def test_init_registered_workspace_does_not_query_git(self):
         run = subprocess.run
         with mock.patch("crew.hooks.subprocess.run", wraps=run) as query:
-            self.assert_cli(["init", "--name", "demo"])
+            self.operations.op('workspace.register', {'name': 'demo', 'root': str(self.root)})
         query.assert_not_called()
 
     def test_init_default_name_preserves_directory_case(self):
-        directory = self.base / "MixedCase"
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        directory = Path(temporary.name) / "MixedCase"
         directory.mkdir()
-        self.assert_cli(["init", "--root", str(directory)])
+        self.operations.op('workspace.add_existing', {'directory': str(directory), 'new_project': True})
         self.assertEqual(board.project(self.conn, "MixedCase")["root"], store.norm_path(directory))
 
     def test_plain_terminal_answer_records_human(self):
         d = board.ask(self.conn, "s1", "question", now=NOW)
-        self.assert_cli(["answer", str(d), "yes"], sid=None)
+        self.operations.op('decision.answer', {'id': d, 'text': 'yes'}, project='demo')
         self.assertEqual(board.decisions(self.conn, "demo", True)[0]["answered_by"], "user")
 
     def test_report_filter_and_event_json(self):
@@ -989,16 +821,17 @@ class InstallAndCliTests(CoreCase):
         self.assertIsInstance(board.events(self.conn, "demo", limit=1)[0]["detail"], dict)
 
     def test_doctor_checks_invalid_blacklist_and_runtime(self):
-        self.assert_cli(["doctor"])
+        self.assertEqual(self.process("crew_cli.py", ["doctor"]).returncode, 0)
         (self.home / "blacklist.txt").write_text("bad rule", encoding="utf-8")
-        self.assert_cli(["doctor"], code=1)
+        self.assertEqual(self.process("crew_cli.py", ["doctor"]).returncode, 1)
         shutil.copyfile(PLUGIN / "defaults" / "blacklist.txt", self.home / "blacklist.txt")
         (self.home / "runtime.json").write_text(json.dumps({"plugin_root": str(self.base / "missing")}), encoding="utf-8")
-        self.assert_cli(["doctor"], code=1)
+        self.assertEqual(self.process("crew_cli.py", ["doctor"]).returncode, 1)
 
     def test_failed_mutation_rolls_back_event_and_data(self):
         before = self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-        self.assert_cli(["join", "one"], sid="s2", code=3)
+        with self.assertRaises(board.Conflict):
+            self.operations.op('session.rename', {'session_id': 's2', 'name': 'one'}, project='demo')
         self.assertEqual(before, self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0])
         self.assertEqual(board.session(self.conn, "s2")["crew_name"], "two")
 

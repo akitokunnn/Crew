@@ -12,7 +12,9 @@ import sys
 import unittest
 from unittest import mock
 
-from crew import board, chat, codex_runtime, goals, runtimes, settings, store, trust_mode, workspace_settings
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
+from crew import board, chat, codex_runtime, goals, runtimes, settings, store, web, trust_mode, workspace_settings
 
 
 class FakeProcess:
@@ -115,9 +117,9 @@ class CodexRuntimeTests(unittest.TestCase):
         (self.plugin / "defaults" / "prices.json").write_text("{}", encoding="utf-8")
         (self.plugin / "crew_codex_hook.py").write_text("# test hook", encoding="utf-8")
         for role in ("member", "leader", "git"):
-            directory = self.plugin / "skills" / role
-            directory.mkdir(parents=True)
-            (directory / "SKILL.md").write_text("# " + role + " role rules", encoding="utf-8")
+            directory = self.plugin / "prompts" / "roles"
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / (role + ".md")).write_text("# " + role + " role rules", encoding="utf-8")
         with closing(store.connect(self.home)) as conn:
             conn.executescript("CREATE TABLE IF NOT EXISTS session_runtimes (session_id TEXT PRIMARY KEY, "
                                "runtime TEXT NOT NULL, native_id TEXT, updated_at TEXT NOT NULL)")
@@ -136,11 +138,11 @@ class CodexRuntimeTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def make_running(self, *, options=None, resume=False, spec=None, router=None, execution=None):
+    def make_running(self, *, options=None, resume=False, spec=None, execution=None):
         journal = chat.Journal(self.home / "chat" / "worker.jsonl")
         running = codex_runtime.CodexRunning(self.home, self.plugin, self.session,
                                              spec or {"agent": None}, options or {"model": None, "effort": None},
-                                             journal, router, resume=resume, execution=execution)
+                                             journal, resume=resume, execution=execution)
         def close():
             running.close()
             self.assertTrue(running.reader_done.wait(2))
@@ -274,13 +276,11 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(start["sandbox"], "workspace-write")
         self.assertEqual(start["approvalPolicy"], "on-request")
         self.assertIn("# member role rules", start["developerInstructions"])
-        self.assertIn("crew_send_message", start["developerInstructions"])
+        self.assertIn("message_send", start["developerInstructions"])
         self.assertNotIn('初始化授权只是快照',start['developerInstructions'])
-        self.assertTrue(start["dynamicTools"])
         self.assertTrue(start["config"]["features"]["hooks"])
         self.assertTrue(start["config"]["bypass_hook_trust"])
         self.assertEqual(start["config"]["model_reasoning_effort"], "high")
-        self.assertEqual(client.kwargs["env"]["CREW_SESSION_ID"], "worker")
 
     @unittest.skipUnless(os.name == 'nt', 'Windows path casing regression')
     def test_start_and_resume_use_disk_casing_without_changing_board_path_keys(self):
@@ -345,7 +345,6 @@ class CodexRuntimeTests(unittest.TestCase):
         running, client = self.make_running(resume=True, spec={"agent": "crew:git"})
         self.assertEqual(client.calls[0][0], "thread/resume")
         self.assertEqual(client.calls[0][1]["threadId"], "existing-thread")
-        self.assertNotIn('dynamicTools', client.calls[0][1])
         self.assertIn("# git role rules", client.calls[0][1]["developerInstructions"])
         self.assertIn("PreToolUse", client.calls[0][1]["config"]["hooks"])
 
@@ -525,26 +524,32 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertEqual(resumed.calls[0], ("thread/resume", {**resumed.calls[0][1], "serviceTier": "priority"}))
 
     def test_tools_bind_sender_and_deduplicate_call_id(self):
-        router = mock.Mock(return_value={"ok": True})
-        running, client = self.make_running(router=router)
-        params = {"threadId": "native-1", "turnId": "turn-1", "callId": "tool-1", "tool": "crew_send_message",
-                  "arguments": {"to": "receiver", "text": "done"}}
-        handler = client.kwargs["tool_handler"]
-        first = handler(params)
-        self.assertTrue(first["success"])
-        self.assertEqual(handler(params), first)
-        router.assert_called_once_with("worker", "receiver", "done", message_id="codex:native-1:tool-1", kind="information")
-        self.assertFalse(handler({**params, "arguments": {"to": "receiver", "text": "different"}})["success"])
-        self.assertFalse(handler({**params, "threadId": "other"})["success"])
+        service = web.Service(self.home, self.plugin, cwd=self.root, agents_provider=lambda: [],
+                              process_factory=mock.Mock(side_effect=AssertionError("unexpected model launch")),
+                              isolated_sources=True)
+        self.addCleanup(service.close)
+        with closing(store.connect(self.home)) as conn:
+            def send(text):
+                return ai_call(service, conn, 'worker', 'message.send', {'to': 'receiver', 'text': text},
+                               runtime='codex', request_id='tool-1')
+            first = send('done')
+            self.assertEqual(first['from_session_id'], 'worker')
+            self.assertEqual(first['receipt'], send('done')['receipt'])
+            with self.assertRaises(OpError) as error:
+                send('changed')
+            self.assertEqual(error.exception.code, 'request_id_reused')
 
     def test_general_codex_message_keeps_explicit_decision_kind_and_host_retry_key(self):
-        router = mock.Mock(return_value={"ok": True, "message_id": "queued-decision", "status": "queued"})
-        _, client = self.make_running(router=router)
-        result = client.kwargs['tool_handler']({"threadId": "native-1", "callId": "decision", "tool": "crew_send_message",
-            "arguments": {"to": "receiver", "text": "第一点\n第二点", "kind": "decision"}})
-        self.assertTrue(result['success'])
-        router.assert_called_once_with('worker', 'receiver', '第一点\n第二点',
-                                       message_id='codex:native-1:decision', kind='decision')
+        service = web.Service(self.home, self.plugin, cwd=self.root, agents_provider=lambda: [],
+                              process_factory=mock.Mock(side_effect=AssertionError("unexpected model launch")),
+                              isolated_sources=True)
+        self.addCleanup(service.close)
+        with closing(store.connect(self.home)) as conn:
+            args = {'to': 'receiver', 'text': '第一点\n第二点', 'kind': 'decision'}
+            for _ in range(2):
+                ai_call(service, conn, 'worker', 'message.send', args, runtime='codex', request_id='decision')
+            rows = conn.execute('SELECT sender_session_id, body, kind FROM peer_messages').fetchall()
+            self.assertEqual([tuple(row) for row in rows], [('worker', args['text'], 'decision')])
 
     def test_host_handoff_close_has_an_explicit_reason_without_a_crash_error(self):
         running, _ = self.make_running()
@@ -634,7 +639,7 @@ for line in sys.stdin:
         with mock.patch("crew.codex_runtime._ObservedClient", self.real_client):
             journal = chat.Journal(self.home / "chat" / "worker.jsonl")
             running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {"agent": None},
-                                                 {"model": None, "effort": None}, journal, None,
+                                                 {"model": None, "effort": None}, journal,
                                                  process_factory=process_factory)
         self.addCleanup(running.close)
         self.assertTrue(running._lease.path.exists())
