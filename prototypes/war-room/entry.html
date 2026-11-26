@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>作战室入口小样 · 状态样例（原型）</title>
+  <script>
+    (function () {
+      var p = new URLSearchParams(location.search), t = p.get("theme");
+      if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+      if (p.has("shot")) document.documentElement.classList.add("wr-shot");
+    })();
+  </script>
+  <link rel="icon" type="image/svg+xml" href="../../frontend/logo.svg">
+  <link rel="stylesheet" href="../../frontend/style.css">
+  <link rel="stylesheet" href="../../frontend/channel.css">
+  <link rel="stylesheet" href="war-room.css">
+</head>
+<body data-page="entry">
+  <div class="wr-app">
+    <nav class="wr-rail" aria-label="应用导航（占位）"></nav>
+    <main class="wr-main wr-entry" id="wr-entry"></main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
