@@ -105,6 +105,7 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
 
 - **允许的改动**：新增 mixin 模块与类声明、`web.py` 中删除被搬方法并加 import 与基类列表；mixin 模块中按需写 import。
 - mixin 方法里用到的模块级常量（如 `MODEL_WORK`、`STATIC`、`FETCH_BLOCKED_PORTS`）若只被搬走的方法使用，随方法搬走并在 web.py 再导出；若 web.py 留下的代码也用，留在 web.py，mixin 里在**方法体内**延迟导入会违背“逐字不变”，因此改为把该常量移到 `web_api/common.py`，两边从那里导入（交付中逐个列出）。
+- **自检（本会话 AST 扫描）**：要搬走的 `Service` 方法引用的 web.py 模块级函数 / 变量只有 `_text`（`_init_project`、`cancel_update`、`maintenance_post`、`resolve_file`、`storage_post`、`update_workspace`）与 `_optional_text`（`storage_post`），按上文移到 `web_api/common.py` 即可；其余都是 import 进来的模块，mixin 模块照原写法 import。
 - **验证**：§0.1 全量 + `python Temp/split/same_bodies.py HEAD:plugin/crew/web.py plugin/crew/web.py plugin/crew/web_service/*.py` 输出 `0 mismatches`。
 - **验收标准**：web.py ≤ 1500 行；`Service` 类体只剩 `__init__`、`_remote_listener`、`now`、`post`、`_post`。
 
@@ -234,6 +235,7 @@ python Temp/split/same_route_blocks.py HEAD plugin/crew/web.py (Get-ChildItem pl
 
 - 允许：新建 `chat_base.py`、`chat_journal.py`、七个 mixin 模块；chat.py 删除被搬定义、加 import / 再导出与基类列表；mixin 模块写 import。
 - `__init__` 中 `from .goal_runtime import Controller` 等延迟导入原位保留。
+- 自检（本会话 AST 扫描）：被搬方法依赖的模块级名字为 `CLAUDE_NO_CONVERSATION`、`IMAGE_TYPES`、`MAINTENANCE_HELD`、`NATIVE_LOST_INPUT`、`NATIVE_MISSING`、`NATIVE_REPLACED`、`REPLY_KIND`、`_admitted`、`idle_reclaim_seconds`、`lost_turn`、`native_output`、`track_background`、`validate_images`（全部归 `chat_base`）与 `Journal`（`chat_journal`，它自己用 `compact_command`、`tool_label`，从 `chat_base` 导入）。`claude_executable` 只被留在 chat.py 的 `_launch_native` 调用。
 - 验证：`python Temp/split/same_bodies.py HEAD:plugin/crew/chat.py plugin/crew/chat.py plugin/crew/chat_*.py` 为 `0 mismatches`；§0.1 全量。
 - 验收标准：chat.py ≤ 600 行；任何 `chat_*.py` 顶层不 `import` chat。
 
