@@ -52,3 +52,16 @@
 .st-note:empty{display:none}
 @container crew-settings-body (max-width:600px){.crew-storage .cs-card{padding:18px}.st-metrics{gap:12px}.st-metric strong{font-size:calc(20px * var(--cs-scale))}.st-category-copy label{flex-wrap:wrap;gap:2px 10px}.st-category-size{margin-left:auto}.st-workspaces>li{flex-wrap:wrap;gap:2px}.st-history-heading .cs-button{white-space:normal}.crew-storage .st-policy-fields{grid-template-columns:minmax(0,1fr)}}
 @container crew-settings-body (max-width:390px){.st-metrics{grid-template-columns:minmax(0,1fr);gap:14px}.st-metric{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.st-metric strong{margin:0}.st-preview-metrics{grid-template-columns:minmax(0,1fr)}.st-preview-metrics .st-metric{display:block}.st-preview-metrics .st-metric strong{margin-top:4px}.st-category-size{margin-left:0}.st-category-copy label{display:block}.st-category-copy label span{display:block;margin-top:3px}.crew-storage .st-actions .cs-button{white-space:normal}}
+
+
+/* === Spatial Studio Storage (High-Density Direction C) === */
+.crew-storage,.st-content{gap:11px}
+.crew-storage .cs-card{padding:14px 16px}
+.st-metrics{gap:10px;margin:12px 0 10px}
+.st-metric{padding:10px 12px;border-radius:10px;background:var(--cs-sheet,var(--cs-card));border:1px solid var(--cs-border,var(--cs-line))}
+.st-metric strong{font-size:calc(19px * var(--cs-scale));font-weight:600;margin-top:3px}
+.st-usage{height:6px;border-radius:999px}
+.st-categories{margin-top:12px}
+.st-category{padding:10px 0}
+.st-confirm,.st-note{border-radius:11px;padding:12px 14px}
+@container crew-settings-body (max-width:390px){.st-metric{padding:9px 12px}}

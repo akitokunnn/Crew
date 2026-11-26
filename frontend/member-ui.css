@@ -17,3 +17,8 @@
 .member-scope-option[aria-pressed="true"]{background:var(--accent-softer);border-color:var(--accent);color:var(--accent)}
 .member-scope-option:focus-visible{outline:none;box-shadow:0 0 0 3px var(--accent-softer)}
 .context-divider.native-replaced{color:var(--text-2)}
+
+
+/* === Spatial Studio Member Settings Dialog (High-Density Direction C) === */
+.member-dialog input:not([type=checkbox]),.member-dialog select{border-radius:9px;padding:7px 10px}
+.member-follow{border-radius:11px;padding:11px 13px}

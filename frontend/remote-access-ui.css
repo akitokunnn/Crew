@@ -13,3 +13,12 @@
 @media(max-width:760px){.remote-access .cs-button{min-height:44px}}
 .remote-link{display:flex;align-items:center;gap:10px;margin-top:6px;min-width:0}.remote-link code{flex:1;min-width:0;padding:8px 10px;border-radius:8px;background:var(--cs-card,var(--surface));border:1px solid var(--cs-line,var(--line));font-size:12px;overflow-wrap:anywhere;user-select:all}.remote-link .cs-button{flex:none}
 @media(max-width:620px){.remote-apply .cs-button{width:100%}.remote-pair strong{font-size:28px}.remote-link{flex-direction:column;align-items:stretch}.remote-link .cs-button{width:100%}}
+
+
+/* === Spatial Studio Remote Access (High-Density Direction C) === */
+.remote-pair{padding:14px 18px;border-radius:12px;background:var(--cs-sheet,var(--surface));border-color:var(--cs-border,var(--line));margin:12px 0}
+.remote-pair strong{font-size:26px;font-weight:600}
+.remote-address-choice select{min-height:36px;padding:6px 11px;border-radius:9px;background:var(--cs-sheet,var(--surface));border-color:var(--cs-border,var(--line))}
+@media(max-width:760px){.remote-address-choice select{min-height:44px}}
+.remote-device{padding:10px 0}
+.remote-link code{border-radius:9px;padding:7px 10px;background:var(--cs-sheet,var(--surface));border-color:var(--cs-border,var(--line))}

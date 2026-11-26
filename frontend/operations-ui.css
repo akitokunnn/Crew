@@ -111,3 +111,17 @@
 .cl-pair-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 .cl-pair-open{display:flex}
 @container crew-settings-body (max-width:600px){.co-toolbar{align-items:flex-start}.co-tabs{flex-wrap:wrap}.co-tabs button{min-width:58px;padding:6px 9px}.cl-modes{grid-template-columns:1fr}.cl-pair{padding:14px}.cl-confirm{padding:20px}.cl-path-input{gap:6px}.cl-path-input .cs-button{padding:8px 10px}}
+
+
+/* === Spatial Studio Operations & Launch (High-Density Direction C) === */
+.co-toolbar{margin-bottom:12px}
+.co-tabs{border-radius:999px;padding:3px;border-color:var(--cs-border,var(--cs-line));background:color-mix(in srgb,var(--cs-text) 5%,transparent)}
+.co-tabs button{border-radius:999px;padding:5px 13px;font-size:calc(12.5px * var(--cs-scale));font-weight:500}
+.co-tabs button[aria-selected=true]{background:var(--cs-sheet,var(--cs-card));box-shadow:var(--cs-shadow-sm,0 1px 3px rgba(0,0,0,.08))}
+.co-chat{border-radius:13px;border-color:var(--cs-border,var(--cs-line));background:var(--cs-card-surface,var(--cs-card));box-shadow:var(--cs-shadow-sm,none)}
+.co-chat-heading{padding:12px 16px;background:var(--cs-glass,transparent)}
+.co-messages{padding:14px 16px}
+.co-composer{margin:0 12px;padding:9px 12px 8px;border-radius:12px;background:var(--cs-sheet,var(--cs-card));border-color:var(--cs-border,var(--cs-line))}
+.cl-modes{gap:9px;margin-top:14px}
+.cl-mode{padding:11px 13px;border-radius:11px;background:var(--cs-sheet,var(--cs-card));border-color:var(--cs-border,var(--cs-line))}
+.cl-pair,.cl-confirm{border-radius:13px;padding:15px 16px}

@@ -60,3 +60,14 @@
 .maintenance-dialog .mt-danger{background:var(--mt-danger);border-color:var(--mt-danger);color:#fff}
 :root[data-theme=dark] .maintenance-dialog{--mt-surface:var(--surface,#202225);--mt-text:var(--text,#ededed);--mt-muted:var(--text-2,#aaa);--mt-ok:#7fb59c;--line:rgba(220,220,220,.12);--hover:rgba(220,220,220,.055)}
 @media(max-width:600px){.mt-header{padding:17px 18px 14px}.mt-body{padding:16px 18px}.mt-footer{padding:13px 18px;flex-wrap:wrap}.mt-note{flex-basis:100%}}
+
+
+/* === Spatial Studio Maintenance Dialog (High-Density Direction C) === */
+.maintenance-dialog{border-radius:16px;background:var(--studio-sheet,var(--mt-surface));border-color:var(--studio-border,var(--line));box-shadow:var(--studio-shadow-float,0 20px 60px rgba(0,0,0,.22))}
+.maintenance-dialog::backdrop{backdrop-filter:blur(6px)}
+.mt-header{padding:15px 22px 13px;background:var(--studio-glass,transparent)}
+.mt-header h2{font-size:1.3em;font-weight:600}
+.mt-body{padding:14px 22px 18px}
+.mt-person{border-radius:11px}
+.mt-footer{padding:12px 22px;background:var(--studio-glass,transparent)}
+.maintenance-dialog button{border-radius:9px}

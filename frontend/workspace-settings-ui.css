@@ -49,3 +49,13 @@
 .wss-loading{padding:30px 0;color:var(--wss-muted);text-align:center}
 :root[data-theme=dark] .workspace-settings-dialog{--wss-surface:var(--surface,#202225);--wss-text:var(--text,#ededed);--wss-muted:var(--text-2,#aaa);--line:rgba(220,220,220,.12);--line-strong:rgba(220,220,220,.22);--hover:rgba(220,220,220,.055)}
 @media(max-width:600px){.wss-header{padding:17px 18px 14px}.wss-body{padding:18px}.wss-footer{padding:13px 18px;flex-wrap:wrap}.wss-footer p{flex-basis:100%}.wss-remove{align-items:flex-start;flex-direction:column;gap:12px}.wss-directory{flex-wrap:wrap}.wss-directory input{flex-basis:100%}}
+
+
+/* === Spatial Studio Workspace Settings Dialog (High-Density Direction C) === */
+.workspace-settings-dialog{border-radius:16px;background:var(--studio-sheet,var(--wss-surface));border-color:var(--studio-border,var(--line));box-shadow:var(--studio-shadow-float,0 20px 60px rgba(0,0,0,.22))}
+.workspace-settings-dialog::backdrop{backdrop-filter:blur(6px)}
+.wss-header{padding:15px 22px 13px;background:var(--studio-glass,transparent)}
+.wss-header h2{font-size:1.3em;font-weight:600}
+.wss-body{padding:16px 22px 18px}
+.wss-footer{padding:12px 22px;background:var(--studio-glass,transparent)}
+.workspace-settings-dialog button,.workspace-settings-dialog input{border-radius:9px}

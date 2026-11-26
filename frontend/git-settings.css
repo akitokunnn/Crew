@@ -7,3 +7,14 @@
 @media(max-width:700px){.git-settings-dialog{max-height:calc(100dvh - 24px)}.gits-header{padding:18px}.gits-body{padding:0 18px}.gits-branches{grid-template-columns:1fr}.gits-footer{padding:14px 18px;flex-wrap:wrap}.gits-footer>div{margin-left:auto}.gits-repository summary{flex-wrap:wrap}}
 
 .gits-header>div:last-child{display:flex;align-items:center;gap:12px}
+
+
+/* === Spatial Studio Git Settings Dialog (High-Density Direction C) === */
+.git-settings-dialog{border-radius:16px;background:var(--studio-sheet,var(--surface));border-color:var(--studio-border,var(--line-strong));box-shadow:var(--studio-shadow-float,var(--shadow-lg))}
+.git-settings-dialog::backdrop{backdrop-filter:blur(6px)}
+.gits-header{padding:15px 22px 13px;background:var(--studio-glass,transparent)}
+.gits-header h2{font-size:calc(18px * var(--fs));font-weight:600}
+.gits-body{padding:0 22px}
+.gits-section{padding:15px 0}
+.gits-body select,.gits-body textarea{border-radius:9px;padding:8px 11px}
+.gits-footer{padding:12px 22px;background:var(--studio-glass,transparent)}

@@ -184,3 +184,103 @@
 .cs-notification-routing select{min-height:40px;width:100%;padding:9px 12px;border:1px solid var(--cs-line);border-radius:8px;background:var(--cs-bg);color:var(--cs-text);font:inherit;outline:none}.cs-notification-routing select:focus-visible{border-color:var(--cs-accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--cs-accent) 20%,transparent)}
 
 .cs-custom-sounds{margin-top:24px}.cs-custom-upload{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}.cs-custom-upload label{display:flex;flex-direction:column;gap:6px;min-width:0;flex:1 1 190px;font-size:13px;color:var(--cs-muted)}.cs-custom-upload input{width:100%;min-width:0;font:inherit;color:var(--cs-text);padding:8px;border:1px solid var(--cs-line);border-radius:6px;background:var(--cs-card)}.cs-custom-list{list-style:none;margin:16px 0 0;padding:0}.cs-custom-list li{display:flex;align-items:center;gap:8px;padding:12px 0;border-top:1px solid var(--cs-line)}.cs-custom-list li>span{flex:1;min-width:0;overflow-wrap:anywhere;font-size:14px}.cs-custom-list small{display:block;margin-top:4px;font-size:11px;color:var(--cs-muted)}
+
+
+/* === Spatial Studio Settings (High-Density Direction C) === */
+.crew-settings{
+  --cs-frame:var(--studio-frame,radial-gradient(820px 440px at 0% 0%,color-mix(in srgb,var(--cs-accent) 11%,transparent),transparent 62%),var(--panel,var(--cs-bg)));
+  --cs-sheet:var(--studio-sheet,var(--surface-2,var(--cs-card)));
+  --cs-glass:var(--studio-glass,color-mix(in srgb,var(--cs-sheet) 84%,transparent));
+  --cs-card-surface:var(--studio-card,color-mix(in srgb,var(--cs-card) 92%,var(--cs-bg)));
+  --cs-border:var(--studio-border,color-mix(in srgb,var(--line-strong,var(--cs-line)) 78%,transparent));
+  --cs-shadow-sm:var(--studio-shadow-sm,0 1px 2px rgba(20,20,18,.05),0 2px 8px rgba(20,20,18,.04));
+  --cs-shadow-sheet:var(--studio-shadow-sheet,0 6px 24px rgba(20,20,18,.07),0 1px 3px rgba(20,20,18,.04));
+  height:100%;background:var(--cs-frame);line-height:1.55;
+}
+@media(prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .crew-settings{
+    --cs-shadow-sm:var(--studio-shadow-sm,0 2px 6px rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.04));
+    --cs-shadow-sheet:var(--studio-shadow-sheet,0 10px 30px rgba(0,0,0,.42),inset 0 1px 0 rgba(255,255,255,.04));
+  }
+}
+:root[data-theme="dark"] .crew-settings{
+  --cs-shadow-sm:var(--studio-shadow-sm,0 2px 6px rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.04));
+  --cs-shadow-sheet:var(--studio-shadow-sheet,0 10px 30px rgba(0,0,0,.42),inset 0 1px 0 rgba(255,255,255,.04));
+}
+
+@media(min-width:651px){
+  .cs-sidebar{flex:0 0 224px;padding:14px 10px 12px;border-right:0;background:transparent}
+  .cs-brand{gap:10px;padding:4px 10px 14px}
+  .cs-mark{width:34px;height:34px;border-radius:10px;box-shadow:var(--cs-shadow-sm)}
+  .cs-mark svg{width:23px;height:23px}
+  .cs-brand strong{font-size:calc(16.5px * var(--cs-scale));font-weight:600}
+  .cs-brand small{margin-top:1px;font-size:calc(11px * var(--cs-scale))}
+  .cs-sidebar nav{gap:3px}
+  .cs-sidebar nav button{gap:10px;padding:7px 10px;border-radius:10px;border:1px solid transparent;font-size:calc(13px * var(--cs-scale));transition:background-color .14s ease,border-color .14s ease,box-shadow .14s ease,color .14s ease}
+  .cs-sidebar nav button small{margin-top:1px;font-size:calc(10.5px * var(--cs-scale));line-height:1.35}
+  .cs-sidebar nav button:hover{background:color-mix(in srgb,var(--cs-sheet) 66%,transparent);border-color:var(--cs-line)}
+  .cs-sidebar nav button.active{background:var(--cs-sheet);color:var(--cs-accent);border-color:color-mix(in srgb,var(--cs-accent) 42%,var(--cs-border));box-shadow:var(--cs-shadow-sm);font-weight:500}
+  .cs-back{margin-top:10px;padding:7px 10px;border-radius:9px;border:1px solid transparent;transition:background-color .14s ease,border-color .14s ease}
+  .cs-back:hover{background:var(--cs-sheet);border-color:var(--cs-border);box-shadow:var(--cs-shadow-sm)}
+  .cs-local{padding-top:14px;line-height:1.55}
+  .cs-body{margin:8px 8px 8px 0;height:calc(100% - 16px);max-height:calc(100% - 16px);border-radius:16px;background:var(--cs-sheet);border:1px solid var(--cs-border);box-shadow:var(--cs-shadow-sheet)}
+}
+
+.cs-header{position:sticky;top:0;z-index:4;align-items:center;padding:13px 26px 12px;background:var(--cs-glass);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px);border-bottom:1px solid var(--cs-line)}
+.cs-eyebrow{font-size:calc(11px * var(--cs-scale));font-weight:500;color:var(--cs-accent);letter-spacing:.3px}
+.crew-settings .cs-header h1{margin:2px 0;font-size:calc(19px * var(--cs-scale));font-weight:600;letter-spacing:-.3px}
+.cs-subtitle{font-size:calc(12px * var(--cs-scale))}
+.cs-close{width:30px;height:30px;border-radius:9px}
+.cs-content{max-width:960px;padding:16px 26px 24px}
+.crew-settings h2{font-size:calc(14.5px * var(--cs-scale));font-weight:600}
+.crew-settings h3{font-size:calc(13.5px * var(--cs-scale));font-weight:600}
+.cs-card,.crew-settings .settings-section{padding:14px 16px;border-radius:13px;background:var(--cs-card-surface);border:1px solid var(--cs-border);box-shadow:var(--cs-shadow-sm)}
+.crew-settings .settings-section{margin-top:11px}
+.crew-settings .settings-section:first-of-type{margin-top:0}
+.cs-task-list{gap:9px}
+.cs-task-list>.cs-card{padding:13px 16px}
+.cs-section-heading{margin:18px 0 9px}
+.cs-card-heading{gap:10px}
+.cs-card-heading p{margin:3px 0 0;font-size:calc(12px * var(--cs-scale));line-height:1.5}
+.cs-badge{border-radius:999px;padding:2px 8px;font-weight:500}
+.cs-fields{gap:12px;margin-top:12px}
+.cs-fields label{gap:5px;font-size:calc(12px * var(--cs-scale))}
+.cs-fields select,.cs-fields input{height:calc(35px * var(--cs-scale));padding:5px 28px 5px 10px;border-radius:9px;background:var(--cs-sheet);border-color:var(--cs-border)}
+.cs-fields input{padding-right:10px}
+.cs-hint,.cs-follow,.cs-footnote{margin-top:10px;font-size:calc(11.5px * var(--cs-scale));line-height:1.6}
+.cs-button{min-height:32px;padding:5px 12px;border-radius:9px;background:var(--cs-sheet);border-color:var(--cs-border)}
+.cs-primary{background:var(--cs-accent);border-color:var(--cs-accent);color:var(--on-accent,#fff)}
+.cs-footer{padding:10px 26px;background:var(--cs-glass);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px);border-top:1px solid var(--cs-line)}
+.cs-tool-row{padding:12px 0}
+
+/* Appearance (Display mode, Project palettes, Font scale) */
+.cs-theme-options{gap:6px;margin-top:12px;padding:3px;border-radius:11px;background:color-mix(in srgb,var(--cs-text) 5%,transparent);border:1px solid var(--cs-line)}
+.cs-theme-options button{padding:8px 10px;border-radius:8px;border:1px solid transparent;background:transparent;font-weight:500;transition:background-color .14s ease,border-color .14s ease,box-shadow .14s ease,color .14s ease}
+.cs-theme-options button[aria-pressed=true]{background:var(--cs-sheet);border-color:color-mix(in srgb,var(--cs-accent) 42%,var(--cs-border));color:var(--cs-accent);box-shadow:var(--cs-shadow-sm)}
+.crew-settings .theme-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}
+.crew-settings .theme-option{padding:8px 11px;border-radius:10px;background:var(--cs-sheet);border:1px solid var(--cs-border);transition:border-color .14s ease,background-color .14s ease,box-shadow .14s ease}
+.crew-settings .theme-option[aria-pressed=true]{border-color:var(--cs-accent);background:color-mix(in srgb,var(--cs-accent) 9%,var(--cs-sheet));box-shadow:var(--cs-shadow-sm)}
+@container crew-settings-body (max-width:560px){.crew-settings .theme-options{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Sounds & Connections */
+.cs-channel-picker{gap:10px}
+.cs-channel-picker>button{padding:12px 14px;border-radius:12px;background:var(--cs-card-surface);border-color:var(--cs-border)}
+.cs-channel-picker>button[aria-pressed=true]{border-color:var(--cs-accent);background:color-mix(in srgb,var(--cs-accent) 8%,var(--cs-sheet));box-shadow:var(--cs-shadow-sm)}
+.cs-sound-volume{margin-top:12px}
+.cs-sound-choice select,.cs-notification-routing select{min-height:35px;border-radius:9px;background:var(--cs-sheet);border-color:var(--cs-border)}
+@media(max-width:760px){.cs-sound-choice select,.cs-notification-routing select{min-height:44px}}
+
+/* Narrow & Mobile Pill Tabs */
+@media(max-width:650px){
+  .crew-settings{background:var(--cs-bg)}
+  .cs-sidebar{padding:8px 10px;background:var(--cs-glass);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px);border-bottom:1px solid var(--cs-line)}
+  .cs-sidebar nav{gap:5px;scrollbar-width:none}
+  .cs-sidebar nav::-webkit-scrollbar{display:none}
+  .cs-sidebar nav button{border-radius:999px;padding:7px 12px;min-height:36px;background:color-mix(in srgb,var(--cs-text) 4%,transparent);border:1px solid transparent}
+  .cs-sidebar nav button.active{background:color-mix(in srgb,var(--cs-accent) 14%,var(--cs-sheet));color:var(--cs-accent);border-color:color-mix(in srgb,var(--cs-accent) 36%,transparent);box-shadow:none}
+  .cs-body{margin:0;height:auto;max-height:none;border-radius:0;border:0;box-shadow:none;flex:1;min-height:0}
+  .cs-header{padding:12px 16px 10px}
+  .cs-content{padding:12px 16px 20px}
+  .cs-footer{padding:10px 16px}
+  .cs-card,.cs-task-list>.cs-card,.crew-settings .settings-section{padding:14px}
+}
