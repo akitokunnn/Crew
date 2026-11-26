@@ -32,7 +32,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   for (const id of ["menu", "backdrop", "main", "leader-panel", "trust-error", "leader-runtime-options", "leader-runtime-status", "leader-model-options", "leader-effort-note", "leader-effort-options", "leader-speed-field", "leader-speed-options"]) nodes.set(id, node());
   const escape = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
   const sandbox = {window:{matchMedia:() => ({matches:false})}, document:{visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:(type, handler) => listeners.set(type, handler)},
-    location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console,
+    location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console, EventSource:class {},
     CrewTheme:{logo:()=>""}, CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
   vm.createContext(sandbox);
   const contextSource=fs.readFileSync(path.join(__dirname, "../../frontend/chat.js"), "utf8");
@@ -40,6 +40,9 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   sandbox.CrewContext=sandbox.window.CrewContext;
   sandbox.CrewActivity={markup:()=>""};
   vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/browser-utils.js"),"utf8"),sandbox);
+  // index.html loads the workspace data layer before app.js; app.js sends requests through it.
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/app-data.js"),"utf8"),sandbox);
+  sandbox.CrewAppData=sandbox.window.CrewAppData;
   vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/workspace-home.js"),"utf8"),sandbox);
   sandbox.CrewWorkspaceHome=sandbox.window.CrewWorkspaceHome;
   vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/settings-ui.js"),"utf8"),sandbox);
