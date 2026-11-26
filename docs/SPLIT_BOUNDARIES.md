@@ -3,7 +3,7 @@
 > 日期：2026-11-27 · 作者：架构重审主题会话（Claude）· 基线：`claude/spatial-studio-ui` `3fdfbec`
 > 上级文档：[总计划](REBUILD_PLAN_2026-11-27.md) 阶段二、[交接文档](HANDOFF_2026-11-27.md) 第 3 节契约、[交互清单](INTERACTION_INVENTORY.md)、[架构重审](ARCHITECTURE_REVIEW.md)
 > 本文是 `web.py`、`chat.py`、`app.js` 拆分施工任务书的直接依据。行号以基线为起点，施工时自行复核。
-> **第 2 版（同日）**：按 `gpt-6.2-astra` 只读评审修订（评审要点与取舍见架构重审附录 A）。主要变化：W1 的 mixin 改为与 `web.py` 同层的平铺模块（子包会让函数内相对导入失效）；W2 补全外层直接处理、条件分派与 B/C 边界，新增**先写后拆**的路由契约测试；C1 调整 `clear_unstarted_member_bindings` 归属；A1 由“服务端拼接”改为**暂缓**（备选“生成并提交 app.js”）；两个核对脚本升级。
+> **第 2 版（同日）**：按 `gpt-6.2-astra` 只读评审修订（评审要点与取舍见架构重审附录 A）。主要变化：W1 的三处函数内相对导入（子包会让它们失效）按主会话第 2 轮施工的做法改为 `..` 并在核对时人工放行；W2 补全外层直接处理、条件分派与 B/C 边界，新增**先写后拆**的路由契约测试；C1 调整 `clear_unstarted_member_bindings` 归属；A1 由“服务端拼接”改为**暂缓**（备选“生成并提交 app.js”）；两个核对脚本升级。
 
 ---
 
@@ -15,7 +15,7 @@
 4. **测试只改装载方式，不改断言。** 允许改的只有补丁目标路径（交付中逐条列旧目标 → 新目标及原因）；任何 `assert*` 行一字不动。需要改断言即说明搬移改变了行为，停工上报。
 5. **一次只拆一个文件，一步一提交。** 每步跑完验证命令且失败差集为空，主会话验收后才开下一步。
 6. **不写防御性代码**（codex-dispatch §5 原文照抄进任务书）；不引入依赖；不新增环境变量；不动 `desktop/`、`docs/`（除任务书要求的契约说明）、正式数据。
-7. **函数体内的延迟 import 保持原位、原文。** 为此 W1、C1 的新模块都放在 `plugin/crew/` 同层（不建子包），相对导入 `from .x import y` 的解析结果不变。
+7. **函数体内的延迟 import 保持原位。** C1 的新模块放在 `plugin/crew/` 同层，相对导入原文不变；W1 的新模块在子包 `plugin/crew/web_service/`（主会话已按此施工），其中三处延迟导入的层级由 `.` 改为 `..`（见 1.3），这是 W1 唯一允许的体内改动。
 
 ### 0.1 基线与验证命令
 
@@ -36,7 +36,7 @@ python -m compileall -q plugin/crew
 
 ### 0.2 核对脚本（主会话验收时也跑）
 
-两个脚本放在各自 worktree 的 `Temp/split/`（被忽略），全文见附录 A、B。新文件请**逐个列出**（PowerShell 用 `(Get-ChildItem plugin/crew/web_service_*.py).FullName` 展开，不要把 `*.py` 原样交给 Python）。
+两个脚本放在各自 worktree 的 `Temp/split/`（被忽略），全文见附录 A、B。新文件请**逐个列出**（PowerShell 用 `(Get-ChildItem plugin/crew/web_service/*.py).FullName` 展开，不要把 `*.py` 原样交给 Python）。
 
 - `same_bodies.py <rev>:<旧文件> <新文件...>`：旧文件的每个函数 / 方法必须在新文件集合里恰好找到一个同名定义，**参数（含默认值）、装饰器、返回注解、函数体** AST 全同；并检查新文件里每个相对导入都能解析到真实模块。用于 W1、C1。
 - `same_route_blocks.py <rev> <新文件...>`：旧 `Service.post/_post`、`Handler._dispatch` 里每个按 `path` 判断的分支体，在新文件中（Service / Handler 类内 `self` 与旧树同样改名为 `service` / `handler`）必须原样出现。**这只是必要条件**：它查不出“外层条件被改、优先级被调换、锁被换、分支被放进不可达函数”。充分性由 W2 的路由契约测试（§1.4.4）保证。
@@ -56,16 +56,16 @@ python -m compileall -q plugin/crew
 | 48–56 | `_vscode_state_db` | 留（`__init__` 调用，测试经 `web._vscode_state_db` 访问） |
 | 60–62 | `MODEL_WORK` | 留（`post` 使用） |
 | 65–140 | `Service.__init__`、`_remote_listener`、`now` | 留 |
-| 142–296、421–552 | 后台轮询与投递：`storage_active_keys`、`refresh_agents`、`_poll_agents`、`digest_channels`、`_refresh_vscode`、`_read_vscode`、`start`、`close`、`_poll_notices`、`_poll_git_ci`、`deliver_notices`、`settle_channel_mentions`、`deliver_git_results` | `web_service_workers.py` · `WorkersMixin` |
-| 297–420 | 更新与连接：`release_abandoned_update`、`update_reasons`、`prepare_update`、`cancel_update`、`connection_plan`、`prepare_connection` | `web_service_updates.py` · `UpdatesMixin` |
-| 553–645 | `selected_project`、`candidates`、`candidate`、`adopt`、`_adopt` | `web_service_roster.py` · `RosterMixin` |
-| 646–935 | 快照：`state`、`member_execution_records`、`_execution_dispatch_settings`、`_conversation_dispatch`、`_native_context_history`、`_project_conversations`、`managed_agents`、`limits`、`_claude_limits`、`_budget`、`decision_participants` | `web_service_snapshot.py` · `SnapshotMixin` |
-| 936–997 | Git：`_git_branches`、`git`、`git_settings`、`git_commit` | `web_service_git.py` · `GitMixin` |
-| 998–1121 | 设置与工作区：`settings_state`、`workspace_state`、`update_workspace`、`maintenance_post`、`storage_post`、`native_approvals`、`resolve_native_approval`、`_init_project` | `web_service_workspace.py` · `WorkspaceMixin` |
+| 142–296、421–552 | 后台轮询与投递：`storage_active_keys`、`refresh_agents`、`_poll_agents`、`digest_channels`、`_refresh_vscode`、`_read_vscode`、`start`、`close`、`_poll_notices`、`_poll_git_ci`、`deliver_notices`、`settle_channel_mentions`、`deliver_git_results` | `web_service/workers.py` · `WorkersMixin` |
+| 297–420 | 更新与连接：`release_abandoned_update`、`update_reasons`、`prepare_update`、`cancel_update`、`connection_plan`、`prepare_connection` | `web_service/updates.py` · `UpdatesMixin` |
+| 553–645 | `selected_project`、`candidates`、`candidate`、`adopt`、`_adopt` | `web_service/roster.py` · `RosterMixin` |
+| 646–935 | 快照：`state`、`member_execution_records`、`_execution_dispatch_settings`、`_conversation_dispatch`、`_native_context_history`、`_project_conversations`、`managed_agents`、`limits`、`_claude_limits`、`_budget`、`decision_participants` | `web_service/snapshot.py` · `SnapshotMixin` |
+| 936–997 | Git：`_git_branches`、`git`、`git_settings`、`git_commit` | `web_service/git.py` · `GitMixin` |
+| 998–1121 | 设置与工作区：`settings_state`、`workspace_state`、`update_workspace`、`maintenance_post`、`storage_post`、`native_approvals`、`resolve_native_approval`、`_init_project` | `web_service/workspace.py` · `WorkspaceMixin` |
 | 1122–1732 | `post`、`_post` | W2，见 1.4 |
-| 1733–1800 | `archive_session`、`delete_session`、`_assert_deletable`、`stop_archived` | `web_service_sessions.py` · `SessionsMixin` |
-| 1801–1943 | `chat_project`、`chat_session`、`chat_history`、`chat_skills`、`channel_messages`、`document_list`、`resolve_file`、`read_file`、`session_avatar`、`chat_file` | `web_service_reads.py` · `ReadsMixin` |
-| 1944–1994 | `scan_usage`、`notification_status`、`set_away`、`usage` | `web_service_usage.py` · `UsageMixin` |
+| 1733–1800 | `archive_session`、`delete_session`、`_assert_deletable`、`stop_archived` | `web_service/sessions.py` · `SessionsMixin` |
+| 1801–1943 | `chat_project`、`chat_session`、`chat_history`、`chat_skills`、`channel_messages`、`document_list`、`resolve_file`、`read_file`、`session_avatar`、`chat_file` | `web_service/reads.py` · `ReadsMixin` |
+| 1944–1994 | `scan_usage`、`notification_status`、`set_away`、`usage` | `web_service/usage.py` · `UsageMixin` |
 | 1995–2101 | `POST_PATHS`、`STATIC`、`STATIC_CACHED` | 留（交接文档 3.1-2：新静态文件仍登记在 `web.py` 的 `STATIC`） |
 | 2102–2510 | `Handler` | 传输层留；GET 业务分支 W2 拆出 |
 | 2511–2665 | 端口常量、`Server`、`create_server`、`project_url`、`serve`、`_open_registered_service`、`_serve_locked` | 留 |
@@ -76,14 +76,14 @@ python -m compileall -q plugin/crew
 
 补丁说明：`patch('crew.web.subprocess.Popen')`、`crew.web.os.startfile`、`crew.web.sys.platform`、`crew.web.store.connect`、`crew.web.usage.scan`、`crew.web.session_ops.archive`、`crew.web.hooks.git_details`、`crew.web.board.register_session`、`crew.web.traceback.print_exc`、`crew.web.Path.home` 改的都是**被引用模块 / 类本身的属性**，代码搬到哪里都生效，前提是新代码仍按“模块.属性”调用（总则 3）。`patch.object(web.Service, '_poll_notices' …)` 作用在具体类上，经 MRO 覆盖 mixin 方法。
 
-### 1.3 第一步 W1：`Service` 方法搬进同层 mixin 模块（零语义风险）
+### 1.3 第一步 W1：`Service` 方法搬进 `web_service/` 子包的 mixin（主会话已施工）
 
 ```python
-# plugin/crew/web_service_workers.py
+# plugin/crew/web_service/workers.py
 """web.Service 的后台轮询与投递线程。由 web.Service 组合，不单独实例化。"""
 import threading, time, ...                 # 只写被搬方法实际用到的，写法与 web.py 原 import 一致
-from . import board, store, notifications, ...
-from .web_api.common import _text           # 被搬方法用到时
+from .. import board, store, notifications, ...
+from ..web_api.common import _text          # 被搬方法用到时
 
 class WorkersMixin:
     def storage_active_keys(self): ...      # 原文，一字不改
@@ -92,7 +92,7 @@ class WorkersMixin:
 ```python
 # web.py
 from .web_api.common import _text, _optional_text
-from .web_service_workers import WorkersMixin
+from .web_service.workers import WorkersMixin
 ...
 class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
               WorkspaceMixin, SessionsMixin, ReadsMixin, UsageMixin):
@@ -103,10 +103,10 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
     def _post(...): ...               # W1 不动
 ```
 
-- **允许的改动**：新建上表 9 个模块与 `web_api/common.py`；web.py 删除被搬方法与 `_text/_optional_text` 定义，加 import 与基类列表；新模块写 import。
+- **允许的改动**：新建子包 `web_service/`（空 `__init__.py`）与上表 9 个模块、`web_api/common.py`；web.py 删除被搬方法与 `_text/_optional_text` 定义，加 import 与基类列表；新模块写 import。
 - **名字归属（自检结果，AST 扫描）**：被搬方法引用的 web.py 模块级函数只有 `_text`（`_init_project`、`cancel_update`、`maintenance_post`、`resolve_file`、`storage_post`、`update_workspace`）与 `_optional_text`（`storage_post`；它自身也调 `_text`），两者一起进 `web_api/common.py`。`STATIC`、`STATIC_CACHED`、`MODEL_WORK`、端口常量、`_vscode_state_db` 只被留下的代码使用，全部留在 web.py。
-- **函数内延迟导入**：`update_reasons`（`web.py:341`）与 `connection_plan`（`:384`）的 `from .operations import read_operations`、`_project_conversations`（`:874`）的 `from . import decision_briefs, decision_flow`，因新模块与 web.py 同层，原文不改即可解析。
-- **验证**：§0.1 全量；`python Temp/split/same_bodies.py HEAD:plugin/crew/web.py plugin/crew/web.py plugin/crew/web_api/common.py <9 个新模块逐个列出>` 输出 `0 problems`。
+- **函数内延迟导入**：`update_reasons`（`web.py:341`）与 `connection_plan`（`:384`）的 `from .operations import read_operations`、`_project_conversations`（`:874`）的 `from . import decision_briefs, decision_flow`，搬进子包后层级改为 `..`。`same_bodies.py` 会把这三个方法报为 `CHANGED_OR_MISSING`，验收时人工确认差异只有导入层级、其余为 0 问题；相对导入可解析检查必须为 0。
+- **验证**：§0.1 全量；`python Temp/split/same_bodies.py HEAD:plugin/crew/web.py plugin/crew/web.py plugin/crew/web_api/common.py <9 个新模块逐个列出>` 只报上述三个方法（人工放行），无 `UNRESOLVED_RELATIVE_IMPORT`。
 - **验收标准**：web.py ≤ 1500 行；`Service` 类体只剩 `__init__`、`_remote_listener`、`now`、`post`、`_post`。
 
 ### 1.4 第二步 W2：POST / GET 业务分支搬成按领域的处理函数
@@ -315,9 +315,11 @@ W2 完成后这组测试必须原样通过（不改一行），这是“请求�
 | C1 | `chat拆分mixin_任务书.md` | Codex `gpt-6.2-astra` high | W2b 合入 | `same_bodies.py` + 全量 |
 | A1 | 不做（§3.2） | — | — | — |
 
+W1 状态：主会话第 2 轮按子包 + 三处 `..` 施工中（2026-11-27）。
+
 每份任务书：角色声明首行；“范围”逐条引用本文对应小节；“不在范围”写 §2.4、§3；编码要求照抄 §0；测试写“改前基线 → 改后 → 差集与失败原因均一致”；交付必须包含：最终文件 / 行号表、核对脚本原始输出、全量测试改前改后失败集合与原因、所有补丁目标或测试装载改动的逐条清单。
 
-阶段三文件归属（建议，供主会话出“文件归属表”）：消息可靠性 → `chat_delivery.py`、`web_api/board.py` 的 channel / messages 函数、`channel.js`、`app.js` 的 `renderChannel`（约 823–833 行）；操作清单与助手 → `web_api/routes.py` 与各领域模块（加元数据）、`chat_personal.py`、`cli.py`、`codex_tools.py`；增量事件流 → `web_service_snapshot.py`、`web_service_usage.py`、`app.js` 数据层（182–238、1288–1402 中的 `loadState` / `notifySounds`、1743 的定时器，按 A2 抽成 `CrewAppData`）；想法思维导图 → `notes.js`、`architecture.js`、`web_api/personal.py`、`app.js` 的 `renderArchitecture`（约 1335–1345 行）。
+阶段三文件归属（建议，供主会话出“文件归属表”）：消息可靠性 → `chat_delivery.py`、`web_api/board.py` 的 channel / messages 函数、`channel.js`、`app.js` 的 `renderChannel`（约 823–833 行）；操作清单与助手 → `web_api/routes.py` 与各领域模块（加元数据）、`chat_personal.py`、`cli.py`、`codex_tools.py`；增量事件流 → `web_service/snapshot.py`、`web_service/usage.py`、`app.js` 数据层（182–238、1288–1402 中的 `loadState` / `notifySounds`、1743 的定时器，按 A2 抽成 `CrewAppData`）；想法思维导图 → `notes.js`、`architecture.js`、`web_api/personal.py`、`app.js` 的 `renderArchitecture`（约 1335–1345 行）。
 
 ---
 
@@ -335,7 +337,7 @@ W2 完成后这组测试必须原样通过（不改一行），这是“请求�
 """纯搬移核对（第 2 版）：旧文件里每个函数 / 方法，在新文件集合中必须恰好找到一个同名定义，
 且参数（含默认值）、装饰器、返回注解、函数体的 AST 完全一致；同时检查新文件里的相对导入都能解析到真实模块。
 用法: python same_bodies.py <git-rev>:<旧文件> <新文件1> [<新文件2> ...]
-说明: 新文件请逐个列出（PowerShell 用 (Get-ChildItem plugin/crew/web_service_*.py).FullName 展开）。
+说明: 新文件请逐个列出（PowerShell 用 (Get-ChildItem plugin/crew/web_service/*.py).FullName 展开）。
 """
 import ast, os, subprocess, sys
 
