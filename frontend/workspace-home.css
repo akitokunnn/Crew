@@ -80,3 +80,29 @@ button.wh-overview-item:hover{color:var(--accent-text)}
 .wh-observing-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;padding:10px 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
 .wh-observing-title{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;flex:1 1 240px;min-width:0;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
 .wh-observing-title strong{font-size:13.5px;font-weight:600;overflow-wrap:anywhere}.wh-observing-title>span:last-child{flex-basis:100%;font-size:12px;color:var(--text-2)}
+
+
+/* === Spatial Studio (High-Density Direction C) === */
+.wh-head{height:auto;min-height:66px;padding:13px 24px 11px;background:var(--studio-glass);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px);border-bottom:1px solid var(--line)}
+.wh-head h1{margin:2px 0 3px;font-size:calc(21px * var(--fs));letter-spacing:-.4px;font-weight:600}
+.wh-eyebrow{font-size:calc(11px * var(--fs))}
+.wh-head>.btn{min-height:34px;border-radius:10px}
+.wh-page{padding:14px 24px 28px}
+.wh-overview{gap:7px;padding:0 0 13px;margin-bottom:16px}
+.wh-overview-item{padding:5px 11px;min-height:30px;border-radius:999px;background:var(--studio-card);border:1px solid var(--line)}
+button.wh-overview-item:hover{border-color:color-mix(in srgb,var(--accent) 40%,var(--line));background:var(--surface)}
+.wh-columns{gap:20px}
+.wh-section-head{margin-bottom:9px}
+.wh-reviews,.wh-observing{margin-bottom:18px}
+.wh-review-list{gap:10px}
+.wh-review{padding:13px 15px;gap:8px;border-radius:13px;background:var(--studio-card);box-shadow:var(--studio-shadow-sm)}
+.wh-review-test{padding:9px 11px;border-radius:9px}
+.wh-action-item{padding:10px 12px;border-radius:11px;background:var(--studio-card)}
+.wh-attention-list{gap:8px}
+.wh-delivery{padding:11px 13px;border-radius:11px;background:var(--studio-card)}
+.wh-discussion-row{padding:10px 0}
+.wh-empty{padding:36px 20px;border-radius:14px;background:var(--studio-card)}
+@media(max-width:760px){
+  .wh-head{min-height:0;padding:calc(var(--m-safe-t) + 6px) var(--m-gutter) 12px}
+  .wh-page{padding:10px var(--m-gutter) 24px}
+}

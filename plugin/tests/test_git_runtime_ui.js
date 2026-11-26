@@ -1,7 +1,7 @@
 "use strict";
 const assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const {test}=require("node:test");
-const web=path.join(__dirname,"../crew/web");
+const web=path.join(__dirname,"../../frontend");
 const tick=async()=>{for(let i=0;i<24;i++)await Promise.resolve();};
 const catalog=(claude,codex)=>[{id:"claude",name:"Claude Code",available:claude},{id:"codex",name:"Codex",available:codex}];
 function harness(initial){

@@ -1,7 +1,7 @@
 "use strict";
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const {createDocument, pressEscape, visibleText} = require("./mini_dom.cjs");
-const source = fs.readFileSync(path.join(__dirname, "../crew/web/maintenance-ui.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../../frontend/maintenance-ui.js"), "utf8");
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function harness(handler) {

@@ -14,7 +14,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import session_ops, board, codex_runtime, decision_flow, goals, remote_routes, store, themes, usage, web
+from crew import frontend_root, session_ops, board, codex_runtime, decision_flow, goals, remote_routes, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
 
@@ -901,7 +901,7 @@ class GitCiScheduleTests(unittest.TestCase):
 
 class FrontendThemeContractTests(unittest.TestCase):
     def test_theme_assets_settings_and_project_list_contract(self):
-        assets = PLUGIN / "crew" / "web"
+        assets = frontend_root.resolve(PLUGIN)
         index = (assets / "index.html").read_text(encoding="utf-8")
         app = (assets / "app.js").read_text(encoding="utf-8")
         css = (assets / "style.css").read_text(encoding="utf-8")
@@ -955,7 +955,7 @@ assert.equal(values.get("--accent"), themes[3].dark["--accent"]);
 component.apply(themes, null, "light");
 assert.equal(root.dataset.projectTheme, "celadon");
 '''
-        result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web" / "themes.js"),
+        result = subprocess.run(["node", "-e", script, str(frontend_root.resolve(PLUGIN) / "themes.js"),
                                  json.dumps(themes.THEMES)],
                                 capture_output=True, text=True, encoding="utf-8", timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -999,7 +999,7 @@ vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),sandbox);sandbox.CrewGit
 const flush=async()=>{for(let index=0;index<20;index++)await Promise.resolve();};
 const calls=[],listeners=new Map();
 const page={scrollTop:0};
-const host=require(path.resolve(process.argv[1],'../../../tests/git_ui_host.cjs'))({scroll:page,handlers:listeners});
+const host=require(process.argv[2])({scroll:page,handlers:listeners});
 const visible={session_id:'visible',name:'侧栏 leader'},hidden={session_id:'hidden',name:'归档 leader'};
 const other={session_id:'other',name:'另一位 leader'};
 const latest={sha:'a'.repeat(40),subject:'修复 <script>alert("title")</script> & 校验',author:'作者',time:'2026-11-09T00:55:00Z'};
@@ -1123,7 +1123,8 @@ const refresh=async()=>{const button={dataset:{gitAct:'refresh'}};listeners.get(
   assert(calls.every(route=>route==='/api/git'));sandbox.CrewGit.unmount();
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
-        result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web" / "git.js")],
+        result = subprocess.run(["node", "-e", script, str(frontend_root.resolve(PLUGIN) / "git.js"),
+                                 str(Path(__file__).resolve().parent / "git_ui_host.cjs")],
                                 capture_output=True, text=True, encoding="utf-8", timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -1189,12 +1190,12 @@ function fixture() {
 }
 '''
         script = bootstrap + "\n(async () => {\n" + scenario + "\n})().catch(error => { console.error(error); process.exitCode = 1; });"
-        result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web")],
+        result = subprocess.run(["node", "-e", script, str(frontend_root.resolve(PLUGIN))],
                                 capture_output=True, text=True, encoding="utf-8", timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_channel_assets_navigation_and_shared_markdown_renderer(self):
-        assets = PLUGIN / "crew" / "web"
+        assets = frontend_root.resolve(PLUGIN)
         index = (assets / "index.html").read_text(encoding="utf-8")
         app = (assets / "app.js").read_text(encoding="utf-8")
         self.assertLess(index.index('src="/chat.js"'), index.index('src="/channel.js"'))

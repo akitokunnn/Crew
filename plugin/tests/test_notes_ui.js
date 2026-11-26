@@ -2,7 +2,7 @@
 const {test} = require("node:test");
 const assert = require("node:assert/strict");
 const vm = require("node:vm"), fs = require("node:fs"), path = require("node:path");
-const web = file => fs.readFileSync(path.join(__dirname, "../crew/web", file), "utf8");
+const web = file => fs.readFileSync(path.join(__dirname, "../../frontend", file), "utf8");
 // Same realm as the assertions, so arrays and objects compare structurally.
 globalThis.window = {};
 vm.runInThisContext(web("notes-model.js"));

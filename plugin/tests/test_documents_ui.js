@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const {test} = require("node:test");
-const web = path.join(__dirname, "../crew/web");
+const web = path.join(__dirname, "../../frontend");
 const plain = value => JSON.parse(JSON.stringify(value));
 function documentsHarness(api = async () => ({})) {
   const handlers={},notices=[],sources=[];

@@ -18,3 +18,7 @@
   .skill-picker-item{grid-template-columns:minmax(0,1fr);gap:2px;padding:8px 10px}
   .skill-picker-token{max-width:none}
 }
+
+
+/* === Spatial Studio (High-Density Direction C) === */
+.skill-picker{background:var(--studio-glass);backdrop-filter:saturate(1.4) blur(16px);-webkit-backdrop-filter:saturate(1.4) blur(16px);border-color:var(--studio-border);box-shadow:var(--studio-shadow-float);border-radius:14px}

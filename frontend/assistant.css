@@ -25,3 +25,17 @@
 .assistant-chat .chat-note-chip{align-self:flex-start;display:inline-flex;align-items:center;gap:8px;max-width:100%;margin:2px 0 6px;padding:2px 9px;border:1px solid var(--accent);border-radius:7px;background:var(--accent-soft);color:var(--accent-text);font:inherit;font-size:12px;line-height:1.7;cursor:pointer}
 .assistant-chat .chat-note-chip>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .assistant-chat .chat-note-chip[hidden]{display:none}
+
+
+/* === Spatial Studio (High-Density Direction C) === */
+@media(min-width:761px){
+  .assistant-page{padding:8px;gap:8px;background:var(--studio-frame);grid-template-columns:minmax(0,1fr) 280px}
+  .assistant-main{border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);overflow:hidden}
+  .assistant-main>.head{height:64px;padding:12px 22px;background:var(--studio-glass);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px)}
+  .assistant-main h1{font-size:calc(18px * var(--fs))}
+  .assistant-context{border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);padding:18px 16px}
+  .assistant-context a{padding:9px 11px;border-radius:10px;background:var(--studio-card)}
+}
+@media(max-width:940px) and (min-width:761px){
+  .assistant-page{grid-template-columns:minmax(0,1fr)}
+}

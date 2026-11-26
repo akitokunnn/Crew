@@ -33,8 +33,10 @@ const AUTH_EXPIRED = '授权已失效，请在主机上重新生成配对码';
 app.setName(config.instanceName);
 if (process.platform === 'win32') app.setAppUserModelId(product.appId);
 config.bundledBackendDir = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '../../plugin');
+config.bundledFrontendDir = app.isPackaged ? path.join(process.resourcesPath, 'frontend') : path.resolve(__dirname, '../../frontend');
 config.backendDir = config.backendDir || config.bundledBackendDir;
 config.helperBackendDir = config.bundledBackendDir;
+config.helperFrontendDir = config.bundledFrontendDir;
 require('node:fs').mkdirSync(config.userData,{recursive:true});
 app.setPath('userData', config.userData);
 const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;
@@ -691,7 +693,7 @@ handle('desktop:storage-empty-trash',body=>settingsRequest('/api/storage/trash/e
 handle('desktop:storage-policy',body=>settingsRequest('/api/storage/policy',body));
 handle('desktop:settings-ui',async()=>{
   // Only trusted home can load these fixed, packaged application assets.
-  const directory = path.join(config.helperBackendDir, 'crew', 'web');
+  const directory = await core.resolveFrontendDir(config.helperBackendDir, config.helperFrontendDir);
   return injectAssets(directory, [
     ['executeJavaScript','browser-utils.js'],
     ['executeJavaScript','launch-settings-ui.js'], ['insertCSS','operations-ui.css'],
@@ -704,7 +706,7 @@ handle('desktop:settings-ui',async()=>{
   ]);
 });
 handle('desktop:workspace-ui',async()=>{
-  const directory=path.join(config.helperBackendDir,'crew','web');
+  const directory = await core.resolveFrontendDir(config.helperBackendDir, config.helperFrontendDir);
   return injectAssets(directory, [
     ['insertCSS','workspace-settings-ui.css'], ['executeJavaScript','workspace-settings-ui.js'],
     ['insertCSS','maintenance-ui.css'], ['executeJavaScript','maintenance-ui.js']
@@ -785,6 +787,8 @@ else {
       // A LAN connection runs no local Python, so its packaged UI assets are read in place.
       if (app.isPackaged && !remoteMode) {
         config.helperBackendDir=await startupStep(core.materializeBackend(config.bundledBackendDir,config.home));
+        if (quitting) return;
+        config.helperFrontendDir=await startupStep(core.materializeBackend(config.bundledFrontendDir,path.join(config.home,'frontend-cache')));
         if (quitting) return;
         if(config.backendSource==='bundled')config.backendDir=config.helperBackendDir;
       }

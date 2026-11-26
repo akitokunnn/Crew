@@ -229,3 +229,14 @@
   .nw-check{opacity:1;top:8px;left:auto;right:8px;transform:none}
   .nw-card-top{padding-right:22px}
 }
+
+
+/* === Spatial Studio (High-Density Direction C) === */
+@media(min-width:761px){
+  .notes-page{padding:8px;gap:8px;background:var(--studio-frame);grid-template-columns:minmax(0,1fr) 240px}
+  .nw-main{border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);padding:0 24px 96px}
+  .nw-head{padding:16px 0 12px}
+  .nw-head h1{font-size:calc(19px * var(--fs))}
+  .nw-card{border-radius:12px;background:var(--studio-card);padding:10px 12px;margin-bottom:9px}
+  .nw-side{border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);padding:18px 12px}
+}

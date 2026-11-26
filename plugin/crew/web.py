@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 
 from . import board, channel, channel_digest, chat, claude_budget, claude_limits, codex_runtime, documents, git_admin, git_ci, git_overview, git_view, goal_api, goals, hooks, maintenance, messaging, models, notifications, presentation, runtime_catalog, runtime_switch, runtimes, session_library, session_ops, settings, spawn, store, themes, todo, trust_mode, updater, usage, usage_cli, vscode_sessions, workspace_execution, workspace_settings
 from .service_lock import HomeServiceLock
-from . import appearance, codex_client, member_defaults, operations_chat, operations_settings
+from . import appearance, codex_client, frontend_root, member_defaults, operations_chat, operations_settings
 from . import connections, session_delete, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
 from . import codex_binding, personal, native_folders, native_home, native_skills
@@ -71,6 +71,7 @@ class Service:
             from .cli import claude_agents
             agents_provider = claude_agents
         self.home, self.plugin_root = Path(home), Path(plugin_root)
+        self.web_root = frontend_root.resolve(self.plugin_root)
         self.storage = StorageService(self.home)
         self.storage.repair_pending()
         self.agents_provider, self.clock = agents_provider, now
@@ -2463,7 +2464,7 @@ class Handler(BaseHTTPRequestHandler):
             filename, content_type = STATIC[url.path]
             if url.path == '/' and query.get('project',[''])[0].startswith(HISTORY_PREFIX):
                 filename = 'storage-history.html'
-            self._send(200, (service.plugin_root / "crew" / "web" / filename).read_bytes(), content_type,
+            self._send(200, (service.web_root / filename).read_bytes(), content_type,
                        cache_control='public, max-age=604800' if url.path in STATIC_CACHED else 'no-store')
         else:
             self._send(404, {"error": "\u9875\u9762\u4e0d\u5b58\u5728"})

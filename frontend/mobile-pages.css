@@ -358,3 +358,7 @@ body:has(>.nw-menu)::after{content:"";position:fixed;inset:0;z-index:69;backgrou
 /* 顶部第一个 chip 已经显示“正在看哪一类”，重复的提示条不再占位 */
 .nw-filters .nw-viewing{display:none}
 .gits-header .icon-btn{font-size:26px}
+
+
+/* === Spatial Studio Mobile Pages (<=760px) === */
+.nw-card,.git-lite-trunk,.git-lite-card,.qcard,.utable,.sl-row{background:var(--studio-card)}

@@ -8,8 +8,8 @@ function harness(snapshot){
     CrewChat:{renderInline:text=>String(text).replaceAll("<","&lt;").replaceAll(">","&gt;")},
     CrewContext:{ring:()=>""},CrewActivity:{markup:()=>""}};
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-ui.js"),"utf8"),sandbox);sandbox.CrewGoals=sandbox.window.CrewGoals;
-  const source=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/goal-ui.js"),"utf8"),sandbox);sandbox.CrewGoals=sandbox.window.CrewGoals;
+  const source=fs.readFileSync(path.join(__dirname,"../../frontend/app.js"),"utf8").replace(/\r\n/g,"\n");
   vm.runInContext(source.replace("  setup();\n})();",`replace=(node,html)=>{node.innerHTML=html;};
     window.ui={render(snapshot,tab){state=snapshot;allTab=tab;renderAll();return document.getElementById("main").innerHTML;},
       sidebar(snapshot,member=null){state=snapshot;view="chat";leaderId=snapshot.leaders[0].session_id;readOnlyId=member;return sidebarLeader(snapshot.leaders[0],0);},

@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const {test} = require("node:test");
 
-const source = fs.readFileSync(path.join(__dirname, "../crew/web/app.js"), "utf8").replace(/\r\n/g, "\n");
+const source = fs.readFileSync(path.join(__dirname, "../../frontend/app.js"), "utf8").replace(/\r\n/g, "\n");
 const fixture = () => ({models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude-haiku-4-5-20251001", name:"Haiku"}],
   efforts:["low", "medium", "high", "max"], runtimes:[
     {id:"claude", name:"Claude Code", available:true, error:null,
@@ -35,13 +35,13 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
     location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console,
     CrewTheme:{logo:()=>""}, CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
   vm.createContext(sandbox);
-  const contextSource=fs.readFileSync(path.join(__dirname, "../crew/web/chat.js"), "utf8");
+  const contextSource=fs.readFileSync(path.join(__dirname, "../../frontend/chat.js"), "utf8");
   vm.runInContext(contextSource.slice(0, contextSource.indexOf("})();")+5), sandbox);
   sandbox.CrewContext=sandbox.window.CrewContext;
   sandbox.CrewActivity={markup:()=>""};
-  vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/workspace-home.js"),"utf8"),sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/workspace-home.js"),"utf8"),sandbox);
   sandbox.CrewWorkspaceHome=sandbox.window.CrewWorkspaceHome;
-  vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/settings-ui.js"),"utf8"),sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/settings-ui.js"),"utf8"),sandbox);
   // Expose lexical UI functions while leaving setup and its state-poll timer off.
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));

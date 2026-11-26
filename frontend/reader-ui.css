@@ -63,3 +63,9 @@
 .file-reader-body>.markdown,.file-reader-body>.file-text,.file-reader-body>.note{max-width:860px;margin-left:auto;margin-right:auto}
 
 @media(prefers-reduced-motion:reduce){.reader-pane,.reader-pane.reader-leaving,#main>#chat-head,#chat-host,.reader-quote,.reader-divider::before,.reader-divider::after{animation:none!important;transition:none!important}}
+
+
+/* === Spatial Studio (High-Density Direction C) === */
+.reader-pane{background:var(--studio-sheet)}
+.reader-pane>.head{height:auto;min-height:52px;padding:8px 16px;background:var(--studio-glass);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px)}
+.reader-quote{background:var(--studio-glass);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}

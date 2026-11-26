@@ -1,7 +1,7 @@
 "use strict";
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const {createDocument, Event, visibleText} = require("./mini_dom.cjs");
-const source = fs.readFileSync(path.join(__dirname, "../crew/web/storage-ui.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../../frontend/storage-ui.js"), "utf8");
 const flush = async () => { await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve)); };
 const copy = value => JSON.parse(JSON.stringify(value));
 const fixture = () => ({home:"C:\\隔离数据", scanned_at:"2026-10-26T01:00:00Z", total_bytes:10000, reclaimable_bytes:2000, recyclable_bytes:3000, trash_bytes:1000,

@@ -1,6 +1,6 @@
 "use strict";
 const {test} = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
-const sandbox = {window:{}, URL}; vm.createContext(sandbox); vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/launch-settings-ui.js"),"utf8"),sandbox);
+const sandbox = {window:{}, URL}; vm.createContext(sandbox); vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/launch-settings-ui.js"),"utf8"),sandbox);
 const ui = sandbox.window.CrewLaunchSettings, plain = value => JSON.parse(JSON.stringify(value));
 const settings = () => ({mode:"local",home:"C:\\Crew Data",source:"custom",backend_directory:"C:\\Crew source\\plugin",service_url:"",port:0,python:"C:\\Python Tools\\python.exe",remote_backend:""});
 test("launch form preserves all startup settings and Windows path boundaries", () => {

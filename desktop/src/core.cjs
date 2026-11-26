@@ -233,6 +233,17 @@ async function materializeBackend(source, home) {
   return target;
 }
 
+async function resolveFrontendDir(backendDir, bundledFrontendDir) {
+  if (process.env.CREW_WEB_ROOT) return path.resolve(process.env.CREW_WEB_ROOT);
+  if (backendDir) {
+    const sibling = path.resolve(backendDir, '..', 'frontend');
+    try { if ((await fs.stat(sibling)).isDirectory()) return sibling; } catch (_) {}
+    const legacy = path.join(backendDir, 'crew', 'web');
+    try { if ((await fs.stat(legacy)).isDirectory()) return legacy; } catch (_) {}
+  }
+  return bundledFrontendDir || (backendDir ? path.join(backendDir, 'crew', 'web') : null);
+}
+
 class Backend {
   constructor(config, dependencies = {}) { this.config = config; this.spawn = dependencies.spawn || spawn; this.child = null; this.url = null; this.owned = false; this.errors = ''; }
   async start() {
@@ -286,7 +297,8 @@ class Backend {
     };
     const args = [script, '--home', this.config.home, '--port', String(this.config.port)];
     if (this.config.isolated || this.config.smoke) args.push('--isolated-sources');
-    const env = { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' };
+    const frontendDir = await resolveFrontendDir(this.config.backendDir, this.config.helperFrontendDir || this.config.bundledFrontendDir);
+    const env = { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', ...(frontendDir ? { CREW_WEB_ROOT: frontendDir } : {}) };
     this.child = this.spawn(this.config.python, args, { cwd: this.config.backendDir, windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'], env });
     this.owned = true;
@@ -420,4 +432,4 @@ class RemoteBackend {
 }
 
 module.exports = { loopback, lanAddress, authorizeRemote, serviceOrigin, options, request, remoteRequest, download, pairDesktop, remoteHealth,
-  projects, hostFolders, Backend, RemoteBackend, workspaceName, existingWorkspace, newWorkspace, materializeBackend, connectionRefused };
+  projects, hostFolders, Backend, RemoteBackend, workspaceName, existingWorkspace, newWorkspace, materializeBackend, resolveFrontendDir, connectionRefused };

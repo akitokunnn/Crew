@@ -254,3 +254,8 @@ button.wh-overview-item:active{background:var(--hover)}
 :is(.wh-history,.channel-digest)>summary::-webkit-details-marker{display:none}
 :is(.wh-history,.channel-digest)>summary::after{content:"";flex:none;width:7px;height:7px;margin-left:10px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;opacity:.7;transform:translateY(-2px) rotate(45deg);transition:transform .15s}
 :is(.wh-history,.channel-digest)[open]>summary::after{transform:translateY(2px) rotate(-135deg)}
+
+
+/* === Spatial Studio Mobile Home (<=760px) === */
+.wh-overview-item,.wh-review,.wh-action-item,.wh-work .goal-rows,.wh-history .goal-rows,.wh-discussions,.wh-delivery-list{background:var(--studio-card);border-color:var(--studio-border)}
+.wh-review,.wh-action-item{box-shadow:var(--studio-shadow-sm)}

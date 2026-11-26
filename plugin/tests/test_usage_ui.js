@@ -4,7 +4,7 @@ const {test}=require("node:test");
 function harness(report,budget=null){
   const main={innerHTML:""},sandbox={window:{},document:{addEventListener(){},getElementById:()=>main},location:{search:"?project=fixture",href:"http://fixture/",origin:"http://fixture"},URL,URLSearchParams};
   vm.createContext(sandbox);
-  const source=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
+  const source=fs.readFileSync(path.join(__dirname,"../../frontend/app.js"),"utf8").replace(/\r\n/g,"\n");
   vm.runInContext(source.replace("  setup();\n})();",`window.ui={render(report,budget=null){state={project:{name:"fixture"},limits:{claude:{budget},codex:null}};usage=report;quotas=()=>[];replace=(node,html)=>{node.innerHTML=html;};renderUsage();},collapse(id){usageCollapsed.add(id);renderUsage();},tab(value){usageTab=value;renderUsage();}};\n})();`),sandbox);
   sandbox.window.ui.render(report,budget);return {ui:sandbox.window.ui,main};
 }

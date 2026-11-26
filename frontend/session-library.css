@@ -44,3 +44,11 @@
 @media (min-width:1700px) {.sl-body {padding-left:40px;padding-right:40px}}
 @media (max-width:950px) {.sl-layout.has-preview {grid-template-columns:minmax(0,1fr)}.sl-preview {position:static;max-height:none;grid-row:1}.sl-body {padding:20px}.sl-search {flex-basis:100%}}
 @media (max-width:540px) {.sl-toolbar {gap:10px}.sl-toolbar label {flex:1;min-width:110px}.sl-toolbar select {width:100%;max-width:none}.sl-categories {gap:3px}.sl-categories button {padding:7px 8px}.sl-body {padding:14px}.sl-row-preview {display:none}}
+
+
+/* === Spatial Studio (High-Density Direction C) === */
+.sl-body{padding:16px 24px 28px}
+.sl-categories{margin:14px 0 10px}
+.sl-row{border-radius:11px;background:var(--studio-card);margin-bottom:7px}
+.sl-row-main{padding:11px 13px;gap:5px}
+.sl-preview{border-radius:14px;padding:16px;background:var(--studio-card)}

@@ -252,3 +252,11 @@ body:has(#main[data-reader]) #chat-attention{display:none!important}
 body:has(#chat-head .exec-chat-bar){--mc-scope:58px}
 #chat-head .exec-chat-bar{width:auto;max-width:none;height:calc(var(--mc-scope) - 10px);box-sizing:border-box;margin:0 var(--m-gutter) 10px}
 #chat-head .exec-chat-bar .goal-status{display:none}
+
+
+/* === Spatial Studio Mobile Chat (<=760px) === */
+#chat-head{background:var(--studio-glass);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px)}
+#chat-head .right>.context-ring{order:9;flex:none;height:28px!important;min-width:30px;margin:0 0 8px 6px!important;padding:0 7px!important;border-radius:999px!important;border:1px solid var(--line)!important;background:var(--surface-2)!important}
+:is(#chat-host,.assistant-chat) .composer>textarea{min-height:42px}
+:is(#chat-host,.assistant-chat) .bubble{background:color-mix(in srgb,var(--accent) 14%,var(--surface));border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line))}
+:is(#chat-host,.assistant-chat) .composer{background:var(--studio-card);border-color:var(--studio-border);box-shadow:var(--studio-shadow-sm)}

@@ -10,7 +10,7 @@ const { peResources } = require('../scripts/verify-icons.cjs');
 const assets = path.resolve(__dirname, '../assets');
 
 test('desktop vector retains the actual Crew open-ring and separate-point brand', () => {
-  const web = fs.readFileSync(path.resolve(__dirname, '../../plugin/crew/web/logo.svg'), 'utf8');
+  const web = fs.readFileSync(path.resolve(__dirname, '../../frontend/logo.svg'), 'utf8');
   const svg = fs.readFileSync(path.join(assets, 'crew.svg'), 'utf8');
   assert.ok(web.includes(icon.MARK_PATH));
   assert.ok(svg.includes(icon.MARK_PATH));

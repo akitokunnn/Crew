@@ -16,7 +16,7 @@ from http.cookies import CookieError, SimpleCookie
 from urllib.parse import urlsplit
 import uuid
 
-from . import network_addresses, remote_routes
+from . import frontend_root, network_addresses, remote_routes
 
 COOKIE = 'crew_remote_session'
 IDLE_SECONDS = 30 * 24 * 60 * 60
@@ -380,7 +380,7 @@ class Controller:
             if authorization is not None and identity is None:
                 return reply(401, AUTH_EXPIRED)
             if path == '/remote/login' and method == 'GET':
-                return reply(200, (Path(__file__).parent / 'web' / 'remote-login.html').read_bytes(), html=True)
+                return reply(200, (frontend_root.resolve() / 'remote-login.html').read_bytes(), html=True)
             if identity is None and path != '/remote/login':
                 if method == 'GET' and path in self.static_paths and (path == '/' or path.endswith('.html')):
                     from urllib.parse import quote

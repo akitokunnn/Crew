@@ -6,7 +6,7 @@ function harness(api){
   const navigation={hidden:true},projectName={textContent:""};
   const sandbox={window:{},document:{addEventListener(){},getElementById:id=>({main,"mobile-navigation":navigation,"mobile-project":projectName})[id]||null},location:{search:"?project=fixture"},URLSearchParams,CrewActivity:{sync(){}},CrewSound:{observe(){}}};
   vm.createContext(sandbox);
-  const source=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
+  const source=fs.readFileSync(path.join(__dirname,"../../frontend/app.js"),"utf8").replace(/\r\n/g,"\n");
   vm.runInContext(source.replace("  setup();\n})();",`window.ui={loadState,services(values){api=values.api;toast=values.toast;applyTheme=()=>{};renderSettings=()=>{};readRoute=()=>{view="all";};render=()=>{document.getElementById("main").innerHTML="已恢复的工作区";};syncRoute=()=>{};}};\n})();`),sandbox);
   sandbox.window.ui.services({api,toast:message=>notices.push(message)});return {ui:sandbox.window.ui,main,retry,notices};
 }

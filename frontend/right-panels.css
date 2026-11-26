@@ -80,3 +80,17 @@ main:has(.task-list[data-open=true]:not([hidden])) #chat-host{margin-right:max(v
 .task-list[data-open=true]{opacity:1;visibility:visible;transform:translateX(0);pointer-events:auto;transition:opacity 180ms ease,transform 180ms ease}
 .task-list[hidden]{display:none}
 @media(prefers-reduced-motion:reduce){.task-list,.task-list[data-open=true]{transform:none;transition:opacity 180ms ease,visibility 180ms}}
+
+
+/* === Spatial Studio (High-Density Direction C) === */
+.chat-sidepanels{right:16px}
+.attention-panel{border-radius:14px;background:var(--studio-sheet);border-color:var(--studio-border);box-shadow:var(--studio-shadow-sheet);margin-bottom:12px}
+.attention-panel .attention-head{padding:10px 12px 8px;background:var(--studio-glass)}
+.chat-sidepanels>.rp{border-radius:14px;background:var(--studio-sheet);border-color:var(--studio-border);box-shadow:var(--studio-shadow-float)}
+.chat-sidepanels .rp>.head{min-height:46px;padding:6px 10px 6px 14px;background:var(--studio-glass);backdrop-filter:saturate(1.4) blur(12px);-webkit-backdrop-filter:saturate(1.4) blur(12px)}
+.chat-sidepanels .rp-tree{padding:8px 10px 12px}
+.rp-run{padding:6px 8px;border-radius:9px;background:var(--studio-card)}
+.task-list{top:58px;bottom:8px;right:max(8px,var(--task-list-right,8px));width:396px;border-radius:14px;border:1px solid var(--studio-border);background:var(--studio-sheet);box-shadow:var(--studio-shadow-float)}
+@media(min-width:761px){
+  main:has(.task-list[data-open=true]:not([hidden])) #chat-host{margin-right:max(var(--chat-side-space,0px),min(calc(var(--task-list-right,0px) + 412px),calc(100% - 460px)))}
+}

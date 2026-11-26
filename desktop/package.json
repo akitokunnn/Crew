@@ -45,6 +45,10 @@
           "!**/*.pyc",
           "!*-test-*/**"
         ]
+      },
+      {
+        "from": "../frontend",
+        "to": "frontend"
       }
     ],
     "win": {

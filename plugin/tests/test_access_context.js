@@ -1,6 +1,6 @@
 "use strict";
 const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
-const source=fs.readFileSync(path.join(__dirname,'../crew/web/access-context.js'),'utf8');
+const source=fs.readFileSync(path.join(__dirname,'../../frontend/access-context.js'),'utf8');
 function boot(fetch){
   const nodes=new Map(),events=[];
   const element=()=>({children:[],setAttribute(){},append(...items){this.children.push(...items);for(const item of items)if(item.id)nodes.set(item.id,item);},replaceChildren(){this.children=[];}});

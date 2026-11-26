@@ -13,3 +13,10 @@
 .doc-actions{display:flex;align-items:center;flex-wrap:wrap;gap:3px;margin-top:14px;padding-top:9px;border-top:1px solid var(--line)}
 .doc-actions .btn{padding:4px 7px;font-size:calc(11px * var(--fs))}.doc-reset{margin-left:auto}
 .doc-missing{display:block;color:var(--danger);font-size:calc(12px * var(--fs))}
+
+
+/* === Spatial Studio (High-Density Direction C) === */
+.document-card{padding:13px 14px;border-radius:12px;background:var(--studio-card)}
+.doc-summary{margin-top:6px;-webkit-line-clamp:3}
+.doc-path{margin:9px 0 6px}
+.doc-actions{margin-top:10px;padding-top:7px}

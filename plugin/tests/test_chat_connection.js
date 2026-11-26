@@ -21,7 +21,7 @@ function harness(){
       signal.addEventListener("abort",()=>{pending?.reject(Object.assign(Error("aborted"),{name:"AbortError"}));pending=null;},{once:true});
       return {ok:true,headers,body:{getReader:()=>({read:()=>{stream.reads++;return queue.length?Promise.resolve(queue.shift()):new Promise((resolve,reject)=>{pending={resolve,reject};});}})}};}};
   sandbox.window=sandbox;vm.createContext(sandbox);
-  for(const file of ["vendor/markdown-it.min.js","browser-utils.js","skill-picker.js","chat.js","goal-work-ui.js"])vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web",file),"utf8"),sandbox);
+  for(const file of ["vendor/markdown-it.min.js","browser-utils.js","skill-picker.js","chat.js","goal-work-ui.js"])vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend",file),"utf8"),sandbox);
   function mount(id,api,extra={},options={}){const target=host(),session={session_id:id,name:id,busy:false,last_seq:0,activity:null,where:"bg",...extra};const client=async(url,data)=>{const value=await api(url,data);if(url.startsWith("/api/chat/history?"))journals.set(journalKey(new URLSearchParams(url.split("?")[1])),{executionId:value.execution_id??"",latestSeq:value.events.at(-1)?.seq||0});return value;};sandbox.CrewChat.mount({host:target,session,state:{project:{name:"fixture"},leaders:[session],members:[]},api:client,toast(){},...options});return target;}
   function update(id,extra={}){const session={session_id:id,name:id,busy:false,last_seq:1,activity:null,where:"bg",...extra};sandbox.CrewChat.update({project:{name:"fixture"},leaders:[session],members:[]});}
   function visibility(visible,desktop=false){const type=desktop?"crew-tab-visibility":"visibilitychange";if(desktop)sandbox.crewTabVisible=visible;else sandbox.document.visibilityState=visible?"visible":"hidden";for(const fn of handlers.get(type)||[])fn({type,detail:{visible}});}
@@ -544,10 +544,10 @@ test("starting a queued goal retains the leader transcript, stream, draft and re
     if(url.startsWith("/api/chat/history?"))return {...history(),execution_id:execution?.id??null};
     throw Error("Unexpected request: "+url);
   };
-  const appSource=fs.readFileSync(path.join(__dirname,"../crew/web/app.js"),"utf8").replace(/\r\n/g,"\n");
+  const appSource=fs.readFileSync(path.join(__dirname,"../../frontend/app.js"),"utf8").replace(/\r\n/g,"\n");
   vm.runInContext(appSource.replace("  setup();\n})();",'window.appFixture={renderChat,configure(value,client,request){state=value;goals=client;api=request;view="chat";leaderId="leader";goalId="goal";}};\n})();'),h.sandbox);
   h.sandbox.CrewReader={pane:()=>null,refresh(){},close:()=>false,escape:()=>false};
-  vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-ui.js"),"utf8"),h.sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/goal-ui.js"),"utf8"),h.sandbox);
   const goalUI=h.sandbox.CrewGoals.create({project:"fixture",state:()=>state,api,avatar:()=>"",ago:()=>"",toast(){},onChange:()=>h.sandbox.appFixture.renderChat(),refreshState:async()=>h.sandbox.appFixture.renderChat()});
   h.sandbox.appFixture.configure(state,goalUI,api);h.sandbox.appFixture.renderChat();await tick();
   assert.equal(h.connections.length,1);const emptyStream=h.connections[0],queuedHost=nodes.get("chat-host");

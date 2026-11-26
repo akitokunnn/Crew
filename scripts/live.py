@@ -149,7 +149,7 @@ def show_effect(live, before, after):
         status, name = parts[0], parts[-1]
         if name.startswith('desktop/'):
             desktop = True
-        elif name.startswith('plugin/crew/web/') and status == 'M':
+        elif name.startswith(('frontend/', 'plugin/crew/web/')) and status == 'M':
             web = True
             if f"'{Path(name).name}'" in shell:
                 bundled.add(Path(name).name)

@@ -1,6 +1,6 @@
 "use strict";
 const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
-const source=fs.readFileSync(path.join(__dirname,'../crew/web/remote-access-ui.js'),'utf8');
+const source=fs.readFileSync(path.join(__dirname,'../../frontend/remote-access-ui.js'),'utf8');
 const clone=value=>JSON.parse(JSON.stringify(value));
 const initial=()=>({enabled:false,bind:'0.0.0.0',port:47812,urls:[],devices:[],pair_pending:false,binding_available:true,
   addresses:[{address:'192.168.1.7',name:'Wi-Fi',kind:'lan',available:true},{address:'10.8.9.7',name:'ZeroTier',kind:'zerotier',available:true}],discovery:{complete:true,error:null}});

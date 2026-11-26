@@ -82,3 +82,22 @@ img,video,canvas,svg{max-width:100%}
 pre,table{max-width:100%;overflow-x:auto}
 .toast{left:var(--m-gutter)!important;right:var(--m-gutter)!important;bottom:calc(var(--m-bottom) + 12px)!important;transform:none!important;max-width:none!important}
 body.m-chat .toast{bottom:calc(96px + var(--m-safe-b))!important}
+
+
+/* === Spatial Studio Mobile Pill Dock (<=760px) === */
+:root{--m-tabbar-h:50px;--m-bottom:calc(64px + var(--m-safe-b))}
+.app>.main,.workspace-entry .main{margin:0!important;border:0!important;border-radius:0!important;box-shadow:none!important}
+.main{background:var(--bg)}
+#m-tabbar{
+  left:12px;right:12px;bottom:max(8px,var(--m-safe-b));height:50px;padding:3px 4px;
+  border-radius:999px;border:1px solid var(--studio-border);
+  background:var(--studio-glass);backdrop-filter:saturate(1.5) blur(18px);-webkit-backdrop-filter:saturate(1.5) blur(18px);
+  box-shadow:var(--studio-shadow-float);
+}
+.m-tab{border-radius:999px;gap:2px;padding:4px 0;transition:background-color .14s ease,color .14s ease}
+.m-tab svg{width:20px;height:20px}
+.m-tab[aria-current=page]{background:var(--accent-soft);color:var(--accent-text);font-weight:600}
+#m-sheet{border-radius:22px 22px 0 0;background:var(--studio-sheet);border-top:1px solid var(--studio-border)}
+.leader-panel{background:var(--studio-frame)!important}
+.leader-row{background:var(--studio-card);border:1px solid var(--line);margin-bottom:4px;border-radius:13px!important}
+.leader-row.active{background:var(--studio-sheet);border-color:color-mix(in srgb,var(--accent) 45%,var(--line-strong));box-shadow:var(--studio-shadow-sm)}
