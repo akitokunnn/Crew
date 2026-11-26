@@ -24,12 +24,12 @@ def card(conn, value):
     req = value['requirements']
     available = conn.execute('SELECT 1 FROM goal_reports WHERE goal_id=?', (value['id'],)).fetchone()
     brief = None
-    report = conn.execute('SELECT id,data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? '
+    report = conn.execute('SELECT id,requirement_version,data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? '
                           'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'])).fetchone()
     supplements = [] if report is None else [dict(row) for row in conn.execute(
         'SELECT version,change_text AS text,actor,created_at AS at FROM goal_requirements '
         'WHERE goal_id=? AND version>? AND created_at>? ORDER BY version',
-        (value['id'], json.loads(report['data_json'])['requirement_version'], report['created_at']))]
+        (value['id'], report['requirement_version'], report['created_at']))]
     if value['status'] == 'awaiting_acceptance':
         if report is not None:
             data = json.loads(report['data_json'])

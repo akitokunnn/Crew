@@ -9,13 +9,45 @@ import uuid
 import zipfile
 
 from crew import behavior_prompts as prompts
-from crew import board, goal_artifacts, goal_reports, goal_work, goals, personal, store, todo
+from crew import board, goal_api, goal_artifacts, goal_reports, goal_work, goals, personal, store, todo
 from crew.storage_v2 import Repository
 from crew.storage_v2 import activation, database, legacy, packages
 from tests.test_runtimes import RuntimeFixture
 
 
 class PortableFeatureTests(RuntimeFixture):
+    def test_package_preserves_versions_and_creation_time_of_each_goal_report(self):
+        from tests.test_goals import GoalFixture
+        goal_id = GoalFixture.goal(self)['id']
+        goals.transition(self.conn, goal_id, 'running')
+        goal_reports.publish(self.conn, goal_id, GoalFixture.report(self, 'progress'),
+                             request_id='stage', now='2026-11-20T10:02:00.123Z')
+        goals.amend(self.conn, goal_id, 'Measure the second sample too.')
+        goals.save_report(self.conn, goal_id, GoalFixture.report(self, 'awaiting_acceptance'),
+                          now='2026-11-20T10:01:00.456Z')
+        query = 'SELECT outcome,version,requirement_version,created_at FROM goal_reports ORDER BY version'
+        source = [tuple(row) for row in self.conn.execute(query)]
+        for row in self.conn.execute('SELECT data_json FROM goal_reports'):
+            self.assertNotIn('requirement_version', json.loads(row[0]))
+        self.assertEqual(source, [('progress', 1, 1, '2026-11-20T10:02:00.123Z'),
+                                  ('awaiting_acceptance', 2, 2, '2026-11-20T10:01:00.456Z')])
+
+        repo = Repository(self.root / 'source-repository')
+        workspace = legacy.migrate_workspace(repo, self.home, 'demo')['workspace_id']
+        package = self.root / 'reports.crewpack'
+        with closing(repo.connect()) as conn:
+            packages.export_workspace(conn, repo.objects, workspace, package)
+        destination = Repository(self.root / 'destination')
+        account, user = destination.ensure_local_identity()
+        with closing(destination.connect()) as conn:
+            imported = packages.import_package(conn, destination.objects, package,
+                                               target_account_id=account, actor_user_id=user)
+        local, root = self.root / 'activated-home', self.root / 'activated-root'
+        root.mkdir()
+        activation.activate_workspace(destination, imported['workspace_id'], local, root)
+        with closing(store.connect(local)) as conn:
+            self.assertEqual([tuple(row) for row in conn.execute(query)], source)
+
     def test_active_discussion_package_restores_delivered_task_without_write_authority(self):
         from tests.test_goals import GoalFixture
         goal = GoalFixture.goal(self)
@@ -42,6 +74,7 @@ class PortableFeatureTests(RuntimeFixture):
             restored = conn.execute('SELECT id FROM goals').fetchone()[0]
             marker = conn.execute('SELECT * FROM goal_discussion_executions').fetchone()
             self.assertEqual(goals.get(conn, restored)['status'], 'completed')
+            self.assertTrue(goal_api.card(conn, goals.get(conn, restored))['report_available'])
             self.assertFalse(goals.get(conn, restored)['manual_pause'])
             self.assertEqual(goals.acceptance_review(conn, restored)['note'], 'Accepted before explanation.')
             self.assertEqual(goals.get_execution(conn, marker['execution_id'])['response_mode'], 'discussion')
@@ -135,6 +168,7 @@ class PortableFeatureTests(RuntimeFixture):
             self.assertEqual(review['note'], 'Kept review before a small correction.')
             self.assertEqual(review['report_id'], continued['report_id'])
             self.assertEqual(goals.get(conn, continued['goal_id'])['current_round'], 1)
+            self.assertTrue(goal_api.card(conn, goals.get(conn, continued['goal_id']))['report_available'])
             discussion = conn.execute('SELECT * FROM goal_discussion_executions').fetchone()
             self.assertIsNotNone(discussion['promoted_at'])
             self.assertIsNone(discussion['promotion_json'])
@@ -157,6 +191,7 @@ class PortableFeatureTests(RuntimeFixture):
         raw = database.files(database.__package__).joinpath('domain.sql').read_text(encoding='utf-8')
         digest = hashlib.sha256((raw + '\n-- device schema --\n' + database.local_sql()).encode()).hexdigest()
         with closing(sqlite3.connect(repo.path)) as conn:
+            conn.execute('DROP TABLE goal_report_versions')
             conn.execute('DROP TABLE workspace_feature_records')
             conn.execute('PRAGMA user_version=2')
             conn.execute('UPDATE local_schema_metadata SET schema_version=2,min_reader_version=2,min_writer_version=2')
@@ -166,38 +201,57 @@ class PortableFeatureTests(RuntimeFixture):
         self.assertEqual(upgraded.device_id, repo.device_id)
         with closing(upgraded.connect()) as conn:
             self.assertEqual(conn.execute('SELECT id FROM workspaces').fetchone()[0], workspace['id'])
-            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], 3)
+            self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], database.SCHEMA_VERSION)
         self.assertEqual(len(list((repo.directory / 'backups').glob('before-schema-3-*'))), 1)
         Repository(repo.home)
         self.assertEqual(len(list((repo.directory / 'backups').glob('before-schema-3-*'))), 1)
+        self.assertEqual(len(list((repo.directory / 'backups').glob('before-schema-4-*'))), 1)
 
-    def test_existing_schema_two_package_still_imports(self):
+    def test_older_packages_activate_goal_reports_in_legacy_order(self):
+        from tests.test_goals import GoalFixture
+        goal_id = GoalFixture.goal(self)['id']
+        goals.save_report(self.conn, goal_id, GoalFixture.report(self, 'progress'))
+        goals.amend(self.conn, goal_id, 'Review progress.')
+        goals.save_report(self.conn, goal_id, GoalFixture.report(self, 'awaiting_acceptance'))
         repo = Repository(self.root / 'old-package')
-        workspace = repo.create_workspace('Old package')
+        workspace = legacy.migrate_workspace(repo, self.home, 'demo')['workspace_id']
         package = self.root / 'new.crewpack'
         with closing(repo.connect()) as conn:
-            packages.export_workspace(conn, repo.objects, workspace['id'], package)
+            packages.export_workspace(conn, repo.objects, workspace, package)
         with zipfile.ZipFile(package) as archive:
             entries = {name: archive.read(name) for name in archive.namelist()}
-        path = self.root / 'old-data.sqlite'; path.write_bytes(entries['data.sqlite'])
-        with closing(sqlite3.connect(path)) as conn:
-            conn.execute('DROP TABLE workspace_feature_records')
-            conn.execute('PRAGMA user_version=2'); conn.commit()
-        entries['data.sqlite'] = path.read_bytes()
-        manifest = json.loads(entries['manifest.json'])
-        manifest.update(schema_version=2, min_reader_version=2, min_writer_version=2)
-        manifest['database'].update(sha256=hashlib.sha256(entries['data.sqlite']).hexdigest(), bytes=len(entries['data.sqlite']))
-        manifest['database']['tables'].pop('workspace_feature_records')
-        entries['manifest.json'] = json.dumps(manifest).encode()
-        old = self.root / 'old.crewpack'
-        with zipfile.ZipFile(old, 'w') as archive:
-            for name, value in entries.items():
-                archive.writestr(name, value)
-        self.assertEqual(packages.preview_package(old)['integrity'], 'ok')
+        old_data = self.root / 'old-data.sqlite'
+        old_data.write_bytes(entries['data.sqlite'])
         account, user = repo.ensure_local_identity()
-        with closing(repo.connect()) as conn:
-            result = packages.import_package(conn, repo.objects, old, target_account_id=account, actor_user_id=user)
-            self.assertNotEqual(result['workspace_id'], workspace['id'])
+        manifest = json.loads(entries['manifest.json'])
+        for schema, removed in ((3, 'goal_report_versions'), (2, 'workspace_feature_records')):
+            with self.subTest(schema=schema):
+                with closing(sqlite3.connect(old_data)) as conn:
+                    conn.execute('DROP TABLE ' + removed)
+                    conn.execute(f'PRAGMA user_version={schema}')
+                    conn.commit()
+                entries['data.sqlite'] = old_data.read_bytes()
+                manifest.update(schema_version=schema, min_reader_version=schema, min_writer_version=schema)
+                manifest['database'].update(sha256=hashlib.sha256(entries['data.sqlite']).hexdigest(), bytes=len(entries['data.sqlite']))
+                del manifest['database']['tables'][removed]
+                entries['manifest.json'] = json.dumps(manifest).encode()
+                old = self.root / f'old-{schema}.crewpack'
+                with zipfile.ZipFile(old, 'w') as archive:
+                    for name, value in entries.items():
+                        archive.writestr(name, value)
+                self.assertEqual(packages.preview_package(old)['integrity'], 'ok')
+                with closing(repo.connect()) as conn:
+                    result = packages.import_package(conn, repo.objects, old, target_account_id=account, actor_user_id=user)
+                    expected = list(conn.execute("SELECT id,created_at FROM reports WHERE workspace_id=? "
+                                                 "AND kind='goal_delivery' ORDER BY created_at,id", (result['workspace_id'],)))
+                local, root = self.root / f'home-{schema}', self.root / f'root-{schema}'
+                root.mkdir()
+                activation.activate_workspace(repo, result['workspace_id'], local, root)
+                with closing(store.connect(local)) as conn:
+                    actual = conn.execute('SELECT id,created_at,version,requirement_version FROM goal_reports ORDER BY version')
+                    self.assertEqual([tuple(row) for row in actual], [(*row, i, 2) for i, row in enumerate(expected, 1)])
+                    restored = conn.execute('SELECT id FROM goals').fetchone()[0]
+                    self.assertTrue(goal_api.card(conn, goals.get(conn, restored))['report_available'])
 
 
 if __name__ == '__main__':

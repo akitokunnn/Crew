@@ -52,6 +52,7 @@ class StorageV2PackageTests(unittest.TestCase):
             source_account, source_user = self.source.ensure_local_identity(conn=conn)
             add('artifact_versions', id=x['version'], artifact_id=x['artifact'], version_no=1, blob_id=self.blob['id'], display_filename='report.html', mime_type='text/html', author_user_id=source_user)
             add('reports', id=x['report'], author_agent_id=x['agent'], goal_round_id=x['round'], execution_id=x['execution'], kind='goal_delivery', title='Original delivery', summary='Saved result', outcome='completed', body_markdown='Unmodified report text', data_json=json.dumps({'goal_id': x['goal'], 'execution_id': x['execution']}), html_artifact_version_id=x['version'])
+            add('goal_report_versions', id=x['report'], report_id=x['report'], format_version=2, version=1, requirement_version=1)
             add('artifact_links', id=str(uuid.uuid4()), artifact_version_id=x['version'], report_id=x['report'], relation='deliverable')
             add('native_archives', id=x['native'], agent_id=x['agent'], artifact_version_id=x['version'], archive_format='test-history', format_version='1', capabilities_json='{}')
             # These unrelated rows and machine-only state MUST NOT enter the package.

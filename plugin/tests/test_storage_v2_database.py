@@ -192,7 +192,8 @@ class StorageV2DatabaseTests(unittest.TestCase):
         with closing(sqlite3.connect(':memory:', isolation_level=None)) as c:
             create_domain(c)
             tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            self.assertEqual(len(tables), 56)
+            self.assertIn('goal_report_versions', tables)
+            self.assertEqual(len(tables), 57)
             self.assertFalse(any(name.startswith('local_') for name in tables))
             c.execute('BEGIN')
             with self.assertRaises(StorageError):
