@@ -58,6 +58,7 @@ test_delegation_boundary
 # /api/state 与 web 契约
 test_web_contract
 test_host_workspace
+test_onboarding   # 首次引导：完成或跳过的记录、载体安装与登录检测、对应接口
 test_workspace_views
 test_workspace_activity
 

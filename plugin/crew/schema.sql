@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS sound_settings (
     updated_at TEXT NOT NULL
 );
 
+-- First-run guide on the desktop home: once finished or skipped it is never shown automatically again.
+CREATE TABLE IF NOT EXISTS onboarding_state (
+    singleton  INTEGER PRIMARY KEY CHECK (singleton = 1),
+    status     TEXT NOT NULL CHECK (status IN ('completed', 'skipped')),
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS projects (
     name        TEXT PRIMARY KEY,
     root        TEXT NOT NULL UNIQUE,      -- absolute path, as given (compare with crew.store.norm_path)

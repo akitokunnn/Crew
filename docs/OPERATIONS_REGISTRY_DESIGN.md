@@ -465,6 +465,8 @@ Web 用 `git.settings.set enabled:false` 停用、CLI 用 `/api/git/disable`：�
 | `settings.get` | 读 | H D A | GET `/api/settings` | — |
 | `settings.save` | 写 / confirm(A 仅 `ai` 字段) | H A | POST `/api/settings` | `settings.save` |
 | `runtimes.list` | 读 | H D A L | GET `/api/runtimes` | — |
+| `runtimes.readiness` | 主机（只读，运行各载体自带的登录状态命令） | H D | GET `/api/runtimes/readiness` | — |
+| `onboarding.get` / `onboarding.set` | 读 / 写 | H D | GET / POST `/api/onboarding` | — |
 | `claude_budget.set` | 写 | H | POST `/api/claude-budget` | — |
 | `sounds.custom.add` / `delete` | 写 | H | POST `/api/sounds/custom` / `delete` | — |
 | `sounds.custom.file` | 读 | H D | GET `/api/sounds/custom/file` | — |

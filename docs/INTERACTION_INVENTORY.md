@@ -16,6 +16,8 @@
 | 标识 | 交互 | 位置 | 依赖 | 已有自动化覆盖 | 验证方法 |
 | --- | --- | --- | --- | --- | --- |
 | `workbench.new` | 点新对话或空页开始新对话 → 打开 Leader 创建表单 | `frontend/workspace-home.js:56`、`frontend/workspace-home.js:57` | `data-act=modal-leader` | `plugin/tests/test_workspace_home_ui.js::empty workspace invites a discussion, without automatically launching or creating a goal` | 手动 · 1280×800 · 点新对话或空页开始新对话，核对打开 Leader 创建表单 |
+| `workbench.start-self` | 空白工作区（无 leader、无任务）点“自己搭”的开始新对话或画架构图 → 打开 Leader 创建表单或架构图，不自动启动 | `frontend/workspace-home.js:53` | `.wh-start`、`data-path=self` | `plugin/tests/test_workspace_home_ui.js::a blank workspace offers 自己搭 and 助手开局 as two equal entries that start nothing by themselves` | 手动 · 1280×800、375×812 · 新建空白工作区后点两个按钮 |
+| `workbench.start-assistant` | 空白工作区点“让助手开局” → 打开全局助手（桌面为助手标签）并带 `#opening=<工作区>` | `frontend/workspace-home.js:53` | `data-path=assistant`、`/assistant.html#opening=` | `plugin/tests/test_workspace_home_ui.js::a blank workspace offers 自己搭 and 助手开局 as two equal entries that start nothing by themselves` | 手动 · 隔离桌面 · 点让助手开局，核对助手标签打开 |
 | `workbench.settings` | 点当前工作区设置 → 打开工作区配置 | `frontend/workspace-home.js:57` | `data-act=workspace-settings` | 无 | 手动 · 1280×800 · 点当前工作区设置，核对打开工作区配置 |
 | `workbench.working` | 点执行中计数 → 查看执行中的会话及派工 | `frontend/workspace-home.js:59`、`frontend/app.js:1576` | `data-tab=working` | `plugin/tests/test_workspace_home_ui.js::home names working sessions and dispatches separately from its task total` | 手动 · 1280×800 · 点执行中计数，核对查看执行中的会话及派工 |
 | `workbench.architecture` | 点架构图 → 进入当前工作区架构图 | `frontend/workspace-home.js:59` | `data-view=architecture` | 无 | 手动 · 1280×800 · 点架构图，核对进入当前工作区架构图 |
@@ -511,6 +513,7 @@
 | `assistant.workspace-link` | 点工作区链接 → 转到相应工作区 | `frontend/assistant.js:24`、`frontend/assistant.js:35` | `project` | 无 | 手动 · 1280×800 · 点工作区链接，核对转到相应工作区 |
 | `assistant.note-attach` | 从想法墙去聊聊 → 查找想法并挂到助手输入框，删除关联时从 URL 清除 | `frontend/assistant.js:52-63` | `#note`、`/api/personal/notes` | `plugin/tests/test_notes_ui.js::assistant page attaches the idea from #note, prefills without sending, and clears the hash once the idea is used`；`desktop/test/tabs.test.cjs::“去聊聊” hands its note hash to the assistant, reusing an open assistant without reloading its draft` | 手动 · 1280×800 · 从想法墙去聊聊，核对查找想法并挂到助手输入框，删除关联时从 URL 清除 |
 | `assistant.note-missing` | 通过无效想法链接进入 → 显示缺失或读取错误 | `frontend/assistant.js:58-60` | `dropNote`、`toast` | 无 | 手动 · 1280×800 · 通过无效想法链接进入，核对显示缺失或读取错误 |
+| `assistant.opening` | 经 `#opening=<工作区>` 进入或已开着时 hash 变化 → 开局意图写入空输入框（有草稿则提示不覆盖），从不自动发送，工作区不存在时提示，hash 用后清除 | `frontend/assistant.js`（`readOpening`、`attachOpening`）、`frontend/chat.js`（`prefill`） | `CrewChat.prefill` | `plugin/tests/test_assistant_opening.js`；`plugin/tests/test_chat_connection.js::prefill writes only into an empty composer and reports whether it did, without sending` | 手动 · 隔离桌面 · 从空白工作区点让助手开局 |
 | `assistant.prompts` | 点助手行为配置 → 打开会话级配置弹窗并能关闭 | `frontend/assistant.js:64` | `#assistant-prompts`、`/api/behavior-prompts` | 无 | 手动 · 1280×800 · 点助手行为配置，核对打开会话级配置弹窗并能关闭 |
 | `assistant.jot` | 点随手记 → 打开笔记表单并显示最近三条 | `frontend/assistant.js:65`、`frontend/personal-notes-ui.js:31` | `#assistant-notes`、`.jot-dialog` | 无 | 手动 · 1280×800 · 点随手记，核对打开笔记表单并显示最近三条 |
 | `assistant.jot-submit` | 点记下来 → 成功清空、刷新最近记录，失败保留文字 | `frontend/personal-notes-ui.js:23`、`frontend/personal-notes-ui.js:38` | `.jot-dialog form` | `plugin/tests/test_assistant_http.py::test_quick_note_capture_edit_and_start_keep_original_and_never_duplicate_leader` | 手动 · 1280×800 · 点记下来，核对成功清空、刷新最近记录，失败保留文字 |
@@ -562,6 +565,7 @@
 | `appearance.project-color` | 点一款当前工作区配色 → 立即应用并保存到工作区 | `frontend/app.js:1597` | `/api/project/theme`、`data-theme-id` | 无 | 手动 · 1280×800 · 逐个选择六款并切换工作区验证作用域 |
 | `appearance.font-slider` | 拖字号滑杆 → 实时显示 90%–140% 及内容大小，拖动中保留控件 | `frontend/app.js:1686` | `data-setting=font`、`--fs`、`crew.fontScale` | 无 | 手动 · 1280×800 · 分别拖至两端，刷新检查 |
 | `appearance.font-reset` | 点字号重置 → 恢复 100% | `frontend/app.js:1599` | `data-act=font-reset` | 无 | 手动 · 1280×800 · 点字号重置，核对恢复 100% |
+| `appearance.font-desktop` | 桌面内拖字号滑杆 → 拖动中只预览本页，松手写入桌面共用字号并同步所有工作区、助手、想法墙页面；首次读取时迁移旧的 `crew.fontScale` | `frontend/app.js`（`setFontScale`、`adoptDesktopFont`）、`frontend/global-rail.js`、`desktop/src/appearance.cjs` | `crewDesktopTheme.setFontScale`、`desktop:font-scale-set` | 无 | 手动 · 隔离桌面 · 在工作区设置拖动后打开助手页核对字号 |
 
 ### 切换执行工具
 
@@ -874,6 +878,16 @@
 | `desktop-home.remote-local` | 点切回本机后台 → 应用本机配置并重开 | `desktop/src/home.js:231` | `launchSettingsApply` | `desktop/test/launch-settings.test.cjs::a LAN window switches back to this computer without probing the host as a borrowed local service` | 手动 · 隔离桌面 · 点切回本机后台，核对应用本机配置并重开 |
 | `desktop-home.settings-nav` | 点首页设置 → 加载全局设置区，失败时有重试 | `desktop/src/home-settings.js:70` | `#nav-settings`、`CrewHomeSettings` | 无 | 手动 · 隔离桌面 · 点首页设置，核对加载全局设置区，失败时有重试 |
 | `desktop-home.theme` | 点击桌面主题选项 → 更新原生主题 | `desktop/src/home-settings.js:22` | `data-desktop-theme` | `desktop/test/appearance.test.cjs::one desktop display mode drives Electron themeSource and survives restarts` | 手动 · 隔离桌面 · 点击桌面主题选项，核对更新原生主题 |
+| `desktop-home.onboarding-auto` | 本机首次启动（无工作区、引导未完成也未跳过、无待执行菜单动作）→ 自动打开新手引导；连接局域网主机时不自动出现 | `desktop/src/home.js`（`maybeOnboard`）、`desktop/src/home-onboarding.js`（`shouldOpen`） | `/api/onboarding` | `desktop/test/home-onboarding.test.cjs::the guide opens by itself only on this computer's first start` | 手动 · 隔离桌面 · 全新 HOME 启动 |
+| `desktop-home.onboarding-steps` | 点左侧步骤、下一步、上一步 → 切换四步并把焦点放到标题 | `desktop/src/home-onboarding.js` | `data-ob-act=step/next/back` | 无 | 手动 · 隔离桌面 · 1280、758、375 各走一遍 |
+| `desktop-home.onboarding-runtime` | 引导第一步显示 Claude Code / Codex 的安装与登录状态，点可用卡片设为默认大脑，选模型与 Codex 速度档位 | `desktop/src/home-onboarding.js`、`plugin/crew/runtime_catalog.py`（`readiness`） | `/api/runtimes/readiness`、`CrewSettings.speedChoices` | `desktop/test/home-onboarding.test.cjs`；`plugin/tests/test_onboarding.py::ReadinessTests` | 手动 · 隔离桌面 · 核对状态与选择 |
+| `desktop-home.onboarding-recheck` | 点重新检测 → 重新读取载体状态与 AI 设置，保留仍可用的选择 | `desktop/src/home-onboarding.js`（`detect`） | `data-ob-act=recheck` | 无 | 手动 · 隔离桌面 · 登录前后各点一次 |
+| `desktop-home.onboarding-brain-save` | 第一步点下一步 → 默认大脑有变化时保存到 AI 设置，失败显示真实原因并停在本步 | `desktop/src/home-onboarding.js`（`saveBrain`） | `crewDesktop.settingsSave` | 无 | 手动 · 隔离桌面 · 保存后到设置 → AI 大脑核对 |
+| `desktop-home.onboarding-appearance` | 引导第二步切显示模式、拖字号（松手保存）、恢复标准 → 立即全桌面生效 | `desktop/src/home-onboarding.js` | `desktop:theme-set`、`desktop:font-scale-set` | `desktop/test/appearance.test.cjs::one desktop font size is kept beside the display mode without either overwriting the other` | 手动 · 隔离桌面 · 切换后看首页与工作区 |
+| `desktop-home.onboarding-workspace` | 引导第四步点打开已有文件夹或新建空白文件夹 → 记为完成、关闭引导，转入首页原有的打开流程或新建表单 | `desktop/src/home-onboarding.js`、`desktop/src/home.js`（`openOnboarding`） | `homeActions`、`/api/onboarding` | 无 | 手动 · 隔离桌面 · 两种入口各走一遍 |
+| `desktop-home.onboarding-skip` | 点跳过引导、完成引导或按 Escape → 记为跳过或完成后关闭，之后不再自动出现；记录失败时显示原因并提供“先关闭，下次启动再提醒” | `desktop/src/home-onboarding.js`（`complete`） | `/api/onboarding` | `desktop/test/home-onboarding.test.cjs::a failed save keeps the real reason and offers an honest way out`；`plugin/tests/test_onboarding.py::OnboardingHttpTests` | 手动 · 隔离桌面 · 跳过后重启核对 |
+| `desktop-home.onboarding-reopen` | 设置 → 外观点重新打开新手引导 → 回到工作区页并打开引导 | `desktop/src/home-settings.js` | `data-onboarding-open`、`CrewHomeOnboarding.open` | 无 | 手动 · 隔离桌面 · 点击核对 |
+| `desktop-home.font` | 设置 → 外观拖字号滑杆或点恢复标准 → 松手保存桌面共用字号 | `desktop/src/home-settings.js` | `data-desktop-font`、`data-font-reset` | `desktop/test/appearance.test.cjs::one desktop font size is kept beside the display mode without either overwriting the other` | 手动 · 隔离桌面 · 拖动后看工作区字号 |
 
 ### 主机目录选择器
 
@@ -982,7 +996,7 @@
 
 | 区域 | 条数 | 无自动化覆盖 |
 | --- | ---: | ---: |
-| 工作台、工作区动态与状态刷新 | 20 | 13 |
+| 工作台、工作区动态与状态刷新 | 22 | 13 |
 | 常驻左栏与工作区切换 | 20 | 16 |
 | Leader 侧栏、团队与会话治理 | 58 | 31 |
 | 对话、状态和会话结构 | 41 | 17 |
@@ -996,10 +1010,10 @@
 | Git 与 Git 助手 | 26 | 18 |
 | 会话库 | 13 | 7 |
 | 想法墙 | 68 | 38 |
-| 全局助手与随手记 | 14 | 11 |
+| 全局助手与随手记 | 15 | 11 |
 | 用量与额度 | 9 | 6 |
 | 设置、默认大脑与权限 | 14 | 7 |
-| 外观、字号与配色 | 6 | 6 |
+| 外观、字号与配色 | 7 | 7 |
 | 切换执行工具 | 12 | 3 |
 | 组员默认大脑 | 11 | 9 |
 | 行为配置与使用记录 | 8 | 2 |
@@ -1014,12 +1028,12 @@
 | 局域网访问与设备管理 | 9 | 1 |
 | 连接鉴权与浏览器配对 | 5 | 3 |
 | 桌面窗口、标签、预览与托盘 | 54 | 39 |
-| 桌面工作区首页 | 21 | 14 |
+| 桌面工作区首页 | 31 | 19 |
 | 主机目录选择器 | 11 | 11 |
 | 应用、源码与工具更新 | 15 | 6 |
 | 桌面系统管理员 | 5 | 0 |
 | 手机、窄屏与无障碍显示 | 44 | 43 |
-| **合计** | **774** | **471** |
+| **合计** | **788** | **477** |
 
 ### 拆分中最容易丢失的 15 条
 

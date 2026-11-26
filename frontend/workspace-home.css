@@ -77,3 +77,18 @@ button.wh-overview-item:hover{color:var(--accent-text);border-color:color-mix(in
 .wh-observing-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;padding:10px 14px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
 .wh-observing-title{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;flex:1 1 240px;min-width:0;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
 .wh-observing-title strong{font-size:13.5px;font-weight:600;overflow-wrap:anywhere}.wh-observing-title>span:last-child{flex-basis:100%;font-size:12px;color:var(--text-2)}
+
+/* Blank workspace: two equal ways in (自己搭 / 助手开局), the same card for each. */
+.wh-start{margin:4px 0 8px}
+.wh-start-head h2{margin:0;font-size:calc(17px * var(--fs));font-weight:600;letter-spacing:-.2px;color:var(--text)}
+.wh-start-head p{margin:5px 0 16px;font-size:calc(13px * var(--fs));line-height:1.6;color:var(--text-2)}
+.wh-start-paths{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.wh-path{display:flex;flex-direction:column;gap:14px;min-width:0;padding:20px;border:1px solid var(--studio-border);border-radius:16px;background:var(--studio-card);box-shadow:var(--studio-shadow-sm)}
+.wh-path-mark{display:grid;place-items:center;width:38px;height:38px;border-radius:11px;background:var(--accent-soft);color:var(--accent-text)}
+.wh-path-mark svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.wh-path-text{flex:1;min-width:0}
+.wh-path h3{margin:0 0 6px;font-size:calc(15px * var(--fs));font-weight:600;color:var(--text)}
+.wh-path p{margin:0;font-size:calc(13px * var(--fs));line-height:1.75;color:var(--text-2);overflow-wrap:anywhere}
+.wh-path-actions{display:flex;flex-wrap:wrap;gap:8px}
+.wh-path-actions .btn{min-height:34px;padding:7px 14px}
+@media(max-width:760px){.wh-start-paths{grid-template-columns:minmax(0,1fr);gap:12px}.wh-path{padding:16px;gap:12px}.wh-path-actions .btn{flex:1 1 auto;justify-content:center;min-height:40px}}

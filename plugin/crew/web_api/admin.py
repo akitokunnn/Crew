@@ -5,7 +5,7 @@ import socket
 from contextlib import closing
 from pathlib import Path
 
-from .. import board, claude_budget, goals, settings, store, usage_cli
+from .. import board, claude_budget, goals, onboarding, runtime_catalog, settings, store, usage_cli
 from .. import member_defaults, operations_chat, operations_settings
 from .. import event_sounds
 from . import behavior_prompts as behavior_prompts_api
@@ -122,6 +122,19 @@ def get_behavior_prompts(handler, service, url, query):
 def get_runtimes(handler, service, url, query):
     catalog = service.runtime_catalog.refresh(force=True) if query.get('refresh') == ['1'] else service.runtime_catalog.refresh()
     handler._send(200, {'runtimes': catalog})
+
+
+def get_runtime_readiness(handler, service, url, query):
+    handler._send(200, {'runtimes': runtime_catalog.readiness()})
+
+
+def get_onboarding(handler, service, url, query):
+    handler._send(200, onboarding.get(service.home))
+
+
+def post_onboarding(service, path, data, project_name):
+    with service.write_lock, closing(store.connect(service.home)) as conn, goals.transaction(conn):
+        return onboarding.save(conn, data)
 
 
 def get_connections(handler, service, url, query):
