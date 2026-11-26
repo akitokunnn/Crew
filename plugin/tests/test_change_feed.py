@@ -25,7 +25,19 @@ def record_todo(conn, project='demo', entity=1, now=None):
         return change_feed.updated(conn, change_feed.workspace(project), 'todo', entity, {'id': entity}, now)
 
 
-class RecordTests(RuntimeFixture):
+def clear_feed(conn):
+    """Start a test from an empty feed: creating its workspaces already recorded their own changes."""
+    conn.execute('DELETE FROM change_log')
+    conn.execute("DELETE FROM sqlite_sequence WHERE name='change_log'")
+
+
+class FeedFixture(RuntimeFixture):
+    def setUp(self):
+        super().setUp()
+        clear_feed(self.conn)
+
+
+class RecordTests(FeedFixture):
     def test_a_change_must_ride_on_the_business_transaction(self):
         with self.assertRaisesRegex(RuntimeError, '同一事务'):
             change_feed.updated(self.conn, change_feed.workspace('demo'), 'todo', 1, {'id': 1})
@@ -59,7 +71,7 @@ class RecordTests(RuntimeFixture):
         self.assertEqual(changes(self.conn, seq), [])
 
 
-class TodoPilotTests(RuntimeFixture):
+class TodoPilotTests(FeedFixture):
     def add(self, title='连接设备', **options):
         return todo.add(self.conn, 'member-id', title, '打开设置连接设备', '设备出现在列表里', **options)
 
@@ -117,14 +129,17 @@ class TodoPilotTests(RuntimeFixture):
             with board.transaction(self.conn):
                 maintenance.Manager._archive(manager, self.conn, 'demo', 'job-1')
         removed = changes(self.conn, seq)
+        # The cleanup boundary also resets the channel's unread count.
         self.assertEqual(sorted((change['type'], change['entity']) for change in removed),
-                         sorted([('todo.removed', str(first['id'])), ('todo.removed', str(second['id']))]))
+                         sorted([('todo.removed', str(first['id'])), ('todo.removed', str(second['id'])),
+                                 ('channel.updated', 'demo')]))
 
 
-class ReadTests(RuntimeFixture):
+class ReadTests(FeedFixture):
     def test_resume_returns_exactly_the_changes_after_the_cursor_in_visible_scopes(self):
         (self.root / 'other').mkdir()
         board.init_project(self.conn, 'other', self.root / 'other')
+        clear_feed(self.conn)
         first = record_todo(self.conn, entity=1)
         record_todo(self.conn, 'other', entity=2)
         with board.transaction(self.conn):
@@ -192,6 +207,7 @@ class ConcurrencyTests(unittest.TestCase):
         self.home = Path(temp.name) / 'home'
         with closing(store.connect(self.home)) as conn:
             board.init_project(conn, 'demo', Path(temp.name))
+            clear_feed(conn)
 
     def test_concurrent_writers_commit_in_sequence_order_and_a_live_reader_never_skips(self):
         writers, per_writer, seen, failures = 4, 40, [], []
@@ -291,7 +307,7 @@ class FakeHandler:
         return frames
 
 
-class HttpHandlerTests(RuntimeFixture):
+class HttpHandlerTests(FeedFixture):
     def setUp(self):
         super().setUp()
         self.service = SimpleNamespace(home=self.home, stop=threading.Event(),

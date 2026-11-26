@@ -1,5 +1,5 @@
 """Deliver human answers once to each explicitly associated task execution."""
-from . import board, codex_client, goals, messaging, todo
+from . import board, codex_client, goals, messaging, snapshot_values, todo
 
 
 @goals.atomic
@@ -27,7 +27,10 @@ def bind(conn, kind, item_id, execution_id, *, associate=False):
                  (kind, item_id, execution['goal_id'], execution['round'], execution['requirement_version'], execution_id))
     if kind == 'todo':
         # The open action lists its links.
-        todo.publish_change(conn, item['project'], item_id)
+        todo.touch(conn, item['project'], item_id)
+    else:
+        # The decision card names its task; the task card shows it as the pending decision.
+        snapshot_values.touch_decision(conn, item_id)
 
 
 def get(conn, kind, item_id):
@@ -67,7 +70,7 @@ def _mark_delivered(conn, link, version):
         conn.execute('UPDATE decisions SET delivered_at=? WHERE id=?',(board._time(None),link['item_id']))
     else:
         # The open action lists its links, delivered version included.
-        todo.publish_change(conn, goals.get(conn, link['goal_id'])['project'], link['item_id'])
+        todo.touch(conn, goals.get(conn, link['goal_id'])['project'], link['item_id'])
 
 
 def deliver(controller, conn):
@@ -96,7 +99,7 @@ def deliver(controller, conn):
                              {'kind':link['kind'],'id':link['item_id'],'version':version,'goal_id':goal['id'],
                               'reason':'原轮次已经失效或目标已经结束'},None)
                 if link['kind'] == 'todo':
-                    todo.publish_change(conn, goal['project'], link['item_id'])
+                    todo.touch(conn, goal['project'], link['item_id'])
             continue
         if goal['status'] in ('paused', 'pausing') or goal['manual_pause']:
             continue

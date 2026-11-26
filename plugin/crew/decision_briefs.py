@@ -110,6 +110,8 @@ def _save(conn, decision_id, brief, now=None):
                  "options_json=excluded.options_json,updated_at=excluded.updated_at",
                  (decision_id, brief["title"], brief["context"], brief["why_user"], brief["recommendation_reason"],
                   brief["impact"], json.dumps(brief["options"], ensure_ascii=False), store.now_iso() if now is None else now))
+    from . import snapshot_values
+    snapshot_values.touch_decision(conn, decision_id)
 
 
 def _decision(conn, decision_id):
@@ -154,6 +156,8 @@ def revise(conn, session_id, decision_id, question=INHERIT, options=INHERIT, rec
     validated = validate(candidate, options=options, recommendation=recommendation)
     conn.execute("UPDATE decisions SET question=?,options=?,recommendation=? WHERE id=?",
                  (question, json.dumps(builtins.list(options), ensure_ascii=False), recommendation, decision_id))
+    from . import snapshot_values
+    snapshot_values.touch_decision(conn, decision_id)
     _save(conn, decision_id, validated, now)
     board._event(conn, "decision:revise", before["project"], session_id,
                  {"id": decision_id, "before": before, "question": question, "brief": validated}, now)

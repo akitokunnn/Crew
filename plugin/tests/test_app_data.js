@@ -169,3 +169,52 @@ test("merge is pure and keeps the snapshot order of each kind",()=>{
   eq(next.todos.map(item=>item.id),[2,1]);assert.equal(next.todo_count,2);
   eq(base.todos.map(item=>item.id),[1,3]);assert.equal(next.leaders,base.leaders);
 });
+
+test("workspace lists merge by key in the server's order",()=>{
+  const {merge}=load();
+  const base={projects:[{name:"beta",display_name:null,theme:"lotus"}],
+    decisions:[{id:4,question:"四"}],
+    goals:[{id:"b",priority:0,created_at:"2026-11-27T00:00:02.000Z"},{id:"c",priority:0,created_at:"2026-11-27T00:00:03.000Z"}]};
+  const next=merge(base,[
+    {seq:1,type:"project.updated",entity:"alpha",data:{name:"alpha",display_name:"甲",theme:"celadon"}},
+    {seq:2,type:"decision.updated",entity:"2",data:{id:2,question:"二"}},
+    {seq:3,type:"decision.removed",entity:"4",data:null},
+    // Higher priority first, then creation time, then id; a later change of the same task replaces it.
+    {seq:4,type:"goal.updated",entity:"a",data:{id:"a",priority:0,created_at:"2026-11-27T00:00:01.000Z"}},
+    {seq:5,type:"goal.updated",entity:"z",data:{id:"z",priority:3,created_at:"2026-11-27T00:00:09.000Z"}},
+    {seq:6,type:"goal.updated",entity:"c",data:{id:"c",priority:0,created_at:"2026-11-27T00:00:00.500Z"}},
+    {seq:7,type:"project.removed",entity:"beta",data:null}]);
+  eq(next.projects.map(item=>item.name),["alpha"]);
+  eq(next.decisions.map(item=>item.id),[2]);
+  eq(next.goals.map(item=>item.id),["z","c","a","b"]);
+  eq(base.goals.map(item=>item.id),["b","c"]);
+});
+
+test("fields are replaced whole and parts keep the fields other sources own",()=>{
+  const {merge}=load();
+  const base={project:{name:"demo",display_name:null,root:"C:/demo",theme:"celadon"},ai:{default:null},domains:{version:0,paths:{}},
+    channel:{unread:0,latest_id:0,digesting:true,digest_error:null,digest_id:null},
+    sounds:{preferences:null,revision:0,catalog:{},missing:[],events:[{id:"reply:x"}]},
+    limits:{claude:null,codex:null},usage_scanned_at:null,usage_error:null,leaders:[]};
+  const next=merge(base,[
+    {seq:1,type:"workspace.updated",entity:"demo",data:{name:"demo",display_name:"演示",root:"C:/demo",theme:"lotus"}},
+    {seq:2,type:"ai.updated",entity:"ai",data:{default:{runtime:"codex"}}},
+    {seq:3,type:"domains.updated",entity:"demo",data:{version:2,paths:{s1:[{id:"p",name:"感知"}]}}},
+    {seq:4,type:"channel.updated",entity:"demo",data:{unread:3,latest_id:9,digest_id:null}},
+    {seq:5,type:"sound_settings.updated",entity:"sounds",data:{preferences:{muted:true},revision:1,catalog:{presets:{}},missing:[]}},
+    {seq:6,type:"limits.updated",entity:"limits",data:{limits:{claude:null,codex:{used_percent:42}},usage_scanned_at:"2026-11-27T00:01:00+00:00",usage_error:null}}]);
+  assert.equal(next.project.display_name,"演示");assert.equal(next.ai.default.runtime,"codex");assert.equal(next.domains.version,2);
+  eq(next.channel,{unread:3,latest_id:9,digesting:true,digest_error:null,digest_id:null});
+  eq(next.sounds.events,[{id:"reply:x"}]);assert.equal(next.sounds.revision,1);
+  assert.equal(next.limits.codex.used_percent,42);assert.equal(next.usage_scanned_at,"2026-11-27T00:01:00+00:00");
+  assert.equal(next.leaders,base.leaders);assert.equal(base.channel.unread,0);assert.equal(base.limits.codex,null);
+});
+
+test("a removed field or a part with other fields than registered is a change the page cannot merge",()=>{
+  const {merge}=load();
+  const base={ai:{},channel:{unread:0,latest_id:0,digesting:false,digest_error:null,digest_id:null}};
+  assert.throws(()=>merge(base,[{seq:1,type:"ai.removed",entity:"ai",data:null}]),/ai\.removed.*刷新页面/);
+  assert.throws(()=>merge(base,[{seq:1,type:"channel.updated",entity:"demo",data:{unread:1,latest_id:1}}]),/channel\.updated.*字段/);
+  assert.throws(()=>merge(base,[{seq:1,type:"channel.updated",entity:"demo",data:{unread:1,latest_id:1,digest_id:null,digesting:true}}]),/字段/);
+  assert.throws(()=>merge(base,[{seq:1,type:"toString.updated",entity:"x",data:{}}]),/toString\.updated/);
+});

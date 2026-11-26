@@ -163,7 +163,7 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
 
     def setUp(self):
         super().setUp()
-        for method in ('_poll_agents', '_poll_notices', '_poll_git_ci'):
+        for method in ('_poll_agents', '_poll_notices', '_poll_git_ci', '_poll_usage'):
             patcher = mock.patch.object(web.Service, method, return_value=None)
             patcher.start()
             self.addCleanup(patcher.stop)

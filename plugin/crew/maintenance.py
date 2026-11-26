@@ -22,7 +22,7 @@ import time
 import uuid
 from contextlib import closing
 
-from . import board, codex_client, codex_runtime, git_admin, goal_context, goals, runtimes, session_ops, store, todo
+from . import board, change_feed, codex_client, codex_runtime, git_admin, goal_context, goals, runtimes, session_ops, snapshot_values, store, todo
 
 COMPACT_TIMEOUT = 900   # seconds a native compaction may take before the item fails
 CONFIRM_GRACE = 30      # seconds to wait for the compact event after the native request has ended
@@ -812,8 +812,11 @@ class Manager:
                                        "ELSE note||char(10)||? END,resolved_by=?,resolved_at=?,updated_at=?,version=version+1 "
                                        "WHERE project=? AND status='open'", (note, note, board.HUMAN, now, now, project)).rowcount
         for todo_id in open_todos:
-            todo.publish_change(conn, project, todo_id, now)
+            todo.touch(conn, project, todo_id)
+        open_decisions = [row['id'] for row in conn.execute("SELECT id FROM decisions WHERE project=? AND status='open'", (project,))]
         counts['decisions'] = conn.execute("UPDATE decisions SET status='withdrawn' WHERE project=? AND status='open'", (project,)).rowcount
+        for decision_id in open_decisions:
+            snapshot_values.touch_decision(conn, decision_id)
         counts['claims'] = conn.execute('UPDATE claims SET released_at=? WHERE project=? AND released_at IS NULL', (now, project)).rowcount
         counts['leases'] = conn.execute('UPDATE leases SET released_at=?,released_by=?,release_note=? WHERE project=? AND released_at IS NULL',
                                         (now, board.HUMAN, note, project)).rowcount
@@ -833,6 +836,8 @@ class Manager:
                      'digest_after=excluded.digest_after,handoff_after=excluded.handoff_after,'
                      'cleanups=workspace_cleanup_boundaries.cleanups+1,job_id=excluded.job_id,updated_at=excluded.updated_at',
                      (project, boundary['channel']['upto'], boundary['digest']['upto'], boundary['handoff']['upto'], job_id, now))
+        # Unread counts and the digest card start after the new boundary.
+        change_feed.touch(conn, 'channel', project, project)
         for name, table in (('channel', 'channel_messages'), ('handoffs', 'handoffs')):
             span = boundary['handoff' if name == 'handoffs' else name]
             counts[name] = conn.execute('SELECT COUNT(*) FROM %s WHERE project=? AND id>? AND id<=?' % table,

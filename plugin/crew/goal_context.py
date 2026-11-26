@@ -348,4 +348,5 @@ def mark_applied(conn, manifest_id, *, execution_id=None, now=None):
     if current and current['version'] == str(goal['requirement_version']) and value['round'] == goal['current_round']:
         conn.execute('UPDATE goal_executions SET requirement_version=?,updated_at=? WHERE id=?',
                      (goal['requirement_version'], at, value['execution_id']))
+        goals.touch(conn, value['goal_id'])
     return manifest(conn, manifest_id)

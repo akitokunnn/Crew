@@ -5,7 +5,7 @@ import json
 import shutil
 import sqlite3
 
-from . import board, guard, store
+from . import board, change_feed, guard, store
 
 
 PURPOSES = ('default', 'leader', 'member', 'assistant', 'digest', 'git', 'operations')
@@ -140,6 +140,7 @@ def save(source, ai):
                     source.execute('INSERT INTO ai_task_settings(purpose,selection_json,updated_at) VALUES(?,?,?) '
                                    'ON CONFLICT(purpose) DO UPDATE SET selection_json=excluded.selection_json,updated_at=excluded.updated_at',
                                    (purpose, json.dumps(value[purpose], ensure_ascii=False, allow_nan=False), store.now_iso()))
+            change_feed.touch(source, 'ai', None, 'ai')
     else:
         with closing(store.connect(source)) as conn:
             save(conn, value)

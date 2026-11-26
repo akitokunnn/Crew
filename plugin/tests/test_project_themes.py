@@ -69,11 +69,13 @@ class ProjectThemeTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM project_themes').fetchone()[0], 1)
 
     def test_assignment_participates_in_outer_transaction(self):
-        self.conn.execute('BEGIN IMMEDIATE')
-        self.legacy('temporary')
-        self.assertEqual(board.project(self.conn, 'temporary')['theme'], 'celadon')
-        self.assertTrue(self.conn.in_transaction)
-        self.conn.rollback()
+        class Rollback(Exception):
+            pass
+        with self.assertRaises(Rollback), board.transaction(self.conn):
+            self.legacy('temporary')
+            self.assertEqual(board.project(self.conn, 'temporary')['theme'], 'celadon')
+            self.assertTrue(self.conn.in_transaction)
+            raise Rollback
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM project_themes').fetchone()[0], 0)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM projects').fetchone()[0], 0)
 

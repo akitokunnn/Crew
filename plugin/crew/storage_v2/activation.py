@@ -16,7 +16,7 @@ import sqlite3
 import stat
 import uuid
 
-from .. import board, settings, store
+from .. import board, change_feed, settings, store
 from .database import StorageConflict, StorageError, now_iso
 from .objects import ObjectStore, canonical_uuid
 from . import legacy
@@ -714,6 +714,10 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
         if unfinished: raise StorageConflict('Activation exists only in the legacy database; inspect its recorded backup before retrying')
         backup=_backup(conn,repo,legacy_home,activation)
         conn.execute('BEGIN IMMEDIATE');conn.execute('PRAGMA defer_foreign_keys=ON')
+        # Activation writes the live database like board.transaction does, so what it touches (the workspace
+        # list and field, through board.init_project) is recorded in this transaction. The bulk-inserted rows are
+        # not: see docs/EVENT_STREAM_DESIGN.md §5 for why the whole workspace is not re-sent yet.
+        change_feed.begin(conn)
         try:
             workspace=_activation_guard(conn,workspace_id,prefix='portable.',legacy_home=legacy_home)
             data={table:_rows(conn,table,workspace_id) for table in TABLES}
@@ -787,7 +791,9 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
                 receipt=dict(conn.execute('SELECT * FROM portable.local_activation_receipts WHERE id=?',(activation,)).fetchone()),event=receipt)
             intent_path=legacy_home/'storage-v2-activation-intents'/(activation+'.json')
             _write_intent(intent_path,intent)
+            change_feed.flush(conn)
             conn.commit()
+            change_feed.end(conn)
             committed=True
             intent.update(phase='complete',completed_at=now_iso());_write_intent(intent_path,intent)
             return {'workspace_id':workspace_id,'project':board.project(conn,project),'status':'activated','backup':str(backup),
@@ -796,6 +802,8 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
                     'source_marker_replaced':source_marker is not None,'repairs':repairs}
         except BaseException:
             conn.rollback()
+            if not committed:
+                change_feed.end(conn)
             if committed or intent_path is not None:
                 # A prepared journal owns recovery after any possible partial
                 # commit. Do not delete files referenced by a committed side.

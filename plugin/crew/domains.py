@@ -10,7 +10,7 @@ import math
 import re
 import uuid
 
-from . import board
+from . import board, change_feed
 
 ID = re.compile(r'[A-Za-z0-9_-]{6,64}\Z')
 NAME_MAX = 40
@@ -89,6 +89,7 @@ def apply(conn, project, ops, base_version=None, now=None):
         effects.append(handler(op))
     conn.execute('INSERT INTO domain_boards(project,version,updated_at) VALUES(?,1,?) ON CONFLICT(project) '
                  'DO UPDATE SET version=version+1,updated_at=excluded.updated_at', (project, now))
+    change_feed.touch(conn, 'domains', project, project)
     # effects[i] says what ops[i] did beyond the request itself (a new id, a lead it replaced, what moved up);
     # with the board before the batch, that is enough for the page to build the undo batch.
     return {'board': snapshot(conn, project), 'effects': effects}
@@ -96,6 +97,9 @@ def apply(conn, project, ops, base_version=None, now=None):
 
 def release_leader(conn, session_id):
     """A permanently deleted leader leaves the board."""
+    for row in conn.execute('SELECT project FROM domain_leaders WHERE session_id=? AND domain_id IS NOT NULL', (session_id,)).fetchall():
+        # Its path leaves the board summary.
+        change_feed.touch(conn, 'domains', row['project'], row['project'])
     conn.execute('DELETE FROM domain_leaders WHERE session_id=?', (session_id,))
 
 

@@ -11,6 +11,9 @@ from .. import codex_client
 
 
 class WorkersMixin:
+    # Started by start(); web.py's __init__ starts the other worker handles the same way.
+    usage_worker = None
+
     def storage_active_keys(self):
         # A cached process can still be draining its last journal writes after
         # exit. Keep its attachment directory protected for this service life.
@@ -35,23 +38,27 @@ class WorkersMixin:
                 self.agents, self.agents_at, self.agents_error = agents, self.now(), None
         self.agents_ready.set()
 
-    def _poll_agents(self):
+    def _poll_agents(self, passed):
+        """`passed` is set after every pass, so startup recovery runs before the usage scan's first step."""
         while not self.stop.is_set():
-            self.refresh_agents()
-            self._refresh_vscode()
             try:
-                self.digest_channels()
-                with self.agents_lock:
-                    agents, error = self.agents, self.agents_error
-                with self.write_lock, closing(store.connect(self.home)) as conn:
-                    self.chat.auto_resume(conn, agents, now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-                                          runtime=None if error is None else 'codex')
-                # Journal times are wall-clock, so idle time is measured on the same clock.
-                self.chat.reclaim_idle()
-            except (sqlite3.Error, OSError, subprocess.SubprocessError):
-                # A temporary failure in another task sharing this worker must
-                # not permanently disable agent discovery and VS Code scans.
-                traceback.print_exc()
+                self.refresh_agents()
+                self._refresh_vscode()
+                try:
+                    self.digest_channels()
+                    with self.agents_lock:
+                        agents, error = self.agents, self.agents_error
+                    with self.write_lock, closing(store.connect(self.home)) as conn:
+                        self.chat.auto_resume(conn, agents, now=self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                                              runtime=None if error is None else 'codex')
+                    # Journal times are wall-clock, so idle time is measured on the same clock.
+                    self.chat.reclaim_idle()
+                except (sqlite3.Error, OSError, subprocess.SubprocessError):
+                    # A temporary failure in another task sharing this worker must
+                    # not permanently disable agent discovery and VS Code scans.
+                    traceback.print_exc()
+            finally:
+                passed.set()
             if self.stop.wait(10):
                 break
 
@@ -115,8 +122,14 @@ class WorkersMixin:
                         board.record_event(conn, "vscode:archived", session["project"], sid, {}, now=now)
 
     def start(self):
-        self.worker = threading.Thread(target=self._poll_agents, name="crew-agents", daemon=True)
+        # The first page shows the estimates saved by earlier scans while the first background scan catches up.
+        self.prime_usage()
+        # Set once the agents worker finished a pass: startup recovery is done and the usage scan may start.
+        self.agents_passed = threading.Event()
+        self.worker = threading.Thread(target=self._poll_agents, args=(self.agents_passed,), name="crew-agents", daemon=True)
         self.worker.start()
+        self.usage_worker = threading.Thread(target=self._poll_usage, args=(self.agents_passed,), name="crew-usage", daemon=True)
+        self.usage_worker.start()
         self.notice_worker = threading.Thread(target=self._poll_notices, name="crew-leader-notices", daemon=True)
         self.notice_worker.start()
         self.ci_worker = threading.Thread(target=self._poll_git_ci, name="crew-git-ci", daemon=True)
@@ -131,6 +144,9 @@ class WorkersMixin:
             self.chat.closed = True
         # Cancel independent digest natives before joining other pollers.
         actions = [self.report_previews.close, self.channel_digest.stop, self.remote_access.shutdown, self.storage_cleanup.close, self.connections.close]
+        if self.usage_worker is not None:
+            # A scan step holds the database writer; let it commit or roll back before the owner goes on.
+            actions.append(self.usage_worker.join)
         if self.notice_worker is not None:
             actions.append(self.notice_worker.join)
         if self.ci_worker is not None:

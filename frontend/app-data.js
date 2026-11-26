@@ -4,28 +4,51 @@
   // The shell (app.js) owns `state`; this module reads it through ctx getters and hands back each new value.
   const text = value => value === null || value === undefined ? "" : String(value);
   const byText = (a, b) => text(a) < text(b) ? -1 : text(a) > text(b) ? 1 : 0;
-  // Mirrors change_feed.KINDS: where each kind lives in the snapshot and how that list is ordered.
+  // Mirrors change_feed.KINDS: where each kind lives in the snapshot. Three shapes:
+  //   list  - entities in a snapshot list, replaced or removed by key, then reordered like the server orders them;
+  //   field - one snapshot field replaced as a whole;
+  //   part  - the named fields of one snapshot object (null = the snapshot itself); other fields there belong to
+  //           sources that are not in the feed yet and keep their value.
   const KINDS = {
     todo: {list:"todos", key:"id", order:(a, b) => Number(!a.blocking) - Number(!b.blocking) || byText(a.created_at, b.created_at) || a.id - b.id,
       derive(next) { next.todo_count = next.todos.length; }},
+    project: {list:"projects", key:"name", order:(a, b) => byText(a.name, b.name)},
+    decision: {list:"decisions", key:"id", order:(a, b) => a.id - b.id},
+    goal: {list:"goals", key:"id", order:(a, b) => b.priority - a.priority || byText(a.created_at, b.created_at) || byText(a.id, b.id)},
+    workspace: {field:"project"},
+    ai: {field:"ai"},
+    domains: {field:"domains"},
+    channel: {part:"channel", keys:["unread", "latest_id", "digest_id"]},
+    sound_settings: {part:"sounds", keys:["preferences", "revision", "catalog", "missing"]},
+    limits: {part:null, keys:["limits", "usage_scanned_at", "usage_error"]},
   };
   const RECONNECT_DELAYS = [1000, 2000, 5000, 10000];
   // A change this page cannot merge means the page is older than the server; only a reload helps.
   class UnknownChange extends Error {}
 
   function merge(base, changes) {
-    const next = {...base}, touched = new Set();
+    const next = {...base}, lists = new Set();
     for (const change of changes) {
       const [name, op] = change.type.split(".");
-      const kind = KINDS[name];
+      const kind = Object.hasOwn(KINDS, name) ? KINDS[name] : undefined;
       if (kind === undefined || (op !== "updated" && op !== "removed")) throw new UnknownChange(`页面不认识的增量事件：${change.type}，请刷新页面`);
-      if (!touched.has(kind)) { next[kind.list] = [...base[kind.list]]; touched.add(kind); }
-      const list = next[kind.list], index = list.findIndex(item => String(item[kind.key]) === change.entity);
-      if (op === "removed") { if (index >= 0) list.splice(index, 1); }
-      else if (index >= 0) list[index] = change.data;
-      else list.push(change.data);
+      if (kind.list !== undefined) {
+        if (!lists.has(kind)) { next[kind.list] = [...base[kind.list]]; lists.add(kind); }
+        const list = next[kind.list], index = list.findIndex(item => String(item[kind.key]) === change.entity);
+        if (op === "removed") { if (index >= 0) list.splice(index, 1); }
+        else if (index >= 0) list[index] = change.data;
+        else list.push(change.data);
+        continue;
+      }
+      // A field or a part is never removed; the server only sends its new value.
+      if (op === "removed") throw new UnknownChange(`页面不认识的增量事件：${change.type}，请刷新页面`);
+      if (kind.field !== undefined) { next[kind.field] = change.data; continue; }
+      const keys = Object.keys(change.data);
+      if (keys.length !== kind.keys.length || !kind.keys.every(key => keys.includes(key))) throw new UnknownChange(`增量事件 ${change.type} 的字段与页面不一致，请刷新页面`);
+      if (kind.part === null) Object.assign(next, change.data);
+      else next[kind.part] = {...next[kind.part], ...change.data};
     }
-    for (const kind of touched) { next[kind.list].sort(kind.order); kind.derive(next); }
+    for (const kind of lists) { next[kind.list].sort(kind.order); if (kind.derive) kind.derive(next); }
     return next;
   }
 

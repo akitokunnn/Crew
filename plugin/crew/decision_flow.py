@@ -1,5 +1,5 @@
 """Human-requested decision disclosure. Reading state never queues model work."""
-from . import board, decision_briefs, goals, trust_mode
+from . import board, decision_briefs, goals, snapshot_values, trust_mode
 
 _READ = object()
 
@@ -69,6 +69,7 @@ def discuss(conn, decision_id, project=None, *, actor=board.HUMAN, now=None):
     conn.execute("INSERT INTO decision_presentations(decision_id,stage,discussed_at,notice_id,updated_at) VALUES(?,'discussion',?,?,?) "
                  "ON CONFLICT(decision_id) DO UPDATE SET stage='discussion',discussed_at=excluded.discussed_at,notice_id=excluded.notice_id,updated_at=excluded.updated_at",
                  (decision_id,stamp,notice,stamp))
+    snapshot_values.touch_decision(conn,decision_id)
     board._event(conn,'decision:discussion',decision['project'],board.HUMAN,{'id':decision_id,'notice_id':notice,'leader_session_id':leader_id},now)
     return get(conn,decision_id)
 
@@ -94,5 +95,6 @@ def ready(conn, decision_id, project=None, *, actor=board.HUMAN, now=None):
         return before
     stamp = board._time(now)
     conn.execute("UPDATE decision_presentations SET stage='ready',ready_at=?,updated_at=? WHERE decision_id=?",(stamp,stamp,decision_id))
+    snapshot_values.touch_decision(conn,decision_id)
     board._event(conn,'decision:ready',decision['project'],board.HUMAN,{'id':decision_id},now)
     return get(conn,decision_id)

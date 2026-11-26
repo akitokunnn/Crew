@@ -1,12 +1,19 @@
 """Incremental changes behind the workspace snapshot (docs/EVENT_STREAM_DESIGN.md).
 
-A business write records the new value of every snapshot entity it changed with `updated` /
-`removed`, on the same connection and inside the same transaction, so the change and the write
-commit or roll back together. Readers take a snapshot together with the sequence it covers, then
-`read` everything after it. When the history a reader needs is gone, or it fell too far behind,
-`read` raises `SnapshotRequired` and the reader starts over from a new snapshot.
+A business write marks every snapshot entity it changed with `touch`, anywhere inside its
+`board.transaction`. Just before that transaction commits, `flush` builds each marked entity's value
+from the database as it now stands, with the same function the snapshot uses, and records it on the
+same connection: the change and the write commit or roll back together, an entity written several
+times in one transaction is recorded once with its final value, and no half-written state leaks out.
+Values that do not live in the database (the usage scan's limits) are recorded directly with
+`updated` inside the transaction that produced them.
+
+Readers take a snapshot together with the sequence it covers, then `read` everything after it. When
+the history a reader needs is gone, or it fell too far behind, `read` raises `SnapshotRequired` and
+the reader starts over from a new snapshot.
 """
 import datetime as dt
+import importlib
 import json
 from contextlib import closing
 
@@ -20,8 +27,27 @@ PRUNE_EVERY = 256
 
 GLOBAL = 'global'
 _WORKSPACE = 'workspace:'
+# Kinds built from the database when a write touches them: kind -> (scope, 'module:function').
+# The function takes (conn, project, entity) and returns the entity's snapshot value, or None when
+# the snapshot no longer lists it. Imported on first use: the builders depend on board, and board
+# imports this module.
+BUILDERS = {
+    'todo': ('workspace', 'todo:change_value'),
+    'project': ('global', 'snapshot_values:project'),
+    'workspace': ('workspace', 'snapshot_values:workspace'),
+    'ai': ('global', 'snapshot_values:ai'),
+    'decision': ('workspace', 'snapshot_values:decision'),
+    'goal': ('workspace', 'snapshot_values:goal'),
+    'domains': ('workspace', 'snapshot_values:domains'),
+    'channel': ('workspace', 'snapshot_values:channel'),
+    'sound_settings': ('global', 'snapshot_values:sound_settings'),
+}
 # Every kind a client knows how to merge; the frontend registry (frontend/app-data.js) mirrors it.
-KINDS = frozenset({'todo'})
+# `limits` comes from the background usage scan (web_service/usage.py), not from a database write.
+KINDS = frozenset(BUILDERS) | {'limits'}
+
+# Entities touched by each open board.transaction, keyed by connection, in first-touch order.
+_touched = {}
 
 
 class SnapshotRequired(Exception):
@@ -41,6 +67,47 @@ def workspace(project):
 def scopes(project):
     """What a subscriber sees: global changes, plus its workspace when it has one."""
     return (GLOBAL,) if project is None else (GLOBAL, workspace(project))
+
+
+def begin(conn):
+    """board.transaction opened a write transaction on `conn`."""
+    if id(conn) in _touched:
+        raise RuntimeError('同一连接上已有未结束的增量记录')
+    _touched[id(conn)] = {}
+
+
+def end(conn):
+    """The transaction committed or rolled back; whatever it touched is settled."""
+    del _touched[id(conn)]
+
+
+def touch(conn, kind, project, entity):
+    """Mark an entity changed by the current write; `flush` records its final value before commit."""
+    if kind not in BUILDERS:
+        raise ValueError('未登记的增量实体类型：%s' % kind)
+    marks = _touched.get(id(conn))
+    if marks is None or not conn.in_transaction:
+        raise RuntimeError('增量变更必须在 board.transaction 的写事务里标记')
+    if (BUILDERS[kind][0] == 'global') != (project is None):
+        raise ValueError('%s 的范围是 %s，工作区参数不符：%r' % (kind, BUILDERS[kind][0], project))
+    marks.setdefault((kind, project, str(entity)), entity)
+
+
+def flush(conn):
+    """Record every touched entity's current value; board.transaction calls this right before commit."""
+    marks = _touched[id(conn)]
+    # A builder reading an old workspace may first give it its theme, which touches that workspace again.
+    while marks:
+        pending = list(marks.items())
+        marks.clear()
+        for (kind, project, key), entity in pending:
+            module, function = BUILDERS[kind][1].split(':')
+            value = getattr(importlib.import_module('.' + module, __package__), function)(conn, project, entity)
+            scope = GLOBAL if project is None else workspace(project)
+            if value is None:
+                removed(conn, scope, kind, key)
+            else:
+                updated(conn, scope, kind, key, value)
 
 
 def updated(conn, scope, kind, entity, data, now=None):

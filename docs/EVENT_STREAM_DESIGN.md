@@ -1,7 +1,7 @@
 # 增量事件流设计：快照 + 序号
 
 > 日期：2026-11-27 · 分支 `claude/event-stream`（基于 `9a2cc6f`）· 依据：[架构重审](ARCHITECTURE_REVIEW.md) §6.2 / §7 阶段 3、[拆分边界](SPLIT_BOUNDARIES.md) §3.3、[交互清单](INTERACTION_INVENTORY.md)
-> 状态：协议、存储、读取、订阅处理函数、前端数据层模块与待办试点已实现并有测试；**删除 3 秒轮询与 `app.js` 接线暂停**，原因见第 9 节“前提冲突”，等主控拍板。
+> 状态（第 2 轮，2026-11-27）：协议、存储、读取、订阅处理函数、前端数据层模块已实现；6.1 中全部“DB”领域在业务写的同一事务里记录整值变更（第 5 节）；迁移阶段 2 完成，`state()` 只读，用量扫描移到后台线程（第 6.3 节）。主控已选方案 A（第 9 节）：会话托管状态的生产者等 `chat.py` 拆分（C1）合入后接入，**3 秒轮询与 `app.js` 接线保持不动**。
 
 ## 1. 目标与边界
 
@@ -45,7 +45,7 @@ CREATE INDEX change_log_at (at); CREATE INDEX change_log_scope (scope, seq);
 {"seq": 41, "data": { …与现在 /api/state 完全相同… }}
 ```
 
-`seq` 在构造 `data` **之前**读取（`change_feed.snapshot`）。架构重审要求“同一个只读事务”，但现在的 `state()` 自己开连接、还会调 `scan_usage` 写库（读路径去副作用是迁移阶段 2，尚未做），做不到同事务。先读序号的保证：构造期间提交的变更可能已经在 `data` 里，订阅后会再收到一次；事件按实体整值替换、按序应用，重复应用是幂等的，追上之后结果与最新状态一致，不会漏。客户端把追赶阶段的事件攒到 `ready` 再一次合并，避免中间态闪回。
+`seq` 在构造 `data` **之前**读取（`change_feed.snapshot`）。架构重审要求“同一个只读事务”：阶段 2 之后 `state()` 已不写库、不拿写锁（6.3），但它仍自己开连接、并读进程与会话日志等库外状态，所以仍按“先读序号”处理。先读序号的保证：构造期间提交的变更可能已经在 `data` 里，订阅后会再收到一次；事件按实体整值替换、按序应用，重复应用是幂等的，追上之后结果与最新状态一致，不会漏。客户端把追赶阶段的事件攒到 `ready` 再一次合并，避免中间态闪回。
 
 ### 4.2 订阅 `GET /api/events?project=<名>&after=<seq>`（SSE）
 
@@ -74,19 +74,34 @@ data: {"reason":"pruned"} ← 发完即关闭连接
 
 事件按实体给出**快照中的完整新值**，客户端按 `kind` 找到它在快照里的位置并按实体 ID 替换或删除；不用 JSON Patch。后端 `change_feed.KINDS` 与前端 `CrewAppData.KINDS` 是同一份登记，记录未登记的 kind 直接报错（后端 `ValueError`，前端 `UnknownChange` → 状态 `failed` 并提示刷新页面），不静默丢弃。schema 只增不改：新增 kind 必须先进前端登记，再由后端产生。
 
-当前登记：
+当前登记（后端 `change_feed.KINDS` = `BUILDERS` 的 9 种 + `limits`；前端 `CrewAppData.KINDS` 同名同形，测试 `test_the_frontend_registry_mirrors_the_backend_kinds` 逐项比对）。三种形状：**列表**（按键替换 / 删除后按后端顺序重排）、**字段**（整值替换，没有删除）、**字段组**（只合并登记的几个字段，同一对象里其他来源的字段保持原值；字段不一致视为页面过旧）：
 
-| kind | 快照位置 | 实体 ID | 排序（与后端一致） | 派生字段 |
-| --- | --- | --- | --- | --- |
-| `todo` | `todos[]` | `id` | 阻塞在前 → `created_at` → `id`（`todo.list`） | `todo_count = todos.length` |
+| kind | 范围 | 形状 · 快照位置 | 实体 ID | 排序 / 字段 | 构造函数（`snapshot_values` 等，快照同用） |
+| --- | --- | --- | --- | --- | --- |
+| `todo` | 工作区 | 列表 `todos[]` | `id` | 阻塞在前 → `created_at` → `id`；派生 `todo_count` | `todo.change_value` |
+| `project` | global | 列表 `projects[]` | `name` | `name` | `project`（已移除 → `removed`） |
+| `workspace` | 工作区 | 字段 `project` | 工作区名 | — | `workspace` |
+| `ai` | global | 字段 `ai` | `ai` | — | `ai` |
+| `decision` | 工作区 | 列表 `decisions[]` | `id` | `id`（只列 open） | `decision` |
+| `goal` | 工作区 | 列表 `goals[]` | `id` | `priority` 降序 → `created_at` → `id`（只列可见 leader 的任务） | `goal` |
+| `domains` | 工作区 | 字段 `domains` | 工作区名 | — | `domains` |
+| `channel` | 工作区 | 字段组 `channel` | 工作区名 | `unread`、`latest_id`、`digest_id`（`digesting`、`digest_error` 属摘要管理器内存，未接入） | `channel` |
+| `sound_settings` | global | 字段组 `sounds` | `sounds` | `preferences`、`revision`、`catalog`、`missing`（`events` 随会话日志，未接入） | `sound_settings` |
+| `limits` | global | 字段组（快照顶层） | `limits` | `limits`、`usage_scanned_at`、`usage_error` | 后台用量扫描直接记录（6.3） |
 
 ## 5. 写入与业务写同事务
 
-- `change_feed.updated / removed` 只能在业务写已开启的事务里调用（否则 `RuntimeError`），与业务写同一连接、一起提交或回滚。`board.transaction`（`BEGIN IMMEDIATE`）与 `goals.transaction`（嵌套时 SAVEPOINT）都满足；SAVEPOINT 回滚同样撤销增量。
-- 实体新值在同一事务里按快照的构造函数现算（待办用 `todo.get`，与 `todo.list` 同一 `_enrich`），保证事件值与之后重建的快照一致（测试逐项比较 `data == todo.list(...)[i]`）。
-- **库外副作用**（追加会话日志 JSONL、启动进程、投递输入）不能随 SQLite 回滚，按架构重审 §6.2 “持久意图 + 发件箱”另做，不在本次试点范围。
+- **标记 + 提交前现算**：写入点只调用 `change_feed.touch(conn, kind, 工作区, 实体)`（可在事务内任意位置，同一实体去重、保持首次标记顺序）。`board.transaction` 在 `BEGIN IMMEDIATE` 后 `change_feed.begin`，**提交前** `change_feed.flush` 按 `BUILDERS` 登记的构造函数用事务内的最终状态现算每个实体的值并写 `change_log`，`finally` 里 `end`。所以增量与业务写同连接、同事务提交或回滚；一个事务里多次写同一实体只记一条最终值，中间态不外泄（测试 `test_an_entity_written_many_times_in_one_transaction_is_recorded_once_with_its_final_value`）。构造函数返回 `None` 表示快照不再列出该实体 → 记 `removed`。
+- **严格**：不在 `board.transaction` 里标记（自动提交模式、或裸 `BEGIN`）直接 `RuntimeError`；未登记 kind、范围与 kind 不符直接 `ValueError`。生产代码对本地库的顶层写事务来自 `board.transaction`（`goals.transaction` 嵌套时用 SAVEPOINT，`usage._transaction` 也落到它），唯一的裸事务（工作区导入）已接入同一记录流程（见下），所以没有放行分支。SAVEPOINT 回滚后标记仍在，提交时按当时的真实状态重算，只会多一条与快照一致的幂等事件。
+- **构造函数与快照同源**：`plugin/crew/snapshot_values.py` 里的函数同时被 `web_service/snapshot.py` 调用（工作区列表、当前工作区、AI、拍板、任务可见性、架构图、交流区、音效设置），事件值与之后重建的快照逐字段相同（`test_change_feed_domains` 每条用例都把增量与新快照比对）。构造函数只读；在旧库上读工作区可能先补主题（`board._ensure_project_themes`），这会再次标记，`flush` 循环到没有新标记为止。
+- 非数据库来源（用量扫描合成的额度值）不走构造函数，在产生它的事务里直接 `change_feed.updated`（6.3）。
+- **库外副作用**（追加会话日志 JSONL、启动进程、投递输入）不能随 SQLite 回滚，按架构重审 §6.2 “持久意图 + 发件箱”另做，不在本文范围。上传 / 删除自定义音效只改文件，写文件后单独开一个事务记录 `sound_settings`。
+- **严格的例外只有一处**：`storage_v2/activation.py` 的工作区导入（`activate_workspace`）自己开裸 `BEGIN IMMEDIATE`（需要 `defer_foreign_keys`），本轮让它像 `board.transaction` 一样 `begin` / 提交前 `flush` / `end`，所以它经 `board.init_project` 标记的工作区列表与字段同事务记录。导入批量插入的会话、任务、拍板、待办**不逐条记录**：导入既有问题——旧库里的进展报告（`data_json` 无 `requirement_version`）导入后版本号排到交付报告之后，`goal_api.card` 取该键 `KeyError`，这样导入的工作区 `state()` 本来就打不开（`test_storage_v2_features` 两条真实链路可复现）。若此时整区重发，这类导入会从“成功但页面打不开”变成整体回滚，属于改变存储口径，已写入交付待主控决定；修好排序后再在导入里整区标记。新建的导入工作区没有订阅者，受影响的只有“导入到一个页面正开着的空工作区”这一情形。导入修复（`repair_activations`）只写可移植库元数据与审计事件，不影响快照。
+- **迁移不是生产者**：`store.py` 启动迁移与 `home_migration.py` 换库不记录变更；换库后序号从头开始，持有旧序号的客户端会得到 `ahead` → 重拿快照。
 
 ### 5.1 待办试点（已实现）
+
+待办写入点改用 `todo.touch`（第 1 轮的 `publish_change` 已删除）。
 
 | 业务写 | 位置 | 产生的事件 |
 | --- | --- | --- |
@@ -97,7 +112,19 @@ data: {"reason":"pruned"} ← 发完即关闭连接
 | 标记已投递 / 归档原轮次 | `goal_links._mark_delivered`、`goal_links.deliver` 失效分支 | 按当前状态 updated / removed（`goal_links[].delivered_version` 变化） |
 | 工作区清理批量取消 | `maintenance.Manager._archive` | 每条原 open 待办一个 `todo.removed` |
 
-待办里还嵌着别的领域的派生值：提出者名、所属组与 leader（`proposer_name`、`group`、`leader_session_id`、`leader_name`）、任务标题（`goal_links[].goal_title`）。改名、换组、关组、归档会话、任务改标题时必须重发受影响的待办；这些写入属于会话 / 组 / 任务领域，随这些领域接入时一起做（见 6.1 “跨实体派生”）。在此之前不能删除轮询（第 9 节）。
+待办里还嵌着别的领域的派生值：提出者名、所属组与 leader（`proposer_name`、`group`、`leader_session_id`、`leader_name`）、任务标题（`goal_links[].goal_title`）。任务标题没有写入点（`goals.py` 不改 `title`），无需联动；改名、换组、关组、归档会话属于会话 / 组领域（依赖托管生产者，见 6.1），随这些领域接入时重发受影响的待办。
+
+### 5.2 第 2 轮铺开的领域（全部直接写入点）
+
+| kind | 业务写（位置） | 联动 |
+| --- | --- | --- |
+| `project` + `workspace` | 创建 / 重新打开（`board.init_project`）、补主题（`board._assign_project_themes`）、改主题（`board.set_project_theme`）、改显示名或目录（`workspace_settings.apply_update`）；移除（`workspace_settings.remove`）只记 `project.removed` | `board.touch_project` 同时标记两者 |
+| `ai` | `settings.save`（含 `ai_settings` 与 `ai_task_settings` 的增删） | — |
+| `decision` | 提问 `board.ask`、答复 `board.answer`（含 `trust_mode.auto_answer`、远程渠道作答）、撤回 `board.withdraw`、记录归属 leader `trust_mode.record_decision_scope`、改写 `decision_briefs.revise`、保存简报 `decision_briefs._save`、讨论 / 给选项 `decision_flow.discuss/ready`、关联执行 `goal_links.bind`、工作区清理批量撤回 `maintenance.Manager._archive` | `snapshot_values.touch_decision` 同时标记关联任务（`pending_decision`） |
+| `goal` | `goals.py` 全部写函数（`create`、`amend`、`assign`、`transition`、`request_pause`、`resume_review`、`resume`、`continue_task`、`reopen`、`configure_execution`、`create_execution`、`set_execution_status`、`save_report`、`review_acceptance`、`observe`、`request_finish`、`finalize_finish`、`request_cancel`、`request_transfer`、`finalize_transfer`，经 `goals._touch` 或直接 `goals.touch`）、工作清单 `goal_work.add/update/carry_forward/hand_over`、决策模式 `goal_mode.initialize/set_mode`、上下文回执改执行版本 `goal_context.mark_applied` | 拍板答复 / 撤回联动任务卡；不进卡片的表（`goal_context_*`、`goal_messages`、执行已读、原生绑定、`goal_ops_pauses`）不标记 |
+| `domains` | `domains.apply`（全部改动批次）、永久删除 leader 时 `domains.release_leader` | — |
+| `channel` | 发言 `channel.post`、自动指引 `channel.settle`、用户已读 `channel._mark_read`（leader 自己的已读不在页面上，不标记）、要点卡 `channel_digest.Manager._run`（插入改为在事务内与清理边界检查一起提交）、工作区清理边界 `maintenance.Manager._archive` | — |
+| `sound_settings` | `event_sounds.save`、上传 `add_custom`、删除 `delete_custom` | — |
 
 ## 6. 快照逐项对应：来源与生产者
 
@@ -105,26 +132,26 @@ data: {"reason":"pruned"} ← 发完即关闭连接
 
 ### 6.1 顶层字段
 
-| 字段 | 来源 | 建议 kind / 范围 | 生产者位置 | 状态 |
+| 字段 | 来源 | kind / 范围 | 生产者位置 | 状态 |
 | --- | --- | --- | --- | --- |
-| `todos`、`todo_count` | DB `todos` + 会话 / 组 / 任务标题 | `todo` / 工作区 | 见 5.1 | **已实现**（跨实体派生待会话、组、任务领域） |
-| `projects`、`project` | DB `projects`、`project_themes`；`project.root` | `project`（列表 `projects[]` 按 `name`）/ global；`workspace` 字段 / 工作区 | `board.init_project`、工作区设置、主题 | 待做 |
-| `ai` | DB `ai_settings` 等 | `ai`（整值）/ global | `settings.save` 等 | 待做 |
-| `decisions` | DB `decisions` + `decision_briefs` / `decision_flow` 富化 + `trust_mode` | `decision`（`id`）/ 工作区 | `board.ask/answer/withdraw`、拍板流程、简报 | 待做 |
-| `goals` | DB `goals` 等（`goal_api.card`）；只含可见 leader 的任务 | `goal`（`id`）/ 工作区 | `goals.*` 写入 | 待做 |
-| `domains` | DB（`domains.summary`） | `domains`（整值）/ 工作区 | `domains.*` | 待做 |
-| `channel` | DB `channel.state` + `channel_digest` 内存（`digesting`、`digest_error`） | `channel`（整值）/ 工作区 | `channel.*` 写入；摘要管理器状态变化 | 待做；R2 合入后接（与 R2 文件归属错开） |
-| `native_approvals` | 内存：Codex app-server 待审批（`native_approvals.py`） | `approval`（`id`）/ 工作区 | 审批到达 / 答复处 | 待做 |
-| `candidates` | 扫描：外部进程列表 + VS Code 会话扫描（`workers.py` 每 10 秒） | `candidates`（整值）/ 工作区 | `refresh_agents`、`_read_vscode` 结果变化时 | 待做 |
-| `agents_error`、`vscode_error` | 扫描（同上） | `scanner`（整值）/ global | 同上 | 待做 |
-| `limits`、`usage_scanned_at` | DB `codex_rate_limits`（由用量扫描写入）+ Claude 额度文件 + `crew_usage` / `claude_budget` 内存 | `limits`（整值）/ global | **前置**：`scan_usage` 现在由 `state()` 每次调用驱动，删轮询后无人驱动，须先按迁移阶段 2 移到后台扫描线程，在扫描结果变化处产生 | 待做（依赖阶段 2） |
-| `runtimes` | 内存：原生载体发现（`runtime_catalog`） | `runtimes`（整值）/ global | 发现刷新完成处 | 待做 |
-| `notification` | `connections` 管理器（渠道状态、离开状态） | `notification`（整值）/ global | 渠道状态变化、`set_away` | 待做 |
-| `sounds` | DB 音效设置 + 会话日志 | `sounds`（整值）/ 工作区 | 设置写入；日志相关部分依赖托管生产者 | 待做 |
-| `git_assistant`、`git_branches` | DB `git_management` + leader 卡片 + Git 进程读取 | `git`（整值）/ 工作区 | Git 设置写入、Git 读取刷新、Git 助手 leader 卡片变化 | 待做 |
-| `attention` | 派生：会话、拍板、派工任务、**会话日志事件** | `attention`（`id`）/ 工作区 | 依赖托管生产者 | 待做（依赖托管） |
-| `leaders`、`members` | **混合**，见 6.2 | `leader` / `member`（`session_id`）+ `leader_order`（顺序整值）/ 工作区 | 见 6.2 | 待做（依赖托管） |
-| `now` | 服务端时钟，前端用于活动计时校准 | 不作为 kind；`ready` 与心跳改为带 `now`，客户端更新校准 | `web_service/events.py` | 待做（接线时一起做） |
+| `todos`、`todo_count` | DB `todos` + 会话 / 组 / 任务标题 | `todo` / 工作区 | 5.1 | **已覆盖**（直接写入点全部覆盖；提出者改名、换组等跨实体派生随会话 / 组领域接入） |
+| `projects`、`project` | DB `projects`、`project_themes`、`project_settings` | `project` / global；`workspace` / 工作区 | 5.2 | **已覆盖** |
+| `ai` | DB `ai_settings`、`ai_task_settings` | `ai` / global | 5.2 | **已覆盖** |
+| `decisions` | DB `decisions` + `decision_briefs` / `decision_presentations` / `decision_leader_scopes` / `goal_links` | `decision` / 工作区 | 5.2 | **已覆盖**（提问人改名属会话领域，未覆盖） |
+| `goals` | DB `goals` 等（`goal_api.card`）；只含可见 leader 的任务 | `goal` / 工作区 | 5.2 | **已覆盖**（leader 关闭 / 移除 / 换组改变可见性属会话领域，未覆盖：在那之后对该任务的下一次写入才会记 `goal.removed`） |
+| `domains` | DB `domains`、`domain_leaders`、`domain_boards` | `domains` / 工作区 | 5.2 | **已覆盖** |
+| `channel` | DB（`unread`、`latest_id`、`digest_id`）+ 摘要管理器内存（`digesting`、`digest_error`） | `channel` 字段组 / 工作区 | 5.2 | **DB 部分已覆盖**；内存部分未覆盖（摘要管理器状态变化处，非 DB） |
+| `native_approvals` | 内存：Codex app-server 待审批（`native_approvals.py`） | `approval`（`id`）/ 工作区 | 审批到达 / 答复处 | 未覆盖（托管） |
+| `candidates` | 扫描：外部进程列表 + VS Code 会话扫描（`workers.py` 每 10 秒） | `candidates`（整值）/ 工作区 | `refresh_agents`、`_read_vscode` 结果变化时 | 未覆盖（扫描） |
+| `agents_error`、`vscode_error` | 扫描（同上） | `scanner`（整值）/ global | 同上 | 未覆盖（扫描） |
+| `limits`、`usage_scanned_at`、`usage_error` | DB `codex_rate_limits`（由用量扫描写入）+ Claude 额度文件 + 预算文件 + 扫描内存 | `limits` 字段组 / global | 后台用量扫描，6.3 | **已覆盖**（阶段 2） |
+| `runtimes` | 内存：原生载体发现（`runtime_catalog`） | `runtimes`（整值）/ global | 发现刷新完成处 | 未覆盖（托管） |
+| `notification` | `connections` 管理器（渠道状态、离开状态） | `notification`（整值）/ global | 渠道状态变化、`set_away` | 未覆盖（非 DB） |
+| `sounds` | DB 音效设置 + 自定义音效文件（`preferences`、`revision`、`catalog`、`missing`）+ 会话日志（`events`） | `sound_settings` 字段组 / global | 5.2 | **设置部分已覆盖**；`events` 未覆盖（托管会话日志） |
+| `git_assistant`、`git_branches` | DB `git_management` + Git 助手的 leader 卡片 + Git 进程读取 | `git`（整值）/ 工作区 | Git 设置写入、Git 读取刷新、助手卡片变化 | 未覆盖：值里包含托管的 leader 卡片（`busy`、`status` 等）与 Git 进程读取结果，在 DB 写入点算不出整值 |
+| `attention` | 派生：会话、拍板、派工任务、**会话日志事件** | `attention`（`id`）/ 工作区 | 依赖托管生产者 | 未覆盖（托管） |
+| `leaders`、`members` | **混合**，见 6.2 | `leader` / `member`（`session_id`）+ `leader_order`（顺序整值）/ 工作区 | 见 6.2 | 未覆盖（托管） |
+| `now` | 服务端时钟，前端用于活动计时校准 | 不作为 kind；`ready` 与心跳改为带 `now`，客户端更新校准 | `web_service/events.py` | 未覆盖（接线时一起做） |
 | `themes`、`models`、`efforts` | 常量 | 无（随快照） | — | 不需要 |
 
 ### 6.2 leader / member 卡片
@@ -144,11 +171,32 @@ data: {"reason":"pruned"} ← 发完即关闭连接
 
 托管部分的生产者只能放在 `chat.py`（`Journal.emit / set_status / _phase / _tokens`、`Running` 启停、`Manager._read`）：按架构重审，高频进度按实体合并，每实体每秒最多一条并保证最后一次送达；结束、删除、审批等不可丢事件单独落盘；生产者在短事务里写 `change_log`，不得在写锁里调用完整 `state()`。
 
+### 6.3 后台用量扫描（迁移阶段 2）
+
+`state()` 不再调用 `scan_usage`，不写库、不拿写锁（测试 `test_the_snapshot_neither_scans_nor_writes_nor_waits_for_the_writer` 在持有写锁时读状态并追踪所有写语句）。扫描移到 `web_service/usage.py` 的后台线程 `crew-usage`（`start()` 启动，`close()` 等它结束当前一步）：
+
+| 项 | 以前（`state()` 驱动） | 现在（后台线程） |
+| --- | --- | --- |
+| 派工回执（`codex_runs.jsonl`、`claude_runs.jsonl`） | 每个打开的页面每 3 秒轮询一次扫一次；没有页面打开就不扫 | 每 2 秒一步（`USAGE_TICK_SECONDS`），不管有没有页面 |
+| 全量扫描（Claude 转录、Codex rollout 与额度、周用量记录、Crew 周估算、API 预算） | 距上次 ≥ 60 秒的那次读取顺带做 | 距上次 ≥ 60 秒的那一步做（`FULL_SCAN_SECONDS`），首步即全量 |
+| 用量页 `/api/usage` | 读之前再扫一次（≥ 60 秒才全量） | 只读后台留下的结果；页面仍按 `usage_scanned_at` 变化重新加载 |
+| 首屏 | 第一次 `state()` 同步做完整全量扫描才返回 | `start()` 同步按已存数据预填 Crew 估算与预算（不读转录），首步全量在后台进行；完成前 `usage_scanned_at` 为 `null` |
+
+每一步：
+
+1. **事务一**：`usage.scan`（全量或只读回执）单独提交，回执与 Codex 额度行先落库。这样即使下面的页面值算不出来（Claude 额度缓存格式变化、价格文件损坏），派工回执也照常更新。
+2. **事务二**：全量时写周用量记录、算 Crew 估算与预算；合成快照里的 `limits`、`usage_scanned_at`、`usage_error`（`usage_value`，快照也用它），与上次记录的值不同才 `change_feed.updated(..., 'limits', ...)`，与估算写入同一事务。两步之间崩溃不会漏：重启后尚未记录过任何值（`usage_published` 为空），第一步必然记录。额度值随时间变化（到期失效）与预算保存（`web.py` 直接改内存）都会在下一步比对出来记录。
+3. **出错**：只捕获扫描可能遇到的错误（`sqlite3.Error`、`OSError`、`ValueError`、`KeyError`、`TypeError`，与 VS Code 扫描同一口径），打印完整 traceback，把“用量扫描失败（2 秒后重试）：类型: 原因”写进 `usage_error` 并记录变更，下一步照常重试；整步成功才清除。记录错误本身也失败时（数据库不可用、页面值算不出来）同样打印原因、下一步重试；此时 `state()` 也会带着同一原因失败，与以前一致。
+4. **锁**：重量扫描只持 `write_lock`（库内写者串行），`scan_lock` 只在更新内存字段时短暂持有，`state()` 读 Claude 标题时不再被分钟级全量扫描挡住。
+5. **启动顺序**：首个全量扫描读多久就持写锁多久，所以用量线程等进程轮询线程跑完首轮（含对上次服务遗留的崩溃会话自动续回）再开始，与以前“首个页面轮询才触发扫描”时的先后一致；`start()` 创建这个事件（`self.agents_passed`）并作为必填参数传给 `_poll_agents(passed)` 与 `_poll_usage(after)`，等待期间每 0.5 秒检查一次停止信号。
+
+`usage_error` 是新增的快照顶层字段（与 `agents_error`、`vscode_error` 同类）；前端本轮未接线，尚不显示。
+
 ## 7. 前端合并规则（`frontend/app-data.js`，`window.CrewAppData`）
 
 - `create(ctx)`：`ctx` 由 `app.js` 提供 `origin`、`project`、`state`（getter，状态仍归外壳所有，测试对 `state=` 的赋值照常被看到）、`api`（晚绑定）、`fetch`、`EventSource`、`setTimeout/clearTimeout`、`onState(next, previous, meta)`、`onStatus(status, detail)`、`onError(error)`。返回 `queryPath`、`request`、`loadState(fresh)`、`stop`、`seq`、`status`。
 - **加载**：`loadState()` = 取快照 → `onState(快照, 旧状态, {source:"snapshot"})` → 以快照 `seq` 建**一个**订阅。并发调用共用一次加载，`fresh` 在当前加载完成后再取一次（与原 `loadState` 合同相同）。失败抛给调用方（外壳显示“加载失败”或提示），同时数据层按退避自动再取，页面能自己恢复。
-- **合并**：只应用 `seq > 当前序号` 的事件（重复送达自动忽略）；按 kind 登记找到列表，按实体 ID 替换 / 追加 / 删除，按登记的排序重排并重算派生字段；返回新对象，未改动的部分保持原引用，旧状态不被修改（外壳仍可比较新旧状态，例如音效）。
+- **合并**：只应用 `seq > 当前序号` 的事件（重复送达自动忽略）；按 kind 登记的形状处理（4.3）：列表按实体 ID 替换 / 追加 / 删除，按登记的排序重排并重算派生字段；字段整值替换；字段组只合并登记的字段，字段不一致或对字段 / 字段组发删除都视为页面过旧（`UnknownChange`）；返回新对象，未改动的部分保持原引用，旧状态不被修改（外壳仍可比较新旧状态，例如音效）。
 - **追赶**：`ready` 之前到达的积压先攒起来，`ready` 时一次合并并标 `meta.catchUp = true`；外壳据此不重播过去的音效与提醒（架构重审：音效只对晚于本次连接建立的事件触发）。
 - **断线**：连接出错 → 关闭该订阅（不用浏览器自带重连，避免两个订阅并存）→ 状态 `disconnected` → 按 1、2、5、10 秒退避，用最后应用的序号重新订阅，不重拿快照；订阅收到 `ready` 后退避归零。
 - **`snapshot-required`**：关闭旧订阅、取消旧重连定时器 → 状态 `resyncing` → 重拿快照 → 以新序号建一个订阅。自动重同步失败时经 `onError` 报告并按退避再取。
@@ -163,26 +211,16 @@ data: {"reason":"pruned"} ← 发完即关闭连接
 - **手机端**：PWA 与桌面共用 `frontend/` 与本协议。弱网下断线续传只补差量；补不上才重拿快照。远程设备吊销时长连接立即结束。手机息屏 / 标签页隐藏时是否断开订阅（对话页 `chat.js` 是隐藏即断、可见再补读）待接线时按交互清单 `chat.read-visibility` 统一。
 - **其他仍在轮询的入口**（不在本次范围，列出供后续统一）：`remote-access-ui.js` 每 5 秒、桌面 `tabs.cjs` 读 `/api/workspaces/activity`、`assistant.js` 的 `/api/assistant/state`。它们可在对应领域接入事件流后改为订阅 `global` 范围。
 
-## 9. 前提冲突（停工点，待主控拍板）
+## 9. 前提冲突与主控裁决（2026-11-27，已结）
 
-任务书要求“在会改变快照内容的业务写入处记录变更”并“删除 3 秒全量轮询，不保留开关”，同时“不得修改 `chat.py`、`chat_*.py`、`web.py`、`web_api/`”。现场核对后，这几条不能同时满足：
+第 1 轮发现：快照里 leader / member 卡片的忙闲、活动计时、压缩小环、未读、`attention`、派工任务等来自 `chat.Manager` 的进程与会话日志内存状态，生产者只能加在 `chat.py`（当时禁改）；`state()` 自身驱动用量扫描；架构重审规定全部领域覆盖前不删轮询。所以没有删轮询、没有接线 `app.js`，并列出 A / B / C 三个方案。
 
-1. **快照里大量字段没有“业务写”**：leader / member 卡片的忙闲、在线位置、活动计时与阶段、token 滚动、压缩小环、未读数与最后回复、`attention`、派工 / 子代理任务，都来自 `chat.Manager` 的进程与会话日志内存状态（6.2），生产者只能加在 `chat.py`，而本任务禁止改它（另一个任务正在拆）。
-2. **`state()` 本身就是用量扫描的驱动者**：`state()` 每次先调 `scan_usage(live_dispatch=True)`，派工回执、Codex 额度、Claude 周用量都靠 3 秒轮询触发写库（6.1 `limits`）。删掉轮询，这些数据就不再更新。架构重审把“读路径去副作用、扫描移到后台”列为迁移阶段 2，是阶段 3 的前置，尚未做。
-3. **外部扫描结果**（外部进程、VS Code 会话、候选人、Git 分支、原生审批）都是后台线程或请求时读取的内存状态，也没有业务写。
-4. 架构重审 §6.2 / §7 原定“试点一个领域，**全部领域覆盖前不删轮询**”，与任务书“直接删轮询”冲突。
+主控裁决：
 
-若此时删除轮询，上面这些字段在页面上会冻结在快照那一刻，直接违反交互零丢失门禁（`chat.activity-*`、`leader.row-unread`、`rail.nav-unread`、`workbench.working*`、`chat.context-ring.*` 等，见交付核对表）。所以本次**没有**删除轮询、**没有**把 `app.js` 接到新数据层。
-
-可选方案（需主控决定）：
-
-| 方案 | 做法 | 优点 | 代价 |
-| --- | --- | --- | --- |
-| A（推荐，按架构重审原路线） | 现在把 DB 领域（6.1“DB”行）按待办试点的做法铺开；先做阶段 2 把 `scan_usage` 等扫描移到后台并在结果变化处产生事件；`chat.py` 拆分合入后在托管生产点接入 leader / member / attention；全部覆盖后接线 `app.js` 并删除轮询 | 不留过渡代码；每个字段由真实变化处产生，符合“读者不再采集” | 轮询要等 `chat.py` 拆分之后才能删 |
-| B | 新增服务端“比对生产者”：有订阅时后台按间隔（或会话日志唤醒时）重建工作区快照，按实体比对后写 `change_log`；可立刻删轮询，不碰 `chat.py` | 删轮询最快，网络流量立刻降到心跳级 | 后端仍周期性构造完整 `state()`（含 `scan_usage` 写锁），违背架构重审“生产者不得调用完整 state()”；是过渡代码，之后要整条删除；事件不与业务写同事务 |
-| C | DB 领域同事务产生 + 托管 / 扫描字段暂用 B 的比对生产者，`chat.py` 拆分后逐个替换 | 能较早删轮询，DB 领域一步到位 | 同时维护两种生产方式一段时间，替换完成前仍有 B 的代价 |
-
-另需确认一处小出入：任务书第 4 条把 `replace` 列为数据层要抽出的内容，而拆分边界 §3.3 列的是 `api`、`queryPath`、`loadState`、轮询定时器、`notifySounds`。`replace` 是渲染辅助（依赖 `composingInput` 等外壳状态，负责焦点、选区、滚动保留），本次没有抽出，建议留在 `app.js` 渲染层。
+1. 选**方案 A**，不做“比对生产者”过渡代码。第 2 轮把 6.1 全部“DB”领域铺开（5.2），并完成迁移阶段 2（6.3）。
+2. 会话托管状态（忙闲、活动计时、压缩小环、未读、`attention`、派工任务）的生产者等 `chat.py` 拆分（C1）合入后的下一轮再做；在那之前不删轮询、不接线 `app.js`。
+3. `replace` 留在 `app.js` 渲染层，不抽出。
+4. 不建 `change_log_state`，沿用 §2 的水位做法；理由已补进架构重审 §6.2 脚注。
 
 ## 10. 待接线
 
@@ -206,7 +244,7 @@ data: {"reason":"pruned"} ← 发完即关闭连接
 
 同时登记 `plugin/tests/test_assistant_http.py::test_new_page_assets_are_served_by_the_actual_backend`。
 
-### 10.3 前端接线（第 9 节拍板后执行）
+### 10.3 前端接线（托管生产者接入后执行）
 
 1. `index.html`：在 `<script src="/app.js" defer>` 之前加 `<script src="/app-data.js" defer></script>`。
 2. `app.js`：`queryPath` 与 `api` 的通用部分改为 `CrewAppData.create(ctx)` 返回的 `queryPath` / `request`，外壳保留 `function api(path, data)`（发送前后的 `waitingSounds` 记账留在外壳）与 `function loadState(fresh)` 同名绑定，使测试注入 `api=`、`loadState` 照常可用；`ctx` 用 `get state() { return state; }`、`api: (...a) => api(...a)` 晚绑定。
