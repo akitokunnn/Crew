@@ -669,8 +669,18 @@ CODEX_HOME=<临时> codex exec --skip-git-repo-check --json "$PROMPT"
 
 结论：两种模式在这组意图上都 100% 完成、没有误选；all 模式让 CC 少一步搜索，Codex 在 all 模式下路径和 token 波动更大。样本只有 12 次、单轮、无相似名称干扰与长会话 / 恢复 / 权限收紧场景，不足以推翻裁决 7。**建议**保持基线（core）为默认并删除 all 模式；all 模式代码目前仍在（启动参数），等主会话记入决策日志后删除。
 
+**与集成分支合并时的处理**（191d4e2 增量事件流与新手引导、ef6f6fd 跨 Leader 作战室）：
+- 新操作 `workspace.snapshot`、`onboarding.get/set`、`runtimes.readiness`、`war_room.*` 补参数格式并登记设备范围；`/api/events` 归传输入口（§8.14）。前端请求统一经 `CrewAppData`（`app-data.js`），`app.js` 的 `api` / `queryPath` 委托给它。
+- `war_room.*` 去掉 HTTP 绑定，leader 经 MCP 在自己的工作区调用、全局助手以用户身份带 project。作战室实测反馈写进工具参数：状态板 `id` 写明“已有项的编号，新增时不要带”；标题、事项、说明、契约、结论的长度限制写进 `maxLength` 与参数说明。守则的作战室一节移到 `prompts/roles/leader.md`，房内通知改为工具名。
+- 工具指南与 `crew_search` 结果里“需附用户原话 message_id”只给全局助手（之前 leader 也看到）；`channel.post` 摘要由“以用户身份……”改为“在 Leader 交流区发言”。
+
+**写入争用修复**（合并后真 AI 实测暴露）：事件流第 2 轮把用量扫描移到后台、启动即全量扫描，扫描在服务写锁下用一个写事务扫完全部会话记录（本机 572 个会话、约 31 万行写入、17 秒）。期间：
+1. 经清单的写操作在回执（`op_requests`）处等 SQLite 忙等 5 秒后报 500——回执与 AI 确认请求改为排队等服务写锁（`test_writes_queue_behind_a_long_writer_instead_of_failing_on_the_busy_timeout`）。
+2. 聊天线程的投递回执、事件流记录不走服务写锁，同样超时；实测中 crew-chat 读取线程崩溃，会话离线——`usage.scan` 改为按整份会话记录分批提交（每批约 0.5 秒，与读取偏移同一事务），批间停 0.12 秒让忙等的写入者进来；后台扫描不再整段持锁，`usage_scan_lock` 保证同时只有一次扫描。中途出错只回滚当前批，下次扫描补齐且不重复计数。首次全量扫描 17.1 秒 → 20.9 秒，增量扫描不变（`test_a_long_first_scan_never_keeps_other_writers_past_the_busy_timeout`，修复前失败、修复后通过）。
+
 **未做 / 未验证**：
 - 完整 A/B（相似名称干扰、长会话、恢复、权限收紧后调用、高风险操作）未做。
 - 确认请求只在助手页显示，工作区页与全局导航还没有入口。
 - Codex 三个工具过滤配置项、长会话里的延迟加载仍未测；CC 长会话里 `list_changed` 加载在真实会话中只测了一轮。
 - `rule_reads` 表随功能删除后不再写入，表结构保留未做迁移删除。
+- 单份特别大的会话记录仍在一个事务里扫完（分批只在文件之间切分）。
