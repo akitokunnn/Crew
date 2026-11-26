@@ -33,6 +33,8 @@ from . import domains
 from .web_api import personal as personal_api
 from .web_api import behavior_prompts as behavior_prompts_api
 from .web_api import routes
+from .ops import executor
+from .ops.errors import HTTP_STATUS, OpError
 from .web_api.common import _text, _optional_text
 from .web_service.workers import WorkersMixin
 from .web_service.updates import UpdatesMixin
@@ -57,10 +59,6 @@ def _vscode_state_db():
 
 # HTTP entries that start or feed model work must pass the update gate before
 # any side effect (adoption, git admin setup, digest).
-MODEL_WORK = {"/api/spawn", "/api/leader", "/api/wake", "/api/chat/send", "/api/session/compact",
-              "/api/git/enable", "/api/channel/digest", "/api/maintenance/department/compact",
-              '/api/assistant/native-action'}
-
 
 class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
               WorkspaceMixin, SessionsMixin, ReadsMixin, UsageMixin):
@@ -141,60 +139,16 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
         return self.clock() if callable(self.clock) else self.clock
 
     def post(self, path, data, project_name=None):
+        """The legacy URL entry: each business path is a binding of a registered operation."""
         if not isinstance(data, dict):
-            raise ValueError("JSON \u8bf7\u6c42\u5fc5\u987b\u662f\u5bf9\u8c61")
-        if path == "/api/admin/update/prepare":
-            return self.prepare_update(data)
-        if path == "/api/admin/update/cancel":
-            return self.cancel_update(data)
-        if path == '/api/admin/connection/prepare':
-            return self.prepare_connection(data)
-        if path == '/api/goals/agent' and data.get('action') == 'report.preview':
-            # Capturing an existing report starts no model work.
-            return self._post(path, data, project_name)
-        if path in MODEL_WORK or path.startswith("/api/goals/") or path in ("/api/native-approval", "/api/decision/discuss", "/api/decision/clarify", "/api/project/update", "/api/project/remove", "/api/maintenance/cleanup"):
-            with self.chat.work():
-                return self._post(path, data, project_name)
-        return self._post(path, data, project_name)
-
-    def _post(self, path, data, project_name):
+            raise ValueError("JSON 请求必须是对象")
         return routes.post(self, path, data, project_name)
 
+    def op(self, name, args=None, *, request_id=None, project=None):
+        """Run one operation as the local user (tests and host code)."""
+        return executor.human_call(self, name, args, request_id=request_id, project=project)
 
-POST_PATHS = {"/api/project/init", "/api/project/theme", "/api/answer", "/api/spawn", "/api/leader", "/api/wake", "/api/roster/move", "/api/roster/remove", "/api/group/close", "/api/group/undo", "/api/roster/adopt", "/api/chat/send", '/api/chat/read'}
-POST_PATHS.update({'/api/messages', '/api/todo/resolve', '/api/todo/undo'})
-POST_PATHS.update({'/api/assistant/open', '/api/assistant/native-action'})
-POST_PATHS.update({'/api/personal/notes', '/api/personal/notes/start', '/api/behavior-prompts'})
-POST_PATHS.add('/api/personal/notes/recovery')
-POST_PATHS.update({'/api/personal/mindmap', '/api/personal/mindmap/preview', '/api/personal/mindmap/convert'})
-POST_PATHS.add('/api/personal/tags')
-POST_PATHS.update({'/api/goals/create', '/api/goals/action', '/api/goals/context', '/api/goals/agent', '/api/chat/interrupt', '/api/decision/discuss', '/api/decision/ready'})
-POST_PATHS.update({'/api/trust', '/api/comments', '/api/decision/clarify'})
-POST_PATHS.update({'/api/project/update', '/api/project/remove'})
-POST_PATHS.update('/api/session/' + action for action in ('appearance', 'rename', 'archive', 'delete', 'restore', 'undo', 'stop', 'options', 'compact'))
-POST_PATHS.update(('/api/session/runtime/prepare','/api/session/runtime/switch'))
-POST_PATHS.update(('/api/attention/dismiss', '/api/notifications/away'))
-POST_PATHS.update(('/api/channel', '/api/channel/read', '/api/channel/digest'))
-POST_PATHS.add('/api/leaders/order')
-POST_PATHS.add('/api/domains')
-POST_PATHS.update(('/api/files/resolve', '/api/files/open', '/api/files/reveal', '/api/goals/report/folder'))
-POST_PATHS.update(('/api/documents','/api/documents/pin','/api/documents/refresh'))
-POST_PATHS.update(('/api/workspace-data/discover','/api/workspace-data/open','/api/workspace-data/export','/api/workspace-data/preview','/api/workspace-data/import','/api/workspace-data/handoff','/api/workspace-data/activate'))
-POST_PATHS.update(('/api/git/enable', '/api/git/disable', '/api/git/fetch', '/api/git/adopt', '/api/git/settings'))
-POST_PATHS.update(('/api/admin/update/prepare', '/api/admin/update/cancel'))
-POST_PATHS.add('/api/settings')
-POST_PATHS.add('/api/claude-budget')
-POST_PATHS.update(('/api/sounds/custom', '/api/sounds/custom/delete'))
-POST_PATHS.update(('/api/storage/preview', '/api/storage/clean', '/api/storage/restore',
-                   '/api/storage/trash/empty', '/api/storage/policy'))
-POST_PATHS.add('/api/member-defaults')
-POST_PATHS.update(('/api/admin/chat/send', '/api/admin/chat/interrupt', '/api/admin/config'))
-POST_PATHS.add('/api/admin/connection/prepare')
-POST_PATHS.update(('/api/connections/configure', '/api/connections/action', '/api/connections/preferences'))
-POST_PATHS.add('/api/native-approval')
-POST_PATHS.add('/api/session-library/adopt')
-POST_PATHS.update(('/api/maintenance/department/preview', '/api/maintenance/department/compact',
-                   '/api/maintenance/cleanup/preview', '/api/maintenance/cleanup'))
+
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
@@ -268,9 +222,6 @@ STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8
 STATIC['/leader-look.js'] = ('leader-look.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/architecture.js': ('architecture.js', 'text/javascript; charset=utf-8'),
                '/architecture.css': ('architecture.css', 'text/css; charset=utf-8')})
-POST_PATHS.add('/api/remote-access')
-POST_PATHS.update(report_preview.WORKER_PATHS)
-POST_PATHS.update(('/api/host/workspace/existing', '/api/host/workspace/new'))
 STATIC.update({'/access-context.js': ('access-context.js', 'text/javascript; charset=utf-8'),
                '/browser-utils.js': ('browser-utils.js', 'text/javascript; charset=utf-8'),
                '/remote-access-ui.js': ('remote-access-ui.js', 'text/javascript; charset=utf-8'),
@@ -410,7 +361,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get("X-Crew") != "1":
                 self._send(403, {"error": "\u7f3a\u5c11 X-Crew: 1 \u8bf7\u6c42\u5934"})
                 return
-            if url.path not in POST_PATHS:
+            if url.path not in routes.post_paths():
                 self._send(404, {"error": "\u63a5\u53e3\u4e0d\u5b58\u5728"})
                 return
             if length <= 0:
@@ -422,8 +373,8 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == '/api/access/context':
             self._send(200, {'remote': False, 'client': 'local', 'authenticated': True,
                              'local_controls': True, 'local_desktop': True, 'host_admin': True})
-        elif (route := routes.GET.get(url.path)) is not None:
-            route(self, service, url, query)
+        elif routes.get(self, service, url, query):
+            return
         elif url.path in STATIC:
             filename, content_type = STATIC[url.path]
             if url.path == '/' and query.get('project',[''])[0].startswith(HISTORY_PREFIX):
@@ -446,6 +397,8 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             # A closed browser connection cannot receive an error response.
             self.close_connection = True
+        except OpError as exc:
+            self._send(HTTP_STATUS[exc.code], {'error': str(exc), 'code': exc.code, 'detail': exc.detail})
         except personal.TagMergeRequired as exc:
             self._send(409, {'error': str(exc), **exc.detail})
         except board.Conflict as exc:

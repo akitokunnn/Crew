@@ -11,6 +11,7 @@ from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
+from crew.web_api import routes
 from crew import board, domains, remote_routes, session_ops, store, web
 from test_shell import NOW, PLUGIN, ShellFixture
 
@@ -264,7 +265,7 @@ class DomainHttpTests(ShellFixture, unittest.TestCase):
             self.assertEqual(domains.leader_paths(conn, 'demo'), {'s3': [{'id': 'sense01', 'name': '感知'}]})
 
     def test_page_assets_and_remote_routes(self):
-        self.assertIn('/api/domains', web.POST_PATHS)
+        self.assertIn('/api/domains', routes.post_paths())
         for kind in ('browser', 'desktop'):
             self.assertTrue(remote_routes.permitted('GET', '/api/domains', (), kind))
             self.assertTrue(remote_routes.permitted('POST', '/api/domains', (), kind))
