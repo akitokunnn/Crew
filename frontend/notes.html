@@ -6,10 +6,12 @@
   <link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/notes.css">
   <script src="/access-context.js" defer></script>
   <script src="/browser-utils.js" defer></script>
+  <script src="/themes.js" defer></script><script src="/global-rail.js" defer></script>
   <script src="/notes-model.js" defer></script><script src="/notes.js" defer></script>
   <link rel="stylesheet" href="/mobile.css" media="(max-width:760px)"><link rel="stylesheet" href="/mobile-home.css" media="(max-width:760px)"><link rel="stylesheet" href="/mobile-chat.css" media="(max-width:760px)"><link rel="stylesheet" href="/mobile-pages.css" media="(max-width:760px)"><script src="/mobile-shell.js" defer></script>
 </head>
 <body class="notes-page">
+  <aside class="sb" id="sidebar" aria-label="主导航"></aside>
   <main class="nw-main" id="nw-main">
     <header class="nw-head">
       <div><h1>想法</h1><p class="nw-sub">随手记下，定期回顾；准备好了去聊聊，或转成任务。</p></div>
@@ -17,7 +19,6 @@
         <button type="button" class="btn" id="nw-review" data-act="review" aria-keyshortcuts="R">回顾</button>
         <button type="button" class="btn ghost" id="nw-select-mode" data-act="select-mode" aria-pressed="false">多选</button>
         <button type="button" class="btn ghost nw-narrow-only" data-act="manage-tags">管理标签</button>
-        <a class="btn ghost" href="/assistant.html">助手</a><a class="btn ghost" href="/">工作区</a>
       </div>
     </header>
     <form class="nw-capture" id="nw-capture" autocomplete="off">

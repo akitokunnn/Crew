@@ -15,7 +15,7 @@
 
   const systemTheme = matchMedia("(prefers-color-scheme: dark)");
   function theme() { let selectedTheme = "system"; if (!window.crewDesktopTheme) try { selectedTheme = localStorage.getItem("crew.theme") || selectedTheme; } catch {} document.documentElement.dataset.theme = selectedTheme === "system" ? (systemTheme.matches ? "dark" : "light") : selectedTheme; }
-  theme(); systemTheme.addEventListener("change", theme); window.addEventListener("storage", theme);
+  theme(); systemTheme.addEventListener("change", theme); window.addEventListener("storage", theme); window.addEventListener("crew:theme-change", theme);
 
   async function api(path, body) {
     const response = await fetch(path, {method: body === undefined ? "GET" : "POST", headers: {"X-Crew": "1", ...(body === undefined ? {} : {"Content-Type": "application/json"})}, ...(body === undefined ? {} : {body: JSON.stringify(body)})});
@@ -58,6 +58,7 @@
     try {
       const listing = await api("/api/projects");
       allProjects = listing.projects; projects = listing.projects.filter(item => !item.read_only);
+      window.CrewGlobalRail?.update({projects: allProjects});
       await refresh();
     } catch (error) { showError(error.message); }
     render();

@@ -90,6 +90,7 @@
 .cs-theme-options button{flex:1;min-width:0;padding:20px 12px;border:1px solid var(--cs-line);border-radius:10px;background:var(--cs-bg);color:var(--cs-text);font-size:calc(13px * var(--cs-scale))}
 .cs-theme-options button[aria-pressed=true]{border-color:var(--cs-accent);color:var(--cs-accent);background:color-mix(in srgb,var(--cs-accent) 6%,var(--cs-card))}
 #settings-surface{position:fixed;inset:0;z-index:55;height:100dvh}
+@media(min-width:761px){#settings-surface{left:var(--sb-w,54px)}}
 .crew-settings .settings-popover{position:static;display:block;inset:auto;max-width:none;width:100%;margin:0;padding:0;border:0;box-shadow:none;background:transparent;color:inherit}
 .crew-settings .settings-popover>h3{display:none}
 .crew-settings .settings-section{margin:16px 0 0;padding:24px;border:1px solid var(--cs-line);border-radius:14px;background:var(--cs-card)}

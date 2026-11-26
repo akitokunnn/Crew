@@ -29,13 +29,13 @@
 
 /* === Spatial Studio (High-Density Direction C) === */
 @media(min-width:761px){
-  .assistant-page{padding:8px;gap:8px;background:var(--studio-frame);grid-template-columns:minmax(0,1fr) 280px}
-  .assistant-main{border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);overflow:hidden}
+  .assistant-page{padding:0;gap:0;background:var(--studio-frame);grid-template-columns:var(--sb-w,54px) minmax(0,1fr) 280px}
+  .assistant-main{margin:8px 8px 8px 0;height:calc(100dvh - 16px);border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);overflow:hidden}
   .assistant-main>.head{height:64px;padding:12px 22px;background:var(--studio-glass);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px)}
   .assistant-main h1{font-size:calc(18px * var(--fs))}
-  .assistant-context{border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);padding:18px 16px}
+  .assistant-context{margin:8px 8px 8px 0;height:calc(100dvh - 16px);border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);padding:18px 16px;border-left:1px solid var(--studio-border)}
   .assistant-context a{padding:9px 11px;border-radius:10px;background:var(--studio-card)}
 }
 @media(max-width:940px) and (min-width:761px){
-  .assistant-page{grid-template-columns:minmax(0,1fr)}
+  .assistant-page{grid-template-columns:var(--sb-w,54px) minmax(0,1fr)}
 }

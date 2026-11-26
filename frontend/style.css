@@ -1105,9 +1105,13 @@ body{background:var(--studio-frame)}
 :root{--sb-w:54px}
 
 /* Ambient Rail + Floating Space Column */
-.app>.sb{width:54px;padding:10px 6px;gap:5px;background:transparent;border-right:0}
-.rail-brand{width:40px;height:40px;border-radius:11px}
+:is(.app,body)>.sb{position:relative;inset:auto;display:flex;flex-direction:column;align-items:center;gap:5px;width:54px;height:100dvh;padding:10px 6px;box-sizing:border-box;overflow:visible;visibility:visible;transform:none;background:transparent;border-right:0;z-index:60}
+.rail-brand{position:relative;display:grid;place-items:center;width:40px;height:40px;padding:0;border:1px solid transparent;border-radius:11px;background:transparent;color:var(--accent);cursor:pointer;text-decoration:none;transition:background-color .14s ease,border-color .14s ease,box-shadow .14s ease}
+.rail-brand:hover{background:color-mix(in srgb,var(--surface-2) 72%,transparent);border-color:var(--line)}
+.rail-brand.active{background:var(--studio-sheet);border-color:var(--studio-border);box-shadow:var(--studio-shadow-sm)}
 .rail-brand>svg{width:27px;height:27px}
+.rail-brand-caret{position:absolute;right:2px;bottom:2px;width:12px;height:12px;border-radius:999px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sm);display:grid;place-items:center;pointer-events:none}
+.rail-brand-caret::after{content:"";width:0;height:0;border-left:2.8px solid transparent;border-right:2.8px solid transparent;border-top:3.4px solid var(--text-2);transform:translateY(.5px)}
 .rail-button{width:38px;height:38px;border-radius:11px;border:1px solid transparent;transition:background-color .14s ease,border-color .14s ease,box-shadow .14s ease,color .14s ease}
 .rail-button:hover{background:color-mix(in srgb,var(--surface-2) 65%,transparent);border-color:var(--line)}
 .rail-button.active,.leader-entry[aria-expanded=true]{background:var(--studio-sheet);color:var(--accent-text);border-color:var(--studio-border);box-shadow:var(--studio-shadow-sm)}
@@ -1143,7 +1147,8 @@ body{background:var(--studio-frame)}
 /* Floating Main Sheet (>760px) — never set backdrop-filter/transform on .main itself */
 @media(min-width:761px){
   .app>.main{margin:8px 8px 8px 0;height:calc(100dvh - 16px);border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);overflow:hidden}
-  .workspace-entry .main{margin:8px;height:calc(100dvh - 16px);border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet)}
+  .workspace-entry{display:grid;grid-template-columns:var(--sb-w) minmax(0,1fr);height:100dvh}
+  .workspace-entry .main{margin:8px 8px 8px 0;height:calc(100dvh - 16px);border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);overflow:auto}
 }
 @media(min-width:761px) and (max-width:1023px){
   .app>.main{margin:6px 6px 6px 0;height:calc(100dvh - 12px);border-radius:14px}
@@ -1217,3 +1222,27 @@ body{background:var(--studio-frame)}
 .btn{border-radius:9px;padding:5px 11px;font-size:calc(12.5px * var(--fs))}
 .presence-popover{left:62px;bottom:14px;border-radius:14px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-float)}
 .settings-popover{border-radius:15px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-float)}
+
+/* Workspace Switcher Popover (Anchored to C. rail brand) */
+.ws-popover{position:fixed;left:62px;top:10px;z-index:80;width:min(300px,calc(100vw - 74px));max-height:calc(100dvh - 24px);display:flex;flex-direction:column;gap:4px;padding:8px;border-radius:15px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-float)}
+.ws-popover[hidden]{display:none}
+.ws-head{display:flex;align-items:center;justify-content:space-between;padding:4px 8px 6px;font-size:calc(11.5px * var(--fs));font-weight:500;color:var(--text-3)}
+.ws-count{padding:1px 6px;border-radius:999px;background:var(--hover);font-size:calc(11px * var(--fs));font-variant-numeric:tabular-nums}
+.ws-list{display:flex;flex-direction:column;gap:3px;min-height:0;overflow:auto;padding:1px}
+.ws-item{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:11px;border:1px solid transparent;color:var(--text);text-decoration:none;transition:background-color .14s ease,border-color .14s ease}
+.ws-item:hover{background:var(--hover);border-color:var(--line)}
+.ws-item.active{background:color-mix(in srgb,var(--accent) 10%,var(--studio-card));border-color:color-mix(in srgb,var(--accent) 36%,var(--studio-border))}
+.ws-logo{display:grid;place-items:center;flex:none;width:26px;height:26px;color:var(--project-accent-light,var(--accent))}
+.ws-logo>svg{width:26px;height:26px}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]) .ws-logo{color:var(--project-accent-dark,var(--accent))}}
+:root[data-theme="dark"] .ws-logo{color:var(--project-accent-dark,var(--accent))}
+.ws-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.ws-meta>strong{font-size:calc(13px * var(--fs));font-weight:600;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-meta>small{font-size:calc(11px * var(--fs));color:var(--text-3);line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-check{flex:none;color:var(--accent-text);display:grid;place-items:center}
+.ws-go{flex:none;color:var(--text-3);opacity:.65;display:grid;place-items:center}
+.ws-item:hover .ws-go{opacity:1}
+.ws-empty{margin:0;padding:14px 8px;text-align:center;font-size:calc(12px * var(--fs));color:var(--text-3)}
+.ws-foot{display:flex;flex-direction:column;gap:2px;margin-top:2px;padding-top:6px;border-top:1px solid var(--line)}
+.ws-foot-btn{display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border:0;border-radius:9px;background:transparent;color:var(--text-2);font:inherit;font-size:calc(12.5px * var(--fs));text-align:left;text-decoration:none;cursor:pointer}
+.ws-foot-btn:hover{background:var(--hover);color:var(--text)}

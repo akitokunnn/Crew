@@ -5,7 +5,7 @@
   const NOTE_OPENING="帮我把这个想法想清楚";
   const systemTheme=matchMedia("(prefers-color-scheme: dark)");
   function theme(){let selected="system";if(!window.crewDesktopTheme)try{selected=localStorage.getItem("crew.theme")||selected;}catch{}document.documentElement.dataset.theme=selected==="system"?(systemTheme.matches?"dark":"light"):selected;}
-  theme();systemTheme.addEventListener("change",theme);window.addEventListener("storage",theme);
+  theme();systemTheme.addEventListener("change",theme);window.addEventListener("storage",theme);window.addEventListener("crew:theme-change",theme);
   const toast=message=>{const node=$("assistant-toast");node.textContent=message;node.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>{node.hidden=true;},5000);};
   document.addEventListener("crew:sound-error",event=>toast(event.detail));
   async function api(path,body) {
@@ -28,6 +28,7 @@
     return node;
   }
   function overview(state) {
+    window.CrewGlobalRail?.update({projects: state.projects || [], todos: state.todos || [], goals: state.goals || []});
     const node=$("assistant-overview");node.replaceChildren(
       section("我的 TODO",(state.todos||[]).filter(item=>item.status==null||item.status==="open"),item=>item.title||item.text||"待办",item=>item.project,"暂时没有需要你动手的事项。"),
       section("进行中的任务",(state.goals||[]).filter(item=>!["completed","cancelled"].includes(item.status)),item=>item.title,item=>item.project,"你可以让我汇总项目近况，或记下新想法。"),

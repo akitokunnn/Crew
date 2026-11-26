@@ -233,10 +233,13 @@
 
 /* === Spatial Studio (High-Density Direction C) === */
 @media(min-width:761px){
-  .notes-page{padding:8px;gap:8px;background:var(--studio-frame);grid-template-columns:minmax(0,1fr) 240px}
-  .nw-main{border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);padding:0 24px 96px}
+  .notes-page{padding:0;gap:0;background:var(--studio-frame);grid-template-columns:var(--sb-w,54px) minmax(0,1fr) 240px}
+  .nw-main{margin:8px 8px 8px 0;height:calc(100dvh - 16px);border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);padding:0 24px 96px}
   .nw-head{padding:16px 0 12px}
   .nw-head h1{font-size:calc(19px * var(--fs))}
   .nw-card{border-radius:12px;background:var(--studio-card);padding:10px 12px;margin-bottom:9px}
-  .nw-side{border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);padding:18px 12px}
+  .nw-side{margin:8px 8px 8px 0;height:calc(100dvh - 16px);border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);padding:18px 12px;border-left:1px solid var(--studio-border)}
+}
+@media(max-width:940px) and (min-width:761px){
+  .notes-page{grid-template-columns:var(--sb-w,54px) minmax(0,1fr)}
 }

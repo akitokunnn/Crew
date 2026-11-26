@@ -19,8 +19,9 @@ button,a,[role=button]{touch-action:manipulation}
 
 /* ---- 外壳：去掉桌面左侧图标栏，主区占满，底部留出标签栏 ---- */
 .app,.app.wide{display:block!important;height:auto!important;width:100%;max-width:100vw}
-.app>.sb{position:fixed!important;inset:auto!important;width:0!important;height:0!important;padding:0!important;border:0!important;overflow:visible!important;transform:none!important;visibility:visible!important}
-.app>.sb>:not(.presence-popover){display:none!important}
+.assistant-page,.notes-page{grid-template-columns:minmax(0,1fr)!important}
+:is(.app,body)>.sb{position:fixed!important;inset:auto!important;width:0!important;height:0!important;padding:0!important;border:0!important;overflow:visible!important;transform:none!important;visibility:visible!important}
+:is(.app,body)>.sb>:not(.presence-popover){display:none!important}
 .main{width:100%;max-width:100vw;height:calc(100dvh - var(--m-bottom))!important;overflow-x:hidden}
 .workspace-entry .main{height:calc(100dvh - var(--m-bottom))!important}
 body.m-chat .main{height:100dvh!important}
