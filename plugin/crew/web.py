@@ -847,6 +847,9 @@ STATIC.update({'/notes.html': ('notes.html', 'text/html; charset=utf-8'),
                '/notes-model.js': ('notes-model.js', 'text/javascript; charset=utf-8'),
                '/notes.css': ('notes.css', 'text/css; charset=utf-8')})
 STATIC['/global-rail.js'] = ('global-rail.js', 'text/javascript; charset=utf-8')
+STATIC.update({'/voice.html': ('voice.html', 'text/html; charset=utf-8'),
+               '/voice.js': ('voice.js', 'text/javascript; charset=utf-8'),
+               '/voice.css': ('voice.css', 'text/css; charset=utf-8')})
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/leader-look.js'] = ('leader-look.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/architecture.js': ('architecture.js', 'text/javascript; charset=utf-8'),
