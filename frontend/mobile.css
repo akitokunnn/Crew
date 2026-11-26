@@ -6,8 +6,8 @@
   /* 尺寸基准：正文 15px、辅助 13px、最小 12px；触控目标至少 44px；页面左右留白 16px */
   --m-fs-body:15px; --m-fs-meta:13px; --m-fs-min:12px; --m-fs-title:22px; --m-fs-section:17px;
   --m-tap:44px; --m-gutter:16px; --m-radius:14px; --m-radius-sm:10px;
-  --m-tabbar-h:56px; --m-safe-b:env(safe-area-inset-bottom,0px); --m-safe-t:env(safe-area-inset-top,0px);
-  --m-bottom:calc(var(--m-tabbar-h) + var(--m-safe-b));
+  --m-tabbar-h:50px; --m-safe-b:env(safe-area-inset-bottom,0px); --m-safe-t:env(safe-area-inset-top,0px);
+  --m-bottom:calc(64px + var(--m-safe-b));
   --m-appbar-h:52px;
   --fs:1;
 }
@@ -22,7 +22,7 @@ button,a,[role=button]{touch-action:manipulation}
 .assistant-page,.notes-page{grid-template-columns:minmax(0,1fr)!important}
 :is(.app,body)>.sb{position:fixed!important;inset:auto!important;width:0!important;height:0!important;padding:0!important;border:0!important;overflow:visible!important;transform:none!important;visibility:visible!important}
 :is(.app,body)>.sb>:not(.presence-popover){display:none!important}
-.main{width:100%;max-width:100vw;height:calc(100dvh - var(--m-bottom))!important;overflow-x:hidden}
+.main{width:100%;max-width:100vw;height:calc(100dvh - var(--m-bottom))!important;overflow-x:hidden;background:var(--bg)}
 .workspace-entry .main{height:calc(100dvh - var(--m-bottom))!important}
 body.m-chat .main{height:100dvh!important}
 
@@ -30,11 +30,11 @@ body.m-chat .main{height:100dvh!important}
 .app>.sb>.presence-popover{position:fixed!important;left:0!important;right:0!important;top:auto!important;bottom:0!important;width:auto!important;max-width:none!important;z-index:62;border-radius:18px 18px 0 0;padding:20px var(--m-gutter) calc(20px + var(--m-safe-b));box-shadow:var(--shadow-lg)}
 
 /* ---- 底部标签栏 ---- */
-#m-tabbar{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;height:var(--m-bottom);padding-bottom:var(--m-safe-b);box-sizing:border-box;background:color-mix(in srgb,var(--panel) 88%,transparent);-webkit-backdrop-filter:saturate(1.4) blur(16px);backdrop-filter:saturate(1.4) blur(16px);border-top:1px solid var(--line)}
+#m-tabbar{position:fixed;left:12px;right:12px;bottom:max(8px,var(--m-safe-b));z-index:40;display:flex;height:50px;box-sizing:border-box;background:var(--studio-glass);-webkit-backdrop-filter:saturate(1.5) blur(18px);backdrop-filter:saturate(1.5) blur(18px);padding:3px 4px;border-radius:999px;border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-float)}
 #m-tabbar[hidden],body.m-chat:not(.m-leaders) #m-tabbar{display:none}
-.m-tab{position:relative;flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:6px 0 4px;border:0;background:none;color:var(--text-3);font:inherit;font-size:11px;font-weight:500;line-height:1;text-decoration:none;cursor:pointer}
-.m-tab svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
-.m-tab[aria-current=page]{color:var(--accent-text)}
+.m-tab{position:relative;flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:4px 0;border:0;background:none;color:var(--text-3);font:inherit;font-size:11px;font-weight:500;line-height:1;text-decoration:none;cursor:pointer;border-radius:999px;transition:background-color .14s ease,color .14s ease}
+.m-tab svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.m-tab[aria-current=page]{color:var(--accent-text);background:var(--accent-soft);font-weight:600}
 .m-tab[aria-current=page] svg{stroke-width:2.1}
 .m-tab:active{opacity:.6}
 .m-badge{position:absolute;top:4px;left:calc(50% + 6px);min-width:17px;height:17px;padding:0 5px;box-sizing:border-box;border-radius:9px;background:var(--warn);color:var(--on-accent);font-size:11px;font-weight:700;line-height:17px;text-align:center}
@@ -43,7 +43,7 @@ body.m-chat .main{height:100dvh!important}
 /* ---- “更多”底部面板 ---- */
 #m-sheet-backdrop{display:block;position:fixed;inset:0;z-index:58;background:rgba(0,0,0,.42);opacity:0;pointer-events:none;transition:opacity .2s ease}
 #m-sheet-backdrop[data-open=true]{opacity:1;pointer-events:auto}
-#m-sheet{display:block;position:fixed;left:0;right:0;bottom:0;z-index:59;max-height:82dvh;overflow:auto;box-sizing:border-box;padding:8px 0 calc(12px + var(--m-safe-b));border-radius:20px 20px 0 0;background:var(--surface);box-shadow:var(--shadow-lg);transform:translateY(105%);transition:transform .26s var(--ease)}
+#m-sheet{display:block;position:fixed;left:0;right:0;bottom:0;z-index:59;max-height:82dvh;overflow:auto;box-sizing:border-box;padding:8px 0 calc(12px + var(--m-safe-b));border-radius:22px 22px 0 0;background:var(--studio-sheet);box-shadow:var(--shadow-lg);transform:translateY(105%);transition:transform .26s var(--ease);border-top:1px solid var(--studio-border)}
 #m-sheet[data-open=true]{transform:none}
 #m-sheet::before{content:"";display:block;width:38px;height:5px;margin:0 auto 10px;border-radius:3px;background:var(--line-strong)}
 .m-sheet-title{margin:0;padding:4px var(--m-gutter) 8px;font-size:var(--m-fs-meta);font-weight:600;color:var(--text-3);letter-spacing:.02em}
@@ -58,7 +58,7 @@ body.m-chat .main{height:100dvh!important}
 [data-access-local-controls="false"] .m-sheet-item[data-local-control]{display:none}
 
 /* ---- Leader 列表：全屏页面（像聊天软件的会话列表） ---- */
-.leader-panel{position:fixed!important;inset:0 0 var(--m-bottom) 0!important;width:auto!important;height:auto!important;z-index:30!important;background:var(--bg)!important;box-shadow:none!important;transition:none!important}
+.leader-panel{position:fixed!important;inset:0 0 var(--m-bottom) 0!important;width:auto!important;height:auto!important;z-index:30!important;background:var(--studio-frame);box-shadow:none!important;transition:none!important}
 .leader-panel:not([data-open=true]){display:none}
 .leader-panel-content{width:100%!important;opacity:1!important;border-right:0!important;transition:none!important;padding-top:var(--m-safe-t);box-sizing:border-box}
 .leader-panel-head{padding:18px var(--m-gutter) 12px!important;gap:10px!important}
@@ -66,7 +66,8 @@ body.m-chat .main{height:100dvh!important}
 .leader-panel-head>span{font-size:var(--m-fs-meta)!important}
 .leader-panel-channel{margin:0 var(--m-gutter) 10px!important;min-height:52px;padding:0 16px!important;border-radius:var(--m-radius)!important;font-size:16px!important}
 .leader-panel-leaders{padding:4px var(--m-gutter) 16px!important;-webkit-overflow-scrolling:touch}
-.leader-row{gap:12px!important;min-height:64px;padding:12px 10px!important;border-radius:var(--m-radius-sm)!important}
+.leader-row{gap:12px!important;min-height:64px;padding:12px 10px!important;border-radius:13px;background:var(--studio-card);border:1px solid var(--line);margin-bottom:4px}
+.leader-row.active{background:var(--studio-sheet);border-color:color-mix(in srgb,var(--accent) 45%,var(--line-strong));box-shadow:var(--studio-shadow-sm)}
 .leader-row-name>strong{font-size:16px!important}
 .leader-row .goal{font-size:var(--m-fs-meta)!important}
 .leader-row-sub>:is(.st,.group-work-label){font-size:var(--m-fs-min)!important}
@@ -83,22 +84,3 @@ img,video,canvas,svg{max-width:100%}
 pre,table{max-width:100%;overflow-x:auto}
 .toast{left:var(--m-gutter)!important;right:var(--m-gutter)!important;bottom:calc(var(--m-bottom) + 12px)!important;transform:none!important;max-width:none!important}
 body.m-chat .toast{bottom:calc(96px + var(--m-safe-b))!important}
-
-
-/* === Spatial Studio Mobile Pill Dock (<=760px) === */
-:root{--m-tabbar-h:50px;--m-bottom:calc(64px + var(--m-safe-b))}
-.app>.main,.workspace-entry .main{margin:0!important;border:0!important;border-radius:0!important;box-shadow:none!important}
-.main{background:var(--bg)}
-#m-tabbar{
-  left:12px;right:12px;bottom:max(8px,var(--m-safe-b));height:50px;padding:3px 4px;
-  border-radius:999px;border:1px solid var(--studio-border);
-  background:var(--studio-glass);backdrop-filter:saturate(1.5) blur(18px);-webkit-backdrop-filter:saturate(1.5) blur(18px);
-  box-shadow:var(--studio-shadow-float);
-}
-.m-tab{border-radius:999px;gap:2px;padding:4px 0;transition:background-color .14s ease,color .14s ease}
-.m-tab svg{width:20px;height:20px}
-.m-tab[aria-current=page]{background:var(--accent-soft);color:var(--accent-text);font-weight:600}
-#m-sheet{border-radius:22px 22px 0 0;background:var(--studio-sheet);border-top:1px solid var(--studio-border)}
-.leader-panel{background:var(--studio-frame)!important}
-.leader-row{background:var(--studio-card);border:1px solid var(--line);margin-bottom:4px;border-radius:13px!important}
-.leader-row.active{background:var(--studio-sheet);border-color:color-mix(in srgb,var(--accent) 45%,var(--line-strong));box-shadow:var(--studio-shadow-sm)}

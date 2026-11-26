@@ -27,7 +27,7 @@
 
 /* ===================== 统计条：三格数字 + 架构图入口行 ===================== */
 .wh-overview{display:grid;align-items:stretch;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 28px;padding:0;border:0}
-.wh-overview-item{position:relative;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:2px;min-width:0;min-height:78px;margin:0;padding:12px;box-sizing:border-box;border:1px solid var(--line);border-radius:var(--m-radius);background:var(--surface);color:var(--text-2);font-size:var(--m-fs-min);line-height:1.35;text-align:left;overflow-wrap:anywhere}
+.wh-overview-item{position:relative;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:2px;min-width:0;min-height:78px;margin:0;padding:12px;box-sizing:border-box;border:1px solid var(--studio-border);border-radius:var(--m-radius);background:var(--studio-card);color:var(--text-2);font-size:var(--m-fs-min);line-height:1.35;text-align:left;overflow-wrap:anywhere}
 .wh-overview-item strong{font-size:24px;line-height:1.2;font-weight:700;font-variant-numeric:tabular-nums;color:var(--text)}
 .wh-overview-item>.dot{position:absolute;top:14px;right:12px;margin:0}
 button.wh-overview-item:active{background:var(--hover)}
@@ -47,7 +47,7 @@ button.wh-overview-item:active{background:var(--hover)}
 
 /* ===================== 待你验收卡片 ===================== */
 .wh-review-list{gap:12px}
-.wh-review{gap:12px;padding:16px;border-radius:var(--m-radius)}
+.wh-review{gap:12px;padding:16px;border-radius:var(--m-radius);box-shadow:var(--studio-shadow-sm);background:var(--studio-card);border-color:var(--studio-border)}
 .wh-review-head{gap:6px 8px}
 .wh-review-head .goal-status{order:1;font-size:var(--m-fs-min);padding:3px 8px;border-radius:6px}
 .wh-review-owner{order:2;margin-left:auto;font-size:var(--m-fs-meta)}
@@ -79,7 +79,7 @@ button.wh-overview-item:active{background:var(--hover)}
 
 /* ===================== 待你处理：拍板 / TODO / 执行权限 ===================== */
 .wh-attention-list{gap:12px}
-.wh-action-item{position:relative;padding:14px 16px 16px;border-radius:var(--m-radius);border-left-width:4px}
+.wh-action-item{position:relative;padding:14px 16px 16px;border-radius:var(--m-radius);border-left-width:4px;box-shadow:var(--studio-shadow-sm);background:var(--studio-card);border-color:var(--studio-border)}
 .wh-kind{margin-bottom:12px;padding:2px 8px;border-radius:6px;font-size:var(--m-fs-min);font-weight:600;line-height:1.6;letter-spacing:.02em}
 .wh-action-title{font-size:16px;font-weight:600;line-height:1.5}
 
@@ -153,7 +153,7 @@ button.wh-overview-item:active{background:var(--hover)}
 .native-approval-list{margin-top:16px}
 
 /* ===================== 任务列表 / 对话 / 成果：inset grouped 列表 ===================== */
-.wh-work .goal-rows,.wh-history .goal-rows,.wh-discussions,.wh-delivery-list{display:flex;flex-direction:column;gap:0;border:1px solid var(--line);border-radius:var(--m-radius);background:var(--surface);overflow:hidden}
+.wh-work .goal-rows,.wh-history .goal-rows,.wh-discussions,.wh-delivery-list{display:flex;flex-direction:column;gap:0;border:1px solid var(--studio-border);border-radius:var(--m-radius);background:var(--studio-card);overflow:hidden}
 .wh-discussions{margin-top:12px}
 .wh-work .goal-row{grid-template-columns:auto minmax(0,1fr) auto;gap:6px 10px;min-height:60px;padding:12px 16px;box-sizing:border-box}
 .wh-work .goal-row:last-child{border-bottom:0}
@@ -239,8 +239,3 @@ button.wh-overview-item:active{background:var(--hover)}
 :is(.wh-history,.channel-digest)>summary::-webkit-details-marker{display:none}
 :is(.wh-history,.channel-digest)>summary::after{content:"";flex:none;width:7px;height:7px;margin-left:10px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;opacity:.7;transform:translateY(-2px) rotate(45deg);transition:transform .15s}
 :is(.wh-history,.channel-digest)[open]>summary::after{transform:translateY(2px) rotate(-135deg)}
-
-
-/* === Spatial Studio Mobile Home (<=760px) === */
-.wh-overview-item,.wh-review,.wh-action-item,.wh-work .goal-rows,.wh-history .goal-rows,.wh-discussions,.wh-delivery-list{background:var(--studio-card);border-color:var(--studio-border)}
-.wh-review,.wh-action-item{box-shadow:var(--studio-shadow-sm)}
