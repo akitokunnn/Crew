@@ -208,7 +208,10 @@ _SPECS = [
           'When your change affects another group, post here and name its leader (naming wakes them) instead of also sending crew_send_message. '
           'Answer a post with reply_to (its # number). If the answer fits in a sentence or two, say it here and only note in your private '
           'conversation that you answered in the channel. If it needs a long explanation, post a one-line conclusion with detail=true and '
-          'write the full answer in your private conversation. Naming a leader wakes them: write @name in the text or list it in to; unnamed posts wake nobody.',
+          'write the full answer in your private conversation. Naming a leader wakes them: write @name in the text or list it in to. '
+          'reply_to another leader\'s post also wakes that post\'s author without naming it; other posts wake nobody. '
+          'A wake waits until the recipient is idle: read the result\'s receipt and each mention\'s delivery '
+          '(queued = not received yet, delivered = in their input, not answered, replied = answered); queued is NOT seen or answered.',
           {'text': _text('The short post.', max_length=2000),
            'to': {'type': 'array', 'maxItems': 12, 'items': _text('Leader Crew name, or * for every leader.', max_length=512)},
            'reply_to': {'type': 'integer', 'minimum': 1, 'description': 'Channel post number being answered.'},
@@ -456,8 +459,9 @@ class CodexTools:
                 return {**actor, **personal.assistant_context(conn, sid)}
             raise ToolError('forbidden', 'Global assistant actions use crew_personal with original user intent')
         if name == 'crew_say':
-            return channel.post(conn, project, sid, args['text'], args.get('to', []),
-                                reply_to=args.get('reply_to'), detail=args.get('detail', False))
+            message = channel.post(conn, project, sid, args['text'], args.get('to', []),
+                                   reply_to=args.get('reply_to'), detail=args.get('detail', False))
+            return {**message, 'receipt': channel.receipt(message)}
         if name == 'crew_channel':
             if channel._leader(conn, project, sid) is None:
                 raise ToolError('forbidden', 'Leader 交流区只给 leader 用；有事告诉你的 leader')

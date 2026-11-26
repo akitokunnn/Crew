@@ -512,6 +512,8 @@ def _emit(value, as_json=False, command=None, channel_card=None, git_assistant=N
         if channel_card is not None and not value:
             blocks.append("要点之后暂无新发言")
         print("\n\n".join(blocks) if blocks else "交流区暂无发言")
+    elif command == "say":
+        print(channel.receipt(value))
     else:
         print(_human(value))
 
