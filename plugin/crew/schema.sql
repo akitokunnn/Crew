@@ -1057,3 +1057,41 @@ CREATE TABLE IF NOT EXISTS op_requests (
  finished_at TEXT,
  PRIMARY KEY (caller_key, request_id)
 );
+
+-- Per-session MCP tokens; only the hash is stored (OPERATIONS_REGISTRY_DESIGN §3.2).
+CREATE TABLE IF NOT EXISTS mcp_tokens (
+ token_hash TEXT PRIMARY KEY,
+ session_id TEXT NOT NULL,
+ execution_id TEXT,
+ goal_id TEXT,
+ role TEXT NOT NULL,
+ runtime TEXT NOT NULL,
+ project TEXT,
+ own_scopes TEXT NOT NULL,
+ delegable_scopes TEXT NOT NULL,
+ issuer_token_hash TEXT,
+ created_at TEXT NOT NULL,
+ revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS mcp_tokens_session ON mcp_tokens(session_id, revoked_at);
+
+-- User confirmations of high-risk operations an AI asked for (OPERATIONS_REGISTRY_DESIGN §5.6).
+CREATE TABLE IF NOT EXISTS interaction_requests (
+ id TEXT PRIMARY KEY,
+ kind TEXT NOT NULL CHECK (kind IN ('confirmation')),
+ caller_key TEXT NOT NULL,
+ request_id TEXT NOT NULL,
+ session_id TEXT NOT NULL,
+ execution_id TEXT,
+ role TEXT NOT NULL,
+ op TEXT NOT NULL,
+ args TEXT NOT NULL,
+ args_hash TEXT NOT NULL,
+ project TEXT,
+ status TEXT NOT NULL CHECK (status IN ('pending','approved','rejected','failed')),
+ result TEXT,
+ error TEXT,
+ created_at TEXT NOT NULL,
+ decided_at TEXT,
+ UNIQUE (caller_key, request_id)
+);

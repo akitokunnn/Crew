@@ -1,9 +1,10 @@
 """Adapters that run the existing ``web_api`` route functions as operation handlers.
 
-The function is the same one the old URL used; only the call shape differs.
+Each function still receives the path and discriminators of the URL it was
+written for; that URL itself is no longer served (only ``/api/op`` is).
 """
 from dataclasses import dataclass
-from urllib.parse import SplitResult
+from urllib.parse import SplitResult, urlencode
 
 
 @dataclass
@@ -30,19 +31,18 @@ class Capture:
         self.value = Content(path.read_bytes(), media_type, attachment)
 
 
-def post(function):
+def post(function, path, when=()):
     def handler(ctx, args):
-        data = ctx.body(args)
+        data = {**dict(when), **ctx.body(args)}
         if ctx.op.lock == 'none':
-            return function(ctx.service, ctx.path, data, ctx.project_name)
+            return function(ctx.service, path, data, ctx.project_name)
         if ctx.op.lock == 'outer':
-            return function(ctx.service, ctx.path, data, ctx.project_name, ctx.conn, ctx.now)
-        return function(ctx.service, ctx.path, data, ctx.project_name, ctx.conn, ctx.now, ctx.project)
-    handler.legacy = function
+            return function(ctx.service, path, data, ctx.project_name, ctx.conn, ctx.now)
+        return function(ctx.service, path, data, ctx.project_name, ctx.conn, ctx.now, ctx.project)
     return handler
 
 
-def get(function):
+def get(function, path, when=()):
     from .executor import SENT
 
     def handler(ctx, args):
@@ -50,15 +50,14 @@ def get(function):
             key: [str(item) for item in value] if isinstance(value, list) else
             ['1' if value is True else '0' if value is False else str(value)]
             for key, value in args.items()}
-        query = {**{key: [value] for key, value in ctx.when.items()}, **query}
+        query = {**{key: [value] for key, value in when}, **query}
         if ctx.project_name is not None and 'project' not in query:
             query = {**query, 'project': [ctx.project_name]}
-        url = ctx.url if ctx.url is not None else SplitResult('', '', ctx.path, '', '')
+        url = SplitResult('', '', path, urlencode(query, doseq=True), '')
         if ctx.http is not None:
             function(ctx.http, ctx.service, url, query)
             return SENT
         capture = Capture()
         function(capture, ctx.service, url, query)
         return capture.value
-    handler.legacy = function
     return handler

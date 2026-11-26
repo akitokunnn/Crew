@@ -881,7 +881,7 @@ def review_acceptance(conn, goal_id, accepted, *, note='', actor=board.HUMAN, ex
         config = board.git_config(conn, goal['project'])
         names = [s['crew_name'] for s in candidates if not board.is_archived(conn, s['session_id'])
                  and (config is None or config['admin_session_id'] != s['session_id'])]
-        text = '任务「%s」用户验收通过。\n可归档的成员：%s。\n请完成收尾；可用 crew archive <名字>（Codex：crew_archive）归档这些成员。' % (goal['title'], '、'.join(names) if names else '无')
+        text = '任务「%s」用户验收通过。\n可归档的成员：%s。\n请完成收尾。用 Crew 工具 `session_archive` 归档这些成员，`target` 填成员名。' % (goal['title'], '、'.join(names) if names else '无')
     else:
         result = continue_task(conn, goal_id, note, actor=actor, expected_version=expected_version, now=now)
         if not notify_rejection:
@@ -893,8 +893,8 @@ def review_acceptance(conn, goal_id, accepted, *, note='', actor=board.HUMAN, ex
 
 def rejection_notice(goal, note):
     """General-chat fallback when the rejected task could not be resumed in its own execution."""
-    return ('任务「%s」用户验收后要求修改：%s\n任务 ID %s 仍是第 %s 轮，已回到待开始。请用 crew goal start %s'
-            '（Codex：crew_goal 的 start）在本任务内按意见修改，完成并验证后重新 crew goal finish 提交验收。'
+    return ('任务「%s」用户验收后要求修改：%s\n任务 ID %s 仍是第 %s 轮，已回到待开始。请用 Crew 工具 `goal_start`（`goal_id=%s`）'
+            '在本任务内按意见修改，完成并验证后重新用 `goal_finish` 提交验收。'
             % (goal['title'], note, goal['id'], goal['current_round'], goal['id']))
 
 
@@ -987,7 +987,7 @@ def _finish_notice(goal, report):
     if len(summary) > 600:
         summary = summary[:600] + '…'
     status = {'awaiting_acceptance': '已交付，等用户验收', 'failed': '未达标结束', 'cancelled': '已取消结束'}[report['outcome']]
-    text = '任务「%s」（ID %s）的执行%s。\n摘要：%s\n完整报告用 crew goal status %s 查看（Codex：crew_goal 的 status）。\n' % (
+    text = '任务「%s」（ID %s）的执行%s。\n摘要：%s\n用 Crew 工具 `goal_get`（`goal_id=%s`）查看完整报告。\n' % (
         goal['title'], goal['id'], status, summary or '（报告没有写摘要）', goal['id'])
     if report['outcome'] == 'awaiting_acceptance':
         return text + '用几句话告诉用户结果、你做过的验证和需要用户确认的内容；验收由用户决定，不要替用户验收，也不要重做已交付的工作。'
@@ -1119,7 +1119,7 @@ def _transfer_notice(goal, transfer, giver, status, manual_pause):
     text = '任务「%s」（ID %s）已从 %s 交给你负责%s。\n交接说明：%s\n' % (
         goal['title'], goal['id'], giver['crew_name'] or giver['session_id'],
         '，是用户的安排' if transfer['actor'] == board.HUMAN else '', transfer['note'] or '（没有写）')
-    text += ('原负责人组里的成员已退出此任务，需要人手用 crew goal assign 从你组里安排（Codex：crew_goal 的 assign）；'
+    text += ('原负责人组里的成员已退出此任务，需要人手用 Crew 工具 `goal_assign` 从你组里安排；'
              '未完成的工作清单项已转到你名下，用 work.list 查看。\n')
     if manual_pause or status in ('pausing', 'paused'):
         return text + '任务目前暂停，等用户恢复后再继续，不要自行开工。', False
@@ -1127,7 +1127,7 @@ def _transfer_notice(goal, transfer, giver, status, manual_pause):
         return text + '任务在等用户答复，答复到达前不要开工。', False
     if status == 'awaiting_acceptance':
         return text + '任务已交付、等用户验收；用户要求修改时由你在本任务内处理，现在无需开工。', False
-    return (text + '请用 crew goal start %s（Codex：crew_goal 的 start）在本任务内接着做：先核对已有进展、交付物和代码，'
+    return (text + '请用 Crew 工具 `goal_start`（`goal_id=%s`）在本任务内接着做：先核对已有进展、交付物和代码，'
             '已完成的不要重做。' % goal['id']), True
 
 

@@ -8,7 +8,7 @@ class RosterMixin:
     def selected_project(self, conn, name):
         name = self.default_project if name is None else name
         if name is None:
-            raise board.BoardError("\u8bf7\u5148 crew init \u542f\u7528\u9879\u76ee")
+            raise board.BoardError("\u8bf7\u5148\u6253\u5f00\u6216\u6dfb\u52a0\u4e00\u4e2a\u5de5\u4f5c\u533a")
         return board.project(conn, name)["name"]
 
     def candidates(self, conn, project_name):
@@ -86,11 +86,11 @@ class RosterMixin:
             peer = any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (session, leader))
             address = "（SendMessage 地址：%s）" % session["cc_name"] if session["cc_name"] else ""
             notice = ("%s%s 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader，请它按 Crew 注入的成员守则工作"
-                "（没看到注入时再读 /crew:member），并用 crew card 写下负责范围和完成标准；crew who 显示离线时，"
-                "用 crew wake %s \"要它做的事\" 叫醒后按 crew 名 SendMessage。" % (session["crew_name"], address, session["crew_name"]))
+                 "，并请它用 Crew 工具 `session_card_set` 写下负责范围（`scope`）和完成标准（`done_when`）。"
+                 "对方离线时，用 `message_send`（`to` 填「%s」，`text` 填要它做的事，`kind=task`），会在对方空闲时送达。" % (session["crew_name"], address, session["crew_name"]))
             if peer:
-                notice = ('%s 已收编到你组。请用 crew send %s "<欢迎与分工>" --kind task（Codex：crew_send_message，kind=task），'
-                          '说明你是它的 leader，请它按 Crew 注入的成员守则工作，并用 crew card 写下负责范围和完成标准；'
+                notice = ('%s 已收编到你组。请用 Crew 工具 `message_send`（`to` 填「%s」，`text` 填欢迎与分工，`kind=task`），'
+                          '说明你是它的 leader，请它按 Crew 注入的成员守则工作，并请它用 `session_card_set` 写下负责范围（`scope`）和完成标准（`done_when`）；'
                           '对方离线时 Crew 会接续它的原会话送达。' %
                           (session['crew_name'], session['crew_name']))
             board.queue_leader_notice.__wrapped__(conn, leader["session_id"],

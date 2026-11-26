@@ -13,7 +13,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import codex_client, rules
+from . import codex_client
 
 CACHE_SECONDS = 120
 PROBE_TIMEOUT = 30
@@ -47,7 +47,7 @@ def _claude_probe(cwd, plugin_root, process_factory):
             return [{'name': item['name'], 'description': item.get('description') or '',
                      'hint': item.get('argumentHint') or '', 'token': '/' + item['name']}
                     for item in response['response']['commands']
-                    if not item.get('builtin') and item['name'] not in rules.SKILLS]
+                    if not item.get('builtin')]
         raise RuntimeError('Claude Code 提前退出，没有返回技能清单：' + (process.stderr.read() or '').strip()[-500:])
     finally:
         timer.cancel()

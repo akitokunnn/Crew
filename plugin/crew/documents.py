@@ -357,7 +357,7 @@ def refresh(conn, home, project, now=None):
             if remaining <= 0 or lines >= MAX_LINES: result['has_more'] = True; break
             encoded = report['bytes']
             if encoded > MAX_BYTES:
-                result['errors'].append({'source':'report:'+str(report['id']),'error':'报告超过历史索引上限，请用 crew doc 显式登记'})
+                result['errors'].append({'source':'report:'+str(report['id']),'error':'报告超过历史索引上限，请用 Crew 工具 `document_register` 显式登记'})
                 last_id = report['id']; continue
             if encoded > remaining: result['has_more'] = True; break
             body=conn.execute('SELECT body FROM reports WHERE project=? AND id=?',(project,report['id'])).fetchone()[0]

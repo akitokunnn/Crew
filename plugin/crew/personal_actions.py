@@ -1,13 +1,6 @@
-"""Native assistant operations bound to the host's real user-message journal."""
-from contextlib import closing
+"""Read handlers of the global assistant's operations (writes go through ``personal.assistant_action``)."""
 
-from . import behavior_prompts, board, documents, goals, guard, personal, store
-
-
-READ_ACTIONS = frozenset(('summary', 'session.detail', 'goal.detail', 'documents.list', 'notes.list', 'notes.get',
-                          'tags.list', 'prompt.get', 'prompt.history', 'prompt.applied'))
-# tags.list registers tags that predate the tag library on first read.
-REGISTERING_READS = frozenset(('tags.list',))
+from . import behavior_prompts, board, documents, goals, personal
 
 
 def read(conn, action, data):
@@ -52,25 +45,3 @@ def read(conn, action, data):
                 'next_offset': offset + limit if offset + limit < len(values) else None,
                 'source': {'kind': action, 'project': project, 'goal_id': data.get('goal_id')}}
     raise board.BoardError('未知助手读取操作: ' + str(action))
-
-
-def dispatch(home, actor_session_id, action, data, *, read_events=None,
-             create_leader=None, send_message=None, stop_session=None):
-    """The host binds actor/journal. Models supply only IDs and action payloads.
-
-    ``data`` is {data: payload, message_id: original-user-id, request_id: stable-id}.
-    Reads need only the payload. Explicit writes require all three fields.
-    """
-    if not isinstance(data, dict) or not isinstance(data.get('data', {}), dict):
-        raise board.BoardError('助手操作参数必须为对象')
-    reading = action in READ_ACTIONS
-    with closing(guard.readonly(home) if reading and action not in REGISTERING_READS else store.connect(home)) as conn:
-        personal._active_assistant(conn, actor_session_id)
-        if reading:
-            return read(conn, action, data.get('data', {}))
-        if read_events is None:
-            raise board.BoardError('当前宿主尚未接通原始用户消息验证')
-        proof = personal.instruction_for_user_action(conn, actor_session_id, data.get('message_id'), read_events=read_events)
-        return personal.assistant_action(conn, action, data.get('data', {}), request_id=data.get('request_id'),
-                                         create_leader=create_leader, send_message=send_message,
-                                         stop_session=stop_session, **proof)

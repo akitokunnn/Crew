@@ -26,23 +26,6 @@ OPEN = {'type': 'object', 'additionalProperties': True}
 
 
 @dataclass(frozen=True)
-class Binding:
-    """A legacy HTTP address: (method, path, discriminator values merged into the body).
-
-    ``handler`` runs the old route function with the old body when the
-    operation's own handler takes the unified arguments instead.
-    """
-    method: str
-    path: str
-    when: tuple = ()
-    handler: Callable = field(default=None, compare=False)
-
-    @property
-    def key(self):
-        return (self.method, self.path, self.when)
-
-
-@dataclass(frozen=True)
 class CliSpec:
     path: tuple
     positional: tuple = ()
@@ -69,11 +52,17 @@ class Operation:
     admission: str
     handler: Callable
     params: dict = field(default_factory=lambda: dict(OPEN))
-    # Arguments for AI callers (MCP inputSchema); None means the same as params.
+    # Arguments and guidance for AI callers (MCP tools, crew_search, guides); None means the same as for people.
     ai_params: dict = None
+    ai_description: str = None
+    # The global assistant acting as the user: the user's handler, assistant_params, project named in the arguments.
+    assistant_as_user: bool = False
+    assistant_params: dict = None
     description: str = ''
     result: dict = None
-    http: tuple = ()
+    # A read whose handler takes the raw query and writes its own response (served by GET /api/op/<name>).
+    query_get: bool = False
+    # Desktop actions that perform this operation without the backend (the operations worker), as 'worker:<action>'.
     ipc: tuple = ()
     cli: CliSpec = None
     core_for: frozenset = frozenset()
@@ -86,8 +75,18 @@ class Operation:
         return Hints(read_only=self.access == 'read', destructive=self.risk == 'high',
                      idempotent=self.access == 'read', open_world=self.access in ('external', 'host'))
 
+    def as_user(self, caller):
+        return caller.role == 'assistant' and self.assistant_as_user
+
     def schema_for(self, caller):
+        if self.as_user(caller):
+            return self.assistant_params
         return self.ai_params if caller.is_ai and self.ai_params is not None else self.params
+
+    def description_for(self, caller):
+        if caller.is_ai and self.ai_description and not self.as_user(caller):
+            return self.ai_description
+        return self.description or self.summary
 
     @property
     def tool_name(self):
@@ -95,7 +94,6 @@ class Operation:
 
 
 _OPS = {}
-_BINDINGS = {}
 
 
 def register(op):
@@ -119,26 +117,22 @@ def register(op):
         problems.append('read operations cannot take the write lock')
     if not op.summary.strip():
         problems.append('summary is required')
-    for label, value in (('params', op.params), ('ai_params', op.ai_params)):
+    for label, value in (('params', op.params), ('ai_params', op.ai_params), ('assistant_params', op.assistant_params)):
         try:
             if value is not None:
                 schema_check.check(value, label)
         except ValueError as exc:
             problems.append(str(exc))
-    if set(op.scopes) & AI_ROLES:
-        schema = op.ai_params or op.params
-        if schema.get('additionalProperties') is True and not schema.get('properties'):
-            problems.append('operations open to AI roles need declared arguments')
-    for binding in op.http:
-        if binding.method not in ('GET', 'POST'):
-            problems.append('binding method %r' % binding.method)
-        if binding.key in _BINDINGS:
-            problems.append('binding %r already belongs to %s' % (binding.key, _BINDINGS[binding.key].name))
+    if op.assistant_as_user != (op.assistant_params is not None):
+        problems.append('assistant_as_user needs assistant_params')
+    ai_schemas = [op.ai_params or op.params] if set(op.scopes) & (AI_ROLES - {'assistant'}) else []
+    if 'assistant' in op.scopes:
+        ai_schemas.append(op.assistant_params if op.assistant_as_user else op.ai_params or op.params)
+    if any(schema.get('additionalProperties') is True and not schema.get('properties') for schema in ai_schemas):
+        problems.append('operations open to AI roles need declared arguments')
     if problems:
         raise ValueError('Invalid operation %s: %s' % (op.name, '; '.join(problems)))
     _OPS[op.name] = op
-    for binding in op.http:
-        _BINDINGS[binding.key] = op
     return op
 
 
@@ -146,8 +140,6 @@ def amend(name, **changes):
     """Replace a registered operation with changed fields, re-running every check."""
     from dataclasses import replace
     op = _OPS.pop(name)
-    for binding in op.http:
-        _BINDINGS.pop(binding.key)
     try:
         return register(replace(op, **changes))
     except ValueError:
@@ -162,24 +154,3 @@ def get(name):
 def operations():
     from . import domains  # noqa: F401  (registers every domain on first use)
     return dict(_OPS)
-
-
-def bindings():
-    operations()
-    return dict(_BINDINGS)
-
-
-def resolve(method, path, data):
-    """Find the operation bound to a legacy address; discriminators must all match."""
-    operations()
-    best = None
-    for (bound_method, bound_path, when), op in _BINDINGS.items():
-        if bound_method == method and bound_path == path and all(
-                isinstance(data, dict) and data.get(key) == value for key, value in when):
-            if best is None or len(when) > len(best[1].when):
-                best = (op, next(b for b in op.http if b.key == (bound_method, bound_path, when)))
-    return best
-
-
-def paths(method):
-    return {path for (bound_method, path, _), _op in bindings().items() if bound_method == method}

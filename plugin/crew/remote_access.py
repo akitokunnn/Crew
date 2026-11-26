@@ -432,8 +432,6 @@ class Controller:
                                    'local_controls': desktop, 'local_desktop': False, 'host_admin': False,
                                    'capabilities': capabilities,
                                    'device_id': identity['device_id']})
-            if method == 'POST':
-                handler.remote_body = json.dumps(remote_routes.human_payload(path, data, identity['kind']), ensure_ascii=False).encode('utf-8')
             return False
         except PermissionError as error:
             return reply(429 if str(error).startswith('尝试') else 403, {'error': str(error)})

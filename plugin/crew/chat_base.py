@@ -151,8 +151,6 @@ def child_environment(spec, environ=None, persistent_names=None):
                 or name.upper() == 'CLAUDE_CONFIG_DIR')}
     # A human-facing session: "cli" keeps it out of the sdk-* programmatic class and on the
     # user's subscription. Custom values (e.g. the former "crew-web") are billed as API usage.
-    env.update(CLAUDE_CODE_ENTRYPOINT="cli", CREW_NAME=spec["name"], CREW_ROLE=spec["role"], CREW_SPAWN_ID=spec["id"],
-               MSYS_NO_PATHCONV="1")
-    if spec["group"] is not None:
-        env["CREW_GROUP"] = spec["group"]
+    # Crew identity is the session's MCP token, never an inherited variable.
+    env.update(CLAUDE_CODE_ENTRYPOINT="cli", MSYS_NO_PATHCONV="1")
     return env

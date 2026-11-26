@@ -22,26 +22,37 @@ def clear_general_handoff(conn, session_id):
     conn.execute('DELETE FROM general_goal_handoffs WHERE session_id=?', (session_id,))
 
 
-def _crew_coordination(home, command):
-    # An ordinary Crew CLI invocation is enough to start more tasks or route messages.
-    if not isinstance(command, str) or re.search(r'[\r\n\x00]', command):
-        return False
-    quoted = re.sub(r"'(?:''|[^'])*'", "''", command)
-    if re.search(r'[<>`$%]', quoted):
+LOCAL_HOSTS = ('127.0.0.1', 'localhost', '[::1]')
+SEPARATORS = ('&&', '||', ';', '|', '&', '(', ')', '\n')
+
+
+def crew_bypass(home, command):
+    """A shell command that reaches Crew around MCP: the crew CLI, its local API, or HOME's launcher, database and tokens."""
+    if not isinstance(command, str):
         return False
     words = SHELL_WORDS.findall(command)
-    if len(words) < 2 or any(word in ('&&', '||', ';', '|', '&', '(', ')') for word in words):
-        return False
-    if words[0].casefold() in ('crew', 'crew.exe', 'crew.cmd'):
+    starts = [word for index, word in enumerate(words) if index == 0 or words[index - 1] in SEPARATORS]
+    if any(Path(word.strip('"\'')).name.casefold() in ('crew', 'crew.exe', 'crew.cmd') for word in starts):
         return True
-    return (len(words) >= 3 and words[0].casefold() in ('python', 'python.exe', 'python3', 'py')
-            and store.norm_path(words[1].strip('\"\'')) == store.norm_path(Path(home) / 'crew.py'))
+    folded = command.replace('\\', '/').casefold()
+    address = Path(home) / 'web.json'
+    if address.exists():
+        port = json.loads(address.read_text(encoding='utf-8'))['url'].rsplit(':', 1)[1]
+        if any('%s:%s/' % (host, port) in folded for host in LOCAL_HOSTS):
+            return True
+    root = str(Path(home).resolve()).replace('\\', '/').casefold()
+    return any(root + '/' + name in folded for name in ('crew.py', 'crew.db', 'runtime/mcp'))
+
+
+def _managed(conn, session_id):
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mcp_tokens'").fetchone():
+        return False
+    return conn.execute('SELECT 1 FROM mcp_tokens WHERE session_id=? AND revoked_at IS NULL LIMIT 1',
+                        (session_id,)).fetchone() is not None
 
 
 def _handoff_reason(conn, home, session_id, tool, command):
     if tool not in SHELLS + WRITES + ('apply_patch', 'Agent', 'Task', 'TeamCreate'):
-        return None
-    if tool in SHELLS and _crew_coordination(home, command):
         return None
     # A live checkout can supply the new hook before the host migrates its board.
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='general_goal_handoffs'").fetchone():
@@ -49,7 +60,7 @@ def _handoff_reason(conn, home, session_id, tool, command):
     row = conn.execute('SELECT goal_id FROM general_goal_handoffs WHERE session_id=?', (session_id,)).fetchone()
     if row is not None:
         return ('BLOCKED by Crew: 本轮已将任务 %s 交给执行对话。请在任务内实施和验证，'
-                '总对话可继续用独立的 Crew 命令协调其他事项。' % row['goal_id'])
+                '总对话可继续用 Crew 工具协调其他事项。' % row['goal_id'])
     return None
 
 
@@ -60,7 +71,7 @@ def discussion_write_reason(conn, execution_id, tool):
     their existing guard; this is not a general shell side-effect sandbox.
     """
     if tool in WRITES + ('apply_patch',) and goals.discussion(conn, execution_id):
-        return 'BLOCKED by Crew: 当前是交付后的讨论；如需修改，请先用 crew goal amend 更新当前任务，再继续实施。'
+        return 'BLOCKED by Crew: 当前是交付后的讨论；如需修改，请先用 Crew 工具 goal_amend 更新当前任务，再继续实施。'
     return None
 
 
@@ -185,6 +196,10 @@ def check(home, data, now=None, *, execution_id=None):
             if p is None:
                 return reason
             sid = data["session_id"]
+            if reason is None and tool in SHELLS and crew_bypass(home, command) and (
+                    execution_id is not None or _managed(conn, sid)):
+                reason = ('BLOCKED by Crew: Crew 启动的会话通过 crew MCP 工具使用 Crew，不要在 Shell 里调用 crew 命令、'
+                          'Crew 的本机接口、数据库或令牌文件；需要的能力先用 crew_search 查找。' + TAIL)
             if reason is None and execution_id is None:
                 reason = _handoff_reason(conn, home, sid, tool, command)
             if reason is None and tool in ('Agent', 'Task', 'TeamCreate'):
@@ -197,13 +212,13 @@ def check(home, data, now=None, *, execution_id=None):
                                       (sid, p["name"])).fetchone()
                 if (config is not None and config["admin_session_id"] != sid and member is not None
                         and member["crew_name"] and member["status"] != "closed" and not board.is_archived(conn, sid)):
-                    reason = "本项目的推送、开 PR、合并交给 Git 助手：用 crew git request 交给它；发版分支由用户自己处理。" + TAIL
+                    reason = "本项目的推送、开 PR、合并交给 Git 助手：用 Crew 工具 git_request_add 交给它；发版分支由用户自己处理。" + TAIL
             if reason is None and tool in SHELLS:
                 active = {l["resource"]: l for l in board.leases(conn, p["name"])}
                 for resource in board.resources(conn, p["name"]):
                     lease = active.get(resource["name"])
                     if resource["guard_regex"] is not None and lease is not None and lease["holder_session"] != sid and re.search(resource["guard_regex"], command):
-                        reason = "设备正在被借用；%s；等对方归还后再试，或找对方 / leader 协商（crew send 或 SendMessage）。%s" % (board.lease_description(lease), TAIL)
+                        reason = "设备正在被借用；%s；等对方归还后再试，或找对方 / leader 协商（Crew 工具 message_send 或 SendMessage）。%s" % (board.lease_description(lease), TAIL)
                         break
             if reason is None and tool in WRITES:
                 path = _path(data)
@@ -223,9 +238,6 @@ def check(home, data, now=None, *, execution_id=None):
     except (sqlite3.Error, OSError) as exc:
         if reason is not None:
             return reason.removesuffix(TAIL) + "白板读取失败: %s: %s。稍后再试，持续失败请告诉用户。%s" % (type(exc).__name__, exc, TAIL)
-        if tool in SHELLS and ("crew.py" in command or "crew_cli.py" in command or command.startswith("crew ")):
-            print("白板读取失败，诊断命令按约定放行: %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
-            return None
         if tool in SHELLS + WRITES:
             return "白板读取失败: %s: %s。稍后再试，持续失败请告诉用户。%s" % (type(exc).__name__, exc, TAIL)
         print("白板读取失败，此工具不在阻止范围内: %s: %s" % (type(exc).__name__, exc), file=sys.stderr)

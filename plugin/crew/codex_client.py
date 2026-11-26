@@ -105,11 +105,11 @@ def command(executable="codex", *, env=None):
 
 class Client:
     def __init__(self, executable="codex", *, cwd=None, env=None, on_notification=None,
-                 tool_handler=None, approval_handler=None, process_factory=None,
+                 approval_handler=None, process_factory=None,
                  timeout=30, client_version="0.2.1"):
         self.timeout = timeout
         self.on_notification = on_notification
-        self.tool_handler, self.approval_handler = tool_handler, approval_handler
+        self.approval_handler = approval_handler
         self.thread_id = self.turn_id = self.turn_status = None
         self.stderr = collections.deque(maxlen=100)
         self.callback_errors = collections.deque(maxlen=20)
@@ -257,15 +257,7 @@ class Client:
     def _server_request(self, message):
         method, params = message["method"], message.get("params", {})
         try:
-            if method == "item/tool/call":
-                if not self.tool_handler:
-                    result = {"contentItems": [{"type": "inputText", "text": "Crew tool is unavailable"}],
-                              "success": False}
-                else:
-                    result = self.tool_handler(params)
-                    if not isinstance(result, dict) or not isinstance(result.get("success"), bool) or not isinstance(result.get("contentItems"), list):
-                        raise ValueError("Tool handler must return contentItems and success")
-            elif method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval",
+            if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval",
                             "item/permissions/requestApproval", "mcpServer/elicitation/request",
                             "item/tool/requestUserInput"):
                 result = self.approval_handler(method, params) if self.approval_handler else None
@@ -279,10 +271,7 @@ class Client:
                 return
         except Exception as exc:
             self.callback_errors.append(exc)
-            if method == "item/tool/call":
-                result = {"contentItems": [{"type": "inputText", "text": "Crew tool failed: " + str(exc)}],
-                          "success": False}
-            elif method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval",
+            if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval",
                             "item/permissions/requestApproval", "mcpServer/elicitation/request",
                             "item/tool/requestUserInput"):
                 result = self._decline(method)

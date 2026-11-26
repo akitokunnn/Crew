@@ -60,7 +60,7 @@ def _write_index(home, index):
 def custom_presets(home):
     """Uploaded sounds whose file is still on disk; a removed file is no longer offered."""
     folder = _custom_dir(home)
-    return {'custom:' + key: {'name': item['name'], 'url': '/api/sounds/custom/file?id=custom:' + key, 'custom': True}
+    return {'custom:' + key: {'name': item['name'], 'url': '/api/op/sounds.custom.file?id=custom:' + key, 'custom': True}
             for key, item in _index(home).items() if (folder / (key + '.' + item['ext'])).is_file()}
 
 

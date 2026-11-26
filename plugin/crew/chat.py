@@ -19,6 +19,7 @@ from pathlib import Path
 from . import behavior_prompts, runtime_recovery, trust_mode
 
 from . import board, channel, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, guard, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
+from .ops import launch
 from .chat_base import (
     PAUSED_FOR_UPDATE, MAINTENANCE_HELD, REPLY_KIND, CLAUDE_NO_CONVERSATION, NATIVE_MISSING,
     NATIVE_REPLACED, NATIVE_LOST_INPUT, NATIVE_OUTPUT, IDLE_RECLAIM_MINUTES, idle_reclaim_seconds,
@@ -208,10 +209,8 @@ class Manager(StatusMixin, NativeMixin, DeliveryMixin, MaintenanceMixin,
         if runtime == "codex":
             from .codex_runtime import CodexRunning
             current = CodexRunning(self.home, self.plugin_root, session, spec, options,
-                                   self.journal(session_id), self.send_message,
-                                   process_factory=self.process_factory, resume=native_resume,
-                                   goal_handler=self.goal_controller.agent_action, maintenance=maintenance,
-                                   personal_handler=self.personal_action)
+                                   self.journal(session_id), process_factory=self.process_factory,
+                                   resume=native_resume, maintenance=maintenance)
             self.processes[session_id] = current
             return spawn.command(session_id, session["crew_name"], session["role"], runtime="codex", **options)
         exe = claude_executable()
@@ -225,17 +224,25 @@ class Manager(StatusMixin, NativeMixin, DeliveryMixin, MaintenanceMixin,
             command += ['--append-system-prompt', spec['_workspace_notice']]
         with closing(store.connect(self.home)) as prompt_conn:
             prompt_manifest = behavior_prompts.for_session(prompt_conn, session_id, plugin_root=self.plugin_root)
+        granted = launch.issue(self.home, session_id=session_id, runtime='claude', now=store.now_iso())
+        if granted is not None:
+            command += launch.claude_args(self.home, granted)
         command = behavior_prompts.append_to_command(command, behavior_prompts.render(prompt_manifest))
         command[0] = exe
         journal = self.journal(session_id)
         journal.reset_runtime()
         identity = {**spec, "name": session["crew_name"], "role": session["role"], "group": session["group_name"]}
         environment = child_environment(identity)
-        environment.update(CREW_SESSION_ID=session_id, CREW_HOME=str(self.home.resolve()))
+        environment['CREW_HOME'] = str(self.home.resolve())
         environment['PATH'] = str(self.home.resolve() / 'bin') + os.pathsep + environment.get('PATH', '')
-        process = self.process_factory(command, cwd=session["cwd"], env=environment, stdin=subprocess.PIPE,
-                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1,
-                                       creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        try:
+            process = self.process_factory(command, cwd=session["cwd"], env=environment, stdin=subprocess.PIPE,
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1,
+                                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        except BaseException:
+            launch.abandon(self.home, granted, store.now_iso())
+            raise
+        launch.attach(granted, process)
         current = Running(process, journal)
         current.resumed_native = session_id if native_resume else None
         current.replacing = None if lost is None else {'lost_native': lost}
@@ -293,8 +300,8 @@ class Manager(StatusMixin, NativeMixin, DeliveryMixin, MaintenanceMixin,
                 group = leader['group_name']
             if role == 'member' and caller_session_id not in (None, board.HUMAN) and bound_goal is None:
                 # Members are executions of one part of a task, not standing teammates.
-                raise board.BoardError('执行只能开在任务里：crew spawn --goal <任务ID> --name <这块活的短名> --task "<任务书>"'
-                                       '（Codex 用 crew_spawn 的 goal_id）；没有任务的零活自己做，或用原生子代理、一次性派工')
+                raise board.BoardError('执行只能开在任务里。用 Crew 工具 `execution_spawn`（`goal_id` 填任务 ID，'
+                                       '`name` 填这块活的短名，`task` 填任务书）；没有任务的零活自己做，或用原生子代理、一次性派工')
             if (role == 'member' and bound_goal is not None and caller_execution_id is None
                     and caller_session_id not in (None, board.HUMAN) and conn.execute(
                         "SELECT 1 FROM goal_executions e JOIN goals g ON g.id=e.goal_id WHERE e.goal_id=? AND e.session_id=? "

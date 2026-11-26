@@ -63,20 +63,3 @@ class PersonalMixin:
                         '。已找回原对话，没有重放输入。原始想法：' + note['original_text'], note_recovery_id=note_id)
                     return {**recovered, 'warning': str(error), 'model_calls': None}
                 raise
-
-    def personal_action(self, action, data, actor_session_id):
-        """A global assistant has narrow user-authorized ports, no leader role."""
-        from . import personal_actions
-
-        def send_message(session_id, text, *, identity, instruction):
-            with closing(store.connect(self.home)) as conn:
-                target = personal._target(conn, session_id)
-            body = '用户通过 Crew 助手转达：\n' + text + '\n\n原始指令：\n' + instruction['instruction']
-            return self.send(target, body, identity='personal:' + hashlib.sha256(identity.encode('utf-8')).hexdigest(), source='human')
-
-        def stop_session(session_id, *, request_id, instruction):
-            return self.stop_identity(session_id)
-
-        return personal_actions.dispatch(self.home, actor_session_id, action, data,
-            read_events=lambda sid: self.history(sid)['events'], create_leader=self._personal_leader,
-            send_message=send_message, stop_session=stop_session)

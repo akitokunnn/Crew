@@ -84,13 +84,13 @@ def _check_short(body):
     if len(body) > LEADER_LIMIT_CHARS or len(lines) > LEADER_LIMIT_LINES:
         raise board.BoardError(
             "交流区像群聊一样说短话：这条 %d 字 %d 行，上限 %d 字 %d 行。能一两句说清就精简后再发；"
-            "要长篇说明就把完整内容写在你的私聊里，这里加 --detail（Codex 用 crew_say 的 detail=true）只说一句结论。"
+            "要长篇说明就把完整内容写在你的私聊里，交流区用 Crew 工具 `channel_post` 只发一句结论（`detail=true`）。"
             % (len(body), len(lines), LEADER_LIMIT_CHARS, LEADER_LIMIT_LINES))
 
 
 def _reply_hint(message_id):
-    return ('能一两句说清的，直接在交流区口语回一句（尽量 50 字内，不复述资料来源）：crew say --reply-to %d "…"（Codex 用 crew_say，reply_to=%d），'
-            '私聊这边只写一句“已在交流区回复”；需要长内容时，交流区回一句结论并加 --detail（Codex 用 detail=true），完整内容在私聊这边写。'
+    return ('能一两句说清的，直接用 Crew 工具 `channel_post` 回复交流区发言 #%d（`text` 尽量 50 字内，不复述资料来源，`reply_to=%d`）。'
+            '私聊这边只写一句“已在交流区回复”；需要长内容时，交流区回一句结论并设 `detail=true`，完整内容在私聊这边写。'
             % (message_id, message_id))
 
 
@@ -201,7 +201,7 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
             what = "点名你" if reason == "mention" else "回复了你的交流区发言 #%d" % reply_to
             text = ("交流区：用户%s（交流区发言 #%d）：\n%s\n\n（这是用户本人的话）%s" % (what, message_id, body, _reply_hint(message_id))
                     if actor == board.HUMAN else
-                    '交流区：「%s」%s（交流区发言 #%d）：\n%s\n\n回复用 crew say --reply-to %d "…"（Codex 用 crew_say）；只是回"收到"就不用回。' %
+                    '交流区：「%s」%s（交流区发言 #%d）：\n%s\n\n回复用 Crew 工具 `channel_post`（参数 `text`、`reply_to=%d`）；只是回“收到”就不用回。' %
                     (speaker_name, what, message_id, body, message_id))
             notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now)
         conn.execute("INSERT INTO channel_mentions(message_id,session_id,name,notice_id,await_reply,reason) "
@@ -343,7 +343,7 @@ def preview(conn, session_id):
             lines.append("- %s：%s" % (line(message), first_line))
         if len(rows) > 10:
             lines.append("还有 %d 条" % (len(rows) - 10))
-        lines.append("全文用 crew channel 看（Codex 用 crew_channel）；要接话用 crew say --reply-to <编号>")
+        lines.append("全文用 Crew 工具 `channel_consume` 查看；要接话用 `channel_post`（参数 `text`，`reply_to` 填发言编号）。")
         blocks.append("\n".join(lines))
     return ("\n\n".join(blocks) if blocks else None), _latest(conn, s["project"])
 

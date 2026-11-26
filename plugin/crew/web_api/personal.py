@@ -116,11 +116,6 @@ def post_assistant_open(service, path, data, project_name):
     return personal_api.open_assistant(service.home, data.get('context_project'))
 
 
-def post_assistant_native_action(service, path, data, project_name):
-    return service.chat.personal_action(_text(data, 'action'), data.get('data', {}),
-                                     _text(data, 'actor_session_id'))
-
-
 def get_personal_notes_recovery(handler, service, url, query):
     handler._send(200, personal_api.note_recovery(service.home, query.get('note_id', [''])[0]))
 

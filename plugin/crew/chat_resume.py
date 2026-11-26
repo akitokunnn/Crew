@@ -82,17 +82,17 @@ class ResumeMixin:
                     raise board.BoardError("leader 直接在网页上和它聊")
                 if caller["role"] == "member":
                     peer = any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (caller, target))
-                    reply = ('回复用 crew send ' + caller['crew_name'] + ' "<回复>" ' + REPLY_KIND + '；Codex 用 crew_send_message 并同样指定 kind。' if peer else
+                    reply = ('回复用 Crew 工具 `message_send`（`to` 填「' + caller['crew_name'] + '」，`text` 填回复，`kind=' + REPLY_KIND + '`）。' if peer else
                              "回复用 SendMessage，地址「" + caller["cc_name"] + "」。" if caller["cc_name"] else
-                             "回复前用 crew who " + caller["crew_name"] + " 查地址；离线时用 crew wake 接续原会话。")
+                             "回复前用 Crew 工具 `session_who` 查地址（`target` 填「" + caller["crew_name"] + "」）。离线时用 `message_send` 联系对方（`to` 填对方的 Crew 名，`text` 填消息，`kind=task`），会在对方空闲时送达。")
                     notice = ("组员「" + caller["crew_name"] + "」（" + caller["group_name"] + "）找你：" + text + "。" + reply)
                 else:
                     peer = any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (caller, target))
                     if not peer and caller["cc_name"] is None:
                         raise board.BoardError("leader 的 SendMessage 地址未知，请查明后再试")
                     notice = ("leader「" + caller["crew_name"] + "」（" + caller["group_name"] + "）找你：" + text +
-                              ('。回复用 crew send ' + caller['crew_name'] + ' "<回复>" ' + REPLY_KIND + '，或 crew say --to ' + caller['crew_name'] + '。' if peer else
-                               "。回复用 SendMessage，地址「" + caller["cc_name"] + "」，或 crew say --to " + caller["crew_name"] + "。"))
+                              ('。回复用 Crew 工具 `message_send`（`to` 填「' + caller['crew_name'] + '」，`text` 填回复，`kind=' + REPLY_KIND + '`），或用 `channel_post`（`text` 填回复，`to` 列表填「' + caller['crew_name'] + '」）。' if peer else
+                               "。回复用 SendMessage，地址「" + caller["cc_name"] + "」，或用 Crew 工具 `channel_post`（`text` 填回复，`to` 列表填「" + caller["crew_name"] + "」）。"))
                 notice_id = board.queue_leader_notice(conn, target["session_id"], notice, "crew", now=now)
                 return {"ok": True, "session_id": target["session_id"], "name": target["crew_name"],
                         "notice_id": notice_id, "message": "已排进对方的通知，对方空闲时送达"}
@@ -109,7 +109,7 @@ class ResumeMixin:
                 introduction += "。"
             if runtimes.get(conn, target["session_id"])["native_id"] is None:
                 # A goal-bound member has worked only inside task executions.
-                situation = "（这是你的总对话第一次启动；你在任务里的执行记录留在对应任务中，需要时用 crew goal status 查阅）"
+                situation = "（这是你的总对话第一次启动；你在任务里的执行记录留在对应任务中，需要时用 Crew 工具 `goal_get` 查阅，`goal_id` 填任务 ID）"
             elif self.missing_native(conn, target) is not None:
                 situation = "（你原来的原生会话已丢失，这是 Crew 新开的会话，任务背景交接在前面）"
             else:
@@ -120,7 +120,7 @@ class ResumeMixin:
                 peer = any(runtimes.get(conn, s['session_id'])['runtime'] == 'codex' for s in (reply_to, target))
                 if not peer and reply_to["cc_name"] is None:
                     raise board.BoardError("leader 的 SendMessage 地址未知，请查明后再试")
-                message += ('\n\n回复 leader 用 crew send ' + reply_to['crew_name'] + ' "<回复>" ' + REPLY_KIND + '；Codex 用 crew_send_message 并同样指定 kind。' if peer else
+                message += ('\n\n回复 leader 用 Crew 工具 `message_send`（`to` 填「' + reply_to['crew_name'] + '」，`text` 填回复，`kind=' + REPLY_KIND + '`）。' if peer else
                             "\n\n回复 leader 用 SendMessage，地址「" + reply_to["cc_name"] + "」。")
             sender = reply_to["crew_name"] if reply_to is not None else board.HUMAN
             created_spawn = self._resume(conn, target, message, sender=sender, now=now, source='human' if human else 'crew')

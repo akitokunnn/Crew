@@ -1,6 +1,6 @@
 # Crew 指令目录
 
-Crew 发给 AI 的每一份指令都是 `plugin/crew/behavior_prompts.py` 里 `SPECS` 的一项：默认文本放在这里（角色守则仍在 `plugin/skills/<角色>/SKILL.md`，供 Claude Code 的 `/crew:<角色>` 使用），设置的“行为配置”按分组列出全部条目，可在全局、工作区或会话范围覆盖。
+Crew 发给 AI 的每一份指令都是 `plugin/crew/behavior_prompts.py` 里 `SPECS` 的一项：默认文本放在这里（角色守则在 `roles/<角色>.md`；Crew 不再随插件注册技能），设置的“行为配置”按分组列出全部条目，可在全局、工作区或会话范围覆盖。
 
 ## 组成
 

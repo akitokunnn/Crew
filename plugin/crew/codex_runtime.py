@@ -13,7 +13,8 @@ import sys
 import tempfile
 import threading
 
-from . import board, codex_app_server, codex_binding, codex_client, codex_events, codex_guard, codex_subagents, codex_tools, codex_visibility, goal_messages, goals, guard, install, messaging, native_approvals, native_skills, rules, settings, store, workspace_execution
+from .ops import guide, launch
+from . import board, codex_app_server, codex_binding, codex_client, codex_events, codex_guard, codex_subagents, codex_visibility, goal_messages, goals, guard, install, messaging, native_approvals, native_skills, rules, settings, store, workspace_execution
 
 
 def process_identity(pid):
@@ -206,9 +207,8 @@ class CodexRunning:
     runtime = "codex"
     maintenance = None
 
-    def __init__(self, home, plugin_root, session, spec, options, journal, send_message,
-                 process_factory=subprocess.Popen, *, resume=False, execution=None, goal_handler=None, maintenance=None,
-                 personal_handler=None):
+    def __init__(self, home, plugin_root, session, spec, options, journal,
+                 process_factory=subprocess.Popen, *, resume=False, execution=None, maintenance=None):
         # Import lazily so this independent driver does not own schema migration.
         from . import runtimes
         self.home, self.plugin_root = Path(home).resolve(), Path(plugin_root).resolve()
@@ -221,8 +221,6 @@ class CodexRunning:
         self.execution = execution
         # Known before the first status write: maintenance never changes goal execution state.
         self.maintenance = maintenance
-        self.goal_handler = goal_handler
-        self.personal_handler = personal_handler
         self.goal_manifests = dict(session.get('_goal_manifests', {}))
         self.applied, self.context, self.pending_compact = None, None, False
         self.reader_done = threading.Event()
@@ -230,8 +228,7 @@ class CodexRunning:
         self._turn_ready = threading.Condition(self.input_lock)
         self._started_turn_id = None
         self._settings_revision, self._options = 0, dict(options)
-        self._send_message, self._tool_lock = send_message, threading.RLock()
-        self._tool_results, self._closing, self._compacting = {}, False, False
+        self._closing, self._compacting = False, False
         self.stop_reason = None
         self.interrupt_requested = False
         self.unexpected_exit = False
@@ -289,10 +286,15 @@ class CodexRunning:
         env['CODEX_HOME'] = str(self.native_home)
         for key in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT"):
             env.pop(key, None)
-        env.update(CREW_HOME=str(self.home), CREW_SESSION_ID=self.session_id,
-                   CREW_NAME=session["crew_name"], CREW_ROLE=session["role"])
-        if execution:
-            env.update(CREW_EXECUTION_ID=execution['id'], CREW_GOAL_ID=execution['goal_id'])
+        # Crew identity is the MCP token in the thread config, never an inherited variable.
+        for key in [name for name in env if name.upper().startswith('CREW_')]:
+            env.pop(key)
+        env['CREW_HOME'] = str(self.home)
+        granted = launch.issue(self.home, session_id=self.session_id, runtime='codex', now=store.now_iso(),
+                               execution_id=execution['id'] if execution else None)
+        if granted is not None:
+            config['mcp_servers'] = launch.codex_config(granted)
+            instructions += '\n\n' + guide.render(granted.role, 'codex', granted.exposure)
         env['PATH'] = str(self.home / 'bin') + os.pathsep + env.get('PATH', '')
         # Board keys are case-folded on Windows. Native sandbox roots must use
         # the filesystem's spelling: mixed cwd/root casing can split one root
@@ -309,7 +311,12 @@ class CodexRunning:
         def own_process(command, **kwargs):
             if new_leader:
                 command = codex_app_server.command(self.home)
-            process = process_factory(command, **kwargs)
+            try:
+                process = process_factory(command, **kwargs)
+            except BaseException:
+                launch.abandon(self.home, granted, store.now_iso())
+                raise
+            launch.attach(granted, process)
             self.process = process
             try:
                 self._lease.bind(process)
@@ -325,7 +332,7 @@ class CodexRunning:
             return process
         try:
             self.client = _ObservedClient(cwd=cwd, env=env,
-                                          on_notification=self._notification, tool_handler=self._tool,
+                                          on_notification=self._notification,
                                           approval_handler=self._approval,
                                           process_factory=own_process)
             self.process = self.client.process
@@ -333,8 +340,6 @@ class CodexRunning:
             if native_id:
                 if execution:
                     codex_visibility.restore_internal(self.client, native_id)
-                # Native dynamic tools are persisted by thread/start. Current
-                # thread/resume has no tool replacement field.
                 try:
                     result = self.client.resume_thread(native_id, **params)
                 except codex_client.RpcError as exc:
@@ -343,7 +348,7 @@ class CodexRunning:
                         raise
                     raise busy from exc
             else:
-                result = self.client.start_thread(ephemeral=False, dynamicTools=codex_tools.tool_specs(assistant=assistant), **params)
+                result = self.client.start_thread(ephemeral=False, **params)
             self.thread_id = result["thread"]["id"]
             if native_id and self.thread_id != native_id:
                 raise board.BoardError("Codex 返回了不同的恢复会话，已停止")
@@ -564,32 +569,6 @@ class CodexRunning:
                     execution_id=self.execution['id'] if self.execution else None)
                 if reason:
                     raise board.Conflict(reason)
-
-    def _tool(self, params):
-        call_id = params.get("callId")
-        if not isinstance(call_id, str) or not call_id or params.get("threadId") != self.thread_id:
-            return {"success": False, "contentItems": [{"type": "inputText", "text": "Invalid Crew tool request identity"}]}
-        signature = json.dumps(params, sort_keys=True, ensure_ascii=False)
-        with self._tool_lock:
-            if call_id in self._tool_results:
-                old, result = self._tool_results[call_id]
-                if old != signature:
-                    return {"success": False, "contentItems": [{"type": "inputText", "text": "Conflicting Crew callId"}]}
-                return copy.deepcopy(result)
-            message_id = "codex:" + self.thread_id + ":" + call_id
-            def deliver(sender, target, text, **metadata):
-                if self._send_message is None:
-                    raise board.BoardError("Crew 消息路由不可用")
-                if self.execution:
-                    metadata['execution_id'] = self.execution['id']
-                return self._send_message(sender, target, text, message_id=message_id,
-                                          **metadata)
-            handler = codex_tools.CodexTools(self.home, self.session_id, send_message=deliver,
-                                            execution_id=self.execution['id'] if self.execution else None,
-                                            goal_handler=self.goal_handler, personal_handler=self.personal_handler)
-            result = handler(params)
-            self._tool_results[call_id] = signature, copy.deepcopy(result)
-            return result
 
     def send(self, text, identity, display_text=None, source="human", images=None, sender=None, image_files=None,
              steer=False):
