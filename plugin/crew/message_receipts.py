@@ -33,6 +33,8 @@ def normalize(receipt, *, kind=None):
             note += '上次尝试：' + str(value['error']) + '；保留同一编号核对，勿重复成功操作。'
     elif status == 'accepted':
         note = '已交给执行输入，尚不代表模型已读、已答复或任务完成。'
+    elif status == 'replied':
+        note = '对方已回复（回复消息编号 %s）；回复不代表任务已完成，以回复内容为准。' % value['replied_by']
     elif status == 'delivered':
         note = '已交给接收通道或原生 Hook 附加上下文，尚未确认执行输入。'
     elif status == 'failed':
@@ -47,4 +49,4 @@ def normalize(receipt, *, kind=None):
     prefix = '[%s · %s] ' % (label, status)
     message = value['message'] if isinstance(value.get('message'), str) and value['message'].startswith(prefix) else prefix + note
     return {**value, 'kind': actual_kind, 'status': status, 'queued': status == 'queued',
-            'accepted': status == 'accepted', 'message': message}
+            'accepted': status == 'accepted' or status == 'replied' and value.get('accepted') is True, 'message': message}

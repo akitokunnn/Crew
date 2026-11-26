@@ -213,7 +213,7 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
         message = result['message']
         self.assertEqual(message['speaker_session_id'], board.HUMAN)
         self.assertEqual(message['speaker_name'], '用户')
-        self.assertEqual(message['mentions'], [{'session_id': 's3', 'name': 'lead', 'replied': False}])
+        self.assertEqual(message['mentions'], [{'session_id': 's3', 'name': 'lead', 'replied': False, 'delivery': 'queued'}])
         notice = board.pending_notices(self.conn, 's3')[0]
         self.assertEqual(notice['source'], 'web')
         self.assertIn('用户点名你', notice['text'])

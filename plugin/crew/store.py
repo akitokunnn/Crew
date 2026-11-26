@@ -103,10 +103,15 @@ def _migrate_quiet_leader_notices(conn):
 
 
 def _migrate_channel_replies(conn):
-    """Channel replies and pending answers; earlier posts stay plain and earlier mentions await nothing."""
+    """Channel replies and pending answers; earlier posts stay plain and earlier mentions await nothing.
+
+    Earlier mentions were all explicit names, and earlier sent notices all went through the leader's input.
+    """
     columns = {'channel_messages': (('reply_to', 'INTEGER REFERENCES channel_messages(id)'),
                                     ('detail', 'INTEGER NOT NULL DEFAULT 0'), ('auto', 'INTEGER NOT NULL DEFAULT 0')),
-               'channel_mentions': (('await_reply', 'INTEGER NOT NULL DEFAULT 0'),)}
+               'channel_mentions': (('await_reply', 'INTEGER NOT NULL DEFAULT 0'),
+                                    ('reason', "TEXT NOT NULL DEFAULT 'mention' CHECK (reason IN ('mention', 'reply'))")),
+               'leader_notices': (('delivered_via', "TEXT CHECK (delivered_via IN ('hook'))"),)}
 
     def missing():
         return [(table, name, kind) for table, wanted in columns.items()

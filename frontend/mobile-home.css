@@ -112,7 +112,6 @@ button.wh-overview-item:active{background:var(--hover)}
 .decision-context{margin-top:14px;padding-top:0}
 .decision-context summary{display:flex;align-items:center;width:100%;min-height:var(--m-tap);font-size:14px;color:var(--text-2)}
 .decision-context .markdown{padding:0 0 4px;font-size:14px;line-height:1.7}
-.dc-result{padding:12px 0 0;font-size:var(--m-fs-meta)}
 
 /* TODO 卡片（工作台与“我的待办”共用） */
 .todo-card{border-radius:var(--m-radius)}

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Leader 交流区 · 重设计原型</title>
+<script>
+  // 原型专用：?theme=dark|light 切主题（不带参数时跟随系统）。
+  (function(){var t=new URLSearchParams(location.search).get("theme");if(t==="dark"||t==="light")document.documentElement.dataset.theme=t;})();
+</script>
+<link rel="stylesheet" href="../../frontend/style.css">
+<link rel="stylesheet" href="channel.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-msg" viewBox="0 0 24 24"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 3.5V17h0A2.5 2.5 0 0 1 4 14.5z"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M5 5.5h14v10H11l-4 3.2v-3.2H5z"/><path d="M9 9.5h6M9 12h3.5"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="i-clock-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7.5v5"/><path d="M12 16h.01" stroke-width="2.4"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5.5 12.5 4 4 9-9"/></symbol>
+    <symbol id="i-replied" viewBox="0 0 24 24"><path d="m2.5 12.5 4 4 9-9"/><path d="m11.5 16 1 .5 9-9"/></symbol>
+    <symbol id="i-reply" viewBox="0 0 24 24"><path d="M9.5 7 5 11.5 9.5 16"/><path d="M5 11.5h9a5 5 0 0 1 5 5V18"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="4" rx="1"/><path d="M5.5 9v9a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V9M10 13h4"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4 21 19.5H3z"/><path d="M12 10v4.5"/><path d="M12 17h.01" stroke-width="2.4"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24"><path d="M7 3.5h7l4 4V20a.5.5 0 0 1-.5.5h-10A.5.5 0 0 1 7 20z"/><path d="M13.5 3.5V8H18M9.5 12h6M9.5 15h6M9.5 18h3.5"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="m14.5 5.5-6.5 6.5 6.5 6.5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/></symbol>
+    <symbol id="i-room" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M3.5 9.5h17M8 14h3M8 16.5h6"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m5 11 7-7 7 7M12 4v16"/></symbol>
+    <symbol id="i-thread" viewBox="0 0 24 24"><path d="M6 4v9a3 3 0 0 0 3 3h9"/><path d="m15 13 3 3-3 3"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 11 12 4.5l8 6.5V19a1 1 0 0 1-1 1h-4.5v-5h-5v5H5a1 1 0 0 1-1-1z"/></symbol>
+    <symbol id="i-todo" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="15" rx="3"/><path d="m8.5 12 2.5 2.5 4.5-5"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 4.5 13.6 10l5.4 2-5.4 2L12 19.5 10.4 14 5 12l5.4-2z"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M7 4h10M7 20h10M8 4c0 4.5 8 5.5 8 8s-8 3.5-8 8M16 4c0 4.5-8 5.5-8 8s8 3.5 8 8"/></symbol>
+  </defs>
+</svg>
+
+<div class="cx-app">
+  <nav class="cx-rail" aria-label="主导航">
+    <a class="cx-rail-brand" href="#" aria-label="工作区：登录改版">
+      <svg viewBox="0 0 28 28" width="26" height="26" aria-hidden="true"><rect x="3" y="3" width="22" height="22" rx="7" fill="currentColor" opacity=".16"/><path d="M9 14.5c2-4.5 8-4.5 10 0M9 14.5c2 4.5 8 4.5 10 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </a>
+    <button class="cx-rail-btn" type="button" aria-label="工作台"><svg class="i"><use href="#i-home"/></svg></button>
+    <button class="cx-rail-btn active" type="button" aria-label="Leader 交流区" aria-current="page"><svg class="i"><use href="#i-msg"/></svg></button>
+    <button class="cx-rail-btn" type="button" aria-label="待办"><svg class="i"><use href="#i-todo"/></svg></button>
+    <span class="cx-rail-div" aria-hidden="true"></span>
+    <div class="cx-rail-leaders" id="rail-leaders"></div>
+  </nav>
+
+  <main class="cx-main">
+    <header class="cx-head">
+      <button class="cx-icon-btn cx-back" type="button" aria-label="返回"><svg class="i"><use href="#i-back"/></svg></button>
+      <div class="cx-title">
+        <h1><svg class="i" aria-hidden="true"><use href="#i-msg"/></svg>Leader 交流区</h1>
+        <p class="cx-sub"><span class="cx-sub-long">所有 leader 和用户的</span>公共频道 · 点名才叫醒</p>
+      </div>
+      <div class="cx-head-actions">
+        <button class="cx-btn" type="button" id="digest-btn"><svg class="i sm" aria-hidden="true"><use href="#i-sparkle"/></svg><span>整理</span></button>
+        <button class="cx-btn cx-room" type="button" disabled aria-disabled="true" title="后续版本：把一串讨论升级为跨 Leader 作战室">
+          <svg class="i sm" aria-hidden="true"><use href="#i-room"/></svg><span class="cx-room-label">作战室</span><span class="cx-soon">后续</span>
+        </button>
+      </div>
+    </header>
+
+    <button class="cx-pendingbar" type="button" id="pendingbar" aria-haspopup="dialog" aria-controls="aside"></button>
+
+    <div class="cx-body">
+      <section class="cx-feed" aria-label="交流区">
+        <div class="cx-pin" id="pin"></div>
+        <div class="cx-scroll" id="scroll" tabindex="0" aria-label="Leader 交流区发言">
+          <div class="cx-inner" id="feed"></div>
+        </div>
+        <div class="cx-composer-wrap">
+          <div class="cx-replybar" id="replybar" hidden></div>
+          <div class="cx-targets" id="targets" role="group" aria-label="点名 leader"></div>
+          <form class="cx-composer" id="composer">
+            <textarea rows="1" id="input" aria-label="发到 Leader 交流区" placeholder="和所有 leader 说…"></textarea>
+            <div class="cx-c-row">
+              <span class="cx-hint">Enter 发送 · Shift+Enter 换行</span>
+              <button class="cx-send" type="submit" aria-label="发送到 Leader 交流区" id="send" disabled><svg class="i"><use href="#i-send"/></svg></button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <aside class="cx-aside" id="aside" aria-label="投递追踪">
+        <div class="cx-aside-head">
+          <strong>投递追踪</strong>
+          <button class="cx-icon-btn cx-aside-close" type="button" aria-label="关闭投递追踪"><svg class="i"><use href="#i-x"/></svg></button>
+        </div>
+        <section class="cx-aside-sec">
+          <h2>成员</h2>
+          <ul class="cx-members" id="members"></ul>
+        </section>
+        <section class="cx-aside-sec">
+          <h2>等待回应 <span class="cx-count" id="pending-count"></span></h2>
+          <ul class="cx-pending" id="pending"></ul>
+        </section>
+        <section class="cx-aside-sec">
+          <h2>状态说明</h2>
+          <ul class="cx-legend" id="legend"></ul>
+          <p class="cx-aside-note">“仅归档”“失败”只出现在私聊协作消息和作战室里，交流区本身不会有。</p>
+        </section>
+      </aside>
+    </div>
+  </main>
+</div>
+
+<div class="cx-backdrop" id="backdrop" hidden></div>
+<div class="cx-pop" id="pop" role="dialog" aria-modal="false" hidden></div>
+<div class="cx-toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

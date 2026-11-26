@@ -179,8 +179,6 @@ body:has(>.nw-menu)::after{content:"";position:fixed;inset:0;z-index:69;backgrou
 .gits-footer>p{flex-basis:100%;font-size:var(--m-fs-meta)}
 .gits-footer>div{flex:1;margin-left:0}
 .gits-footer .btn{flex:1;justify-content:center;min-height:var(--m-tap);font-size:var(--m-fs-body)}
-.git-disable-dialog{width:100%;max-width:100%;margin:auto 0 0;padding:22px var(--m-gutter) calc(18px + var(--m-safe-b));border-width:1px 0 0;border-radius:20px 20px 0 0;animation:mp-sheet-up .24s var(--ease)}
-.git-disable-dialog p{font-size:var(--m-fs-body)}
 .git-disable-dialog>div .btn{flex:1;justify-content:center;min-height:48px;font-size:16px}
 
 /* ======================= 用量 ======================= */

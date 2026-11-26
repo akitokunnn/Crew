@@ -125,6 +125,12 @@ def receipt(conn, identity):
             original = conn.execute('SELECT message_id FROM goal_message_meta WHERE idempotency_key=?', (key,)).fetchone()
             if original and original['message_id'] != identity:
                 value['duplicate_of'] = original['message_id']
+    if value['status'] in ('queued', 'delivered', 'accepted'):
+        # The recipient answering this very message is the only evidence of a reply; delivery is not.
+        answer = conn.execute('SELECT id FROM peer_messages WHERE reply_to=? AND sender_session_id=? '
+                              'ORDER BY created_at,id LIMIT 1', (identity, row['target_session_id'])).fetchone()
+        if answer is not None:
+            value.update(status='replied', replied_by=answer['id'], accepted=value['status'] == 'accepted')
     return message_receipts.normalize(value)
 
 

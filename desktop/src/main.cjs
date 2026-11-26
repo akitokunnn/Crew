@@ -429,15 +429,6 @@ async function chromeEvidence() {
       nodeAvailable:typeof require!=='undefined', viewport:{width:innerWidth,height:innerHeight} };
   })()`);
 }
-async function waitForChrome(page) {
-  for (let attempt = 0; attempt < 200; attempt++) {
-    try {
-      if (await window.webContents.executeJavaScript('document.documentElement.dataset.crewDesktopChromeReady === "true"' + (page ? ' && document.documentElement.dataset.crewDesktopPage === ' + JSON.stringify(page) : ''))) return;
-    } catch (_) { /* The old document is being replaced by the recovery page. */ }
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
-  throw new Error('窗口外壳没有完成加载');
-}
 async function visualEvidence(target, evidence) {
   evidence.visual = {};
   await window.webContents.executeJavaScript('document.getElementById("new").click(); document.getElementById("name").value="新的工作区"');
