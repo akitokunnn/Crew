@@ -501,7 +501,7 @@ class VSCodeServiceTests(unittest.TestCase):
         stop.wait.return_value = True
         self.service.stop = stop
         with mock.patch.object(self.service, "_refresh_vscode", wraps=self.service._refresh_vscode) as refresh:
-            self.service._poll_agents()
+            self.service._poll_agents(threading.Event())
         refresh.assert_called_once_with()
         stop.wait.assert_called_once_with(10)
         self.assertEqual(self.ids()["running"], {sid})
@@ -530,7 +530,7 @@ class VSCodeServiceTests(unittest.TestCase):
         stop.wait.side_effect = next_pass
         self.service.stop = stop
         with mock.patch.object(self.service.chat, "auto_resume") as resume:
-            self.service._poll_agents()
+            self.service._poll_agents(threading.Event())
         self.assertEqual(stop.wait.call_count, 2)
         self.assertIn("JSONDecodeError", errors[0])
         self.assertIn("重试", errors[0])
@@ -624,7 +624,7 @@ class VSCodeServiceTests(unittest.TestCase):
                 mock.patch.object(self.service, "_refresh_vscode", wraps=self.service._refresh_vscode) as refresh, \
                 mock.patch.object(self.service.chat, "auto_resume") as resume, \
                 contextlib.redirect_stderr(io.StringIO()) as log:
-            self.service._poll_agents()
+            self.service._poll_agents(threading.Event())
         self.assertIn("database is locked", log.getvalue())
         self.assertEqual(refresh.call_count, 2)
         self.assertEqual(resume.call_count, 1)

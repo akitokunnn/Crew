@@ -21,7 +21,7 @@ class SharedTodoTests(RuntimeFixture):
         self.controller.send = mock.Mock(return_value={'accepted': True, 'delivery': 'started'})
 
     def journal(self, key):
-        return self.journals.setdefault(key, chat.Journal(self.home / 'test-todo-chats' / (key + '.jsonl')))
+        return self.journals.setdefault(key, chat.Journal(self.home / 'test-todo-chats' / (key + '.jsonl'), None))
 
     def target(self, person='member-id', runtime='claude', title='测试任务'):
         goal = goals.create(self.conn, 'demo', 'chief-id', title, '完整请求', ['可验证结果'])

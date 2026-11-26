@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import behavior_prompts, runtime_recovery, trust_mode
 
-from . import board, channel, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, guard, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
+from . import board, change_feed, channel, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, guard, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 from .ops import launch
 from .chat_base import (
     PAUSED_FOR_UPDATE, MAINTENANCE_HELD, REPLY_KIND, CLAUDE_NO_CONVERSATION, NATIVE_MISSING,
@@ -53,6 +53,8 @@ class Manager(StatusMixin, NativeMixin, DeliveryMixin, MaintenanceMixin,
         self.home, self.plugin_root = Path(home), Path(plugin_root)
         self.agents_provider, self.process_factory = agents_provider, process_factory
         self.journals, self.processes = {}, {}
+        # Conversation state a workspace page shows; the service records these marks (docs/EVENT_STREAM_DESIGN.md §6.2).
+        self.changes = change_feed.Notifier()
         self.context_history = None
         self.lock = threading.RLock()
         self._close_lock = threading.Lock()
@@ -212,6 +214,7 @@ class Manager(StatusMixin, NativeMixin, DeliveryMixin, MaintenanceMixin,
                                    self.journal(session_id), process_factory=self.process_factory,
                                    resume=native_resume, maintenance=maintenance)
             self.processes[session_id] = current
+            self.changes.session(session_id)
             return spawn.command(session_id, session["crew_name"], session["role"], runtime="codex", **options)
         exe = claude_executable()
         if native_id not in (None,session_id):
@@ -254,6 +257,7 @@ class Manager(StatusMixin, NativeMixin, DeliveryMixin, MaintenanceMixin,
                 evidence='Claude 进程创建成功；启动参数已携带 Crew 配置，原生读取尚未回报')
         current.maintenance = maintenance
         self.processes[session_id] = current
+        self.changes.session(session_id)
         self._control(current, "get_settings")
         self._control(current, "get_context_usage")
         current.stderr_reader = threading.Thread(target=self._stderr, args=(current,), name="crew-chat-stderr", daemon=True)

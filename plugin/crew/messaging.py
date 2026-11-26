@@ -173,7 +173,7 @@ def take_for_hook(conn, session_id, now=None):
     messages = pending(conn, session_id)
     from .chat import Journal
     database = next((row['file'] for row in conn.execute('PRAGMA database_list') if row['name'] == 'main'), '')
-    inputs = Journal(Path(database).parent / 'chat' / (session_id + '.jsonl')).inputs if database else {}
+    inputs = Journal(Path(database).parent / 'chat' / (session_id + '.jsonl'), None).inputs if database else {}
     lines = []
     for message in messages:
         prior = inputs.get('peer:' + message['id'])

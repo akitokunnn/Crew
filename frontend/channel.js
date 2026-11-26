@@ -342,7 +342,7 @@
       context.loading = false; renderDigest(context);
       renderMessages(context, "unread");
       if (context.focus != null) { const id = context.focus; context.focus = null; jump(context, id); }
-      if (context.state.channel.latest_id > context.latestId) refresh(context);
+      if (context.stale || context.state.channel.latest_id > context.latestId) refresh(context);
     } catch (error) {
       if (current(context)) { context.loading = false; context.inner.textContent = "Leader 交流区加载失败"; context.toast(error.message); }
     }
@@ -362,7 +362,7 @@
   }
   async function refresh(context) {
     if (context.loading || context.refreshing) return;
-    context.refreshing = true;
+    context.refreshing = true; context.stale = false;
     const known = context.latestId, messages = [];
     let before = null, succeeded = false;
     try {
@@ -382,8 +382,29 @@
     } catch (error) { if (current(context)) context.toast(error.message); }
     finally {
       context.refreshing = false;
-      if (succeeded && current(context) && context.state.channel.latest_id > context.latestId) refresh(context);
+      if (succeeded && current(context) && (context.stale || context.state.channel.latest_id > context.latestId)) refresh(context);
     }
+  }
+  // Posts from the change stream (app-data.js `channel_message`): each replaces the shown post with its id. A post not
+  // shown yet arrives current when its page is read. A page read while changes arrived may hold older badges, so it is
+  // read again. `null` follows a snapshot, which says nothing about posts: the newest page is read again.
+  function changed(changes) {
+    if (!active) return;
+    const context = active;
+    if (changes === null) { context.stale = true; refresh(context); return; }
+    if (changes.length === 0) return;
+    if (context.loading || context.refreshing) context.stale = true;
+    let shown = false;
+    for (const change of changes) {
+      const id = Number(change.entity);
+      for (const list of ["messages", "originalMessages"]) {
+        const index = context[list].findIndex(item => item.id === id);
+        if (index < 0) continue;
+        if (change.data === null) context[list].splice(index, 1); else context[list][index] = change.data;
+        shown = true;
+      }
+    }
+    if (shown && !context.loading) renderMessages(context);
   }
   async function send(context) {
     if (context.send.disabled) return;
@@ -416,7 +437,7 @@
   function mount(options) {
     unmount();
     const context = {...options, digest:null, digestError:null, requestingDigest:false, originalMessages:[], originalsOpen:false, hasMoreOriginals:false, loadingOriginals:false, messages:[], children:new Map(), threads:new Set(), selected:new Set(), allLeaders:false, replyTo:null,
-      latestId:0, readId:0, unreadFrom:null, unreadCount:0, loading:true, loadingOlder:false, refreshing:false, reading:false, sending:false, composing:false, version:0, digestOpen:!narrow(), asideOpen:false, popFor:null, popKey:null, pinned:false, hoverTimer:0, hideTimer:0, minute:0, pulse:""};
+      latestId:0, readId:0, unreadFrom:null, unreadCount:0, loading:true, loadingOlder:false, refreshing:false, reading:false, sending:false, composing:false, version:0, digestOpen:!narrow(), asideOpen:false, popFor:null, popKey:null, pinned:false, hoverTimer:0, hideTimer:0, minute:0, stale:false};
     active = context;
     const host = options.host, find = selector => host.querySelector(selector);
     host.innerHTML = LAYOUT;
@@ -493,11 +514,15 @@
   }
   function update(state) {
     if (!active) return;
-    const context = active, pulse = JSON.stringify(state.leaders.map(item => [item.session_id, item.notices_pending, item.busy, item.where]));
+    const context = active;
     context.state = state; renderTargets(context); composerState(context); digestState(context); renderAside(context);
-    if (state.channel.latest_id > context.latestId || state.channel.digest_id !== (context.digest === null ? null : context.digest.id) || (context.pulse !== "" && pulse !== context.pulse)) refresh(context);
+    if (state.channel.latest_id > context.latestId || state.channel.digest_id !== (context.digest === null ? null : context.digest.id)) refresh(context);
     else if (Math.floor(Date.now() / 60000) !== context.minute && !context.loading && !context.popFor && pendingItems(context).some(x => x.s.key === "queued")) renderMessages(context);
-    context.pulse = pulse;
+  }
+  // Show one post of the mounted channel (the sidebar's queued mention); while loading, the load lands there.
+  function focus(id) {
+    if (!active) return;
+    if (active.loading) active.focus = id; else jump(active, id);
   }
   function unmount() {
     if (!active) return;
@@ -508,5 +533,5 @@
     active.media.removeEventListener("change", active.relayout);
     active = null;
   }
-  window.CrewChannel = {mount, update, unmount};
+  window.CrewChannel = {mount, update, changed, focus, unmount};
 })();

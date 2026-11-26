@@ -35,7 +35,7 @@ def clear_unstarted_member_bindings(home):
                 if row is None:
                     continue
                 journal = home / 'chat' / (session_id + '.jsonl')
-                events = Journal(journal).events
+                events = Journal(journal, None).events
                 if has_native_output(events):
                     continue
                 at = store.now_iso()
@@ -51,8 +51,11 @@ def clear_unstarted_member_bindings(home):
 
 
 class Journal:
-    def __init__(self, path):
+    def __init__(self, path, observer):
+        """`observer(key)` hears every change a workspace page shows (events, status, progress, context);
+        None for a journal that is only read."""
         self.path = path
+        self.observer = observer
         self.condition = threading.Condition(threading.RLock())
         self.events = []
         self.signature = None
@@ -102,7 +105,13 @@ class Journal:
             stat = self.path.stat()
             self.signature = (stat.st_size, stat.st_mtime_ns)
             self.condition.notify_all()
+            self.changed()
             return event
+
+    def changed(self):
+        """Something a page shows about this conversation changed outside an emitted event."""
+        if self.observer is not None:
+            self.observer(self.path.stem)
 
     def set_status(self, status):
         with self.condition:
@@ -118,6 +127,8 @@ class Journal:
             if self.status != status:
                 self.status = status
                 self.emit("status", status=status)
+            else:
+                self.changed()
 
     def reset_runtime(self):
         with self.condition:
@@ -125,10 +136,12 @@ class Journal:
             self.progress = None
             self._calls, self._tools = {}, {}
             self._call_id, self._thinking_index = None, None
+            self.changed()
 
     def remember_context(self, runtime, native_id, context):
         with self.condition:
             self.last_context = (runtime, native_id, dict(context, source="last_observed"))
+            self.changed()
 
     def bind_claude_subagents(self, native_id):
         with self.condition:
@@ -233,6 +246,8 @@ class Journal:
             for event in self._claude_subagents.consume(record):
                 self.emit(event['type'], **{key: value for key, value in event.items() if key != 'type'})
             self._consume_progress(record)
+            # Phase and token count move with every streamed record.
+            self.changed()
         kind = record["type"]
         if kind == "stream_event":
             event = record["event"]

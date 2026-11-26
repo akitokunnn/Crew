@@ -1,5 +1,5 @@
 """The project channel: shared posts, explicit mentions, and per-reader cursors."""
-from . import board, git_admin, messaging, store
+from . import board, change_feed, git_admin, messaging, store
 
 
 def _leader(conn, project_name, session_id):
@@ -109,6 +109,9 @@ def _mark_read(conn, project_name, reader, message_id, now):
     conn.execute("INSERT INTO channel_reads(project,reader,message_id,updated_at) VALUES(?,?,?,?) "
                  "ON CONFLICT(project,reader) DO UPDATE SET message_id=MAX(channel_reads.message_id,excluded.message_id),"
                  "updated_at=excluded.updated_at", (project_name, reader, message_id, board._time(now)))
+    if reader == board.HUMAN:
+        # The workspace page shows the user's unread count.
+        change_feed.touch(conn, 'channel', project_name, project_name)
 
 
 def _named_in_body(conn, project_name, body, actor):
@@ -190,6 +193,10 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
         "INSERT INTO channel_messages(project,speaker_session_id,speaker_name,body,created_at,reply_to,detail) "
         "VALUES(?,?,?,?,?,?,?)",
         (project_name, actor, speaker_name, body, board._time(now), reply_to, int(detail))).lastrowid
+    change_feed.touch(conn, 'channel', project_name, project_name)
+    if reply_to is not None:
+        # A leader answering a post it was told about turns that post's badge to replied.
+        change_feed.touch(conn, 'channel_message', project_name, reply_to)
     if reply_to is not None and actor != board.HUMAN:
         conn.execute("UPDATE channel_mentions SET await_reply=0 WHERE message_id=? AND session_id=?", (reply_to, actor))
     for target, reason in told:
@@ -245,6 +252,8 @@ def settle(conn, session_id, message_ids, now=None):
             "VALUES(?,?,?,?,?,?,1,1)",
             (leader["project"], session_id, leader["crew_name"], "回复在私聊里", board._time(now),
              row["message_id"])).lastrowid
+        change_feed.touch(conn, 'channel', leader["project"], leader["project"])
+        change_feed.touch(conn, 'channel_message', leader["project"], row["message_id"])
         conn.execute("UPDATE channel_mentions SET await_reply=0 WHERE message_id=? AND session_id=?",
                      (row["message_id"], session_id))
         posted.append(message_id)
@@ -278,8 +287,20 @@ def messages(conn, project_name, limit=20, before=None, after=0):
             "has_more": len(rows) > limit, "latest_id": _latest(conn, project_name)}
 
 
+def listed_message(conn, project_name, message_id):
+    """One post as `messages` lists it now, or None once it is gone or behind the workspace's cleanup boundary."""
+    row = conn.execute("SELECT * FROM channel_messages WHERE project=? AND id=? AND id>?",
+                       (project_name, message_id, board.cleanup_boundary(conn, project_name)["channel_after"])).fetchone()
+    return None if row is None else _message(conn, row)
+
+
 def state(conn, project_name, reader=board.HUMAN):
     board.project(conn, project_name)
+    return counts(conn, project_name, reader)
+
+
+def counts(conn, project_name, reader=board.HUMAN):
+    """Unread posts and the latest id, without asking whether the workspace is still open."""
     after = max(_read_id(conn, project_name, reader), board.cleanup_boundary(conn, project_name)["channel_after"])
     unread = conn.execute("SELECT COUNT(*) FROM channel_messages WHERE project=? AND id>? AND speaker_session_id<>?",
                           (project_name, after, reader)).fetchone()[0]

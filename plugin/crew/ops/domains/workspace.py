@@ -1,5 +1,6 @@
 """Workspaces, workspace data packages and host folders (design §8.1)."""
 from ...web_api import admin, board as board_api, files, workspace
+from ...web_service import events as change_events
 from ._common import H, HD, route
 
 def _field(kind, description, **constraints):
@@ -20,6 +21,10 @@ route('workspace.list', '列出工作区', 'GET', '/api/projects', workspace.get
       }))
 route('workspace.state', '读取工作区看板快照', 'GET', '/api/state', workspace.get_state, access='read',
       params=_object({
+          'project': _field('string', '工作区名，不填用当前工作区', minLength=1),
+      }))
+route('workspace.snapshot', '读取工作区快照及其覆盖到的增量序号', 'GET', '/api/snapshot', change_events.serve_snapshot,
+      access='read', params=_object({
           'project': _field('string', '工作区名，不填用当前工作区', minLength=1),
       }))
 route('workspace.activity', '读取多个工作区的活动概况', 'GET', '/api/workspaces/activity',

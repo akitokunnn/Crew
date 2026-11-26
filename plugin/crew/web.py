@@ -91,7 +91,7 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
         self.codex_root = native_home.codex_sessions() if codex_root is None else Path(codex_root)
         self.runs_file = self.home / "codex_runs.jsonl" if runs_file is None else Path(runs_file)
         self.agents_lock, self.scan_lock, self.write_lock = threading.Lock(), threading.Lock(), threading.Lock()
-        self.channel_digest = channel_digest.Manager(home, self.write_lock, process_factory)
+        self.channel_digest = channel_digest.Manager(home, self.write_lock, self.chat.changes, process_factory)
         self.agents, self.agents_at = [], None
         self.agents_error = "\u6b63\u5728\u83b7\u53d6\u8fdb\u7a0b\u72b6\u6001"
         self.scanned_at = None
@@ -155,6 +155,7 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
 
 
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+          "/app-data.js": ("app-data.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
           "/sound-settings-ui.js": ("sound-settings-ui.js", "text/javascript; charset=utf-8"),
@@ -431,7 +432,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, {"error": "\u670d\u52a1\u5668\u9519\u8bef\uff0c\u539f\u56e0\u89c1 Crew \u83dc\u5355\u201c\u5e2e\u52a9 \u2192 \u67e5\u770b\u65e5\u5fd7\u6587\u4ef6\u5939\u201d\u91cc\u7684 backend.log"})
 
     def log_message(self, format, *args):
-        # The page polls every 3 seconds; access lines would bury real errors (tracebacks still print).
+        # Pages hold change streams and read often; access lines would bury real errors (tracebacks still print).
         return
 
     def do_GET(self):

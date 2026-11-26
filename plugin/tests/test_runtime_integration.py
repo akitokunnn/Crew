@@ -162,7 +162,7 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
 
     def setUp(self):
         super().setUp()
-        for method in ('_poll_agents', '_poll_notices', '_poll_git_ci'):
+        for method in ('_poll_agents', '_poll_notices', '_poll_git_ci', '_poll_usage'):
             patcher = mock.patch.object(web.Service, method, return_value=None)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -398,6 +398,7 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
             written.wait(.15)
             conn.execute('PRAGMA user_version=2')
             conn.execute('RELEASE timing_scan')
+            return {'inserted': 0, 'updated': 0, 'skipped': 0, 'bad_lines': []}
         def write():
             try:
                 if not snapshot.wait(3):raise AssertionError('scan never read')

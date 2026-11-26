@@ -91,6 +91,14 @@ route('runtimes.list', '列出可用载体与模型', 'GET', '/api/runtimes', ad
       params=_object({
           'refresh': _field('boolean', '是否强制重新发现载体与模型，默认否'),
       }))
+# Runs each tool's own read-only sign-in report on the host; no model session starts.
+route('runtimes.readiness', '检测本机执行载体是否已安装并登录', 'GET', '/api/runtimes/readiness', admin.get_runtime_readiness,
+      access='host', scopes=HD, params=_object({}, description='无参数'))
+route('onboarding.get', '读取新手引导是否已完成或跳过', 'GET', '/api/onboarding', admin.get_onboarding, access='read', scopes=HD,
+      params=_object({}, description='无参数'))
+route('onboarding.set', '记录新手引导已完成或已跳过', 'POST', '/api/onboarding', admin.post_onboarding, access='write', scopes=HD,
+      params={'type': 'object', 'properties': {'status': {'type': 'string', 'enum': ['completed', 'skipped']}},
+              'required': ['status'], 'additionalProperties': False})
 route('claude_budget.set', '设置 Claude 用量预算', 'POST', '/api/claude-budget', admin.post_claude_budget,
       access='write', scopes=HD,
       params=_object({

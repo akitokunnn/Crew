@@ -177,7 +177,7 @@ class GoalMessageTests(GoalFixture):
         self.assertEqual(native.call_count, 1)
         self.assertEqual(self.controller.send.call_count, 3)
         self.assertEqual(self.row(receipt)['status'], 'failed')
-        journal = chat.Journal(manager.path(self.target['id']))
+        journal = chat.Journal(manager.path(self.target['id']), None)
         identity = self.controller.send.call_args.kwargs['identity']
         self.assertEqual(journal.inputs[identity]['status'], 'unknown')
 
@@ -320,7 +320,7 @@ class GoalMessageTests(GoalFixture):
 
     def test_general_hook_never_repeats_unknown_input_and_reconciles_an_accepted_receipt(self):
         receipt = messaging.queue(self.conn,'member-id','chief-id','General evidence',kind='result')
-        journal = chat.Journal(self.home/'chat'/'chief-id.jsonl')
+        journal = chat.Journal(self.home/'chat'/'chief-id.jsonl', None)
         identity = 'peer:'+receipt['message_id']
         journal.emit('input_delivery',message_id=identity,status='unknown')
         self.assertEqual(messaging.take_for_hook(self.conn,'chief-id'),[])

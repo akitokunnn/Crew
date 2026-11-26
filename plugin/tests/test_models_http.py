@@ -388,7 +388,7 @@ class ModelWakeTests(shell.ShellFixture, unittest.TestCase):
                 mock.patch.object(service, "_refresh_vscode", side_effect=lambda: session_ops.archive(self.conn, "s1", now=shell.NOW)), \
                 mock.patch.object(service.chat, "auto_resume", side_effect=inspect), \
                 mock.patch.object(service.stop, "wait", return_value=True):
-            service._poll_agents()
+            service._poll_agents(threading.Event())
         self.assertEqual(resumed, ["checked"])
 
     def test_cli_option_flags_reach_operations_and_connection_errors_match(self):

@@ -173,7 +173,7 @@ PWA 需要的 `manifest.json` 与 Service Worker 只做“可添加到主屏 + �
 
 ### 6.2 快照 + 序号增量推送
 
-- **新增独立的增量表** `change_log(seq INTEGER PRIMARY KEY AUTOINCREMENT, at, scope, type, entity, data JSON)` 与水位表 `change_log_state(scope, pruned_through)`。**不复用**现有 `events` 表：它是审计日志（`id/ts/project/session_id/kind/detail`，`schema.sql:536–544`），待办、通知、恢复、摘要逻辑都在读它（`board.py:52,876,911`、`todo.py:248`、`notifications.py:647`、`channel_digest.py:240`），套用新的裁剪窗口会改变旧功能。`change_log` 保留最近 10,000 条或 24 小时（初值），裁剪时推进 `pruned_through`。
+- **新增独立的增量表** `change_log(seq INTEGER PRIMARY KEY AUTOINCREMENT, at, scope, type, entity, data JSON)` 与水位表 `change_log_state(scope, pruned_through)`[^change-log-state]。**不复用**现有 `events` 表：它是审计日志（`id/ts/project/session_id/kind/detail`，`schema.sql:536–544`），待办、通知、恢复、摘要逻辑都在读它（`board.py:52,876,911`、`todo.py:248`、`notifications.py:647`、`channel_digest.py:240`），套用新的裁剪窗口会改变旧功能。`change_log` 保留最近 10,000 条或 24 小时（初值），裁剪时推进 `pruned_through`。
 - **事务归属**：现有连接 `isolation_level=None`（`store.py:23`），`board.transaction()` 自己 `BEGIN IMMEDIATE` / `commit`（`board.py:25–33`），`goal_actions.dispatch`、个人助手入口会另开连接，HTTP 的 `write_lock` 不等于 SQLite 事务。所以不能简单地“命令执行器外层包一个事务”（会嵌套事务或跨连接等锁）。做法：命令执行器拥有连接并开启事务，处理函数在这条连接上完成同库业务写入，执行器在同一事务里写回执与 `change_log`，然后提交；**逐领域**把处理函数改为“接收调用方连接、不自行开事务”，先做一个领域贯通（第 7 节阶段 3），不一次铺开。
 - **库外副作用**（追加会话日志 JSONL、启动进程、向模型投递输入、写文件）不能被 SQLite 回滚：采用“持久意图 + 发件箱”——事务内记录意图与回执（`running`），提交后执行，再记结果与对应事件；后台重启时对遗留意图按可查询的副作用对账，查不清的显示“待核实”（与操作清单设计 5.5 一致）。
 - **后台状态要有生产者，读者不再采集**：进程状态、活动阶段、用量由实际变化处（进程轮询线程、会话日志写入点、后台用量扫描）产生事件；高频进度按实体合并，每实体每秒最多发一条并保证最后一次更新送达；结束、删除、审批等不可丢事件单独落盘、不合并。生产者在短事务里更新投影与序号，**不得在写锁中调用完整 `state()` 构造事件**。
@@ -184,6 +184,8 @@ PWA 需要的 `manifest.json` 与 Service Worker 只做“可添加到主屏 + �
   - 对话日志 `/api/chat/events` 保持现有格式与**它自己的序号**（会话日志序号与 `change_log` 序号不是同一序列），客户端分别保存两种游标，不做混合映射。
 - **客户端**：拿快照 → 记 `seq` → 订阅 `after=seq` → 按实体合并。断线用最后序号续订；收到 `snapshot-required` 时：关闭旧订阅、取消旧重连定时器 → 重拿快照 → 以新 `seq` 建**一个**新订阅。重放与补发只恢复实体，不重播过去的音效与提醒（音效只对晚于本次连接建立时间的事件触发）。**重连只恢复订阅，绝不重发写请求**；写请求结果用 `request_id` 查询。连接断开期间界面显示“已断开”，不展示旧数据为在线状态。
 - **切换时机**：在某领域的所有生产者都接入之前，前端对该领域继续使用原读取路径；全部领域覆盖后删除 3 秒轮询（`setInterval` 在 `app.js:1743` 的 `setup()` 里，`loadState` 在 `app.js:1364`），删除时不保留“SSE 不通就退回轮询”的隐式回退。
+
+[^change-log-state]: 2026-11-27 实施时（`claude/event-stream`，主控裁决 4）未建 `change_log_state`：裁剪只删除按全局序号最老的一段连续前缀（按时间裁剪也取“早于截止时间的最大序号”整段删除，时钟回拨不会删出空洞），所以水位就是 `min(seq) - 1`；表被裁空时取 SQLite 为 AUTOINCREMENT 维护的 `sqlite_sequence`（裁剪不会降低它）。保留规则按全局序号与时间计算，按范围分别记水位只会得到同一个值；少一张表也就少一次每次连接或每次裁剪的写入。依据与测试见 [增量事件流设计](EVENT_STREAM_DESIGN.md) §2、§3。
 
 ### 6.3 审批与用户输入请求统一结构
 

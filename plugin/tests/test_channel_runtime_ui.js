@@ -2,7 +2,7 @@
 const assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const {test}=require("node:test");
 const sandbox={window:{},CrewChat:{renderMarkdown:text=>`<p>${text}</p>`},setTimeout,clearTimeout};vm.createContext(sandbox);
-const source=fs.readFileSync(path.join(__dirname,"../../frontend/channel.js"),"utf8").replace('window.CrewChannel = {mount, update, unmount};','window.CrewChannel = {mount, update, unmount, renderDigest, deliveryHTML, pendingItems, explain, badgeOf, go};');vm.runInContext(source,sandbox);
+const source=fs.readFileSync(path.join(__dirname,"../../frontend/channel.js"),"utf8").replace('window.CrewChannel = {mount, update, changed, focus, unmount};','window.CrewChannel = {mount, update, changed, focus, unmount, renderDigest, deliveryHTML, pendingItems, explain, badgeOf, go};');vm.runInContext(source,sandbox);
 const C=sandbox.window.CrewChannel;
 function render(extra){const pin={hidden:true,innerHTML:""};C.renderDigest({pin,digest:{created_at:"2026-10-25T00:00:00Z",total_message_count:5,body:"已有要点",...extra}});return pin.innerHTML;}
 test("digest metadata shows the actual Codex model and unknown fees without implying a zero charge",()=>{

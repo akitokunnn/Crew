@@ -291,6 +291,7 @@ class Controller:
                                    process_factory=self.manager.process_factory, resume=binding is not None,
                                    execution=execution, maintenance=maintenance)
             self.manager.processes[key] = current
+            self.manager.changes.session(key)
             return spawn.command(key, session['crew_name'], session['role'], runtime='codex', **options)
         native_id = binding['native_id'] if binding else str(uuid.uuid4())
         if binding is None:
@@ -337,6 +338,7 @@ class Controller:
         current.maintenance = maintenance
         current.goal_manifests = dict(session.get('_goal_manifests', {}))
         self.manager.processes[key] = current
+        self.manager.changes.session(key)
         journal.reset_runtime()
         self.manager._control(current, 'get_settings')
         self.manager._control(current, 'get_context_usage')

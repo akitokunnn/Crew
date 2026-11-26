@@ -9,7 +9,9 @@
   const project = new URLSearchParams(location.search).get("project");
   // leaderTaskChat: the task whose leader execution the chat shows; only the task detail's entry sets it.
   let leaderTaskChat = null;
-  let state = null, view = "all", leaderId = null, readOnlyId = null, mountedChat = null, pollBusy = false, statePromise = Promise.resolve();
+  let state = null, view = "all", leaderId = null, readOnlyId = null, mountedChat = null;
+  // appData: the workspace data layer (app-data.js); snapshotGeneration: the sound generation when the last snapshot was requested.
+  let appData = null, snapshotGeneration = 0;
   // Member page record choice: "general" or a goal id. The first default is kept, so
   // later activity never switches the record under the reader.
   const memberScopes = new Map();
@@ -196,12 +198,11 @@
   const openTodos = () => (Array.isArray(state?.todos) ? state.todos : []).filter(item => item.status === undefined || item.status === "open");
   const todoById = id => openTodos().find(item => String(item.id) === String(id));
   const todosOf = id => openTodos().filter(item => item.leader_session_id === id || item.session_id === id);
-  function queryPath(path) { const url = new URL(path, location.origin); if (project !== null && !["/api/op/settings.get", "/api/op/settings.save"].includes(url.pathname)) url.searchParams.set("project", project); return url.pathname + url.search; }
+  const queryPath = path => workspaceData().queryPath(path);
   async function api(path, data) {
+    if (path === "/api/op/workspace.snapshot") snapshotGeneration = soundGeneration;
     const sentAfter = path === "/api/op/chat.send" ? (leader(data.session_id) || member(data.session_id))?.last_seq || 0 : null;
-    const response = await fetch(queryPath(path), data === undefined ? {} : window.CrewBrowser.postOptions(data));
-    const result = await response.json();
-    if (!response.ok) { const error = new Error(result.error || "请求失败，请重试。"); error.status = response.status; error.details = result; throw error; }
+    const result = await workspaceData().request(path, data);
     if (path === "/api/op/chat.send" && data.goal_id == null && member(data.session_id)) waitingSounds.set(data.session_id, {generation:++soundGeneration, afterSeq:sentAfter});
     else if (["/api/op/session.stop", "/api/op/session.archive", "/api/op/session.delete"].includes(path)) waitingSounds.delete(data.session_id);
     return result;
@@ -270,7 +271,17 @@
     }
   }
   function applyFontScale() { document.documentElement.style.setProperty("--fs", String(fontScale)); }
-  function setFontScale(value) { fontScale = value; applyFontScale(); try { localStorage.setItem("crew.fontScale", String(value)); } catch (error) { toast(error.message); } }
+  // Inside the Crew desktop the font size is desktop-wide like the display mode; browsers keep their own.
+  function setFontScale(value, save = true) {
+    fontScale = value; applyFontScale();
+    if (!save) return;
+    if (desktopTheme) void desktopTheme.setFontScale(value).catch(error => toast(error.message));
+    else try { localStorage.setItem("crew.fontScale", String(value)); } catch (error) { toast(error.message); }
+  }
+  function adoptDesktopFont(value) {
+    if (typeof value?.fontScale !== "number" || value.fontScale === fontScale) return;
+    fontScale = value.fontScale; applyFontScale(); renderSettings();
+  }
   function renderSettings() {
     const pct = value => `${Math.round(value * 100)}%`;
     const themes = state !== null && project !== null ? `<section class="settings-section"><h4 id="project-theme-title">主题</h4><div class="theme-options" role="group" aria-labelledby="project-theme-title">${state.themes.map(item => `<button type="button" class="theme-option" data-act="project-theme" data-theme-id="${esc(item.id)}" aria-pressed="${state.project.theme === item.id}"><span class="theme-swatches" aria-hidden="true"><i style="background:${item.light["--accent"]}"></i><i style="background:${item.dark["--accent"]}"></i></span><span>${esc(item.name)}</span>${state.project.theme === item.id ? ic("check", "sm") : ""}</button>`).join("")}</div><p class="settings-hint">左浅右深 · 为这个项目保存</p></section>` : "";
@@ -325,11 +336,18 @@
     const more = items.slice(3);
     return `<span class="leader-branches" style="--tint:${tint(item.name)}" aria-label="${items.length} 个分支待处理">${items.slice(0, 3).map(chip).join("")}${more.length === 0 ? "" : `<span class="leader-branch more" title="${esc(more.map(hint).join("\n\n"))}">+${more.length}</span>`}</span>`;
   }
+  // Notices still waiting for this leader (channel mentions and others); a queued mention opens the channel on its post.
+  function leaderQueued(item) {
+    if (item.notices_pending === 0) return "";
+    const text = `${ic("clock")}<span>${item.notices_pending} 条通知排队中</span>`;
+    if (item.channel_queued_id === null) return `<span class="leader-queued" title="${esc(`${item.name} 空下来或下次提示时送达`)}">${text}</span>`;
+    return `<button type="button" class="leader-queued" data-act="leader-queued" data-id="${esc(item.session_id)}" data-message="${item.channel_queued_id}" title="打开交流区，定位到最早一条还在排队的点名">${text}</button>`;
+  }
   function sidebarLeader(item) {
     // A member conversation stays inside its leader's group: that leader keeps a quieter selection and its tasks.
     const inGroup = view === "chat" && leaderId === item.session_id, selected = inGroup && readOnlyId === null;
     const work = groupWork(item), unread = leaderUnread(item);
-    return `<div draggable="true" class="leader-row session-surface${item.pinned ? " pinned" : ""} ${selected ? "active" : inGroup ? "in-group" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}${unread ? "，有未读消息" : ""}" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><span class="leader-row-name"><strong>${esc(item.name)}</strong>${contextRing(item)}${trustMark(item)}${unread ? '<span class="leader-unread-dot" title="有未读消息"></span>' : ""}</span><span class="leader-row-sub">${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}${work.active ? groupWorkLabel(work, true) : st(item.status)}</span>${leaderBranches(item)}</span>${pinButton(item)}</div>${inGroup ? CrewGoals.leaderTasks(state.goals.filter(task => task.leader_session_id === item.session_id), goalId) : ""}`;
+    return `<div draggable="true" class="leader-row session-surface${item.pinned ? " pinned" : ""} ${selected ? "active" : inGroup ? "in-group" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}${unread ? "，有未读消息" : ""}" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><span class="leader-row-name"><strong>${esc(item.name)}</strong>${contextRing(item)}${trustMark(item)}${unread ? '<span class="leader-unread-dot" title="有未读消息"></span>' : ""}</span><span class="leader-row-sub">${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}${work.active ? groupWorkLabel(work, true) : st(item.status)}</span>${leaderBranches(item)}${leaderQueued(item)}</span>${pinButton(item)}</div>${inGroup ? CrewGoals.leaderTasks(state.goals.filter(task => task.leader_session_id === item.session_id), goalId) : ""}`;
   }
   function setLeadersOpen(open, remember = true) {
     leadersOpen = open;
@@ -833,7 +851,7 @@
   }
   function renderAll() {
     if (allTab === "overview") {
-      replace($("main"), CrewWorkspaceHome.render({name:projectDisplay(state.project), git_assistant:state.git_assistant, leaders:state.leaders,
+      replace($("main"), CrewWorkspaceHome.render({name:projectDisplay(state.project), project:state.project.name, git_assistant:state.git_assistant, leaders:state.leaders,
         members:state.members, goals:state.goals || [], todos:state.todos || [], decisions:state.decisions},
         {taskCards:items => CrewGoals.cards(items, state.leaders), decisionCards:items => items.map(decisionCard).join(""), todoCards:items => items.map(todoCard).join(""), todoTint,
           approvalCount:nativeApprovals?.count() || 0, settingsIcon:ic("settings", "sm")}));
@@ -1359,35 +1377,50 @@
     if (failed) CrewSound.play("error");
     if (completed.size > 0) CrewSound.play("complete");
   }
+  // Workspace data: one snapshot, then the change stream (app-data.js). Callers keep the former contract:
+  // concurrent calls share one load, `fresh` asks for one more, and a failure is shown here instead of thrown.
+  function workspaceData() {
+    if (appData === null) appData = CrewAppData.create({origin:location.origin, project, get state() { return state; },
+      api:(...args) => api(...args), fetch:(...args) => fetch(...args), EventSource, setTimeout:(...args) => setTimeout(...args),
+      clearTimeout:(...args) => clearTimeout(...args), onState:applyState, onStatus:showConnection, onError:showLoadError});
+    return appData;
+  }
   async function loadState(fresh = false) {
-    if (pollBusy) { await statePromise; if (fresh) return loadState(true); return; }
-    pollBusy = true;
-    let complete;
-    statePromise = new Promise(resolve => { complete = resolve; });
-    const requestedGeneration = soundGeneration;
-    try {
-      const result = await api("/api/op/workspace.state"), previous = state; state = result;
-      CrewSound.observe(state.sounds, state.now);
-      nativeApprovals?.sync(state); CrewActivity.sync(state); applyTheme(); renderSettings();
-      if (project === null) { $("app").className = "workspace-entry"; $("leader-panel").hidden = true; $("right-panel").hidden = true; renderEntrySidebar(); replace($("main"), CrewWorkspaceEntry.render(state, {esc, ic, display: projectDisplay})); document.title = "工作区 · Crew"; if (pendingSettingsHash) { pendingSettingsHash = false; history.replaceState(null, "", `${location.pathname}${location.search}`); openSettings("ai"); } return; }
-      try { localStorage.setItem("crew.mobile.project", project); } catch {}
-      if (previous === null) readRoute();
-      if (readOnlyId !== null && !state.members.some(item => item.session_id === readOnlyId)) { navigate("all"); toast("该会话已不在下属列表，已返回工作台"); }
-      else if (view === "chat" && readOnlyId === null && leader(leaderId) === undefined) { navigate("all"); toast("这个 leader 已结束，已返回工作台"); }
-      else if (view === "chat" && goalId != null && !(state.goals || []).some(item => String(item.id) === String(goalId) && item.leader_session_id === leaderId)) { navigate("chat",leaderId,readOnlyId,null); toast("目标已不在本组，已回到总对话。"); }
-      else { render(); syncRoute(); }
-      if (pendingSettingsHash) { pendingSettingsHash = false; openSettings("ai"); }
-      refreshUsage();
-      if (previous !== null) notifySounds(previous, fresh, requestedGeneration);
-    } catch (error) {
-      if (state === null) {
-        $("main").innerHTML = `<div class="workspace-home" role="alert"><h1>Crew 加载失败</h1><button data-local-control class="btn ghost" data-act="settings">打开设置</button><p class="error-line">${esc(error.message)}</p><p class="note">每 3 秒自动重试，也可以立即重试。</p><button class="btn primary" data-act="state-retry">立即重试</button></div>`;
-        delete $("main").dataset.render;
-        const retry = $("main").querySelector('[data-act="state-retry"]');
-        retry.onclick = async () => { retry.disabled = true; try { await loadState(); } finally { retry.disabled = false; } };
-      } else toast(error.message);
-    }
-    finally { pollBusy = false; complete(); }
+    try { await workspaceData().loadState(fresh); } catch (error) { showLoadError(error); }
+  }
+  // A snapshot (first load, after a write, after the server asked for one) never sounds; a live change does,
+  // the changes caught up after a reconnect do not.
+  function applyState(next, previous, meta) {
+    state = next;
+    CrewSound.observe(state.sounds, state.now);
+    nativeApprovals?.sync(state); CrewActivity.sync(state); applyTheme(); renderSettings();
+    if (project === null) { $("app").className = "workspace-entry"; $("leader-panel").hidden = true; $("right-panel").hidden = true; renderEntrySidebar(); replace($("main"), CrewWorkspaceEntry.render(state, {esc, ic, display: projectDisplay})); document.title = "工作区 · Crew"; if (pendingSettingsHash) { pendingSettingsHash = false; history.replaceState(null, "", `${location.pathname}${location.search}`); openSettings("ai"); } return; }
+    try { localStorage.setItem("crew.mobile.project", project); } catch {}
+    if (previous === null) readRoute();
+    if (readOnlyId !== null && !state.members.some(item => item.session_id === readOnlyId)) { navigate("all"); toast("该会话已不在下属列表，已返回工作台"); }
+    else if (view === "chat" && readOnlyId === null && leader(leaderId) === undefined) { navigate("all"); toast("这个 leader 已结束，已返回工作台"); }
+    else if (view === "chat" && goalId != null && !(state.goals || []).some(item => String(item.id) === String(goalId) && item.leader_session_id === leaderId)) { navigate("chat",leaderId,readOnlyId,null); toast("目标已不在本组，已回到总对话。"); }
+    else { render(); syncRoute(); }
+    // Channel posts are not in the snapshot: a change replaces a shown post, a snapshot has the channel re-read its newest page.
+    if (mountedChannel) CrewChannel.changed(meta.source === "snapshot" ? null : meta.changes.filter(change => change.type.startsWith("channel_message.")));
+    if (pendingSettingsHash) { pendingSettingsHash = false; openSettings("ai"); }
+    refreshUsage();
+    if (previous !== null) notifySounds(previous, meta.source === "snapshot" || meta.catchUp, meta.source === "snapshot" ? snapshotGeneration : soundGeneration);
+  }
+  function showLoadError(error) {
+    if (state === null) {
+      $("main").innerHTML = `<div class="workspace-home" role="alert"><h1>Crew 加载失败</h1><button data-local-control class="btn ghost" data-act="settings">打开设置</button><p class="error-line">${esc(error.message)}</p><p class="note">正在自动重连，也可以立即重试。</p><button class="btn primary" data-act="state-retry">立即重试</button></div>`;
+      delete $("main").dataset.render;
+      const retry = $("main").querySelector('[data-act="state-retry"]');
+      retry.onclick = async () => { retry.disabled = true; try { await loadState(); } finally { retry.disabled = false; } };
+    } else toast(error.message);
+  }
+  // While the stream is down the page keeps the last data and says so.
+  function showConnection(status) {
+    const node = $("connection-status"), text = {disconnected:"已断开，正在重连…", resyncing:"正在重新同步…", failed:"页面版本过旧，请刷新页面"}[status];
+    node.hidden = text === undefined || state === null;
+    node.dataset.state = status;
+    node.textContent = text || "";
   }
   async function answer(id, text) {
     const item = state.decisions.find(item => item.id === id);
@@ -1438,10 +1471,22 @@
         sounds:host => window.CrewSoundSettings.mount(host,{read:()=>api("/api/op/settings.get"),save:body=>api("/api/op/settings.save",body),api,toast}),
         ...(hostAdmin() ? {remote:host => window.CrewRemoteAccess.mount(host,{read:()=>api("/api/op/remote_access.get"),action:body=>api("/api/op/remote_access.action",body)})} : {}),prompts:host => window.CrewBehaviorPrompts.mount(host,{...window.CrewBehaviorPrompts.requests(api),project,session:behaviorSession || (view === "chat" ? readOnlyId || leaderId : null),execution:goals?.executionFor(behaviorSession || readOnlyId || leaderId)?.id}),appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections, storage:settingsStorage}});
     if (desktopTheme) {
-      desktopTheme.onChange(value => { if (["system", "light", "dark"].includes(value?.mode)) { theme = value.mode; applyTheme(); renderSettings(); if (state !== null && project !== null) renderSidebar(); } });
-      void desktopTheme.get().then(value => { if (["system", "light", "dark"].includes(value?.mode)) { theme = value.mode; renderSettings(); if (state !== null && project !== null) renderSidebar(); } }).catch(error => toast(error.message));
-    } else try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
-    try { const stored = Number(localStorage.getItem("crew.fontScale")); if (stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { toast(error.message); }
+      desktopTheme.onChange(value => { adoptDesktopFont(value); if (["system", "light", "dark"].includes(value?.mode)) { theme = value.mode; applyTheme(); renderSettings(); if (state !== null && project !== null) renderSidebar(); } });
+      void desktopTheme.get().then(async value => {
+        // First desktop-wide reading: carry over the size this page chose before the desktop kept one.
+        if (!value.fontStored) {
+          let legacy = null;
+          try { legacy = localStorage.getItem("crew.fontScale"); } catch (error) { toast(error.message); }
+          if (legacy !== null && Number(legacy) >= FONT_MIN && Number(legacy) <= FONT_MAX) value = await desktopTheme.setFontScale(Number(legacy));
+        }
+        try { localStorage.removeItem("crew.fontScale"); } catch (error) { toast(error.message); }
+        adoptDesktopFont(value);
+        if (["system", "light", "dark"].includes(value?.mode)) { theme = value.mode; renderSettings(); if (state !== null && project !== null) renderSidebar(); }
+      }).catch(error => toast(error.message));
+    } else {
+      try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
+      try { const stored = Number(localStorage.getItem("crew.fontScale")); if (stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { toast(error.message); }
+    }
     try { leadersOpen = !narrowLayout() && localStorage.getItem("crew.leadersOpen") !== "false"; } catch { leadersOpen = !narrowLayout(); }
     $("leader-panel").dataset.open = String(leadersOpen); $("leader-panel").inert = !leadersOpen;
     CrewChat.initFiles(api, toast);
@@ -1551,6 +1596,11 @@
         toast("已结束 leader", async () => { await api("/api/op/group.undo", {group, before:result.before}); await loadState(true); toast("已撤销"); });
       });
       else if (act === "wake-session") action(`wake:${id}`, async () => { await api("/api/op/session.wake", {session_id:id, text:"用户叫醒了你，请继续当前任务。"}); await loadState(true); toast("已叫醒"); });
+      else if (act === "leader-queued") {
+        const message = Number(button.dataset.message);
+        if (narrowLayout() && leadersOpen) setLeadersOpen(false);
+        if (mountedChannel) CrewChannel.focus(message); else { channelFocus = message; navigate("channel"); }
+      }
       else if (act === "leader") { tasksOpen = !narrowLayout(); if (cardId !== null) closeCard(); navigate("chat", id, null, null); }
       else if (act === "member-chat") { const item = member(id); if (item) { if (button.dataset.goalId) memberScopes.set(item.session_id, button.dataset.goalId); if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id, null); } }
       else if (act === "view") { if (settingsOpen) closeSettings(false); if (narrowLayout() && leadersOpen) setLeadersOpen(false); if (cardId !== null) closeCard(); if (button.dataset.view === "all") allTab = "overview"; navigate(button.dataset.view); }
@@ -1667,6 +1717,8 @@
       else if (act === "member-history") { const item = member(id); if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id, null); }
     });
     document.addEventListener("change", event => {
+      // The desktop keeps the size once the slider is released; dragging only previews it on this page.
+      if (event.target.dataset.setting === "font" && desktopTheme) { setFontScale(Number(event.target.value)); return; }
       if (!event.target.closest("#leader-settings-form") || lookDraft === null) return;
       if (event.target.matches("[data-look-color]")) { lookDraft.color = event.target.value; lookDraft.error = ""; renderLeaderSettings(); }
       else if (event.target.matches("[data-look-avatar]")) void pickLeaderAvatar(event.target);
@@ -1679,7 +1731,7 @@
       const todoForm = event.target.closest("[data-todo-form]");
       if (todoForm && event.target.name === "note") { const draft = todoActions.get(todoForm.dataset.todoForm); if (draft) draft.note = event.target.value; return; }
       // Update only the readout while dragging; re-rendering would steal the slider from the pointer.
-      if (event.target.dataset.setting === "font") { setFontScale(Number(event.target.value)); $("font-scale-value").textContent = `${Math.round(fontScale * 100)}%`; $("settings").querySelector('[data-act="font-reset"]').disabled = fontScale === 1; return; }
+      if (event.target.dataset.setting === "font") { setFontScale(Number(event.target.value), !desktopTheme); $("font-scale-value").textContent = `${Math.round(fontScale * 100)}%`; $("settings").querySelector('[data-act="font-reset"]').disabled = fontScale === 1; return; }
  });
     document.addEventListener("submit", event => {
       const form = event.target;
@@ -1736,7 +1788,9 @@
       }
     });
     window.addEventListener("hashchange", () => { if (state === null || project === null) return; CrewChat.unmount(); mountedChat = null; readRoute(); render(); refreshUsage(true); });
-    loadState(); setInterval(loadState, 3000);
+    loadState();
+    // Minutes-ago and running-for texts move with the clock, not with any change; redraw them locally.
+    setInterval(() => { if (state !== null && project !== null) render(); }, 30000);
   }
   setup();
 })();

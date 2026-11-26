@@ -142,6 +142,9 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
                               self.dispatch("failed-beta", "beta-main", self.beta, 11),
                               dict(self.dispatch("running-alpha", "alpha-peer", self.alpha / "running"), ended_at=None, exit_code=None,
                                    pid=os.getpid(),pid_created=codex_runtime.process_identity(os.getpid()))])
+        # Receipts and rollouts are read by the background scan's full step; run it before the page reads.
+        self.server.service.scanned_at = None
+        self.server.service.scan_usage()
         with mock.patch.object(self.server.service.chat, 'running', side_effect=lambda sid: sid == 'alpha-peer'):
             state = self.state("alpha")
         self.assertEqual(directory(state)['alpha-peer']['status'], 'waiting', 'A stale idle journal cannot erase a real waiting hook')
@@ -201,6 +204,9 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
             "utilization": {"five_hour": {"utilization": 9, "resets_at": reset.isoformat()}}},
             "unrelated_secret": "must-never-appear"}), encoding="utf-8")
         original_cache = cache.read_bytes()
+        # The usage page reads what the background scan stored; run its full step first.
+        self.server.service.scanned_at = None
+        self.server.service.scan_usage()
         results = {}
         for scope, project, requests, tokens in (("workspace", "alpha", 2, 3500),
                                                 ("workspace", "beta", 1, 4500), ("machine", "alpha", 4, 13500)):

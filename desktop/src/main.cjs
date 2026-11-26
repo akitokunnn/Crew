@@ -627,18 +627,23 @@ function themeSender(event){
 }
 ipcMain.handle('desktop:theme',event=>{themeSender(event);return appearance.state();});
 ipcMain.handle('desktop:theme-set',(event,mode)=>{themeSender(event);return appearance.set(mode);});
-function applyTheme(){
-  const dark=nativeTheme.shouldUseDarkColors,frame=chrome.colors(dark);
-  if(liveWindow()){
-    window.setBackgroundColor(frame.color);
-    if(platform!=='darwin')window.setTitleBarOverlay?.({color:frame.color,symbolColor:frame.symbolColor,height:chrome.HEIGHT});
-  }
+// The font size has no native event: every Crew page hears the new appearance state at once.
+ipcMain.handle('desktop:font-scale-set',async(event,value)=>{themeSender(event);const state=await appearance.setFontScale(value);publishAppearance();return state;});
+function publishAppearance(){
   const state=appearance.state();
   for(const contents of webContents.getAllWebContents()){
     if(contents.isDestroyed())continue;
     let origin=null;try{origin=new URL(contents.getURL()).origin;}catch(_){}
     if(liveWindow()&&contents===window.webContents||tabs&&origin===tabs.origin)contents.send('desktop:theme',state);
   }
+}
+function applyTheme(){
+  const dark=nativeTheme.shouldUseDarkColors,frame=chrome.colors(dark);
+  if(liveWindow()){
+    window.setBackgroundColor(frame.color);
+    if(platform!=='darwin')window.setTitleBarOverlay?.({color:frame.color,symbolColor:frame.symbolColor,height:chrome.HEIGHT});
+  }
+  publishAppearance();
   tabs?.setBackground?.(frame.color);
 }
 nativeTheme.on('updated',applyTheme);
@@ -663,6 +668,10 @@ handle('desktop:settings-save',body=>{
   if(launchSettings?.pending)throw Error('后台连接正在切换，完成后再发送消息或修改设置。');
   return settingsRequest('/api/op/settings.save',body);
 });
+// First-run guide: its outcome lives in the backend's settings database; the readiness check runs each tool's own status command.
+handle('desktop:onboarding-get',()=>settingsRequest('/api/op/onboarding.get'));
+handle('desktop:onboarding-save',status=>settingsRequest('/api/op/onboarding.set',{status}));
+handle('desktop:runtime-readiness',()=>settingsRequest('/api/op/runtimes.readiness',undefined,60000));
 handle('desktop:launch-settings-get',()=>launchSettings.get());
 handle('desktop:launch-settings-validate',body=>launchSettings.validate(body));
 handle('desktop:launch-settings-apply',body=>launchSettings.apply(body));

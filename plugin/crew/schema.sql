@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS sound_settings (
     updated_at TEXT NOT NULL
 );
 
+-- First-run guide on the desktop home: once finished or skipped it is never shown automatically again.
+CREATE TABLE IF NOT EXISTS onboarding_state (
+    singleton  INTEGER PRIMARY KEY CHECK (singleton = 1),
+    status     TEXT NOT NULL CHECK (status IN ('completed', 'skipped')),
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS projects (
     name        TEXT PRIMARY KEY,
     root        TEXT NOT NULL UNIQUE,      -- absolute path, as given (compare with crew.store.norm_path)
@@ -423,6 +430,8 @@ CREATE TABLE IF NOT EXISTS channel_mentions (
     reason     TEXT NOT NULL DEFAULT 'mention' CHECK (reason IN ('mention', 'reply')),  -- reply: told because the post answers its own
     PRIMARY KEY (message_id, session_id)
 );
+-- A notice's delivery change finds the posts that show it (change_triggers.py).
+CREATE INDEX IF NOT EXISTS channel_mentions_notice ON channel_mentions (notice_id);
 
 CREATE TABLE IF NOT EXISTS channel_reads (
     project    TEXT NOT NULL REFERENCES projects(name),
@@ -546,6 +555,23 @@ CREATE TABLE IF NOT EXISTS events (
     detail      TEXT                       -- JSON object
 );
 CREATE INDEX IF NOT EXISTS events_ts ON events (ts);
+
+-- Incremental changes behind the snapshot + sequence stream (docs/EVENT_STREAM_DESIGN.md).
+-- Written in the same transaction as the business write (or by the card triggers, change_triggers.py);
+-- a row says which entity changed, and readers build its current value. `events` above stays the audit log.
+-- `seq` never repeats (AUTOINCREMENT) and SQLite's single writer commits rows in seq order.
+-- Pruning only removes the oldest rows, so the pruned watermark is min(seq) - 1, or the last
+-- assigned seq (sqlite_sequence) once every row is gone; no separate state row is written.
+CREATE TABLE IF NOT EXISTS change_log (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL,
+    scope       TEXT NOT NULL,             -- 'global' or 'workspace:<project name>'
+    type        TEXT NOT NULL,             -- '<kind>.invalidated'; '<kind>.updated' for the usage scan's limits (and rows written before invalidations)
+    entity      TEXT NOT NULL,             -- the entity id inside its kind, as text
+    data        TEXT                       -- NULL for invalidations; the JSON value for '.updated' rows
+);
+CREATE INDEX IF NOT EXISTS change_log_at ON change_log (at);
+CREATE INDEX IF NOT EXISTS change_log_scope ON change_log (scope, seq);
 
 -- ---------------------------------------------------------------- usage
 

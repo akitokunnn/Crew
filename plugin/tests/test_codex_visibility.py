@@ -43,7 +43,7 @@ class CodexVisibilityTests(unittest.TestCase):
              mock.patch.object(codex_runtime, '_ObservedClient', side_effect=create_client), \
              mock.patch.object(codex_runtime, 'process_identity', return_value='test-process'), \
              mock.patch('crew.codex_app_server.command', return_value=standalone):
-            journal = chat.Journal(self.home / 'chat' / 'worker.jsonl')
+            journal = chat.Journal(self.home / 'chat' / 'worker.jsonl', None)
             for resume in (False, True):
                 running = codex_runtime.CodexRunning(self.home, self.plugin, session, {}, {}, journal,
                                                      process_factory=spawn, resume=resume)
@@ -118,7 +118,7 @@ class CodexVisibilityTests(unittest.TestCase):
             self.clients.append(client)
             return client
         with mock.patch('crew.codex_runtime._ObservedClient', side_effect=factory):
-            journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'))
+            journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'), None)
             first = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {}, {}, journal, execution=execution)
             first.close(); self.assertTrue(first.reader_done.wait(2))
             self.assertEqual(archived, {'native-1'})
@@ -159,7 +159,7 @@ class CodexVisibilityTests(unittest.TestCase):
             goal = goals.create(conn, 'demo', 'worker', 'Inspect', 'Request', ['Works'])
             execution = goals.create_execution(conn, goal['id'], 'worker', runtime='codex')
         running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {}, {},
-            chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl')), execution=execution)
+            chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'), None), execution=execution)
         client = self.clients[-1]
         client.request = mock.Mock(side_effect=codex_client.CodexError('native archive rejected'))
         running.close(); self.assertTrue(running.reader_done.wait(2))

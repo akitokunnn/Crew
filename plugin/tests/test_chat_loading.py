@@ -104,7 +104,7 @@ class ChatLoadingTests(unittest.TestCase):
 class ProjectionCacheTests(unittest.TestCase):
     def test_projections_reuse_signature_and_invalidate_on_self_and_external_append_or_replacement(self):
         with tempfile.TemporaryDirectory() as directory:
-            journal = chat.Journal(Path(directory) / 'events.jsonl')
+            journal = chat.Journal(Path(directory) / 'events.jsonl', None)
             journal.emit('text', id='answer', text='Saved reply')
             journal.emit('turn_result', status='completed', success=True)
 

@@ -48,7 +48,7 @@ def main():
         work = []
         for index, title in enumerate(('声音评测', '客户端联调')):
             goal = goals.create(case.conn, 'demo', 'coordinator', title, '独立推进，保留原始证据', ['交付可核对证据'])
-            code, receipt, _ = case.request('/api/chat/send?project=demo', {
+            code, receipt, _ = case.request('/api/op/chat.send?project=demo', {
                 'session_id': 'coordinator', 'goal_id': goal['id'], 'text': '开始' + title,
                 'message_id': 'native-ui-task-' + str(index)})
             assert code == 200, receipt
@@ -100,13 +100,13 @@ def main():
                     ('ui-dispatch-'+str(index), 'coordinator', '审查协作记录 ' + '长标题与原始说明。' * 12,
                      str(case.project), stamp.isoformat(), 'claude' if index % 2 else 'codex',
                      os.getpid() if active else None, process_identity(os.getpid()) if active else None))
-            code, reply, _ = case.request('/api/chat/send?project=demo', {'session_id': 'coordinator',
+            code, reply, _ = case.request('/api/op/chat.send?project=demo', {'session_id': 'coordinator',
                 'text': '准备总会话，独立任务继续推进。', 'message_id': 'ui-general-ready'})
             assert code == 200, reply
             case.finish_turn('coordinator', manager.processes['coordinator'].process)
             delivered_goal, delivered_report, _, _ = case.awaiting_acceptance()
-            code, accepted, _ = case.request('/api/goals/action?project=demo', {
-                'goal_id': delivered_goal['id'], 'action': 'accept',
+            code, accepted, _ = case.request('/api/op/goal.accept?project=demo', {
+                'goal_id': delivered_goal['id'],
                 'version': delivered_goal['version'], 'report_id': delivered_report['id']})
             assert code == 200, accepted
             delivered = {'goal_id': delivered_goal['id'], 'leader': 's3', 'report_id': delivered_report['id']}
@@ -162,7 +162,7 @@ def main():
                             board.join(case.conn, sid, 'demo', name, case.project, case.project, 'main', group_name='协作负责人')
                         runtimes.set(case.conn, sid, 'codex' if index % 2 else 'claude')
                         goals.assign(case.conn, goal_id, sid, '复核任务执行')
-                        code, receipt, _ = case.request('/api/chat/send?project=demo', {
+                        code, receipt, _ = case.request('/api/op/chat.send?project=demo', {
                             'session_id': sid, 'goal_id': goal_id, 'text': '开始复核', 'message_id': 'group-' + sid})
                         assert code == 200, receipt
                 print(json.dumps({'group_executions_started': True}), flush=True)

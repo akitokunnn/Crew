@@ -385,14 +385,17 @@
     reading = value === null ? null : {label:value.label, data:value.data, attached:true};
     if (active && !active.readonly) readingComposer(active);
   }
-  // Prefills only an empty composer, so an existing draft is never replaced.
-  function setNote(note, prefill = null) {
+  // Prefills only an empty composer, so an existing draft is never replaced; reports whether it filled it.
+  function prefill(text) {
+    if (!active || active.readonly || active.input.value.trim()) return false;
+    active.input.value = text; active.cache.version += 1; saveDraft(active); resizeInput(active); composerState(active);
+    active.input.focus(); active.input.setSelectionRange(text.length, text.length);
+    return true;
+  }
+  function setNote(note, opening = null) {
     if (!active || active.readonly) return;
     active.note = note; noteComposer(active);
-    if (prefill !== null && !active.input.value.trim()) {
-      active.input.value = prefill; active.cache.version += 1; saveDraft(active); resizeInput(active); composerState(active);
-      active.input.focus(); active.input.setSelectionRange(prefill.length, prefill.length);
-    }
+    if (opening !== null) prefill(opening);
   }
   function quote(text) {
     if (!active || active.readonly) return false;
@@ -1244,5 +1247,5 @@
     if (visible()) timer = setTimeout(poll, 3000);
     return close;
   }
-  window.CrewChat = {setTask, setNote, setReading, quote, mount, update, unmount, watchCompact, renderMarkdown, renderInline, initFiles};
+  window.CrewChat = {setTask, setNote, prefill, setReading, quote, mount, update, unmount, watchCompact, renderMarkdown, renderInline, initFiles};
 })();

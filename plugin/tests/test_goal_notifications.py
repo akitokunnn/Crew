@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from crew import board, chat, goal_links, goal_runtime, goals, notifications, qq, session_ops, store, todo
+from crew import board, change_feed, chat, goal_links, goal_runtime, goals, notifications, qq, session_ops, store, todo
 from tests.test_goals import GoalFixture
 from tests.test_notifications import FakeQQ
 
@@ -23,7 +23,8 @@ class GoalNotificationTests(GoalFixture):
         (self.home/'notify.json').write_text(json.dumps({'owner_openid':'owner','since':NOW,'manual_away':False,
             }),encoding='utf-8')
         manager=SimpleNamespace(home=self.home,path=lambda sid:self.home/'chat'/(sid+'.jsonl'),journal=self.journal,
-                                busy=mock.Mock(return_value=False), work=lambda **kwargs: contextlib.nullcontext(True))
+                                busy=mock.Mock(return_value=False), work=lambda **kwargs: contextlib.nullcontext(True),
+                                changes=change_feed.Notifier())
         self.controller=goal_runtime.Controller(manager)
         self.controller.send=mock.Mock(return_value={'accepted':True,'delivery':'started'})
         self.service=SimpleNamespace(home=self.home,now=lambda:self.clock,chat=manager,write_lock=threading.RLock(),
@@ -31,7 +32,7 @@ class GoalNotificationTests(GoalFixture):
         self.inbox=self.new_inbox()
 
     def journal(self, sid):
-        if sid not in self.journals:self.journals[sid]=chat.Journal(self.home/'chat'/(sid+'.jsonl'))
+        if sid not in self.journals:self.journals[sid]=chat.Journal(self.home/'chat'/(sid+'.jsonl'), None)
         return self.journals[sid]
 
     def new_inbox(self):

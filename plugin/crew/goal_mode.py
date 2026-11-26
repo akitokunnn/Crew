@@ -36,6 +36,7 @@ def initialize(conn, goal_id, mode=None, *, actor=board.HUMAN, now=None):
     ensure(conn)
     conn.execute('INSERT INTO goal_decision_modes VALUES(?,?,?,?,?)',
                  (goal_id, chosen, source, 1, board._time(now)))
+    goals.touch(conn, goal_id)
     return get(conn, goal_id)
 
 

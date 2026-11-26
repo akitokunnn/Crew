@@ -4,7 +4,7 @@ Do not generate these from the registry: a change here must be made on purpose.
 """
 
 # Not operations (design §8.14).
-TRANSPORT_GET = frozenset(('/api/admin/health', '/api/chat/events'))
+TRANSPORT_GET = frozenset(('/api/admin/health', '/api/chat/events', '/api/events'))
 
 # Operations each remote device kind may call, frozen from the remote route rules
 # (remote_routes allow list for browsers, deny list for desktops) when they were replaced.
@@ -28,7 +28,7 @@ DEVICE_BROWSER = frozenset((
     'session.rename', 'session.restore', 'session.stop', 'session.undo', 'session.wake', 'sounds.custom.file',
     'tag.create', 'tag.merge', 'tag.pin', 'tag.recolor', 'tag.remove', 'tag.rename', 'tag.reorder', 'tags.list',
     'todo.list', 'todo.resolve', 'todo.undo', 'usage.export', 'usage.report', 'workspace.activity',
-    'workspace.list', 'workspace.state', 'workspace.theme.set',
+    'workspace.list', 'workspace.snapshot', 'workspace.state', 'workspace.theme.set',
 ))
 DEVICE_DESKTOP = frozenset((
     'interaction.list', 'interaction.resolve',
@@ -50,9 +50,9 @@ DEVICE_DESKTOP = frozenset((
     'maintenance.jobs', 'member_defaults.set', 'mindmap.convert', 'mindmap.edit', 'mindmap.get', 'mindmap.preview',
     'note.annotate', 'note.archive', 'note.bulk', 'note.capture', 'note.keep', 'note.merge', 'note.pin',
     'note.recover', 'note.recovery.get', 'note.restore', 'note.snooze', 'note.start', 'note.unmerge',
-    'note.update', 'notes.list', 'notifications.away.set', 'prompt.applied', 'prompt.get', 'prompt.history',
+    'note.update', 'notes.list', 'notifications.away.set', 'onboarding.get', 'onboarding.set', 'prompt.applied', 'prompt.get', 'prompt.history',
     'prompt.list', 'prompt.reset', 'prompt.save', 'roster.adopt', 'roster.move', 'roster.remove', 'runtimes.list',
-    'session.appearance.set', 'session.archive', 'session.avatar.get', 'session.compact', 'session.delete',
+    'runtimes.readiness', 'session.appearance.set', 'session.archive', 'session.avatar.get', 'session.compact', 'session.delete',
     'session.options.set', 'session.rename', 'session.restore', 'session.runtime.prepare',
     'session.runtime.switch', 'session.stop', 'session.undo', 'session.wake', 'session_library.adopt',
     'session_library.list', 'session_library.preview', 'settings.get', 'settings.save', 'sounds.custom.add',
@@ -61,7 +61,8 @@ DEVICE_DESKTOP = frozenset((
     'tag.recolor', 'tag.remove', 'tag.rename', 'tag.reorder', 'tags.list', 'todo.list', 'todo.resolve',
     'todo.undo', 'trust.report', 'trust.set', 'usage.export', 'usage.report', 'workspace.activity',
     'workspace.add_existing', 'workspace.create_folder', 'workspace.host_folders', 'workspace.list',
-    'workspace.register', 'workspace.remove', 'workspace.settings.get', 'workspace.state', 'workspace.theme.set',
+    'workspace.register', 'workspace.remove', 'workspace.settings.get', 'workspace.snapshot', 'workspace.state',
+    'workspace.theme.set',
     'workspace.update',
 ))
 

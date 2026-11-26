@@ -162,6 +162,16 @@ test("an idea from the wall rides on exactly one send as note_id, prefilling onl
   }
 });
 
+test("prefill writes only into an empty composer and reports whether it did, without sending",async()=>{
+  const h=harness(),calls=[];
+  const target=h.mount("assistant",async(url,data)=>{calls.push({url,data});return history();},{runtime:"claude"});
+  await tick();const input=target.querySelector("textarea");
+  assert.equal(h.chat.prefill("我想在工作区「甲」开局"),true);assert.equal(input.value,"我想在工作区「甲」开局");
+  assert.equal(h.chat.prefill("另一段"),false);assert.equal(input.value,"我想在工作区「甲」开局","an existing draft is never replaced");
+  assert(!calls.some(call=>call.url==="/api/op/chat.send"));
+  h.chat.unmount();
+});
+
 test("a rejected task supplement keeps the exact backend reason, draft and target on retry",async()=>{
   const h=harness(),toasts=[],sent=[];let fail=true;
   const target=h.mount("leader",async(url,data)=>{if(url!=="/api/op/chat.send")return history();sent.push(data);if(fail)throw Error("该目标已暂停，请先恢复");return {accepted:true};},{},{toast:text=>toasts.push(text)});

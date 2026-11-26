@@ -111,6 +111,7 @@ class Manager:
             self.notification_target = data['target']
             for inbox in self.inboxes.values():
                 inbox.wake.set()
+        self.service.chat.changes.mark('notification', None, 'notification')
         return self.snapshot()
 
     def set_away(self, away):
@@ -120,6 +121,7 @@ class Manager:
             self.manual_away = away
             for inbox in self.inboxes.values():
                 inbox._set_away(away)
+        self.service.chat.changes.mark('notification', None, 'notification')
         return self.notification_status()
 
     def _stop(self, inbox):
@@ -134,6 +136,7 @@ class Manager:
             self.inboxes[channel] = inbox
             if channel == 'qq':
                 self.service.inbox = inbox
+        self.service.chat.changes.mark('notification', None, 'notification')
         inbox.start()
 
     def _reset_binding(self, inbox):

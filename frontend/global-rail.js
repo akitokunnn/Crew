@@ -162,19 +162,23 @@
   }
 
   if (page !== "app") {
-    try {
+    // Inside the Crew desktop the font size is desktop-wide and arrives with the display mode.
+    const desktopFont = value => { if (typeof value?.fontScale === "number") document.documentElement.style.setProperty("--fs", String(value.fontScale)); };
+    if (!window.crewDesktopTheme) try {
       const fs = Number(localStorage.getItem("crew.fontScale"));
       if (fs >= 0.9 && fs <= 1.4) document.documentElement.style.setProperty("--fs", String(fs));
     } catch {}
     themeMode = readThemeMode();
     if (window.crewDesktopTheme) {
       window.crewDesktopTheme.onChange?.(value => {
+        desktopFont(value);
         if (["system", "light", "dark"].includes(value?.mode)) {
           themeMode = value.mode;
           renderStandalone();
         }
       });
       void window.crewDesktopTheme.get?.().then(value => {
+        desktopFont(value);
         if (["system", "light", "dark"].includes(value?.mode)) {
           themeMode = value.mode;
           renderStandalone();

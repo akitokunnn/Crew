@@ -19,7 +19,7 @@ class GoalLinkTests(RuntimeFixture):
 
     def journal(self, execution_id):
         if execution_id not in self.journals:
-            self.journals[execution_id] = chat.Journal(self.home/'test-goal-chat'/(execution_id+'.jsonl'))
+            self.journals[execution_id] = chat.Journal(self.home/'test-goal-chat'/(execution_id+'.jsonl'), None)
         return self.journals[execution_id]
 
     def target(self, title='原目标', person='member-id'):

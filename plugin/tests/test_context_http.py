@@ -139,6 +139,9 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         path = self.write(self.codex / ("rollout-fixture-" + native_id + ".jsonl"),
                           [meta, older, latest, token_count(45, info=False)])
         expected = {"used": 57554, "max": 258400, "source": "transcript"}
+        # Rollouts are read by the background scan's full step; run that step before the page reads.
+        self.server.service.scanned_at = None
+        self.server.service.scan_usage()
         self.assertEqual(self.state()["s3"]["context"], expected)
         self.assertEqual(self.request("/api/op/chat.history?project=demo&session_id=s3")[1]["context"], expected)
         archive = self.codex.parent / "archived_sessions"
