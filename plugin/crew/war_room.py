@@ -50,7 +50,8 @@ def _leaders(conn, project_name, names):
         raise board.BoardError('成员必须是 leader 名字数组')
     found = []
     for name in dict.fromkeys(names):
-        target = board.named_session(conn, project_name, name)
+        by_id = channel._leader(conn, project_name, name)
+        target = by_id if by_id is not None else board.named_session(conn, project_name, name)
         if channel._leader(conn, project_name, target['session_id']) is None:
             raise board.BoardError('成员必须是本工作区在用的 leader: ' + name)
         found.append(target)
@@ -239,6 +240,9 @@ def close(conn, room_id, actor, summary, now=None):
                                       source=_source(actor), now=now, generated=True)
     conn.execute("UPDATE war_rooms SET status='closed',summary=?,closed_at=?,closed_message_id=? WHERE id=?",
                  (summary, stamp, notice['id'], room_id))
+    # Room mentions not yet delivered no longer wake anyone: there is nothing left to answer in a closed room.
+    conn.execute('UPDATE leader_notices SET wake=0 WHERE sent_at IS NULL AND id IN (SELECT t.notice_id FROM '
+                 'channel_mentions t JOIN channel_messages m ON m.id=t.message_id WHERE m.room_id=?)', (room_id,))
     for member in members(conn, room_id):
         if member['session_id'] != actor:
             board._queue_leader_notice(conn, member['session_id'], '作战室 #%d《%s》已收尾，结论：%s。回到原岗位继续你自己的任务。' % (

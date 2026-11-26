@@ -198,7 +198,9 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
     names += _named_in_body(conn, project_name, body, actor)
     identities = set()
     for name in dict.fromkeys(names):
-        target = board.named_session(conn, project_name, name)
+        # A leader's session id names it as well as its name does (AI callers often only have the id).
+        by_id = _leader(conn, project_name, name)
+        target = by_id if by_id is not None else board.named_session(conn, project_name, name)
         if _leader(conn, project_name, target["session_id"]) is None:
             raise board.BoardError("点名对象不是本项目的 leader: " + name)
         if room is not None and not war_room.is_member(conn, room_id, target["session_id"]):

@@ -58,6 +58,11 @@ class OpenAndTalkTests(WarRoomFixture):
         with self.assertRaisesRegex(board.BoardError, "同一个地方"):
             channel.post(self.conn, "demo", "a", "跨着回", now=NOW, reply_to=self.main()[0]["id"], room_id=room["id"])
 
+    def test_a_session_id_names_a_leader_as_well_as_its_name(self):
+        room = self.open_room(members=("b",))
+        told = war_room.say(self.conn, room["id"], "a", "看下契约", to=["b"], now=NOW)
+        self.assertEqual([m["name"] for m in told["mentions"]], ["beta"])
+
     def test_member_gets_room_posts_next_turn_and_non_members_do_not(self):
         room = self.open_room(members=("beta",))
         for notice in self.notices("b"):
@@ -142,6 +147,11 @@ class CloseTests(WarRoomFixture):
             [note] = self.notices(sid)
             self.assertEqual(note["wake"], 0)
             self.assertIn("回到原岗位", note["text"])
+
+    def test_room_mentions_still_queued_at_close_stop_waking(self):
+        room = self.open_room(members=("beta",))
+        war_room.close(self.conn, room["id"], "a", "先停", now=NOW)
+        self.assertEqual(sorted(n["wake"] for n in self.notices("b")), [0, 0])
         with self.assertRaisesRegex(board.BoardError, "已收尾"):
             war_room.say(self.conn, room["id"], "b", "还有一句", now=NOW)
         self.assertNotIn("[Crew 作战室", channel.preview(self.conn, "b")[0] or "")
