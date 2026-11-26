@@ -1,7 +1,7 @@
 """Global assistant page state; transport and native process ownership stay out."""
 from contextlib import closing
 
-from .. import board, event_sounds, guard, models, personal, settings, store
+from .. import board, event_sounds, guard, mindmap_api, models, personal, settings, store
 from . import personal as personal_api
 from .common import _text
 
@@ -137,3 +137,21 @@ def get_personal_tags(handler, service, url, query):
 def get_assistant_state(handler, service, url, query):
     handler._send(200, personal_api.state(service.home, history=service.chat.history, journal=service.chat.journal,
         activity=service.chat.activity, applied=service.chat.applied, context=service.chat.display_context))
+
+
+def post_personal_mindmap(service, path, data, project_name):
+    return mindmap_api.edit(service.home, data)
+
+
+def post_personal_mindmap_preview(service, path, data, project_name):
+    return mindmap_api.preview(service.home, data)
+
+
+def post_personal_mindmap_convert(service, path, data, project_name):
+    # Writes the target workspace's architecture board, so it runs under the service write lock.
+    with service.write_lock:
+        return mindmap_api.convert(service.home, data)
+
+
+def get_personal_mindmap(handler, service, url, query):
+    handler._send(200, mindmap_api.snapshot(service.home))
