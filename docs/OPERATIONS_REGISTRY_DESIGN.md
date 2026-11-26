@@ -3,18 +3,18 @@
 > 日期：2026-11-27 · 作者：架构重审主题会话（Claude）· 基线 `3fdfbec`
 > 依据：[总计划](REBUILD_PLAN_2026-11-27.md) 用户裁决 7、[Teamwork 设计](ONBOARDING_AND_TEAMWORK_DESIGN.md) 第 6 节、[入口全量盘点](OPERATIONS_INVENTORY.md)（事实底稿）、[架构重审](ARCHITECTURE_REVIEW.md)、[拆分边界](SPLIT_BOUNDARIES.md)
 > 本文是阶段三“操作清单与助手（R5）”会话的施工依据。实测记录见第 12 节。
+> **第 2 版（同日）**：按 `gpt-6.2-astra` 只读评审修订（要点与取舍见架构重审附录 A）：工具暴露回到用户裁决 7 的“核心工具 + `crew_search`”为施工基线，原生全量注册改为 R5 内 A/B 复测的候选；补威胁模型、委派与撤权规则、设备两种形态、按判别条件绑定、确认与幂等的边界、桌面 IPC 覆盖。
 
 ---
 
 ## 0. 结论
 
 1. **清单是唯一事实来源。** 每个业务动作登记一次：名称、参数格式、读写级别、风险、各角色可用范围、加锁与准入、对外绑定（HTTP 路径 / CLI 命令 / MCP 工具）。HTTP 路由表、CLI、MCP 工具、助手指南、覆盖测试全部从清单生成或对照清单检查。
-2. **AI 只走 MCP。** Crew 后端在本机 HTTP 端口上提供 `/mcp`（Streamable HTTP，无常驻流），每个托管会话启动时拿到自己的令牌（经启动参数 / 配置文件注入，不放环境变量）。后端按令牌认出调用者、按清单卡权限。Bash 调 `crew`、Codex `dynamicTools`、`/api/assistant/native-action` 三条旧路径整条删除。
-3. **权限即工具集，由载体原生按需加载（已用真模型实测，第 12 节）。** 每个会话在 MCP 连接建立时拿到它有效权限内的**全部**操作工具（每个操作一个，带只读 / 破坏性 / 可重复注解）。两种载体都会把 MCP 工具藏在自带的工具搜索后面：60 个带长说明的工具，Claude Code 只多约 900 token（只列名字），Codex 几乎不增加（19706 vs 19511），两者都能按需找到并调用其中任意一个。所以“默认只给少数核心工具、其余按需加载”由载体完成，Crew 不需要自己做加载协议：
-   - **Claude Code**：全部工具一次给出，CC 的 ToolSearch 负责延迟加载。
-   - **Codex**：按 t3code 的做法注册两个服务名：`crew`（全部工具，走 Codex 的延迟加载）与 `crew_core`（只启用核心工具，`omit_tools_from = ["deferred"]` 直出），核心工具不用搜就能调。
-   - `crew_search` 保留为只读的**用法指南**工具（中文检索“想做 X 用哪个操作”、返回风险与相近操作的区别），两种载体相同，不承担加载。
-   - 实测还确认：Claude Code 支持中途 `tools/list_changed`，**Codex 不支持**（`list_changed`、`config/mcpServer/reload`、`thread/resume`、同进程新开线程都拿不到新工具）。本设计因此不依赖 `list_changed`：会话的工具集在启动时确定，权限收紧由后端每次调用时拒绝、立即生效；新增权限在会话下次启动（重签令牌）时出现在工具列表里。两种载体行为一致，没有按载体分叉的调用路径。
+2. **AI 只走 MCP。** Crew 后端在本机 HTTP 端口上提供 `/mcp`（Streamable HTTP，无常驻流），每个托管会话启动时拿到自己的令牌（经 CC 的 `--mcp-config` 文件与 Codex app-server 的 `-c` 参数注入，不放环境变量，防止子进程与测试意外继承身份；威胁模型见 3.4）。后端按令牌认出调用者、按清单卡权限。Bash 调 `crew`、Codex `dynamicTools`、`/api/assistant/native-action` 三条旧路径整条删除。
+3. **工具暴露：施工基线按用户裁决 7，原生全量注册作为候选做 A/B（已用真模型实测，第 12 节）。**
+   - **基线（裁决 7）**：默认只列核心工具 + `crew_search`。Claude Code 支持会话中途 `notifications/tools/list_changed`（实测：收到后立即重拉并能调用新工具），`crew_search` 命中后服务端把这些操作加入该会话可见集并发通知。Codex 只在 MCP 连接建立时读一次工具列表（实测：`list_changed`、`config/mcpServer/reload` 后服务端已重新列出新工具、`thread/resume`、同进程新开线程，线程都仍不能调用新工具），所以 Codex 会话用固定核心集 + `crew_search`（返回调用方式）+ `crew_call(op, args, request_id)`。这是明确的按载体差异，不做隐式回退；`crew_call` 由服务端按具体操作名逐个鉴权、校验、确认与审计，代价是 Codex 侧失去逐工具的原生审批粒度。
+   - **候选（权限即工具集）**：实测两种载体都会把 MCP 工具藏在自带的工具搜索后面——60 个长说明工具，CC 只多约 900 token，Codex 几乎不增加，且都能按名字找到并调用。若在 R5 的产品形态复测（约 200 个真实操作、相似名称、不透露工具名的中文意图、长会话、恢复、权限收紧、高风险操作）中发现成功率与误选不劣于基线，则改为“每个会话一开始拿到全部有权限的操作工具”，两种载体同一工具面、去掉 `crew_call` 与 `list_changed` 依赖；`tools/list` 由少数变为全部是可观察的契约变更，须记入决策日志。
+   - 两种模式在 R5 中作为**显式配置**同时实现以便对比，复测结束后删除落选的一种，不长期并存。
 4. **权限在后端卡死，派出的权限不超过发起方**：令牌记录有效权限集 = 角色默认集 ∩ 签发者有效集；每次调用按 `(操作, 调用者, 目标)` 查表。
 5. **写操作带 `request_id` 只执行一次**（借鉴 t3code 的 commandId）；高风险操作由 AI 发起时生成统一的“用户确认请求”，用户在界面确认后才执行。
 6. **覆盖测试**：任何 HTTP 路由、前端或桌面里的改数据调用、CLI 子命令、MCP 工具，没有对应清单条目（或未列入带理由的“非操作入口”表）即测试失败。
@@ -52,11 +52,12 @@ class Operation:
     risk: str                 # 'normal' | 'confirm'（AI 发起需挂原始用户消息）| 'high'（AI 发起需用户在界面确认）
     scopes: frozenset[str]    # 可调用角色，见第 4 节；不得为空
     target: str               # 目标约束：'none' | 'self' | 'own_group' | 'own_project' | 'own_goal' | 'any'
-    lock: str                 # 'none' | 'read' | 'write'（来自 W2 阶段表）
-    admission: bool           # True = 走 chat.work() 更新准入（现 MODEL_WORK 等）
+    lock: str                 # 'outer_write' | 'self_managed' | 'read'：W2 的 B/C 段为 outer_write；A 段为 self_managed（分支内部自己加锁，不等于无锁）
+    admission: str            # 'model_work' | 'none'：在解析出具体操作后判定（同一 URL 不同 action 可不同，如 goals/agent 的 report.preview）
     project: str              # 'none' | 'selected' | 'chat' | 'body'（来自 W2 的项目解析规则）
     handler: Callable         # handler(ctx, args) -> dict；ctx 含 caller、conn、project、now、service
-    http: tuple[Binding, ...] # 现有 URL 绑定（迁移期保留，界面零改动）；新客户端统一走 /api/op
+    http: tuple[Binding, ...] # 现有 URL 绑定，键为（方法, 路径, 判别条件）：判别条件如 action 值；迁移期保留，新客户端统一走 /api/op
+    ipc: tuple[str, ...]      # 桌面直接调用的 IPC 通道 / worker 动作（如 desktop:settings-save 经运维 worker），共享业务写入必须映射到同一操作
     cli: CliSpec | None       # 生成 CLI 的命令路径与位置参数；None = 不出 CLI
     core_for: frozenset[str]  # 在哪些角色的 MCP 默认工具集里（其余经 crew_search）
     emits: tuple[str, ...]    # 写成功后产生的事件类型（给“快照 + 序号”事件流）
@@ -68,7 +69,7 @@ class Operation:
 - `access == 'write'` ⇒ `params` 必须含 `request_id`（字符串，必填）；`emits` 非空。
 - `risk == 'high'` ⇒ `hints.destructive`；对 AI 角色走确认请求（第 5.6 节）。
 - `scopes` 只能用第 4 节列出的角色名；`target` 与角色组合必须在权限表里有定义。
-- 每个 `http` 绑定唯一；每个 `cli` 命令路径唯一；工具名唯一。
+- 每个（方法, 路径, 判别条件）绑定唯一；授权与准入在解析出具体操作**之后**执行；每个 `cli` 命令路径唯一；工具名唯一。
 
 ---
 
@@ -79,7 +80,8 @@ class Operation:
 | 角色 | 如何认出 | 说明 |
 | --- | --- | --- |
 | `human` | 本机界面 / 本机 CLI：现有本机来源检查 + `X-Crew: 1` | 用户本人；CLI 默认就是 `human`，不再从环境变量读会话 |
-| `device` | 远程浏览器 Cookie / 远程桌面 Bearer（现有 `remote_access`） | 用户的其他设备；权限是 `human` 的子集（现 `remote_routes` 允许 / 拒绝清单改为清单字段 `scopes` 里是否含 `device`） |
+| `device_browser` | 远程浏览器 Cookie（现有 `remote_access`） | 用户的其他设备上的浏览器；按现有**允许清单**（`remote_routes.py:7–27`）放行，并保留“远程正文不得带 `caller_session_id` / `actor_*` 等 AI 身份字段”的规则（`remote_routes.py:54–72`） |
+| `device_desktop` | 远程桌面客户端 Bearer | 局域网连接主机的 Crew 桌面；按现有**拒绝清单**（`remote_routes.py:30–45`）处理，比浏览器多工作区、存储、连接等设置能力 |
 | `assistant` | MCP 令牌，签发给全局助手会话 | 跨工作区；写操作至少 `confirm` |
 | `leader` | MCP 令牌，签发给 leader 总对话 | 限本工作区；目标约束按条目 |
 | `execution` | MCP 令牌，签发给成员 / 目标内执行（含 execution_id、goal_id） | 只能动自己的目标与执行 |
@@ -88,24 +90,39 @@ class Operation:
 
 ### 3.2 令牌
 
-- 后端在启动托管会话（CC 进程、Codex app-server、目标执行）前签发：随机 32 字节，库里只存哈希。表 `mcp_tokens(token_hash PK, session_id, execution_id NULL, goal_id NULL, role, project, scopes JSON, issuer_token_hash NULL, created_at, revoked_at NULL)`。
-- `scopes` 在签发时算好：`角色默认集 ∩ 签发者有效集`（用户手动启动时签发者是 `human`，有效集为全集）。之后签发者权限变化不追溯（会话下次启动重新签发时生效）。
-- 会话停止、归档、删除，或执行结束时吊销；后台重启时，旧令牌全部吊销，托管进程按现有“自动续回”重新启动并拿新令牌。
-- 令牌**只**通过载体的 MCP 配置传入，不进环境变量，因此模型在 shell 里起的子进程（如 codex-dispatch、claude-dispatch）拿不到会话身份——这正是现在 `CREW_SESSION_ID` / `CLAUDE_CODE_SESSION_ID` 泄漏给子进程和测试的根因。
-- `/mcp` 只接受本机连接；远程监听对 `/mcp` 一律拒绝（加入 `remote_routes` 拒绝清单并由覆盖测试检查）。
+- 后端在启动托管会话（CC 总对话、CC 目标执行、Codex app-server 新开与恢复）前签发：随机 32 字节，库里只存哈希。表 `mcp_tokens(token_hash PK, session_id, execution_id NULL, goal_id NULL, role, runtime, project, own_scopes JSON, delegable_scopes JSON, issuer_token_hash NULL, created_at, revoked_at NULL)`。
+- 注入层：CC 在 `chat._launch_native` 与 `goal_runtime` 构造命令行处加 `--mcp-config <每会话文件>`；Codex 在 `codex_client.py:103` 构造 app-server 命令处加 `-c mcp_servers.crew...`（不是改 `thread/start` 参数，也不写用户的 `~/.codex/config.toml`）。正常退出、启动失败、异常退出三条路径都吊销令牌并删除每会话文件。
+- 后台重启时，旧令牌全部吊销，托管进程按现有“自动续回”重新启动并拿新令牌。
+
+### 3.3 委派与撤权
+
+- **两种权限分开存**：`own_scopes` = 本人能做的操作；`delegable_scopes` = 能授予由它启动的会话的操作（例如 leader 自己不能 `goal.finish` 别人的目标，但能把 `goal.finish(own_goal)` 委派给它派出的执行）。签发子令牌时：子 `own_scopes` = 子角色默认集 ∩ 父 `delegable_scopes`，项目、目标、执行约束一并收窄。助手的 `delegable_scopes` 含 leader 默认集（用于 `leader.create`），不含 `execution.spawn`（助手不直接派执行）。
+- **每次调用都检查当前有效性**：令牌未吊销 → 会话仍在岗（未归档 / 未停止）→ 祖先链上每个签发令牌都未吊销 → 操作在 `own_scopes` 内且仍在**当前**权限表允许范围内（表收紧立即生效）→ 目标约束 → 处理函数自己的归属校验。父会话被停止或归档时级联吊销其签发的令牌。
+- 新增权限（表放宽、角色升级）只在会话下次启动重签令牌后生效；工具列表里暂时多出已失效的工具名可以接受，但调用必被拒。
+
+### 3.4 威胁模型（写清楚能防什么、不能防什么）
+
+- **能防**：意外继承与误用。令牌不进环境变量，托管会话在 shell 里起的子进程（codex-dispatch、claude-dispatch、测试）不会**意外**带上会话身份——这是现在 `CREW_SESSION_ID` / `CLAUDE_CODE_SESSION_ID` 泄漏的根因；AI 角色的权限与确认由后端执行，提示词写错或模型误判不会越权。
+- **不能单靠令牌防**：同一操作系统用户下主动作恶的进程。每会话配置文件、进程命令行对同用户可见；本机 HTTP 的 `human` 身份只靠本机来源与 `X-Crew: 1`，同用户进程都能发。这与现状相同，不在本设计里假装解决。
+- **纵深措施**：① 守卫（`guard.check`）拒绝托管会话 shell 里直接访问 Crew 本机 API（`localhost:<端口>/api`、`/mcp`）、`crew` CLI 与 `CREW_HOME` 下数据库 / 令牌文件的命令，把“绕过 MCP 冒充 human”挡在常见路径上；② 每会话文件放 `CREW_HOME/runtime/mcp/`，Windows 上设当前用户 ACL，进程退出即删；③ 令牌不写日志（日志只记哈希前缀）；④ Codex `workspace-write` 沙箱下的网络限制按 Codex 自身配置生效，不依赖它。要真正隔离不受信任的执行，需要独立的 OS 用户或容器，列为后续议题。
+- `/mcp` 只接受本机连接并校验 `Origin`（有 `Origin` 头且不是本机 Crew 页面来源即拒绝，防 DNS 重绑定）；远程监听对 `/mcp` 一律拒绝（加入 `remote_routes` 拒绝清单并由覆盖测试检查）。
 
 ---
 
 ## 4. 权限范围表
 
+本表是**摘要**，用于说明方向；每个操作的确切角色、目标约束与前置条件写在清单条目里，并由 R5 按**现有入口的实际行为**逐条写正反例测试来校验（不能用同一张表既生成实现又生成预期，那会把错误固化）。有意收紧现有行为的必须单独记为产品行为变更。D 列在实现时拆成 `device_browser`（允许清单）与 `device_desktop`（拒绝清单），以现有 `remote_routes.py` 为准。
+
 “✓”= 可用；“自”= 只能作用于自己（`target=self`）；“组”= 本组（自己领导的成员、自己发起的执行）；“目标”= 自己负责或参与的目标；“确认”= `risk=confirm`，须挂原始用户消息；“界面确认”= `risk=high`，AI 发起会生成用户确认请求；空 = 不可用。
 
 | 领域（操作前缀） | human | device | assistant | leader | execution | git_admin |
 | --- | --- | --- | --- | --- | --- | --- |
-| 查询：`workspace.state/list`、`session.whoami/who`、`decision.list`、`todo.list`、`document.list`、`goal.get`、`channel.list` | ✓ | ✓ | ✓ 跨工作区 | ✓ 本工作区 | ✓ 本工作区（只读视图） | ✓ 本工作区 |
+| 查询：`workspace.state`、`session.whoami/who`、`decision.list`、`todo.list`、`document.list`、`goal.get` | ✓ | ✓ | ✓ 跨工作区 | ✓ 本工作区 | ✓ 本工作区（`document.list` 等按当前执行的 `goal_id` 过滤，保留现有目标过滤） | ✓ 本工作区 |
+| 查询：`workspace.list`、`channel.list` | ✓ | ✓ | ✓（仅 `workspace.list`） | ✓（仅 `channel.list`） | | |
 | 自身：`session.task.set`、`session.card.*`、`session.rename` | ✓ 任意会话 | ✓ | | 自 | 自（不可改名） | 自 |
 | 协作消息：`message.send` | | | ✓ 确认（以用户来源代发） | ✓ 本工作区 | ✓ 本工作区 | ✓ 本工作区 |
-| 交流区：`channel.post/consume` | ✓（`channel.post` 以用户身份） | ✓ | | ✓ | | |
+| 交流区：`channel.post` | ✓（以用户身份） | ✓ | | ✓ | | |
+| 交流区：`channel.consume`（读并推进本人游标） | | | | ✓ | | |
 | 拍板：`decision.ask/revise/withdraw` | | | | ✓ | ✓（挂在执行上） | ✓ |
 | 拍板答复：`decision.answer` | ✓ | ✓ | ✓ 确认 | 组（原归属组，按授权模式） | | |
 | 拍板流转：`decision.discuss/ready/clarify` | ✓ | ✓ | ✓ 确认 | | | |
@@ -114,7 +131,7 @@ class Operation:
 | 文档：`document.register/refresh` | ✓ | ✓ | | ✓ | ✓ | ✓ |
 | 建人：`leader.create` | ✓ | ✓ | ✓ 确认 | | | |
 | 派执行：`execution.spawn` | ✓ | ✓ | | 组 | | |
-| 停 / 归档：`session.stop/archive`、`group.close` | ✓ | ✓ | ✓ 确认 | 组 | 自（仅 stop） | |
+| 停 / 归档：`session.stop/archive`、`group.close` | ✓ | 浏览器无 `group.close`（以允许清单为准） | ✓ 确认 | 组 | 自（仅 stop） | 自（仅 stop，现有 `stop_identity` 允许已登记调用者停自己） |
 | 删除 / 清理：`session.delete`、`workspace.remove`、`maintenance.cleanup.run`、`storage.clean/trash_empty` | ✓ | 部分（见映射表） | 界面确认 | | | |
 | 目标生命周期：`goal.create/start/pause/resume/cancel/reopen/transfer/amend/assign` | ✓ | ✓ | ✓ 确认 | 目标 | | |
 | 目标验收：`goal.accept/reject/observe` | ✓ | ✓ | ✓ 确认 | | | |
@@ -129,9 +146,9 @@ class Operation:
 
 派生规则：
 
-1. 默认集按上表；`execution` 的有效集 ∩ 发起它的 leader 的有效集；助手启动的 leader 用 leader 默认集（助手有效集覆盖它）。
+1. 委派与撤权按 3.3：子会话 `own_scopes` = 子角色默认集 ∩ 父 `delegable_scopes`；每次调用检查令牌、在岗状态、祖先链与当前权限表。
 2. **授权模式**（`trust_mode`：由我拍板 / 自主推进）不改变清单权限，只改变 leader 的 `decision.answer` 等是否需要升级给用户，由处理函数判断——维持现状。
-3. 现有处理函数里已做的归属校验（如“只能停本组成员”“只能撤回自己的拍板”）保留在处理函数内；清单的 `target` 是第一道闸，处理函数是第二道，测试分别覆盖。
+3. 现有处理函数里已做的归属与可见范围校验（如“只能停本组成员”“只能撤回自己的拍板”“拍板答复要求调用者是原归属 leader 且当前组有效”“执行侧文档列表按当前目标过滤”）保留在处理函数内；清单的 `target` 是第一道闸，处理函数是第二道，测试分别覆盖，通用层不得因为“已过角色表”而跳过处理函数的过滤。
 
 ---
 
@@ -139,70 +156,55 @@ class Operation:
 
 ### 5.1 传输
 
-- 端点：Crew 后端现有端口上的 `POST /mcp`（Streamable HTTP，MCP 2025-06-18 起的形态）。`GET /mcp` 返回 405（规范允许“服务器不提供独立 SSE 流”），`DELETE /mcp` 返回 200。两种载体在这种形态下都能工作（第 12 节）。
-- 所有响应都是普通 `application/json`；不推通知、不需要常驻连接，`BaseHTTPRequestHandler` 足够，不引入依赖。
-- 鉴权：`Authorization: Bearer <令牌>`。缺失或吊销 → 401；权限不足 → 工具结果 `isError: true` + 结构化错误（`forbidden`、原因、需要的角色），不用 HTTP 403，避免载体把它当连接故障重试。
-- `initialize` 返回 `capabilities.tools = {}`（不声明 `listChanged`）；`serverInfo.name = "crew"`。会话 ID 头 `Mcp-Session-Id` 用令牌哈希前缀，便于日志关联。
+- 端点：Crew 后端现有端口上的 `POST /mcp`（Streamable HTTP，MCP 2025-06-18 起的形态）。`GET /mcp` 返回 405（规范允许“服务器不提供独立 SSE 流”）。
+- 客户端 POST 来的是 JSON-RPC **请求**时：普通结果回 `application/json`；基线模式下 CC 会话的 `crew_search` 加载了新工具时，响应改为 `text/event-stream`，先发一条 `notifications/tools/list_changed` 再发结果后关闭（实测第 2 行即此形态）。客户端 POST 来的是**通知或响应**（如 `notifications/initialized`）时：回 `202 Accepted`、空响应体（规范要求）。
+- 不发 `Mcp-Session-Id`（服务器无协议会话状态；调用者身份只来自令牌，Codex 的两个服务别名共用一个令牌也不冲突）。
+- 鉴权：`Authorization: Bearer <令牌>`。缺失或吊销 → 401；权限不足 → 工具结果 `isError: true` + 结构化错误（`forbidden`、原因、需要的角色），不用 HTTP 403，避免载体把它当连接故障重试。`Origin` 校验见 3.4。
+- `initialize`：基线模式返回 `capabilities.tools.listChanged = true`（候选模式为 `{}`）；`serverInfo.name = "crew"`。
 
 ### 5.2 工具集
 
-- `tools/list` 返回令牌有效权限集内的全部操作，工具名为操作名把点换成下划线（`channel.post` → `channel_post`），加上 `crew_search`。每个工具的 `inputSchema` 就是清单 `params`；`annotations` 来自 `hints`（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`），`title` 用 `summary`，`description` 用 `description`（写清何时用、与相近操作的区别）。
-- 核心工具（`core_for`）只影响 Codex 的直出注册，CC 不区分：
+工具名为操作名把点换成下划线（`channel.post` → `channel_post`）；`inputSchema` 就是清单 `params`；`annotations` 来自 `hints`（`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`），`title` 用 `summary`，`description` 写清何时用、与相近操作的区别。
 
-| 角色 | 核心工具（Codex `crew_core` 直出） |
+| 角色 | 核心工具（`core_for`） |
 | --- | --- |
-| leader | `session_whoami`、`workspace_state`、`message_send`、`channel_post`、`channel_consume`、`decision_ask`、`execution_spawn`、`session_stop`、`todo_add`、`document_register`、`goal_get`、`goal_finish` |
-| execution | `session_whoami`、`message_send`、`decision_ask`、`todo_add`、`document_register`、`goal_get`、`goal_work_update`、`goal_context_put`、`goal_report_publish`、`goal_finish` |
-| assistant | `workspace_state`、`session_detail`、`goal_get`、`chat_send`、`leader_create`、`decision_answer`、`todo_resolve`、`note_capture`、`notes_list` |
-| git_admin | `session_whoami`、`git_requests_list`、`git_branches_list`、`git_policy_get`、`git_request_resolve`、`message_send` |
+| leader | `session_whoami`、`workspace_state`、`message_send`、`channel_post`、`channel_consume`、`decision_ask`、`execution_spawn`、`session_stop`、`todo_add`、`document_register`、`goal_get`、`goal_finish`、`crew_search` |
+| execution | `session_whoami`、`message_send`、`decision_ask`、`todo_add`、`document_register`、`goal_get`、`goal_work_update`、`goal_context_put`、`goal_report_publish`、`goal_finish`、`crew_search` |
+| assistant | `workspace_state`、`session_detail`、`goal_get`、`chat_send`、`leader_create`、`decision_answer`、`todo_resolve`、`note_capture`、`notes_list`、`crew_search` |
+| git_admin | `session_whoami`、`git_requests_list`、`git_branches_list`、`git_policy_get`、`git_request_resolve`、`message_send`、`crew_search` |
+| Codex 会话（基线模式）额外 | `crew_call` |
 
-- Codex 启动参数（每会话 app-server）：
+**基线模式（用户裁决 7，施工默认）**：`tools/list` = 核心工具 ∩ 有效权限 + 该会话已加载的工具。CC 会话：`crew_search` 命中项加入该令牌的“已加载集”并随响应发 `list_changed`。Codex 会话：已加载集不变，`crew_search` 结果写明“用 `crew_call` 调用，`op` 填 `<操作名>`”并附完整 `params`；`crew_call` 与直接调用同名工具走完全相同的鉴权、参数校验（按 `op` 的 schema 校验 `args`）、确认与幂等，不是后门。载体类型在签发令牌时记录（`runtime` 字段），不从 `clientInfo` 猜。
 
-```
--c mcp_servers.crew.url="http://127.0.0.1:<端口>/mcp"
--c mcp_servers.crew.http_headers.Authorization="Bearer <令牌>"
--c mcp_servers.crew.disabled_tools=[<核心工具名>]
--c mcp_servers.crew_core.url="http://127.0.0.1:<端口>/mcp"
--c mcp_servers.crew_core.http_headers.Authorization="Bearer <令牌>"
--c mcp_servers.crew_core.enabled_tools=[<核心工具名>]
--c mcp_servers.crew_core.omit_tools_from=["deferred"]
-```
+**候选模式（权限即工具集）**：`tools/list` = 有效权限内全部操作 + `crew_search`（只读用法指南，不加载）。Codex 照 t3code 注册两个服务名：`crew`（全部工具，走 Codex 的延迟加载，`disabled_tools` = 核心工具）与 `crew_core`（`enabled_tools` = 核心工具，`omit_tools_from = ["deferred"]` 直出），写法见 t3code `CodexAdapterV2.ts:1747–1761`；这三个键尚未在本机 Codex 0.172 上实测。
 
-  `disabled_tools` / `enabled_tools` / `omit_tools_from` 的写法照 t3code `CodexAdapterV2.ts:1747–1761`；R5 落地时先在隔离 `CODEX_HOME` 用 0.172 实测这三个键（本次只实测了 `url` 与 `http_headers`）。
+**R5 内的 A/B 复测**（决定保留哪种）：使用真实约 200 个操作 schema；任务用不透露工具名的中文意图，并包含名称相近的操作；覆盖冷启动、长会话（CC 流式长会话、Codex app-server 多轮）、恢复、权限收紧后调用、普通与高风险操作；记录发现成功率、误选、额外往返、首次调用耗时、输入与缓存 token、审批是否以正确工具粒度出现。模型按裁决 5（Haiku 5.5、`gpt-6-luna` low）。结论记入总计划决策日志，删除落选模式。
 
-### 5.3 `crew_search`（用法指南）
+### 5.3 `crew_search`
 
-- 参数：`query`（中文或操作名片段），可选 `domain`。只读。
-- 只在调用者有效权限集里搜；按名称、`summary`、`description` 打分，返回前 8 条：工具名、`summary`、何时用、风险（`confirm` 要带哪条用户消息，`high` 会生成用户确认请求）、相近操作的区别。
-- 不加载工具、不发通知；结果对两种载体相同（工具名在 CC 里显示为 `mcp__crew__<名>`，结果文字只写裸工具名）。
+- 参数：`query`（中文或操作名片段），可选 `domain`。只在调用者有效权限集里搜；按名称、`summary`、`description` 打分，返回前 8 条：工具名、`summary`、何时用、风险（`confirm` 要带什么证据，`high` 会生成用户确认请求）、相近操作的区别、调用方式（随模式与载体不同，见 5.2）。
 
-### 5.4 被否决的方案：`list_changed` 动态加载 + Codex `crew_call`
+### 5.4 两种模式的取舍记录
 
-最初按用户裁决的字面方案设计为：默认只列核心工具 + `crew_search`，CC 搜到后服务端加载并发 `list_changed`，Codex 因不支持 `list_changed` 改用 `crew_call(op, args)` 通用执行器。第 12 节第 12–15 行实测载体原生延迟加载后改为 5.2 的做法，理由：
-
-1. 上下文代价已由载体解决（实测数据见第 12 节），自做加载协议没有额外收益；
-2. 两种载体工具面一致，不需要按载体分叉的提示词、搜索结果文字和执行路径；
-3. Codex 侧也保留逐工具的注解和 Codex 自带的工具审批粒度，`crew_call` 会把所有操作压成一个工具；
-4. MCP 端点不需要 SSE 响应，实现更简单。
-
-保留的风险：载体的延迟加载是它们自己的行为，若某个版本改为全量加载，代价是上下文变大而不是功能失效；阶段五真实模型实测与后续升级检查都看 `tools/list` 的 token 代价（第 12 节的对照方法可复跑）。
+候选模式的好处：两种载体同一工具面，不需要按载体分叉的搜索结果文字和执行路径；Codex 侧保留逐工具注解与原生审批粒度；不依赖 `list_changed`。保留基线的理由（评审意见，主控采纳）：实验 12–15 只是 60 个合成工具、按名字点名调用的单轮对照，不能证明约 200 个真实操作下的发现率与误选；“暴露全部”改变了裁决 7 字面上的默认契约，须以产品形态证据为准。两种模式共用清单、鉴权、处理函数，差别只在 `tools/list` 与 Codex 启动参数，A/B 成本小。
 
 ### 5.5 幂等（命令带 ID 只执行一次）
 
-- 表 `op_requests(caller_key, request_id, op, args_hash, status, result JSON, created_at)`，主键 `(caller_key, request_id)`；`caller_key` = 令牌哈希或 `human` / 设备 ID。
-- 同一 `request_id` 重复到达：参数相同 → 返回已存结果并带 `replayed: true`，不再执行；参数不同 → 409 `request_id_reused`。执行中重复到达 → 返回 `status: running`，客户端等事件流结果，不重发。
-- 保存 7 天，随存储清理一并回收。现有便笺 `request_id` 回执（`personal.py`）并入这张表。
-- 界面与手机端：写请求一律在客户端生成 `request_id`，断线重连后**只重拿快照、不重发写请求**；需要确认结果时用 `request_id` 查询（`op.status`）。
+- 表 `op_requests(caller_key, request_id, op, args_hash, status, result JSON, last_seq, created_at, finished_at)`，主键 `(caller_key, request_id)`；`caller_key` 用**稳定调用身份**：`session:<id>` / `execution:<id>` / `human` / `device:<设备 ID>`，不用令牌哈希（令牌轮换后同一请求仍能去重）。
+- 同一 `request_id` 重复到达：参数相同 → 返回已存结果并带 `replayed: true`，不再执行；参数不同 → 409 `request_id_reused`；之前被拒绝 → 重放拒绝原因；执行中 → `status: running`。
+- **承诺按副作用分级**：只改 Crew 数据库的操作，业务写入、回执与增量事件在同一事务提交，保证“同一请求只提交一次”。涉及库外副作用的操作（向模型投递输入、启动进程、写文件、打开主机程序、外部服务）采用“先记意图 → 提交 → 执行 → 记结果”：承诺的是**可查询、不盲目重发、结果不明可识别**（状态 `unknown` 显示为“待核实”），而不是“恰好一次”。后台重启时扫描遗留的 `running` 回执，按可查询的副作用对账，查不清的标为 `unknown`。
+- 保存 7 天，随存储清理回收；过期后同一 `request_id` 视为新请求（客户端不会在 7 天后重试同一请求）。现有便笺 `request_id` 回执（`personal.py`）并入这张表。
+- 迁移期旧 URL 绑定：旧前端请求没有 `request_id`，绑定层**显式**为其生成一次性 ID（不提供去重），并在覆盖测试里把这些绑定标为“旧绑定”；前端改用 `/api/op` 后删除。
 
 ### 5.6 风险与确认
 
-- `risk=confirm`：AI 调用必须带 `message_id`（触发它的那条用户消息）；后端按现有 `personal.py:887–901,1028–1077` 的做法在该会话日志里核实消息存在、来源为 `human` / `qq` / `lark`、角色为用户。范围从“仅助手”扩大到所有 AI 角色的 `confirm` 操作。
-- `risk=high`：AI 调用不直接执行，而是写一条**用户输入请求**（见架构重审第 6.3 节的统一结构，`kind=confirmation`），工具立即返回 `status: awaiting_user` 和请求 ID；用户在界面（桌面 / 手机）确认后后端执行，结果经事件流和 `message.send` 回告发起会话。拒绝或超时同样回告。
-- 用户本人（`human` / `device`）在界面上点的高风险按钮保持现有二次确认对话框，不走请求表。
+- `risk=confirm`：AI 调用必须带 `message_id`（触发它的那条用户消息），后端按 `personal.py:887–901,1028–1077` 的做法核实该消息存在、来源为 `human` / `qq` / `lark`、角色为用户。这只是**来源证据**（证明用户说过话），不等于用户同意了这个具体操作；因此 `confirm` 只用于低到中风险、可撤销的操作。
+- `risk=high`：AI 调用不直接执行，而是生成一条**用户输入请求**（架构重审 6.3 的统一结构，`kind=confirmation`），内容绑定发起者、操作名、目标、参数哈希与目标当前版本，一次性有效；工具立即返回 `status: awaiting_user` 与请求 ID。用户确认后，后端执行前再次检查发起者当前授权与目标版本，不一致则拒绝并回告。结果经事件流与 `message.send` 回告发起会话；拒绝、过期同样回告。
+- 用户本人（`human` / `device_*`）在界面上点的高风险按钮保持现有二次确认对话框，不走请求表。
 
 ### 5.7 错误
 
-工具错误统一为 `{"error": {"code": "...", "message": "...", "detail": {...}}}`，`code` 取自固定集合：`forbidden`、`invalid_arguments`、`not_found`、`conflict`、`request_id_reused`、`awaiting_user`、`paused_for_update`、`internal`。`message` 保留处理函数的真实原因（现有中文报错原样透出），不吞错。
+工具错误统一为 `{"error": {"code": "...", "message": "...", "detail": {...}}}`，`code` 取自固定集合：`forbidden`、`invalid_arguments`、`not_found`、`conflict`、`request_id_reused`、`awaiting_user`、`paused_for_update`、`unknown_outcome`、`internal`。`message` 保留处理函数的真实原因（现有中文报错原样透出），不吞错。
 
 ---
 
@@ -220,13 +222,13 @@ class Operation:
 | 步骤 | 内容 | 验证 |
 | --- | --- | --- |
 | 1 | 建 `mcp_tokens` 表与签发 / 吊销函数；`chat._launch_native`、`goal_runtime` 启动 CC 时写每会话 MCP 配置文件 `<home>/runtime/mcp/<令牌哈希前缀>.json`（仅当前用户可读）并加 `--mcp-config <文件>`；`codex_runtime` 启动 app-server 时加 `-c mcp_servers.crew.url=...` 与 `-c mcp_servers.crew.http_headers.Authorization="Bearer ..."`，不写用户的 `~/.codex/config.toml` | 单测：签发、吊销、范围求交；隔离 home 真起 CC / Codex，`tools/list` 按角色返回 |
-| 2 | `/mcp` 端点 + 清单驱动的工具执行；`tools/list` 按令牌返回全部有权限的操作；Codex 双服务名直出核心工具 | 第 12 节实验（含 12–15 的延迟加载对照）复跑到产品端点 |
+| 2 | `/mcp` 端点 + 清单驱动的工具执行；基线模式（核心 + `crew_search`，CC `list_changed` 加载，Codex `crew_call`）与候选模式（权限即工具集）两种显式配置，按 5.2 做 A/B | 第 12 节实验复跑到产品端点；A/B 结论记入决策日志后删除落选模式 |
 | 3 | hooks 不再从环境变量认会话：现在 `hooks.py` 用环境变量做三件事——判断是否 Crew 托管进程（`CREW_SESSION_ID` 是否存在，`hooks.py:161,168`）、目标执行身份（`CREW_EXECUTION_ID`，`hooks.py:69,76`）、新会话首次登记的名字与角色（`CREW_NAME` / `CREW_ROLE` / `CREW_GROUP` / `CREW_SPAWN_ID`，`hooks.py:154–156`）。改为**按载体 payload 里的 `session_id` 查库**：后台在启动托管进程前已登记它的原生会话 ID、所属执行与待登记身份（CC 由 Crew 用 `--session-id` 指定原生 ID，目标执行的原生 ID 绑定已在 `goal_runtime`），存在有效令牌即视为托管。不改插件 `hooks.json`，也不新增每会话 `--settings`，避免与插件 hook 重复触发 | `test_hooks*`、目标执行 hook 测试、守卫相关测试；外部（非托管）CC 会话的 hook 行为不变 |
-| 4 | 删除注入：`chat.py:1053`、`codex_runtime.py:292`、`goal_runtime.py:315` 不再设置 `CREW_SESSION_ID` / `CREW_EXECUTION_ID` / `CREW_GOAL_ID` / `CREW_NAME` / `CREW_ROLE`；`child_environment` 继续**剥离**这些变量（防外层残留） | grep 无注入点；托管会话 shell 中 `echo $CREW_SESSION_ID` 为空 |
-| 5 | 删除读取：`cli.py` 12 处、`spawn.py:271,304`、`hooks.py:69,76,154–168` | grep `CREW_SESSION_ID\|CLAUDE_CODE_SESSION_ID\|CREW_EXECUTION_ID` 只剩剥离代码与测试 |
-| 6 | 集成脚本（`integrations/*-dispatch/*.ps1`）只用于记录“由谁派出”的展示信息：改为由 Crew 在托管会话的 MCP 结果里提供 `whoami` 的 `dispatch_label`，脚本参数显式传入；不再从环境变量读身份 | 派工登记仍显示在发起人卡片下 |
+| 4 | 删除注入：`chat.child_environment()`（`chat.py:194–215`，总对话与目标执行都用）不再注入 `CREW_NAME` / `CREW_ROLE` / `CREW_GROUP` / `CREW_SPAWN_ID`；`chat.py:1053`、`codex_runtime.py:292`（及 `:170–172` 守卫命令行）、`goal_runtime.py:313–317` 不再注入 `CREW_SESSION_ID` / `CREW_EXECUTION_ID` / `CREW_GOAL_ID`。`child_environment` 与 `codex_runtime.py:290`、`channel_digest.py:45,83`、`native_skills.py:30`、`operations_chat.py:103`、`operations_worker.py:29`、`desktop/src/operations.cjs:19` 里**剥离**这些变量的代码保留（防外层残留） | grep 注入点为空；托管会话 shell 中 `echo $CREW_SESSION_ID` 为空 |
+| 5 | 删除读取：`cli.py:520,527,534,579,584,601,622,627,722,748,759,827,954,1053`、`spawn.py:271,304–305`、`hooks.py:69,76,154–168` | 交付列“读取 / 注入 / 剥离”三张清单，逐条标“已删 / 保留（剥离）” |
+| 6 | 派工展示关联：`integrations/codex-dispatch/run_codex.ps1:100–117` 与 `integrations/claude-dispatch/scripts/run_claude.ps1:117–133` 现在从环境变量记录“由谁派出”再清理。改为托管会话经 MCP `session.whoami` 拿到逻辑会话 / 执行 ID，作为参数显式传给脚本；`codex_runs.jsonl` 按逻辑 ID 关联到发起人卡片 | 派工登记仍显示在发起人卡片下（第四张清单：展示关联） |
 
-迁移期间不保留“令牌失败就回退环境变量”的分支：步骤 1–5 在同一个合入里完成，由第 12 节实验 + 阶段五真实模型实测把关。
+迁移期间不保留“令牌失败就回退环境变量”的分支：步骤 1–6 在同一个合入里完成，由第 12 节实验 + 阶段五真实模型实测把关。前置条件：`risk=high` 依赖的“用户输入请求”最小闭环（架构重审第 7 节）已上线，否则只上线不含高风险操作的领域。
 
 ---
 
@@ -512,8 +514,8 @@ Web 用 `git.settings.set enabled:false` 停用、CLI 用 `/api/git/disable`：�
 
 ### 8.15 盘点发现、随清单一并处理
 
-- `STATIC['/goal-versions-ui.js']`（`web.py:2051`）指向不存在的文件：随 A1 或清单落地时删除该条。
-- 无调用方的写路由：`/api/attention/dismiss`、`/api/chat/interrupt`、`/api/comments`(POST)、`/api/session/restore`、`/api/roster/adopt`、`/remote/logout`。登记进清单（操作仍有效，助手与手机端可能用），但不再各自维护一个 URL；迁移完成后只保留 `/api/op` 访问。
+- `STATIC['/goal-versions-ui.js']`（`web.py:2051`）指向不存在的文件：删除会改变该 URL 的响应（从 500 类错误变 404），放进阶段二第 4 步死代码清理，不在清单落地时顺手删。
+- 无调用方的写路由：`/api/attention/dismiss`、`/api/chat/interrupt`、`/api/comments`(POST)、`/api/session/restore`、`/api/roster/adopt`（`/remote/logout` 属远程认证协议，按 8.14 作非操作入口，不迁 `/api/op`）。登记进清单（操作仍有效，助手与手机端可能用），但不再各自维护一个 URL；迁移完成后只保留 `/api/op` 访问。
 
 ---
 
@@ -528,14 +530,16 @@ Web 用 `git.settings.set enabled:false` 停用、CLI 用 `/api/git/disable`：�
 
 新增 `plugin/tests/test_operations_registry.py`（Python）与 `plugin/tests/test_operations_frontend.js`（Node），全部是静态或纯函数测试，秒级完成：
 
-1. **路由全覆盖**：`web` 实际可达的每个 GET / POST 路径（W2 后为路由表的全部键；最终为清单生成的绑定）必须等于“清单 `http` 绑定 ∪ 8.14 白名单”。多一个少一个都失败，失败信息列出路径与建议的操作名。
+1. **路由全覆盖**：`web` 实际可达的每个（方法, 路径, 判别条件）——W2 后为外层直接处理集合 ∪ 各段路由表 ∪ 条件分支，最终为清单生成的绑定——必须等于“清单 `http` 绑定 ∪ 8.14 白名单”。多一个少一个都失败，失败信息列出路径与建议的操作名；旧绑定（无 `request_id`）单独标出并统计数量。
 2. **按 action 分派的入口**：`/api/personal/notes`、`/api/personal/tags`、`/api/behavior-prompts`、`/api/goals/agent`、`/api/goals/action`、`/api/goals/context` 的每个合法 `action` 值都映射到一个操作（从处理函数的动作表读取，如 `personal.py` 的动作常量、`goal_actions.dispatch` 的分派表）。
 3. **界面改数据动作全覆盖**：扫描 `frontend/*.js`、`frontend/app/*.js`、`desktop/src/*.cjs`、`desktop/src/home*.js` 中 `api(` / `fetch(` / `post(` 调用的路径字面量与 `method:"POST"`，每个非 GET 路径必须命中清单绑定；动态拼接的路径必须在文件内声明 `// crew-op: <操作名>` 注释，否则失败（逼迫新代码写字面量或声明）。
 4. **CLI 全覆盖**：生成的 argparse 树中每个叶子命令必须对应一个操作或在主机命令白名单里；反之每个 `cli != None` 的操作都能在树里找到。
-5. **MCP 工具全覆盖**：对每个角色模拟签发令牌后调用 `tools/list`，返回的工具 = 有效权限集内的全部操作 + `crew_search`；生成的 Codex 启动参数里 `crew_core.enabled_tools` = 该角色 `core_for` ∩ 有效权限集；`crew_search` 对每个可用操作都能按名字搜到。
+5. **MCP 工具全覆盖**：对每个角色、每种载体模拟签发令牌后调用 `tools/list`：基线模式 = 核心工具 ∩ 有效权限（Codex 另加 `crew_call`），CC 经 `crew_search` 加载后出现被加载项；候选模式 = 有效权限内全部操作 + `crew_search`。`crew_search` 对每个可用操作都能按名字搜到；`crew_call` 对有效权限外的 `op` 一律拒绝。
 6. **权限穷尽**（借鉴 t3code 的“权限穷尽声明”）：`Operation` 构造时 `scopes`、`access`、`risk`、`target` 缺一即抛错；测试遍历 `所有操作 × 所有角色`，断言 `authorize()` 的结果与第 4 节表（以数据形式存于 `ops/scopes.py`）一致；新增角色或操作而不更新表即失败。
 7. **字段一致性**：第 2 节的规则（读 ⇒ 只读注解与只读连接、写 ⇒ `request_id` 与 `emits`、high ⇒ destructive）逐条断言；读操作用样例参数在只读连接上执行一遍，写库即失败。
-8. **远程边界**：`/mcp`、全部 `host` 类操作对 `device` 拒绝。
+8. **远程边界**：`/mcp`、全部 `host` 类操作对 `device_*` 拒绝；`device_browser` 的可用集合等于现有允许清单，`device_desktop` 的拒绝集合等于现有拒绝清单（迁移前后对比）。
+9. **桌面 IPC 与本机 worker 全覆盖**：从 `desktop/src/preload.cjs` / `main.cjs` 实际注册的 `ipcMain.handle` 通道与运维 worker 的动作表取集合（如 `desktop:settings-save` → 运维 worker 的 `save_settings`），共享业务写入必须映射到清单操作的 `ipc` 绑定；只影响本设备的能力（主题 `desktop:theme-set`、启动设置、远程主机配对等）登记为带理由的“本机能力”白名单，保留脱离后端也能运行的方式。
+10. **预期集合独立维护**：上面各项的“应有入口”清单（路由、action 值、IPC 通道、CLI 叶子）从源码扫描或手写的独立文件取得，不从清单生成——避免“用清单生成路由，再用清单证明路由齐全”。
 
 ---
 
@@ -605,7 +609,7 @@ CODEX_HOME=<临时> codex exec --skip-git-repo-check --json "$PROMPT"
 | 14 | CC Haiku 5.5 · stdio | 同 12 的对照 | 输入（缓存读 + 写）29678 vs 30578，只多约 900 token（init 列出 61 个工具名）→ **原生延迟加载** |
 | 15 | CC 同上 | 60 个工具下要求调用 `crew_op_37` | 先 `ToolSearch select:mcp__dyn__crew_op_37`，再调用成功，花费 $0.0032 |
 
-**设计取舍**（已写入第 0、5 节）：采用“权限即工具集 + 载体原生延迟加载”，两种载体同一工具面；Codex 用双服务名把核心工具直出。`list_changed` 动态加载与 Codex `crew_call` 作为被否决方案记在 5.4。实验 1–11 仍然有效：它证明了 Codex 不能靠 `list_changed` 中途加工具，所以设计里不让任何能力依赖中途改工具列表。
+**设计取舍**（已写入第 0、5 节）：实验 1–11 证明 CC 可用 `list_changed` 中途加工具、Codex 不行，因此基线模式里 Codex 走 `crew_call`；实验 12–15 证明两种载体都原生延迟加载 MCP 工具，使“权限即工具集”成为可行候选，但它只覆盖 60 个合成工具的点名调用，按评审意见不据此改写裁决 7，而是在 R5 里按 5.2 的 A/B 复测决定。
 
 **未验证**：Crew 默认 `approvalPolicy=on-request` 时，Codex 对带 `destructiveHint` 的 MCP 工具是否发 `mcpServer/elicitation/request`（实验用的是 `never` 与只读工具）；R5 落地时用产品端点补测，`codex_client.py:269–300` 已有该请求的处理分支。延迟加载只测了 `-p` / `exec` 单轮与 60 个工具；Crew 实际是 CC 流式长会话与 Codex app-server，且真实清单约 200 个操作，R5 落地时按产品启动参数复测 token 代价与可调用性。Codex 的 `disabled_tools` / `enabled_tools` / `omit_tools_from` 三个键尚未在本机 0.172 上实测（5.2 已注明）。
 
@@ -619,4 +623,5 @@ CODEX_HOME=<临时> codex exec --skip-git-repo-check --json "$PROMPT"
 | 2 | 生成 CLI 的调用者固定为 `human` | 是。CLI 给人和脚本用；AI 不再经 shell 调 Crew |
 | 3 | `usage` 系列保持主机命令，不进清单 | 是，它读本机原生日志目录，与业务数据无关 |
 | 4 | 迁移期旧 URL 作为清单绑定保留，前端按领域逐步改 `/api/op` | 是，避免一次性改 40 多个前端调用点 |
-| 5 | 用“权限即工具集 + 载体原生延迟加载”代替用户裁决 7 字面上的“默认只开放核心工具 + `crew_search` 按需加载” | 采用。目标（不撑大上下文、按需加载）不变，由载体完成，实测有效；`crew_search` 保留为用法指南。需记入决策日志 |
+| 5 | 工具暴露：施工基线按裁决 7（核心 + `crew_search`，CC 用 `list_changed`，Codex 用 `crew_call`），“权限即工具集”作为 R5 内 A/B 复测的候选 | 采纳评审意见：先按裁决施工，A/B 结果出来后由主会话记入决策日志并删除落选模式 |
+| 6 | 威胁模型只承诺“防意外继承与误用”，同用户恶意进程不在本设计范围；守卫拦截 shell 直连 Crew API / 数据库作为纵深措施 | 是；真正隔离需独立 OS 用户或容器，列为后续议题 |
