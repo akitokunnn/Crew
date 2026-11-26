@@ -31,6 +31,9 @@ POST = frozenset((
     '/api/workspace-data/activate', '/api/workspace-data/discover', '/api/workspace-data/export',
     '/api/workspace-data/handoff', '/api/workspace-data/import', '/api/workspace-data/open',
     '/api/workspace-data/preview',
+    # War rooms (docs/WAR_ROOM_DESIGN.md §6).
+    '/api/war-room/close', '/api/war-room/contract', '/api/war-room/decide', '/api/war-room/item',
+    '/api/war-room/members', '/api/war-room/open', '/api/war-room/post', '/api/war-room/read',
 ))
 GET = frozenset((
     '/api/admin/chat', '/api/admin/config', '/api/admin/connection/plan', '/api/assistant/state',
@@ -44,6 +47,7 @@ GET = frozenset((
     '/api/state', '/api/storage', '/api/todos', '/api/trust/report', '/api/usage', '/api/usage/export',
     '/api/workspace-data/artifact', '/api/workspace-data/blob', '/api/workspace-data/download',
     '/api/workspace-data/history', '/api/workspaces/activity',
+    '/api/war-room', '/api/war-rooms',
 ))
 # Not operations (design §8.14).
 TRANSPORT_GET = frozenset(('/api/admin/health', '/api/chat/events'))

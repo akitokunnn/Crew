@@ -10,6 +10,7 @@ GET_PATHS = frozenset((
     '/api/goals', '/api/goal', '/api/goals/report', '/api/documents', '/api/comments',
     '/api/chat/history', '/api/chat/events', '/api/chat/file', '/api/session/avatar', '/api/files/content', '/api/files/download',
     '/api/git', '/api/git/commit', '/api/domains', '/api/sounds/custom/file', '/api/usage', '/api/usage/export', '/api/channel', '/api/todos', '/api/runtimes',
+    '/api/war-rooms', '/api/war-room',
 ))
 POST_PATHS = frozenset((
     '/api/assistant/open', '/api/personal/notes', '/api/personal/notes/start', '/api/personal/tags',
@@ -20,6 +21,8 @@ POST_PATHS = frozenset((
     '/api/decision/discuss', '/api/decision/ready', '/api/decision/clarify', '/api/native-approval',
     '/api/todo/resolve', '/api/todo/undo', '/api/comments',
     '/api/channel', '/api/channel/read', '/api/channel/digest', '/api/attention/dismiss',
+    '/api/war-room/open', '/api/war-room/members', '/api/war-room/post', '/api/war-room/item',
+    '/api/war-room/contract', '/api/war-room/decide', '/api/war-room/close', '/api/war-room/read',
     '/api/leaders/order', '/api/domains', '/api/project/theme',
     '/api/session/appearance', '/api/session/rename', '/api/session/archive', '/api/session/delete', '/api/session/restore', '/api/session/undo',
     '/api/session/stop', '/api/session/compact', '/api/session/options',

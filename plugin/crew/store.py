@@ -106,10 +106,11 @@ def _migrate_channel_replies(conn):
     """Channel replies and pending answers; earlier posts stay plain and earlier mentions await nothing.
 
     Earlier mentions were all explicit names, and earlier sent notices all went through the leader's input.
-    Earlier notices record no owning batch or waiting reason.
+    Earlier notices record no owning batch or waiting reason; earlier posts all belong to the main channel.
     """
     columns = {'channel_messages': (('reply_to', 'INTEGER REFERENCES channel_messages(id)'),
-                                    ('detail', 'INTEGER NOT NULL DEFAULT 0'), ('auto', 'INTEGER NOT NULL DEFAULT 0')),
+                                    ('detail', 'INTEGER NOT NULL DEFAULT 0'), ('auto', 'INTEGER NOT NULL DEFAULT 0'),
+                                    ('room_id', 'INTEGER REFERENCES war_rooms(id)')),
                'channel_mentions': (('await_reply', 'INTEGER NOT NULL DEFAULT 0'),
                                     ('reason', "TEXT NOT NULL DEFAULT 'mention' CHECK (reason IN ('mention', 'reply'))")),
                'leader_notices': (('delivered_via', "TEXT CHECK (delivered_via IN ('hook'))"), ('batch_id', 'TEXT'),

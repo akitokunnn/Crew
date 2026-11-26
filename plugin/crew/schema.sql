@@ -410,9 +410,67 @@ CREATE TABLE IF NOT EXISTS channel_messages (
     created_at         TEXT NOT NULL,
     reply_to           INTEGER REFERENCES channel_messages(id),  -- the post this one answers
     detail             INTEGER NOT NULL DEFAULT 0,  -- 1: the speaker wrote the full answer in its own conversation
-    auto               INTEGER NOT NULL DEFAULT 0   -- 1: Crew posted it because the leader answered only in private
+    auto               INTEGER NOT NULL DEFAULT 0,  -- 1: Crew posted it because the leader answered only in private
+    room_id            INTEGER REFERENCES war_rooms(id)  -- set: the post belongs to that war room's timeline
 );
 CREATE INDEX IF NOT EXISTS channel_messages_project ON channel_messages (project, id);
+
+-- A war room is a channel topic with fixed members, a shared board and one decision card (docs/WAR_ROOM_DESIGN.md).
+CREATE TABLE IF NOT EXISTS war_rooms (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project             TEXT NOT NULL REFERENCES projects(name),
+    title               TEXT NOT NULL,
+    goal                TEXT NOT NULL,
+    lead_session_id     TEXT NOT NULL,
+    origin_message_id   INTEGER REFERENCES channel_messages(id),  -- the channel post it was raised from
+    opened_message_id   INTEGER REFERENCES channel_messages(id),  -- the main-channel notice that it opened
+    closed_message_id   INTEGER REFERENCES channel_messages(id),  -- the main-channel notice that it closed
+    contract            TEXT NOT NULL DEFAULT '',
+    contract_updated_at TEXT,
+    contract_updated_by TEXT,
+    status              TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+    summary             TEXT,
+    created_at          TEXT NOT NULL,
+    closed_at           TEXT
+);
+CREATE INDEX IF NOT EXISTS war_rooms_project ON war_rooms (project, status);
+CREATE TABLE IF NOT EXISTS war_room_members (
+    room_id    INTEGER NOT NULL REFERENCES war_rooms(id),
+    session_id TEXT NOT NULL,
+    joined_at  TEXT NOT NULL,
+    left_at    TEXT,
+    PRIMARY KEY (room_id, session_id)
+);
+CREATE TABLE IF NOT EXISTS war_room_items (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id          INTEGER NOT NULL REFERENCES war_rooms(id),
+    title            TEXT NOT NULL,
+    owner_session_id TEXT,
+    status           TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'blocked', 'done')),
+    note             TEXT,
+    updated_at       TEXT NOT NULL,
+    updated_by       TEXT NOT NULL
+);
+-- Board and membership changes, shown as handoff points on the room timeline.
+CREATE TABLE IF NOT EXISTS war_room_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id    INTEGER NOT NULL REFERENCES war_rooms(id),
+    at         TEXT NOT NULL,
+    actor      TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    detail     TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS war_room_decisions (
+    decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
+    room_id     INTEGER NOT NULL REFERENCES war_rooms(id)
+);
+CREATE TABLE IF NOT EXISTS war_room_reads (
+    room_id    INTEGER NOT NULL REFERENCES war_rooms(id),
+    reader     TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (room_id, reader)
+);
 
 CREATE TABLE IF NOT EXISTS channel_mentions (
     message_id INTEGER NOT NULL REFERENCES channel_messages(id),

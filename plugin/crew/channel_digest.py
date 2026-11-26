@@ -259,11 +259,11 @@ class Manager:
             after = max(previous["upto_message_id"] if previous is not None else 0, boundary["channel_after"])
             if trigger == "auto":
                 baseline = max(after, self.failed_upto.get(project, 0))
-                count = conn.execute("SELECT COUNT(*) FROM channel_messages WHERE project=? AND id>?",
+                count = conn.execute("SELECT COUNT(*) FROM channel_messages WHERE project=? AND id>? AND room_id IS NULL",
                                      (project, baseline)).fetchone()[0]
                 if count < 20:
                     return False
-            rows = conn.execute("SELECT * FROM channel_messages WHERE project=? AND id>? ORDER BY id",
+            rows = conn.execute("SELECT * FROM channel_messages WHERE project=? AND id>? AND room_id IS NULL ORDER BY id",
                                 (project, after)).fetchall()
             if not rows:
                 raise board.BoardError("没有新发言需要整理")
