@@ -125,7 +125,7 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
         text = current.journal.path.read_text(encoding="utf-8")
         self.assertNotIn("<command-name>", text)
         self.assertNotIn("/compact", text)
-        self.assertEqual(chat.Journal(current.journal.path).messages, {sent["uuid"]})
+        self.assertEqual(chat.Journal(current.journal.path, None).messages, {sent["uuid"]})
 
     def test_compact_busy_rejects_before_writing(self):
         manager, current, session = self.running("working")
@@ -309,7 +309,7 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
             {"type": "result", "local_command": "compact", "num_turns": 0},
             {"type": "command_lifecycle", "state": "completed"},
         ]
-        journal = chat.Journal(self.home / "chat" / "s1.jsonl")
+        journal = chat.Journal(self.home / "chat" / "s1.jsonl", None)
         phases = []
         for record in records:
             journal.consume(record)

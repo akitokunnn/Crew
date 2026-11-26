@@ -80,9 +80,9 @@ class AssistantHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(names, ['新对话', '新对话 2'])
 
     def test_new_page_assets_are_served_by_the_actual_backend(self):
-        for path in ('/assistant.html', '/assistant.js', '/assistant.css', '/workspace-home.js', '/workspace-home.css',
+        for path in ('/app-data.js', '/assistant.html', '/assistant.js', '/assistant.css', '/workspace-home.js', '/workspace-home.css',
                      '/workspace-entry.js', '/workspace-entry.css',
-                     '/global-rail.js', '/voice.html', '/voice.js', '/voice.css', '/personal-notes-ui.js', '/personal-notes-ui.css', '/behavior-prompts-ui.js', '/behavior-prompts-ui.css'):
+                     '/global-rail.js', '/voice.html', '/voice.js', '/voice.css', '/mindmap.js', '/mindmap-model.js', '/mindmap.css', '/personal-notes-ui.js', '/personal-notes-ui.css', '/behavior-prompts-ui.js', '/behavior-prompts-ui.css'):
             code, content, _ = self.request(path, raw=True)
             self.assertEqual(code, 200, path)
             self.assertGreater(len(content), 30)
@@ -141,3 +141,34 @@ class AssistantHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(history['history']), 1)
         code, _, _ = self.request('/api/behavior-prompts', {**body, 'content': '旧版本不能覆盖别人刚保存的修改'})
         self.assertEqual(code, 409)
+
+
+class MindmapHttpTests(ShellFixture, unittest.TestCase):
+    """The mind map's four operations are wired into the real backend's route tables."""
+    request = AssistantHttpTests.request
+    close_server = AssistantHttpTests.close_server
+
+    def setUp(self):
+        ShellFixture.setUp(self)
+        self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project,
+            agents_provider=lambda: [], claude_root=self.claude, codex_root=self.codex,
+            runs_file=self.runs, now=lambda: store.parse_iso(NOW), process_factory=self.process_factory)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .02})
+        self.thread.start()
+        self.addCleanup(self.close_server)
+        self.url = 'http://127.0.0.1:%d' % self.server.server_port
+
+    def test_snapshot_edit_preview_and_convert_are_served(self):
+        code, snapshot, _ = self.request('/api/personal/mindmap')
+        self.assertEqual(code, 200, snapshot)
+        self.assertEqual(snapshot['version'], 0)
+        code, edited, _ = self.request('/api/personal/mindmap', {
+            'ops': [{'op': 'create', 'id': 'root-topic', 'label': '下一版', 'parent_id': None}], 'base_version': 0})
+        self.assertEqual(code, 200, edited)
+        self.assertEqual(edited['map']['version'], 1)
+        code, stale, _ = self.request('/api/personal/mindmap', {
+            'ops': [{'op': 'label', 'id': 'root-topic', 'label': '旧版本'}], 'base_version': 0})
+        self.assertEqual(code, 409, stale)
+        for path in ('/api/personal/mindmap/preview', '/api/personal/mindmap/convert'):
+            code, refused, _ = self.request(path, {})
+            self.assertEqual(code, 400, (path, refused))

@@ -69,31 +69,11 @@ def touch_project(conn, name):
 
 
 def _assign_project_themes(conn, now):
-    assigned = [row[0] for row in conn.execute("SELECT theme FROM project_themes")]
-    missing = conn.execute("SELECT p.name FROM projects p LEFT JOIN project_themes t ON t.project=p.name "
-                           "WHERE t.project IS NULL ORDER BY p.created_at,p.rowid").fetchall()
-    for row in missing:
-        unused = [theme for theme in themes.IDS if theme not in assigned]
-        theme = unused[0] if unused else themes.IDS[len(assigned) % len(themes.IDS)]
-        conn.execute("INSERT INTO project_themes(project,theme,assigned_at) VALUES(?,?,?)",
-                     (row[0], theme, _time(now)))
-        touch_project(conn, row[0])
-        assigned.append(theme)
-
-
-def _ensure_project_themes(conn, now=None):
-    if conn.execute("SELECT 1 FROM projects p LEFT JOIN project_themes t ON t.project=p.name "
-                    "WHERE t.project IS NULL LIMIT 1").fetchone() is None:
-        return
-    if conn.in_transaction:
-        _assign_project_themes(conn, now)
-    else:
-        with transaction(conn):
-            _assign_project_themes(conn, now)
+    for name in store.assign_project_themes(conn, _time(now)):
+        touch_project(conn, name)
 
 
 def projects(conn, *, include_removed=False):
-    _ensure_project_themes(conn)
     fields = 'p.*,t.theme,s.display_name' + (',s.removed_at' if include_removed else '')
     return _rows(conn, "SELECT " + fields + " FROM projects p JOIN project_themes t ON t.project=p.name "
                  "LEFT JOIN project_settings s ON s.project=p.name " +
@@ -129,7 +109,6 @@ def project(conn, name, *, include_removed=False):
         raise BoardError("项目不存在: " + name)
     if row['removed_at'] is not None and not include_removed:
         raise Conflict("工作区已移除，请先重新打开工作区: " + name)
-    _ensure_project_themes(conn)
     value = dict(row)
     value.pop('removed_at')
     return {**value, "theme": conn.execute("SELECT theme FROM project_themes WHERE project=?", (name,)).fetchone()[0]}
@@ -330,7 +309,7 @@ def init_project(conn, name, root, now=None):
         raise Conflict("项目名称或目录已被使用: " + old["name"])
     if old is None:
         conn.execute("INSERT INTO projects VALUES(?,?,?)", (name, root, _time(now)))
-    _ensure_project_themes(conn, now)
+    _assign_project_themes(conn, now)
     touch_project(conn, name)
     _event(conn, "project:init", name, None, {"root": root}, now)
     return project(conn, name)

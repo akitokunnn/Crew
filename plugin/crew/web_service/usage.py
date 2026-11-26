@@ -60,7 +60,11 @@ class UsageMixin:
         full = self.scanned_at is None or (now - self.scanned_at).total_seconds() >= FULL_SCAN_SECONDS
         with self.write_lock, closing(store.connect(self.home)) as conn:
             with board.transaction(conn):
-                usage.scan(conn, self.claude_root, self.codex_root, self.runs_file, receipts_only=not full)
+                counts = usage.scan(conn, self.claude_root, self.codex_root, self.runs_file, receipts_only=not full)
+                if counts['inserted'] or counts['updated']:
+                    # Dispatch receipts and the settings observed in transcripts show on the cards.
+                    for project in board.projects(conn):
+                        change_feed.touch(conn, 'conversations', project['name'], project['name'])
             crew_usage, budget, scanned_at = self.crew_usage, self.claude_budget, self.scanned_at
             with board.transaction(conn):
                 if full:

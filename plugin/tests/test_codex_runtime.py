@@ -137,7 +137,7 @@ class CodexRuntimeTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def make_running(self, *, options=None, resume=False, spec=None, router=None, execution=None):
-        journal = chat.Journal(self.home / "chat" / "worker.jsonl")
+        journal = chat.Journal(self.home / "chat" / "worker.jsonl", None)
         running = codex_runtime.CodexRunning(self.home, self.plugin, self.session,
                                              spec or {"agent": None}, options or {"model": None, "effort": None},
                                              journal, router, resume=resume, execution=execution)
@@ -632,7 +632,7 @@ for line in sys.stdin:
         def process_factory(command, **kwargs):
             return subprocess.Popen([sys.executable, "-u", "-c", server], **kwargs)
         with mock.patch("crew.codex_runtime._ObservedClient", self.real_client):
-            journal = chat.Journal(self.home / "chat" / "worker.jsonl")
+            journal = chat.Journal(self.home / "chat" / "worker.jsonl", None)
             running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {"agent": None},
                                                  {"model": None, "effort": None}, journal, None,
                                                  process_factory=process_factory)

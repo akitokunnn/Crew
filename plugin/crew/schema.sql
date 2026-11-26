@@ -546,7 +546,8 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_ts ON events (ts);
 
 -- Incremental changes behind the snapshot + sequence stream (docs/EVENT_STREAM_DESIGN.md).
--- Written in the same transaction as the business write; `events` above stays the audit log.
+-- Written in the same transaction as the business write (or by the card triggers, change_triggers.py);
+-- a row says which entity changed, and readers build its current value. `events` above stays the audit log.
 -- `seq` never repeats (AUTOINCREMENT) and SQLite's single writer commits rows in seq order.
 -- Pruning only removes the oldest rows, so the pruned watermark is min(seq) - 1, or the last
 -- assigned seq (sqlite_sequence) once every row is gone; no separate state row is written.
@@ -554,9 +555,9 @@ CREATE TABLE IF NOT EXISTS change_log (
     seq         INTEGER PRIMARY KEY AUTOINCREMENT,
     at          TEXT NOT NULL,
     scope       TEXT NOT NULL,             -- 'global' or 'workspace:<project name>'
-    type        TEXT NOT NULL,             -- '<kind>.updated' | '<kind>.removed'
+    type        TEXT NOT NULL,             -- '<kind>.invalidated'; '<kind>.updated' for the usage scan's limits (and rows written before invalidations)
     entity      TEXT NOT NULL,             -- the entity id inside its kind, as text
-    data        TEXT                       -- JSON of the entity exactly as the snapshot shows it; NULL for removals
+    data        TEXT                       -- NULL for invalidations; the JSON value for '.updated' rows
 );
 CREATE INDEX IF NOT EXISTS change_log_at ON change_log (at);
 CREATE INDEX IF NOT EXISTS change_log_scope ON change_log (scope, seq);

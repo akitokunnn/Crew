@@ -1,6 +1,7 @@
-"""Every database-backed snapshot domain records its writes in the same transaction (docs/EVENT_STREAM_DESIGN.md §6.1).
+"""Every database-backed snapshot domain marks its writes in the same transaction (docs/EVENT_STREAM_DESIGN.md §6.1).
 
-Each recorded value must equal what a fresh snapshot shows for that entity, and a rolled-back write records nothing.
+Read back through the service, each changed entity's value must equal what a fresh snapshot shows for it, and a
+rolled-back write marks nothing.
 """
 import tests
 import base64
@@ -11,14 +12,19 @@ from unittest import mock
 
 from crew import (board, change_feed, channel, decision_briefs, decision_flow, domains, event_sounds, goal_work, goals,
                   settings, store, web, workspace_settings)
+from crew.web_service.snapshot import CONVERSATION_FIELDS
 from tests.test_runtimes import RuntimeFixture
 from test_shell import PLUGIN
 
 LISTS = {'todo': ('todos', 'id'), 'project': ('projects', 'name'), 'decision': ('decisions', 'id'), 'goal': ('goals', 'id')}
-FIELDS = {'workspace': 'project', 'ai': 'ai', 'domains': 'domains'}
+FIELDS = {'workspace': 'project', 'ai': 'ai', 'domains': 'domains', 'runtimes': 'runtimes', 'notification': 'notification'}
 PARTS = {'channel': ('channel', ('unread', 'latest_id', 'digest_id')),
          'sound_settings': ('sounds', ('preferences', 'revision', 'catalog', 'missing')),
-         'limits': (None, ('limits', 'usage_scanned_at', 'usage_error'))}
+         'limits': (None, ('limits', 'usage_scanned_at', 'usage_error')),
+         'conversations': (None, CONVERSATION_FIELDS),
+         'channel_digest': ('channel', ('digesting', 'digest_error')),
+         'sound_events': ('sounds', ('events',)),
+         'scanner': (None, ('agents_error', 'vscode_error'))}
 BRIEF = {'title': '选择数据库', 'context': '要存用户数据', 'why_user': '影响长期成本', 'recommendation_reason': '够用且便宜',
          'impact': '迁移成本低', 'options': [{'label': 'SQLite', 'consequence': '单机简单'},
                                          {'label': 'Postgres', 'consequence': '要运维'}]}
@@ -43,13 +49,17 @@ class DomainFeedFixture(RuntimeFixture):
         self.seq = change_feed.latest_seq(self.conn)
 
     def changes(self, project='demo'):
-        """Changes since the last call that a subscriber of `project` sees."""
-        found = change_feed.read(self.conn, change_feed.scopes(project), self.seq)
+        """Changes since the last call that a subscriber of `project` sees, built by the service."""
+        def build(conn, kind, scope_project, entity):
+            return self.service.change_value(conn, kind, scope_project, entity, project)
+        found = change_feed.read(self.conn, change_feed.scopes(project), self.seq, build)
         self.seq = change_feed.latest_seq(self.conn)
         return found
 
-    def kinds(self, changes):
-        return [(change['type'], change['entity']) for change in changes]
+    def kinds(self, changes, cards=False):
+        """(type, entity) of each change; the workspace cards that tasks and decisions also change only when asked."""
+        return [(change['type'], change['entity']) for change in changes
+                if cards or change['type'] != 'conversations.updated']
 
     def assert_snapshot(self, changes, project='demo'):
         """Applied in order, the changes leave exactly what a fresh snapshot shows: the last change of each
@@ -82,6 +92,7 @@ class DomainFeedFixture(RuntimeFixture):
 
 class MechanismTests(DomainFeedFixture):
     def test_marks_outside_a_board_transaction_and_unknown_kinds_or_scopes_are_refused(self):
+        # Only board.transaction (and the workspace import) opens the bookkeeping a mark needs.
         with self.assertRaisesRegex(RuntimeError, 'board.transaction'):
             change_feed.touch(self.conn, 'goal', 'demo', 'x')
         self.conn.execute('BEGIN IMMEDIATE')
@@ -104,15 +115,16 @@ class MechanismTests(DomainFeedFixture):
         with board.transaction(self.conn):
             goals.amend.__wrapped__(self.conn, goal['id'], '第一次补充')
             goals.amend.__wrapped__(self.conn, goal['id'], '第二次补充')
-        [change] = self.changes()
-        self.assertEqual(change['type'], 'goal.updated')
-        self.assertEqual(change['data']['request'], goals.get(self.conn, goal['id'])['requirements']['request'])
-        self.assert_snapshot([change])
+        changes = self.changes()
+        self.assertEqual(self.kinds(changes, cards=True), [('goal.updated', goal['id']), ('conversations.updated', 'demo')])
+        self.assertEqual(changes[0]['data']['request'], goals.get(self.conn, goal['id'])['requirements']['request'])
+        self.assert_snapshot(changes)
 
     def test_the_frontend_registry_mirrors_the_backend_kinds(self):
         source = (Path(PLUGIN).parent / 'frontend' / 'app-data.js').read_text(encoding='utf-8')
         block = source[source.index('const KINDS = {'):source.index('\n  };', source.index('const KINDS = {'))]
-        self.assertEqual(set(re.findall(r'^\s{4}(\w+): \{', block, re.M)), set(change_feed.KINDS))
+        # `snapshot` never reaches a page: the server turns it into snapshot-required.
+        self.assertEqual(set(re.findall(r'^\s{4}(\w+): \{', block, re.M)), set(change_feed.KINDS) - {'snapshot'})
 
 
 class ProjectTests(DomainFeedFixture):
@@ -122,14 +134,16 @@ class ProjectTests(DomainFeedFixture):
         changes = self.changes('other')
         self.assertEqual(self.kinds(changes), [('project.updated', 'other'), ('workspace.updated', 'other')])
         self.assert_snapshot(changes, 'other')
-        self.assertEqual(self.kinds(change_feed.read(self.conn, change_feed.scopes('demo'), self.seq - 2)),
+        self.assertEqual(self.kinds(change_feed.read(self.conn, change_feed.scopes('demo'), self.seq - 2,
+                                                     lambda conn, kind, project, entity: self.service.change_value(conn, kind, project, entity, 'demo'))),
                          [('project.updated', 'other')], 'another workspace only sees the global list change')
 
         board.set_project_theme(self.conn, 'other', 'lotus')
         workspace_settings.apply_update(self.conn, 'other', '另一个', None, 0)
         changes = self.changes('other')
-        self.assertEqual(self.kinds(changes), [('project.updated', 'other'), ('workspace.updated', 'other')] * 2)
-        self.assertEqual(changes[-1]['data']['display_name'], '另一个')
+        # Two writes before the read: each entity arrives once, as it is now.
+        self.assertEqual(self.kinds(changes), [('project.updated', 'other'), ('workspace.updated', 'other')])
+        self.assertEqual((changes[-1]['data']['display_name'], changes[-1]['data']['theme']), ('另一个', 'lotus'))
         self.assert_snapshot(changes, 'other')
 
         workspace_settings.remove(self.conn, 'other', 1)
@@ -142,10 +156,14 @@ class ProjectTests(DomainFeedFixture):
         self.assertEqual(self.kinds(changes), [('project.updated', 'other'), ('workspace.updated', 'other')])
         self.assert_snapshot(changes, 'other')
 
-    def test_a_legacy_workspace_given_its_theme_is_recorded(self):
+    def test_a_legacy_workspace_gets_its_theme_when_the_database_opens_not_when_it_is_read(self):
         self.conn.execute('INSERT INTO projects VALUES(?,?,?)', ('legacy', store.norm_path(self.root / 'legacy'), board._time(None)))
-        board.projects(self.conn)
-        self.assertEqual(self.kinds(self.changes()), [('project.updated', 'legacy')])
+        self.assertNotIn('legacy', [project['name'] for project in board.projects(self.conn)])
+        store.connect(self.home).close()
+        [given] = [project['theme'] for project in board.projects(self.conn) if project['name'] == 'legacy']
+        self.assertNotEqual(given, board.project(self.conn, 'demo')['theme'])
+        # A migration is not a producer: pages opened afterwards take a snapshot that already has it.
+        self.assertEqual(self.changes(), [])
 
     def test_a_rolled_back_theme_change_records_nothing(self):
         self.assert_rolled_back(lambda: board.set_project_theme.__wrapped__(self.conn, 'demo', 'lotus'))
@@ -175,11 +193,13 @@ class DecisionTests(DomainFeedFixture):
         self.assert_snapshot(changes)
 
         decision_briefs.revise(self.conn, 'member-id', first, question='选哪个数据库？', brief=BRIEF)
+        changes = self.changes()
+        self.assertEqual(self.kinds(changes), [('decision.updated', str(first))])
+        self.assertEqual((changes[0]['data']['question'], changes[0]['data']['needs_review']), ('选哪个数据库？', False))
+        self.assert_snapshot(changes)
         decision_flow.discuss(self.conn, first, 'demo')
         changes = self.changes()
-        self.assertEqual(self.kinds(changes), [('decision.updated', str(first))] * 2)
-        self.assertEqual((changes[0]['data']['question'], changes[0]['data']['needs_review']), ('选哪个数据库？', False))
-        self.assertEqual(changes[1]['data']['presentation_stage'], 'discussion')
+        self.assertEqual(changes[0]['data']['presentation_stage'], 'discussion')
         self.assert_snapshot(changes)
 
         board.answer(self.conn, first, 'SQLite')
@@ -190,8 +210,9 @@ class DecisionTests(DomainFeedFixture):
         second = board.ask(self.conn, 'member-id', '要不要加缓存？')
         board.withdraw(self.conn, 'member-id', second)
         changes = self.changes()
-        self.assertEqual(self.kinds(changes), [('decision.updated', str(second)), ('decision.removed', str(second))])
-        self.assert_snapshot(changes[1:])
+        # Asked and withdrawn before the read: one removal, nothing of the question that never showed.
+        self.assertEqual(self.kinds(changes), [('decision.removed', str(second))])
+        self.assert_snapshot(changes)
 
     def test_a_task_shows_its_pending_decision_until_it_is_answered(self):
         goal = goals.create(self.conn, 'demo', 'chief-id', '数据层', '搭数据层', ['可复核'])
@@ -202,13 +223,13 @@ class DecisionTests(DomainFeedFixture):
         asked = board.ask(self.conn, 'member-id', '用哪个数据库？', ['SQLite'], execution_id=execution['id'])
         changes = self.changes()
         self.assertEqual(self.kinds(changes), [('decision.updated', str(asked)), ('goal.updated', goal['id'])])
-        self.assertEqual(changes[0]['data']['goal_id'], goal['id'])
-        self.assertEqual(changes[1]['data']['pending_decision']['id'], asked)
+        decision, card = [change['data'] for change in changes if change['type'] != 'conversations.updated']
+        self.assertEqual((decision['goal_id'], card['pending_decision']['id']), (goal['id'], asked))
         self.assert_snapshot(changes)
         board.answer(self.conn, asked, 'SQLite')
         changes = self.changes()
         self.assertEqual(self.kinds(changes), [('decision.removed', str(asked)), ('goal.updated', goal['id'])])
-        self.assertIsNone(changes[1]['data']['pending_decision'])
+        self.assertIsNone([change for change in changes if change['type'] == 'goal.updated'][0]['data']['pending_decision'])
         self.assert_snapshot(changes)
 
     def test_a_rolled_back_question_records_nothing(self):
@@ -226,12 +247,17 @@ class GoalTests(DomainFeedFixture):
         goals.transition(self.conn, goal['id'], 'running')
         goal_work.add(self.conn, goal['id'], 'schema', '建表', '表存在')
         changes = self.changes()
-        self.assertEqual(self.kinds(changes), [('goal.updated', goal['id'])] * 3)
-        self.assertEqual((changes[1]['data']['status'], changes[2]['data']['work_summary']['total']), ('running', 1))
+        self.assertEqual(self.kinds(changes), [('goal.updated', goal['id'])])
+        self.assertEqual((changes[0]['data']['status'], changes[0]['data']['work_summary']['total']), ('running', 1))
         self.assert_snapshot(changes)
 
-        # The page lists only the tasks of the leaders it shows; the next write takes a hidden leader's task off it.
+        # The page lists only the tasks of the leaders it shows: closing a leader sends every page for a new
+        # snapshot, and a later write to its task takes the task off the page as well.
         self.conn.execute("UPDATE sessions SET status='closed' WHERE session_id='chief-id'")
+        with self.assertRaises(change_feed.SnapshotRequired) as caught:
+            self.changes()
+        self.assertEqual(caught.exception.reason, 'reset')
+        self.seq = change_feed.latest_seq(self.conn)
         goals.request_pause(self.conn, goal['id'], manual=True)
         changes = self.changes()
         self.assertEqual(self.kinds(changes), [('goal.removed', goal['id'])])
@@ -294,6 +320,8 @@ class ChannelTests(DomainFeedFixture):
                 worker.join(5)
                 self.assertFalse(worker.is_alive())
         self.assertEqual(manager.state('demo'), {'digesting': False, 'digest_error': None})
+        # Starting and finishing marked the digest fields, which live in the manager, for the change worker.
+        self.assertIn(('channel_digest', 'demo', 'demo'), self.service.chat.changes.take()[0])
         changes = self.changes()
         self.assertEqual(self.kinds(changes), [('channel.updated', 'demo')])
         self.assertIsNotNone(changes[0]['data']['digest_id'])

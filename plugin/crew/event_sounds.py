@@ -243,8 +243,9 @@ def _reply_completion(events, cache_key):
     return latest
 
 
-def snapshot(conn, home, project, history, journal):
-    """history returns recorded events or None for a scope with no journal; no launch."""
+def events(conn, project, history, journal):
+    """Reply and delivery events a page may sound for; `history` returns recorded events or None for a
+    scope with no journal; no launch. `project` None lists every workspace (the entry page)."""
     scope = '' if project is None else ' AND s.project=?'
     params = () if project is None else (project,)
     sessions = list(conn.execute("SELECT s.session_id FROM sessions s WHERE s.role='leader' "
@@ -280,7 +281,7 @@ def snapshot(conn, home, project, history, journal):
                        'kind': kind, 'at': completion['at']})
     events.extend({'id': 'delivery:' + row['report_id'], 'scope': 'delivery:' + row['goal_id'],
                    'kind': 'delivery', 'at': row['finalized_at']} for row in deliveries)
-    return {**settings_value(conn, home), 'events': events}
+    return events
 
 
 def settings_value(conn, home):

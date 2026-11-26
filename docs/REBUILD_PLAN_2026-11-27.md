@@ -130,6 +130,17 @@
 - 主会话按完成顺序逐个合入集成分支；后合入的会话先并入最新集成分支并复验。
 - 共享契约（操作清单格式、投递状态枚举、事件格式）由主会话定稿后才开工，各会话不自行修改。
 
+### 4.1 阶段三文件归属（2026-11-27，主会话定）
+
+| 主题 | 归属文件 | 不得修改 |
+| --- | --- | --- |
+| 消息可靠性（R2 第二部分） | `chat_delivery.py`、`channel.py`、`messaging.py`、`message_receipts.py`、`web_api/board.py` 中交流区与私聊相关函数、`frontend/channel.js`、`app.js` 的 `renderChannel` 一段、交流区样式 | `web_api/routes.py`、`cli.py`、`codex_tools.py`（工具说明文字的改动写成清单交给操作清单主题合入） |
+| 操作清单与助手（R5） | 新清单模块与 MCP 服务、`web_api/routes.py`、`cli.py`、`codex_tools.py`、`chat_personal.py`、`personal*.py`、`plugin/skills/`、`hooks.py` 中身份相关部分 | `chat_delivery.py`、`change_feed.py`、`app.js` 数据层 |
+| 增量事件流 | `change_feed.py`、`web_service/events.py`、`web_service/snapshot.py`、`web_service/workers.py`、`frontend/app-data.js`、`app.js` 数据层与轮询、`chat_status.py` / `chat_journal.py` 中的状态生产点 | `chat_delivery.py`、`routes.py`（接线由主会话做） |
+| 样式并入 | `frontend/*.css`（交流区样式除外）、`desktop/src/*.css` | 任何 `.js` 与 `.py` |
+
+路由登记统一由主会话或操作清单主题在 `routes.py` 里做，其余主题把“待接线”写进交付。
+
 ## 5. 验收口径
 
 - 每次合入：相关测试通过且新增失败差集为空；看 diff 有无越界、防御性代码、残留旧路径；对照交互清单抽查受影响的交互。
@@ -157,4 +168,7 @@
 | 2026-11-27 | W1 mixin 放子包还是平铺 | 保留已施工的 `plugin/crew/web_service/` 子包，三处函数内相对导入改为 `..`，核对时人工放行这三个方法。 | 返工成本高于收益；升级后的核对脚本能查出子包内解析不到的相对导入 |
 | 2026-11-27 | W2 怎么拆 | 拆成 W2a（先在未拆代码上写路由契约测试）与 W2b（再拆；契约测试一行不改且全过才算完成）。 | astra 评审：旧核对脚本只是必要条件，证明不了等价 |
 | 2026-11-27 | 操作清单设计第 13 节六条待定 | 全部按推荐：删除 `crew join`；生成的 CLI 调用者固定为 `human`；`usage` 系列保持主机命令不进清单；旧 URL 作为清单绑定过渡，但 R5 会话结束前前端调用全部改走清单入口并删除旧绑定（不留到后续）；工具暴露按裁决 7 施工，“权限即工具集”只做 A/B 复测，结果记入本表并删除落选方式；威胁模型只承诺防意外继承与误用。 | `docs/OPERATIONS_REGISTRY_DESIGN.md` §13 + astra 评审 |
+| 2026-11-27 | 增量事件流删轮询的前提 | 选方案 A：先铺数据库领域、把读路径副作用（用量扫描）移到后台；`chat.py` 拆分后接会话托管状态的生产点；全部覆盖后再接线 `app.js` 并删除 3 秒轮询。不做“比对生产者”过渡代码。 | 事件流第 1 轮停工报告 |
+| 2026-11-27 | 事件流变更在写入时算整值还是发送时算 | 选 Y：业务事务只记失效（kind + 范围 + 实体），发送前在读批次里按当前状态现算整值；构造失败只结束该订阅并要求重拿快照，不越过游标，不回滚业务写入。共享投影器等有扇出实测再议。 | astra 只读评审：X 会让“回答关联到坏任务卡的拍板”等用户写入必然回滚 |
+| 2026-11-27 | 导入后报告版本错乱致页面打不开 | 作为既有缺陷单独修复（`claude/import-report-fix`），修在根因，不在 `card` 里兜底缺字段。 | 事件流第 2 轮发现 |
 

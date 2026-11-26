@@ -9,7 +9,9 @@
   const project = new URLSearchParams(location.search).get("project");
   // leaderTaskChat: the task whose leader execution the chat shows; only the task detail's entry sets it.
   let leaderTaskChat = null;
-  let state = null, view = "all", leaderId = null, readOnlyId = null, mountedChat = null, pollBusy = false, statePromise = Promise.resolve();
+  let state = null, view = "all", leaderId = null, readOnlyId = null, mountedChat = null;
+  // appData: the workspace data layer (app-data.js); snapshotGeneration: the sound generation when the last snapshot was requested.
+  let appData = null, snapshotGeneration = 0;
   // Member page record choice: "general" or a goal id. The first default is kept, so
   // later activity never switches the record under the reader.
   const memberScopes = new Map();
@@ -198,6 +200,7 @@
   const todosOf = id => openTodos().filter(item => item.leader_session_id === id || item.session_id === id);
   function queryPath(path) { const url = new URL(path, location.origin); if (project !== null && url.pathname !== "/api/settings") url.searchParams.set("project", project); return url.pathname + url.search; }
   async function api(path, data) {
+    if (path === "/api/snapshot") snapshotGeneration = soundGeneration;
     const sentAfter = path === "/api/chat/send" ? (leader(data.session_id) || member(data.session_id))?.last_seq || 0 : null;
     const response = await fetch(queryPath(path), data === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json", "X-Crew":"1"}, body:JSON.stringify(data)});
     const result = await response.json();
@@ -1359,35 +1362,48 @@
     if (failed) CrewSound.play("error");
     if (completed.size > 0) CrewSound.play("complete");
   }
+  // Workspace data: one snapshot, then the change stream (app-data.js). Callers keep the former contract:
+  // concurrent calls share one load, `fresh` asks for one more, and a failure is shown here instead of thrown.
+  function workspaceData() {
+    if (appData === null) appData = CrewAppData.create({origin:location.origin, project, get state() { return state; },
+      api:(...args) => api(...args), fetch:(...args) => fetch(...args), EventSource, setTimeout:(...args) => setTimeout(...args),
+      clearTimeout:(...args) => clearTimeout(...args), onState:applyState, onStatus:showConnection, onError:showLoadError});
+    return appData;
+  }
   async function loadState(fresh = false) {
-    if (pollBusy) { await statePromise; if (fresh) return loadState(true); return; }
-    pollBusy = true;
-    let complete;
-    statePromise = new Promise(resolve => { complete = resolve; });
-    const requestedGeneration = soundGeneration;
-    try {
-      const result = await api("/api/state"), previous = state; state = result;
-      CrewSound.observe(state.sounds, state.now);
-      nativeApprovals?.sync(state); CrewActivity.sync(state); applyTheme(); renderSettings();
-      if (project === null) { $("app").className = "workspace-entry"; $("leader-panel").hidden = true; $("right-panel").hidden = true; renderEntrySidebar(); replace($("main"), CrewWorkspaceEntry.render(state, {esc, ic, display: projectDisplay})); document.title = "工作区 · Crew"; if (pendingSettingsHash) { pendingSettingsHash = false; history.replaceState(null, "", `${location.pathname}${location.search}`); openSettings("ai"); } return; }
-      try { localStorage.setItem("crew.mobile.project", project); } catch {}
-      if (previous === null) readRoute();
-      if (readOnlyId !== null && !state.members.some(item => item.session_id === readOnlyId)) { navigate("all"); toast("该会话已不在下属列表，已返回工作台"); }
-      else if (view === "chat" && readOnlyId === null && leader(leaderId) === undefined) { navigate("all"); toast("这个 leader 已结束，已返回工作台"); }
-      else if (view === "chat" && goalId != null && !(state.goals || []).some(item => String(item.id) === String(goalId) && item.leader_session_id === leaderId)) { navigate("chat",leaderId,readOnlyId,null); toast("目标已不在本组，已回到总对话。"); }
-      else { render(); syncRoute(); }
-      if (pendingSettingsHash) { pendingSettingsHash = false; openSettings("ai"); }
-      refreshUsage();
-      if (previous !== null) notifySounds(previous, fresh, requestedGeneration);
-    } catch (error) {
-      if (state === null) {
-        $("main").innerHTML = `<div class="workspace-home" role="alert"><h1>Crew 加载失败</h1><button data-local-control class="btn ghost" data-act="settings">打开设置</button><p class="error-line">${esc(error.message)}</p><p class="note">每 3 秒自动重试，也可以立即重试。</p><button class="btn primary" data-act="state-retry">立即重试</button></div>`;
-        delete $("main").dataset.render;
-        const retry = $("main").querySelector('[data-act="state-retry"]');
-        retry.onclick = async () => { retry.disabled = true; try { await loadState(); } finally { retry.disabled = false; } };
-      } else toast(error.message);
-    }
-    finally { pollBusy = false; complete(); }
+    try { await workspaceData().loadState(fresh); } catch (error) { showLoadError(error); }
+  }
+  // A snapshot (first load, after a write, after the server asked for one) never sounds; a live change does,
+  // the changes caught up after a reconnect do not.
+  function applyState(next, previous, meta) {
+    state = next;
+    CrewSound.observe(state.sounds, state.now);
+    nativeApprovals?.sync(state); CrewActivity.sync(state); applyTheme(); renderSettings();
+    if (project === null) { $("app").className = "workspace-entry"; $("leader-panel").hidden = true; $("right-panel").hidden = true; renderEntrySidebar(); replace($("main"), CrewWorkspaceEntry.render(state, {esc, ic, display: projectDisplay})); document.title = "工作区 · Crew"; if (pendingSettingsHash) { pendingSettingsHash = false; history.replaceState(null, "", `${location.pathname}${location.search}`); openSettings("ai"); } return; }
+    try { localStorage.setItem("crew.mobile.project", project); } catch {}
+    if (previous === null) readRoute();
+    if (readOnlyId !== null && !state.members.some(item => item.session_id === readOnlyId)) { navigate("all"); toast("该会话已不在下属列表，已返回工作台"); }
+    else if (view === "chat" && readOnlyId === null && leader(leaderId) === undefined) { navigate("all"); toast("这个 leader 已结束，已返回工作台"); }
+    else if (view === "chat" && goalId != null && !(state.goals || []).some(item => String(item.id) === String(goalId) && item.leader_session_id === leaderId)) { navigate("chat",leaderId,readOnlyId,null); toast("目标已不在本组，已回到总对话。"); }
+    else { render(); syncRoute(); }
+    if (pendingSettingsHash) { pendingSettingsHash = false; openSettings("ai"); }
+    refreshUsage();
+    if (previous !== null) notifySounds(previous, meta.source === "snapshot" || meta.catchUp, meta.source === "snapshot" ? snapshotGeneration : soundGeneration);
+  }
+  function showLoadError(error) {
+    if (state === null) {
+      $("main").innerHTML = `<div class="workspace-home" role="alert"><h1>Crew 加载失败</h1><button data-local-control class="btn ghost" data-act="settings">打开设置</button><p class="error-line">${esc(error.message)}</p><p class="note">正在自动重连，也可以立即重试。</p><button class="btn primary" data-act="state-retry">立即重试</button></div>`;
+      delete $("main").dataset.render;
+      const retry = $("main").querySelector('[data-act="state-retry"]');
+      retry.onclick = async () => { retry.disabled = true; try { await loadState(); } finally { retry.disabled = false; } };
+    } else toast(error.message);
+  }
+  // While the stream is down the page keeps the last data and says so.
+  function showConnection(status) {
+    const node = $("connection-status"), text = {disconnected:"已断开，正在重连…", resyncing:"正在重新同步…", failed:"页面版本过旧，请刷新页面"}[status];
+    node.hidden = text === undefined || state === null;
+    node.dataset.state = status;
+    node.textContent = text || "";
   }
   async function answer(id, text) {
     const item = state.decisions.find(item => item.id === id);
@@ -1735,7 +1751,9 @@
       }
     });
     window.addEventListener("hashchange", () => { if (state === null || project === null) return; CrewChat.unmount(); mountedChat = null; readRoute(); render(); refreshUsage(true); });
-    loadState(); setInterval(loadState, 3000);
+    loadState();
+    // Minutes-ago and running-for texts move with the clock, not with any change; redraw them locally.
+    setInterval(() => { if (state !== null && project !== null) render(); }, 30000);
   }
   setup();
 })();

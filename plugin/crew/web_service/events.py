@@ -1,12 +1,15 @@
 """HTTP side of the change feed: `GET /api/snapshot` and the SSE stream `GET /api/events`.
 
-Both take the `Handler` that received the request, the `Service`, and the parsed query, like the
-other handler functions; route registration lives in web.py (see docs/EVENT_STREAM_DESIGN.md
-"待接线"). The stream re-reads `change_log` on every wake-up instead of trusting an in-process
-notification, because CLI and hook processes write the same database from outside this service.
+Both take the `Handler` that received the request, the `Service`, the URL and the parsed query, like
+the other GET handlers (web_api/routes.py). This module only carries changes and errors:
+`change_feed.read` builds the values. The stream re-reads `change_log` on every wake-up instead of
+trusting an in-process notification, because CLI and hook processes write the same database from
+outside this service.
 """
 import json
+import sys
 import time
+import traceback
 from contextlib import closing
 
 from .. import change_feed, store
@@ -23,7 +26,7 @@ def _project(service, query):
         return service.selected_project(conn, name)
 
 
-def serve_snapshot(handler, service, query):
+def serve_snapshot(handler, service, url, query):
     name = query.get('project', [None])[0]
     handler._send(200, change_feed.snapshot(service.home, lambda: service.state(name)))
 
@@ -47,14 +50,31 @@ def _write(handler, event, data, seq=None):
     handler.wfile.write((text + 'data: %s\n\n' % json.dumps(data, ensure_ascii=False)).encode('utf-8'))
 
 
-def serve_events(handler, service, query):
-    visible = change_feed.scopes(_project(service, query))
+def _read(conn, visible, cursor, build):
+    """`(changes, None)`, or `([], why)` when this subscription must end with snapshot-required."""
+    try:
+        return change_feed.read(conn, visible, cursor, build), None
+    except change_feed.SnapshotRequired as exc:
+        return [], {'reason': exc.reason}
+    except change_feed.ProjectionFailed as exc:
+        # The business write is already committed; this reader starts over from a new snapshot, which
+        # shows the same cause if the data itself is broken. The log keeps kind, entity, seq and the cause.
+        traceback.print_exception(exc, file=sys.stderr)
+        cause = exc.__cause__
+        return [], {'reason': 'projection', 'kind': exc.kind, 'entity': exc.entity, 'seq': exc.seq,
+                    'error': '%s: %s' % (type(cause).__name__, cause)}
+
+
+def serve_events(handler, service, url, query):
+    viewer = _project(service, query)
+    visible = change_feed.scopes(viewer)
     cursor = _after(handler, query)
+
+    def build(conn, kind, project, entity):
+        return service.change_value(conn, kind, project, entity, viewer)
+
     with closing(store.connect(service.home)) as conn:
-        try:
-            changes, required = change_feed.read(conn, visible, cursor), None
-        except change_feed.SnapshotRequired as exc:
-            changes, required = [], exc.reason
+        changes, required = _read(conn, visible, cursor, build)
         controller = getattr(handler.server, 'remote_controller', None)
         device_id = handler.remote_identity['device_id'] if controller is not None else None
         if controller is not None:
@@ -69,7 +89,8 @@ def serve_events(handler, service, query):
             handler.close_connection = True
             handler.end_headers()
             if required is not None:
-                _write(handler, 'snapshot-required', {'reason': required})
+                # No id and no ready: the client keeps its cursor and takes a new snapshot.
+                _write(handler, 'snapshot-required', required)
                 handler.wfile.flush()
                 return
             for change in changes:
@@ -82,10 +103,9 @@ def serve_events(handler, service, query):
             while not service.stop.is_set() and handler._request_active():
                 if stopping.wait(POLL_SECONDS):
                     break
-                try:
-                    changes = change_feed.read(conn, visible, cursor)
-                except change_feed.SnapshotRequired as exc:
-                    _write(handler, 'snapshot-required', {'reason': exc.reason})
+                changes, required = _read(conn, visible, cursor, build)
+                if required is not None:
+                    _write(handler, 'snapshot-required', required)
                     handler.wfile.flush()
                     break
                 for change in changes:

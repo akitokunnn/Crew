@@ -9,7 +9,7 @@ import threading
 import unittest
 from unittest import mock
 
-from crew import board, channel, channel_digest, settings
+from crew import board, change_feed, channel, channel_digest, settings
 import test_channel
 from test_channel_digest import CARD
 
@@ -83,7 +83,7 @@ class CodexDigestTests(unittest.TestCase):
                                side_effect=AssertionError('No Claude is installed'))
         discovery.start(); no_claude.start()
         self.addCleanup(discovery.stop); self.addCleanup(no_claude.stop)
-        manager = channel_digest.Manager(self.home, threading.Lock(), self.factory)
+        manager = channel_digest.Manager(self.home, threading.Lock(), change_feed.Notifier(), self.factory)
         self.addCleanup(manager.close)
         return manager
 

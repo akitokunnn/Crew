@@ -1,14 +1,51 @@
 import datetime as dt
 from contextlib import closing
 
-from .. import board, chat, claude_budget, claude_limits, git_admin, goal_api, goals, models, presentation, runtime_switch, runtimes, store, themes, todo, trust_mode, usage
+from .. import board, change_feed, chat, claude_budget, claude_limits, git_admin, goal_api, goals, models, presentation, runtime_switch, runtimes, store, themes, todo, trust_mode, usage
 from .. import appearance, member_defaults
 from .. import session_presence
 from .. import event_sounds
 from .. import snapshot_values
 
 
+# The snapshot fields of the managed `conversations` kind: the cards and what is derived from them.
+CONVERSATION_FIELDS = ('leaders', 'members', 'attention', 'native_approvals', 'git_assistant', 'git_branches', 'candidates')
+
+
 class SnapshotMixin:
+    def change_value(self, conn, kind, project, entity, viewer):
+        """The current value of a changed entity for a subscriber of workspace `viewer` (None: the entry page).
+
+        Database kinds use their builders (change_feed.BUILDERS); managed kinds read the state this
+        service holds, with the same functions the snapshot uses.
+        """
+        if kind in change_feed.BUILDERS:
+            return change_feed.build_database_value(conn, kind, project, entity)
+        if kind == 'conversations':
+            with self.agents_lock:
+                agents, error = self.agents, self.agents_error
+            cards, _ = self._conversation_cards(conn, project, session_presence.external_agents(self.chat, agents), error)
+            return cards
+        if kind == 'channel_digest':
+            return self.channel_digest.state(project)
+        if kind == 'sound_events':
+            return {'events': event_sounds.events(conn, viewer, self._sound_history({}), self.chat.journal)}
+        if kind == 'runtimes':
+            return self.runtime_catalog.snapshot()
+        if kind == 'notification':
+            return self.notification_status()
+        if kind == 'scanner':
+            with self.agents_lock:
+                return {'agents_error': self.agents_error, 'vscode_error': self.vscode_error}
+        raise ValueError('增量类型 %s 没有构造方式' % kind)
+
+    def _sound_history(self, histories):
+        def history(identity):
+            if identity in histories:
+                return histories[identity]
+            return self.chat.history(identity) if self.chat.path(identity).is_file() else None
+        return history
+
     def state(self, project_name=None):
         # Pure read: the background usage scan (web_service/usage.py) keeps limits and receipts fresh.
         with self.scan_lock:
@@ -28,17 +65,16 @@ class SnapshotMixin:
                       'candidates': {'running': [], 'others': []},
                       'channel': {'unread': 0, 'latest_id': 0, 'digesting': False, 'digest_error': None, 'digest_id': None},
                       **self.usage_value(conn, crew_usage, budget, scanned_at, usage_error)}
-            result['vscode_error'] = self.vscode_error
+            with self.agents_lock:
+                result['vscode_error'] = self.vscode_error
             histories = {}
             if project_name is not None:
                 name = self.selected_project(conn, project_name)
                 conversations, histories = self._project_conversations(conn, name, agents, error)
                 result.update(conversations)
-            def sound_history(identity):
-                if identity in histories:
-                    return histories[identity]
-                return self.chat.history(identity) if self.chat.path(identity).is_file() else None
-            result['sounds'] = event_sounds.snapshot(conn, self.home, result['project']['name'] if result['project'] else None, sound_history, self.chat.journal)
+            viewer = result['project']['name'] if result['project'] else None
+            result['sounds'] = {**event_sounds.settings_value(conn, self.home),
+                                'events': event_sounds.events(conn, viewer, self._sound_history(histories), self.chat.journal)}
             return result
 
     def member_execution_records(self, conn, session_id, active):
@@ -84,17 +120,29 @@ class SnapshotMixin:
             return self.title_cache.get(native_id, {}).get('context')
 
     def _project_conversations(self, conn, name, agents, error):
-        general_present = board.live_sessions(agents)
-        result = {'leaders': [], 'members': [], 'decisions': [], 'git_assistant': None}
         visible_leaders = snapshot_values.visible_leaders(conn, name)
-        result['goals'] = [goal_api.card(conn, goal) for goal in goals.list_goals(conn, name)
-                           if goal['leader_session_id'] in visible_leaders]
-        result['channel'] = {**snapshot_values.channel(conn, name, name), **self.channel_digest.state(name)}
-        status, present, agents = session_presence.project_status(self, conn, name, agents, error)
-        git_config = board.git_config(conn, name)
-        result['project'] = snapshot_values.workspace(conn, name, name)
+        result = {'goals': [goal_api.card(conn, goal) for goal in goals.list_goals(conn, name)
+                            if goal['leader_session_id'] in visible_leaders],
+                  'channel': {**snapshot_values.channel(conn, name, name), **self.channel_digest.state(name)},
+                  'project': snapshot_values.workspace(conn, name, name)}
         result['todos'] = todo.list(conn, name)
         result['todo_count'] = len(result['todos'])
+        result['decisions'] = [snapshot_values.decision(conn, name, decision['id'])
+                               for decision in board.decisions(conn, name, all=True) if decision['status'] == 'open']
+        result['domains'] = snapshot_values.domains(conn, name, name)
+        cards, histories = self._conversation_cards(conn, name, agents, error)
+        result.update(cards)
+        return result, histories
+
+    def _conversation_cards(self, conn, name, agents, error):
+        """The `conversations` fields (CONVERSATION_FIELDS) of an open workspace, and the journals read for them."""
+        general_present = board.live_sessions(agents)
+        result = {'leaders': [], 'members': [], 'git_assistant': None}
+        visible_leaders = snapshot_values.visible_leaders(conn, name)
+        coordinating = [goal for goal in goals.list_goals(conn, name) if goal['leader_session_id'] in visible_leaders
+                        and goal['status'] in ('running', 'pausing', 'paused', 'waiting_user')]
+        status, present, agents = session_presence.project_status(self, conn, name, agents, error)
+        git_config = board.git_config(conn, name)
         open_groups = {group['name'] for group in status['groups'] if group['closed_at'] is None}
         removed = {r[0] for r in conn.execute('SELECT session_id FROM session_controls WHERE removed=1')}
         sessions = [s for s in [*status['ungrouped'], *(s for group in status['groups'] for s in group['members'])]
@@ -108,8 +156,7 @@ class SnapshotMixin:
         for session in sessions:
             sid = session['session_id']
             scopes = active_scopes[sid] = self.chat.goal_controller.active_executions(conn, sid)
-            coordinated = [goal['id'] for goal in result['goals'] if goal['leader_session_id'] == sid
-                           and goal['status'] in ('running', 'pausing', 'paused', 'waiting_user')]
+            coordinated = [goal['id'] for goal in coordinating if goal['leader_session_id'] == sid]
             active_goal_ids[sid] = list(dict.fromkeys([e['goal_id'] for e in scopes] + coordinated))
             execution = scopes[0] if scopes else None
             key = sid if self.chat.busy(sid) or execution is None else execution['id']
@@ -119,8 +166,7 @@ class SnapshotMixin:
                 histories[sid] = self.chat.history(sid)
             session['status'] = session_presence.status(self.chat, session, present, key)
         decisions = board.decisions(conn, name, all=True)
-        result['decisions'] = [snapshot_values.decision(conn, name, decision['id'])
-                               for decision in decisions if decision['status'] == 'open']
+        pending_leaders = [trust_mode.decision_leader(conn, decision['id']) for decision in decisions if decision['status'] == 'open']
         tasks = usage.dispatch_tasks(conn, None, None, project=name)
         subagent_keys, conversation_keys = {}, {}
         for row in conn.execute('SELECT e.id,e.session_id,e.goal_id,e.round,g.current_round FROM goal_executions e '
@@ -186,7 +232,7 @@ class SnapshotMixin:
                     last_seq=events[-1]['seq'] if events else 0, read_seq=read_seq,
                     last_reply_id=replies[-1]['id'] if replies else None,
                     unread=sum(reply['seq'] > read_seq for reply in replies),
-                    pending=sum(d['leader_session_id'] == sid for d in result['decisions']),
+                    pending=pending_leaders.count(sid),
                     notices_pending=len(board.pending_notices(conn, sid)),
                     member_ids=[s['session_id'] for s in sessions if s['role'] != 'leader' and s['crew_name']
                                 and member_leaders[s['session_id']] is not None
@@ -228,7 +274,6 @@ class SnapshotMixin:
                     conn, git_config, leader, decisions, builtin=sid in builtin_ids)
         result['git_branches'] = self._git_branches(conn, status['project'], git_config)
         result['candidates'] = self.candidates(conn, name)
-        result['domains'] = snapshot_values.domains(conn, name, name)
         result['attention'] = presentation.attention(conn, sessions, decisions, tasks,
             {sid: history['events'] for sid, history in histories.items()})
         return result, histories

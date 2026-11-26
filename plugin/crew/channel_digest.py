@@ -196,8 +196,9 @@ def generate(home, text, process_factory, cancelled=None):
 
 
 class Manager:
-    def __init__(self, home, write_lock, process_factory=subprocess.Popen):
-        self.home, self.write_lock, self.process_factory = Path(home), write_lock, process_factory
+    def __init__(self, home, write_lock, changes, process_factory=subprocess.Popen):
+        """`changes` (change_feed.Notifier) hears when a workspace's digesting or digest_error changes."""
+        self.home, self.write_lock, self.changes, self.process_factory = Path(home), write_lock, changes, process_factory
         self.lock = threading.Lock()
         self.running, self.errors, self.failed_upto, self.workers = set(), {}, {}, {}
         self.stopping = threading.Event()
@@ -276,6 +277,7 @@ class Manager:
             worker = threading.Thread(target=self._run, args=(project, previous, messages, trigger, boundary["cleanups"], job),
                                       name="crew-channel-digest", daemon=True)
             self.workers[project] = worker
+            self.changes.mark('channel_digest', project, project)
             worker.start()
             return True
 
@@ -316,9 +318,11 @@ class Manager:
                 self.failed_upto[project] = messages[-1]["id"]
                 self.running.remove(project)
                 del self.jobs[project]
+            self.changes.mark('channel_digest', project, project)
         else:
             with self.lock:
                 self.errors.pop(project, None)
                 self.failed_upto.pop(project, None)
                 self.running.remove(project)
                 del self.jobs[project]
+            self.changes.mark('channel_digest', project, project)

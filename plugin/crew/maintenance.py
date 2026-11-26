@@ -504,6 +504,7 @@ class Manager:
                 if state['running']:
                     current = chat.processes[key]
                     current.maintenance = marker
+                    chat.changes.session(key)
                 else:
                     marker['owned'] = True
                     try:

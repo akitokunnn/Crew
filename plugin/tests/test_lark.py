@@ -9,7 +9,7 @@ import unittest
 from unittest import mock
 from urllib.error import HTTPError
 
-from crew import board, lark, notifications, personal, qq, store
+from crew import board, change_feed, lark, notifications, personal, qq, store
 from tests.fixture_cleanup import cleanup_directory
 from tests.test_qq import WebSocketServer, frame as wire_frame
 
@@ -390,7 +390,7 @@ class LarkDecisionFlowTests(unittest.TestCase):
         (self.home / 'lark-notify.json').write_text(json.dumps(dict(owner_openid='ou-owner', since=self.now,
             manual_away=False, generation='lark-generation')), encoding='utf-8')
         self.service = SimpleNamespace(home=self.home, write_lock=threading.RLock(), now=lambda: store.parse_iso(self.now))
-        self.service.chat = SimpleNamespace(busy=lambda sid: False)
+        self.service.chat = SimpleNamespace(busy=lambda sid: False, changes=change_feed.Notifier())
         self.assistant = personal.ensure_assistant(self.conn, self.home)['session_id']
         self.sent = []
         self.restart_inbox()

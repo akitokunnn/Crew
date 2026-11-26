@@ -5,15 +5,15 @@ from . import report_preview
 
 
 GET_PATHS = frozenset((
-    '/api/access/context', '/api/state', '/api/projects', '/api/workspaces/activity',
-    '/api/assistant/state', '/api/personal/notes', '/api/personal/notes/recovery', '/api/personal/tags',
+    '/api/access/context', '/api/state', '/api/snapshot', '/api/events', '/api/projects', '/api/workspaces/activity',
+    '/api/assistant/state', '/api/personal/notes', '/api/personal/notes/recovery', '/api/personal/tags', '/api/personal/mindmap',
     '/api/goals', '/api/goal', '/api/goals/report', '/api/documents', '/api/comments',
     '/api/chat/history', '/api/chat/events', '/api/chat/file', '/api/session/avatar', '/api/files/content', '/api/files/download',
     '/api/git', '/api/git/commit', '/api/domains', '/api/sounds/custom/file', '/api/usage', '/api/usage/export', '/api/channel', '/api/todos', '/api/runtimes',
 ))
 POST_PATHS = frozenset((
     '/api/assistant/open', '/api/personal/notes', '/api/personal/notes/start', '/api/personal/tags',
-    '/api/personal/notes/recovery', '/api/chat/send', '/api/chat/interrupt', '/api/chat/read',
+    '/api/personal/notes/recovery', '/api/personal/mindmap', '/api/personal/mindmap/preview', '/api/personal/mindmap/convert', '/api/chat/send', '/api/chat/interrupt', '/api/chat/read',
     '/api/leader', '/api/wake', '/api/spawn', '/api/member-defaults', '/api/roster/move', '/api/roster/remove', '/api/git/adopt',
     '/api/notifications/away', '/api/goals/create', '/api/goals/action', '/api/goals/context',
     '/api/goals/agent', '/api/answer',

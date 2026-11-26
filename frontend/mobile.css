@@ -83,6 +83,9 @@ img,video,canvas,svg{max-width:100%}
 pre,table{max-width:100%;overflow-x:auto}
 .toast{left:var(--m-gutter)!important;right:var(--m-gutter)!important;bottom:calc(var(--m-bottom) + 12px)!important;transform:none!important;max-width:none!important}
 body.m-chat .toast{bottom:calc(96px + var(--m-safe-b))!important}
+/* The disconnection notice sits above the tab bar (or the composer) instead of over the page header. */
+.connection-status{top:auto;bottom:calc(var(--m-bottom) + 12px);max-width:calc(100vw - 2 * var(--m-gutter))}
+body.m-chat .connection-status{bottom:calc(96px + var(--m-safe-b))}
 
 
 /* === Spatial Studio Mobile Pill Dock (<=760px) === */

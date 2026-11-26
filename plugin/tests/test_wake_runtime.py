@@ -134,7 +134,7 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.manager.journal("s1").status, "working")
         self.manager.close()
         self.assertTrue(self.manager.processes["s1"].reader_done.wait(2))
-        self.assertEqual(chat.Journal(self.manager.path("s1")).status, "offline")
+        self.assertEqual(chat.Journal(self.manager.path("s1"), None).status, "offline")
         restarted = chat.Manager(self.home, PLUGIN, lambda: [], self.process_factory)
         self.addCleanup(restarted.close)
         restarted.auto_resume(self.conn, [], now=NOW)
@@ -157,7 +157,7 @@ class AutoResumeTests(ShellFixture, unittest.TestCase):
         process = current.process
         with mock.patch.object(process.stdin, "close"):
             self.manager.close()
-        self.assertEqual(chat.Journal(self.manager.path("s1")).status, "working")
+        self.assertEqual(chat.Journal(self.manager.path("s1"), None).status, "working")
         provider = mock.Mock(return_value=[{"sessionId": "s1", "name": "one"}])
         restarted = chat.Manager(self.home, PLUGIN, provider, self.process_factory)
         self.addCleanup(restarted.close)

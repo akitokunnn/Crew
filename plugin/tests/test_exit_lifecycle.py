@@ -11,7 +11,7 @@ from types import MethodType, SimpleNamespace
 import unittest
 from unittest import mock
 
-from crew import channel, channel_digest, chat, codex_runtime, connections, notifications, report_preview, settings, web
+from crew import change_feed, channel, channel_digest, chat, codex_runtime, connections, notifications, report_preview, settings, web
 from test_chat import FakeProcess
 import test_channel
 from test_channel_digest import CARD
@@ -233,7 +233,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
         claude = mock.patch('crew.channel_digest.chat.claude_executable', return_value='fixture-claude.exe')
         discovery.start(); claude.start()
         self.addCleanup(discovery.stop); self.addCleanup(claude.stop)
-        manager = channel_digest.Manager(self.home, threading.Lock(), factory)
+        manager = channel_digest.Manager(self.home, threading.Lock(), change_feed.Notifier(), factory)
         self.addCleanup(manager.close)
         self.post('Evidence that must not become a successful card after cancellation')
         manager.start(self.conn, 'demo')
@@ -266,7 +266,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
     def test_close_wins_before_native_start_and_rejects_future_starts(self):
         entered, release = threading.Event(), threading.Event()
         factory = mock.Mock(side_effect=AssertionError('Cancelled digest must not launch a native'))
-        manager = channel_digest.Manager(self.home, threading.Lock(), factory)
+        manager = channel_digest.Manager(self.home, threading.Lock(), change_feed.Notifier(), factory)
         self.addCleanup(manager.close)
         self.post()
         def resolve(*args):
@@ -310,7 +310,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
             connections=SimpleNamespace(close=lambda: actions.append('connections')),
             notice_worker=SimpleNamespace(join=lambda: self.assertEqual(actions[0], 'digest-stop')),
             ci_worker=None, chat=SimpleNamespace(lock=threading.RLock(), close=lambda: actions.append('chat')),
-            maintenance=SimpleNamespace(close=lambda: actions.append('maintenance')), worker=None, usage_worker=None)
+            maintenance=SimpleNamespace(close=lambda: actions.append('maintenance')), worker=None, usage_worker=None, change_worker=None)
         web.Service.close(service)
         self.assertTrue(service.stop.is_set())
         self.assertEqual(actions, ['digest-stop', 'remote', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
@@ -328,7 +328,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
             if not release.wait(3):
                 raise AssertionError('Process creation gate was not released')
             return process
-        manager = channel_digest.Manager(self.home, threading.Lock(), factory)
+        manager = channel_digest.Manager(self.home, threading.Lock(), change_feed.Notifier(), factory)
         self.addCleanup(manager.close)
         self.post()
         def close():
@@ -366,7 +366,7 @@ class DigestExitLifecycleTests(unittest.TestCase):
             storage_cleanup=SimpleNamespace(close=lambda: actions.append('storage')),
             connections=SimpleNamespace(close=lambda: actions.append('connections')),
             notice_worker=None, ci_worker=None, chat=SimpleNamespace(lock=threading.RLock(), close=lambda: actions.append('chat')),
-            maintenance=SimpleNamespace(close=lambda: actions.append('maintenance')), worker=None, usage_worker=None)
+            maintenance=SimpleNamespace(close=lambda: actions.append('maintenance')), worker=None, usage_worker=None, change_worker=None)
         with mock.patch('crew.web.traceback.print_exc') as logged:
             with self.assertRaises(OSError) as raised:
                 web.Service.close(service)

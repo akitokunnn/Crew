@@ -715,8 +715,8 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
         backup=_backup(conn,repo,legacy_home,activation)
         conn.execute('BEGIN IMMEDIATE');conn.execute('PRAGMA defer_foreign_keys=ON')
         # Activation writes the live database like board.transaction does, so what it touches (the workspace
-        # list and field, through board.init_project) is recorded in this transaction. The bulk-inserted rows are
-        # not: see docs/EVENT_STREAM_DESIGN.md §5 for why the whole workspace is not re-sent yet.
+        # list and field, through board.init_project) is recorded in this transaction, and a workspace reset
+        # makes a page already open on this workspace take a new snapshot (docs/EVENT_STREAM_DESIGN.md §5).
         change_feed.begin(conn)
         try:
             workspace=_activation_guard(conn,workspace_id,prefix='portable.',legacy_home=legacy_home)
@@ -791,6 +791,7 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
                 receipt=dict(conn.execute('SELECT * FROM portable.local_activation_receipts WHERE id=?',(activation,)).fetchone()),event=receipt)
             intent_path=legacy_home/'storage-v2-activation-intents'/(activation+'.json')
             _write_intent(intent_path,intent)
+            change_feed.touch(conn,'snapshot',project,project)
             change_feed.flush(conn)
             conn.commit()
             change_feed.end(conn)

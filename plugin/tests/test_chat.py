@@ -67,7 +67,7 @@ class FakeProcess:
 class ChatTests(UsageFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
-        self.journal = chat.Journal(self.home / "chat" / "s1.jsonl")
+        self.journal = chat.Journal(self.home / "chat" / "s1.jsonl", None)
 
     def test_protocol_merges_blocks_deduplicates_replay_and_omits_thinking(self):
         self.journal.message("human-1", "hello")
@@ -96,14 +96,14 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertEqual(len([e for e in events if e["type"] == "tool_result"]), 1)
         self.assertEqual([e["text"] for e in events if e["type"] == "error"], ["quota reached"])
         self.assertNotIn("private", self.journal.path.read_text(encoding="utf-8"))
-        self.assertEqual(chat.Journal(self.journal.path).events, events)
+        self.assertEqual(chat.Journal(self.journal.path, None).events, events)
 
     def test_reload_keeps_unicode_line_separators_inside_text(self):
         # Misdecoded tool output (10-23) carried U+2028; str.splitlines cut that record in half.
         text = "a b c\x1cd\x85e"
         self.journal.consume({"type": "user", "uuid": "u1", "message": {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": text}]}})
-        self.assertEqual([e["content"] for e in chat.Journal(self.journal.path).events if e["type"] == "tool_result"], [text])
+        self.assertEqual([e["content"] for e in chat.Journal(self.journal.path, None).events if e["type"] == "tool_result"], [text])
 
     def read_process(self, records):
         process = FakeProcess([])
@@ -178,13 +178,13 @@ class ChatTests(UsageFixture, unittest.TestCase):
     def test_new_events_have_utc_millisecond_timestamps_and_old_events_are_unchanged(self):
         old = {"seq": 1, "type": "message", "id": "old", "text": "legacy", "source": "human"}
         self.write(self.journal.path, [old])
-        journal = chat.Journal(self.journal.path)
+        journal = chat.Journal(self.journal.path, None)
         with mock.patch.object(chat.store, "now_iso", return_value="2026-10-23T12:34:56.789Z"):
             journal.message("new", "current")
         self.assertEqual(journal.events[0], old)
         self.assertEqual(journal.events[1]["at"], "2026-10-23T12:34:56.789Z")
         self.assertRegex(journal.emit("text", text="chunk")["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
-        self.assertEqual(chat.Journal(self.journal.path).events, journal.events)
+        self.assertEqual(chat.Journal(self.journal.path, None).events, journal.events)
 
     def test_history_cache_uses_size_and_mtime_and_updates_after_external_writes(self):
         path = self.journal.path
@@ -244,7 +244,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
         self.assertEqual([event['seq'] for event in journal.events], list(range(1, 104)))
         self.assertEqual([event['text'] for event in journal.events],
                          ['seed', *map(str, range(100)), 'external append', 'after external'])
-        self.assertEqual(chat.Journal(journal.path).events, journal.events)
+        self.assertEqual(chat.Journal(journal.path, None).events, journal.events)
 
     def test_crew_and_qq_sources_survive_cli_echo_and_replay(self):
         manager, process, _ = self.manager_with_process()
@@ -260,7 +260,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
     def test_status_refreshes_before_comparing_and_starting_a_new_message(self):
         first = self.journal
         first.set_status("working")
-        second = chat.Journal(first.path)
+        second = chat.Journal(first.path, None)
         second.set_status("idle")
         first.set_status("working")
         first.refresh()
@@ -269,7 +269,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
         second.set_status("idle")
         first.consume({"type": "stream_event", "event": {"type": "message_start"}})
         self.assertEqual(first.status, "working")
-        self.assertEqual(chat.Journal(first.path).status, "working")
+        self.assertEqual(chat.Journal(first.path, None).status, "working")
         self.assertEqual([event["status"] for event in first.events], ["working", "idle", "working", "idle", "working"])
 
     def test_assistant_merge_refreshes_external_content_before_using_cached_blocks(self):
@@ -278,14 +278,14 @@ class ChatTests(UsageFixture, unittest.TestCase):
 
         first = self.journal
         first.consume(answer("a"))
-        second = chat.Journal(first.path)
+        second = chat.Journal(first.path, None)
         second.consume(answer("b"))
         first.consume(answer("c"))
         expected = [{"type": "text", "text": text} for text in ("a", "b", "c")]
         self.assertEqual(first.events[-1]["content"], expected)
         self.assertEqual(first.assistant["answer"], expected)
         second.consume(answer("c"))
-        persisted = chat.Journal(first.path)
+        persisted = chat.Journal(first.path, None)
         self.assertEqual(len(persisted.events), 3)
         self.assertEqual(persisted.assistant["answer"], expected)
 
@@ -293,12 +293,12 @@ class ChatTests(UsageFixture, unittest.TestCase):
         result = {"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": "tool-1", "content": "done"}]}}
         first = self.journal
-        second = chat.Journal(first.path)
+        second = chat.Journal(first.path, None)
         second.consume(result)
         first.consume(result)
         self.assertEqual(len(first.events), 1)
         self.assertEqual(first.results, {"tool-1"})
-        self.assertEqual(len(chat.Journal(first.path).events), 1)
+        self.assertEqual(len(chat.Journal(first.path, None).events), 1)
 
     def test_image_send_writes_cli_blocks_and_only_filenames_to_journal(self):
         manager, process, session = self.manager_with_process()
@@ -408,7 +408,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
         result = manager.send(session, 'one instruction', identity='input-once')
         self.assertTrue(result['duplicate'])
         self.assertEqual(len(process.stdin.getvalue().splitlines()), 1)
-        self.assertEqual(chat.Journal(manager.path('s1')).inputs['input-once']['status'], 'accepted')
+        self.assertEqual(chat.Journal(manager.path('s1'), None).inputs['input-once']['status'], 'accepted')
         with self.assertRaises(board.Conflict):
             manager.send(session, 'different instruction', identity='input-once')
 
@@ -439,7 +439,7 @@ class ChatTests(UsageFixture, unittest.TestCase):
         persisted = self.journal.path.read_text(encoding="utf-8")
         for key in ("turn_started_at", "output_tokens", "thinking_tokens"):
             self.assertNotIn(key, persisted)
-        replay = chat.Journal(self.journal.path)
+        replay = chat.Journal(self.journal.path, None)
         self.assertIsNone(replay.progress)
 
     def test_estimates_use_cumulative_thinking_and_utf8_then_replace_with_real_usage(self):

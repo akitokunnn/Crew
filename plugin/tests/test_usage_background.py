@@ -23,8 +23,9 @@ class UsageBackgroundTests(ShellFixture, unittest.TestCase):
         self.addCleanup(self.service.chat.close)
 
     def limits_changes(self, after):
-        return [change for change in change_feed.read(self.conn, change_feed.scopes(None), after)
-                if change['type'] == 'limits.updated']
+        """The limits values the scan recorded, one row per recording (a reader would merge them into the last)."""
+        return [{'seq': row['seq'], 'data': json.loads(row['data'])} for row in self.conn.execute(
+            "SELECT seq,data FROM change_log WHERE seq>? AND type='limits.updated' ORDER BY seq", (after,))]
 
     def page_fields(self, state):
         return {key: json.loads(json.dumps(state[key])) for key in ('limits', 'usage_scanned_at', 'usage_error')}

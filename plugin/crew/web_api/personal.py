@@ -1,7 +1,9 @@
 """Global assistant page state; transport and native process ownership stay out."""
 from contextlib import closing
 
-from .. import board, event_sounds, guard, models, personal, settings, store
+from .. import board, event_sounds, guard, mindmap_api, models, personal, settings, store
+from . import personal as personal_api
+from .common import _text
 
 
 def open_assistant(home, context_project=None):
@@ -15,7 +17,7 @@ def state(home, *, history, journal, activity, applied, context):
         assistant = personal.ensure_assistant(conn, home)
         snapshot = personal.overview(conn)
         ai = settings.get(conn)
-        sounds = event_sounds.snapshot(conn, home, None, history, journal)
+        sounds = {**event_sounds.settings_value(conn, home), 'events': event_sounds.events(conn, None, history, journal)}
     sid = assistant['session_id']
     chat = history(sid)
     events = chat['events']
@@ -91,3 +93,65 @@ def recover_note(home, data):
     with closing(store.connect(home)) as conn:
         return personal.bind_note_leader(conn, data.get('note_id'), data.get('session_id'),
             request_id=data.get('request_id'), reason=data.get('reason'))
+
+
+def post_personal_notes(service, path, data, project_name):
+    return personal_api.save_note(service.home, data)
+
+
+def post_personal_tags(service, path, data, project_name):
+    return personal_api.save_tag(service.home, data)
+
+
+def post_personal_notes_recovery(service, path, data, project_name):
+    return personal_api.recover_note(service.home, data)
+
+
+def post_personal_notes_start(service, path, data, project_name):
+    return service.chat.start_personal_note(_text(data, 'note_id'), _text(data, 'project'),
+                                         request_id=_text(data, 'request_id'))
+
+
+def post_assistant_open(service, path, data, project_name):
+    return personal_api.open_assistant(service.home, data.get('context_project'))
+
+
+def post_assistant_native_action(service, path, data, project_name):
+    return service.chat.personal_action(_text(data, 'action'), data.get('data', {}),
+                                     _text(data, 'actor_session_id'))
+
+
+def get_personal_notes_recovery(handler, service, url, query):
+    handler._send(200, personal_api.note_recovery(service.home, query.get('note_id', [''])[0]))
+
+
+def get_personal_notes(handler, service, url, query):
+    handler._send(200, personal_api.notes(service.home, project=query.get('project', [None])[0],
+        include_archived=query.get('include_archived') == ['1']))
+
+
+def get_personal_tags(handler, service, url, query):
+    handler._send(200, personal_api.tags(service.home))
+
+
+def get_assistant_state(handler, service, url, query):
+    handler._send(200, personal_api.state(service.home, history=service.chat.history, journal=service.chat.journal,
+        activity=service.chat.activity, applied=service.chat.applied, context=service.chat.display_context))
+
+
+def post_personal_mindmap(service, path, data, project_name):
+    return mindmap_api.edit(service.home, data)
+
+
+def post_personal_mindmap_preview(service, path, data, project_name):
+    return mindmap_api.preview(service.home, data)
+
+
+def post_personal_mindmap_convert(service, path, data, project_name):
+    # Writes the target workspace's architecture board, so it runs under the service write lock.
+    with service.write_lock:
+        return mindmap_api.convert(service.home, data)
+
+
+def get_personal_mindmap(handler, service, url, query):
+    handler._send(200, mindmap_api.snapshot(service.home))

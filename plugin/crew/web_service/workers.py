@@ -6,13 +6,55 @@ import threading
 import traceback
 from contextlib import closing
 
-from .. import board, channel, git_admin, messaging, runtimes, store, vscode_sessions
+from .. import board, change_feed, channel, git_admin, messaging, runtimes, store, vscode_sessions
 from .. import codex_client
+
+# Marks of state outside the database are recorded at most once a second; the last one always is.
+CHANGE_SECONDS = 1.0
+# A conversation key is a person's general conversation or one of its task executions.
+_KEY_WORKSPACE = ("SELECT project FROM sessions WHERE session_id=? AND project IS NOT NULL "
+                  "UNION SELECT g.project FROM goal_executions e JOIN goals g ON g.id=e.goal_id WHERE e.id=?")
 
 
 class WorkersMixin:
     # Started by start(); web.py's __init__ starts the other worker handles the same way.
     usage_worker = None
+    change_worker = None
+
+    def _poll_changes(self, closed):
+        """Record what producers outside the database marked (change_feed.Notifier).
+
+        It keeps running while the service shuts down, so the conversations' last changes (going offline)
+        are recorded; close() sets `closed` and wakes it once everything that marks has stopped.
+        """
+        changes = self.chat.changes
+        while not closed.is_set():
+            changes.wake.wait()
+            self._record_changes()
+            closed.wait(CHANGE_SECONDS)
+        self._record_changes()
+
+    def _record_changes(self):
+        marks, keys, kinds = self.chat.changes.take()
+        if not marks and not keys and not kinds:
+            return
+        try:
+            with closing(store.connect(self.home)) as conn, board.transaction(conn):
+                touched = list(marks)
+                for key in keys:
+                    # A key outside every workspace (the personal assistant) only sounds.
+                    touched.extend(('conversations', row['project'], row['project'])
+                                   for row in conn.execute(_KEY_WORKSPACE, (key, key)))
+                if keys:
+                    touched.append(('sound_events', None, 'sound_events'))
+                for kind in kinds:
+                    touched.extend((kind, project['name'], project['name']) for project in board.projects(conn))
+                for kind, project, entity in touched:
+                    change_feed.touch(conn, kind, project, entity)
+        except sqlite3.Error:
+            # The database is busy past its timeout or failing: keep the marks and try again next round.
+            traceback.print_exc()
+            self.chat.changes.restore(marks, keys, kinds)
 
     def storage_active_keys(self):
         # A cached process can still be draining its last journal writes after
@@ -31,11 +73,19 @@ class WorkersMixin:
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
             self.chat.goal_controller.live_native = None
             with self.agents_lock:
-                self.agents_error = "\u8fdb\u7a0b\u72b6\u6001\u83b7\u53d6\u5931\u8d25\uff1a%s: %s" % (type(exc).__name__, exc)
+                error = "\u8fdb\u7a0b\u72b6\u6001\u83b7\u53d6\u5931\u8d25\uff1a%s: %s" % (type(exc).__name__, exc)
+                changed = failed = self.agents_error != error
+                self.agents_error = error
         else:
             self.chat.goal_controller.live_native = frozenset(agent['sessionId'] for agent in agents)
             with self.agents_lock:
+                changed, failed = agents != self.agents or self.agents_error is not None, self.agents_error is not None
                 self.agents, self.agents_at, self.agents_error = agents, self.now(), None
+        # Process presence shows on every card (where, busy, running) and in the candidates.
+        if changed:
+            self.chat.changes.everywhere('conversations')
+        if failed:
+            self.chat.changes.mark('scanner', None, 'scanner')
         self.agents_ready.set()
 
     def _poll_agents(self, passed):
@@ -78,7 +128,17 @@ class WorkersMixin:
             # failure must not terminate the shared agents/auto-resume worker.
             # Keep the last good snapshot and retry on the next poll.
             with self.agents_lock:
-                self.vscode_error = "VS Code 会话扫描失败（10 秒后重试）：%s: %s" % (type(exc).__name__, exc)
+                error = "VS Code 会话扫描失败（10 秒后重试）：%s: %s" % (type(exc).__name__, exc)
+                changed, self.vscode_error = self.vscode_error != error, error
+            if changed:
+                self.chat.changes.mark('scanner', None, 'scanner')
+
+    def _mark_vscode(self, listed, failed):
+        # The VS Code sessions are every workspace's adoption candidates.
+        if listed:
+            self.chat.changes.everywhere('conversations')
+        if failed:
+            self.chat.changes.mark('scanner', None, 'scanner')
 
     def _read_vscode(self):
         with self.write_lock, self.scan_lock, closing(store.connect(self.home)) as conn:
@@ -104,15 +164,21 @@ class WorkersMixin:
             hidden = vscode_sessions.hidden_ids(self.vscode_state_db)
         except (sqlite3.Error, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
             with self.agents_lock:
+                listed = (self.vscode_sessions, self.vscode_record_ids) != (sessions, record_ids)
                 self.vscode_sessions, self.vscode_record_ids = sessions, record_ids
                 reason = "%s: %s" % (type(exc).__name__, exc)
                 archive_error = ("还没读到 VS Code 会话列表；" + reason
                                  if self.vscode_hidden_ids is None else reason)
-                self.vscode_error = archive_error + ("；" + source_error if source_error else "")
+                error = archive_error + ("；" + source_error if source_error else "")
+                failed, self.vscode_error = self.vscode_error != error, error
+            self._mark_vscode(listed, failed)
         else:
             with self.agents_lock:
+                listed = (self.vscode_sessions, self.vscode_record_ids, self.vscode_hidden_ids) != (sessions, record_ids, hidden)
+                failed = self.vscode_error != source_error
                 self.vscode_sessions, self.vscode_record_ids = sessions, record_ids
                 self.vscode_hidden_ids, self.vscode_error = hidden, source_error
+            self._mark_vscode(listed, failed)
             with self.write_lock, self.scan_lock, closing(store.connect(self.home)) as conn:
                 now = self.now().isoformat(timespec="milliseconds").replace("+00:00", "Z")
                 for session in conn.execute("SELECT session_id,project FROM sessions WHERE crew_name IS NOT NULL AND crew_name<>''"):
@@ -134,6 +200,9 @@ class WorkersMixin:
         self.notice_worker.start()
         self.ci_worker = threading.Thread(target=self._poll_git_ci, name="crew-git-ci", daemon=True)
         self.ci_worker.start()
+        self.changes_closed = threading.Event()
+        self.change_worker = threading.Thread(target=self._poll_changes, args=(self.changes_closed,), name="crew-changes", daemon=True)
+        self.change_worker.start()
         self.connections.start()
         self.storage_cleanup.start()
         self.remote_access.start_saved()
@@ -155,6 +224,11 @@ class WorkersMixin:
         if self.worker is not None:
             actions.append(lambda: self.worker.join(timeout=1))
         actions.append(self.channel_digest.close)
+        if self.change_worker is not None:
+            # Last: the conversations and the digests have stopped, so their final marks are recorded.
+            actions.append(self.changes_closed.set)
+            actions.append(self.chat.changes.wake.set)
+            actions.append(self.change_worker.join)
         errors = []
         for close in actions:
             try:

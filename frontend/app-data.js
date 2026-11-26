@@ -4,7 +4,8 @@
   // The shell (app.js) owns `state`; this module reads it through ctx getters and hands back each new value.
   const text = value => value === null || value === undefined ? "" : String(value);
   const byText = (a, b) => text(a) < text(b) ? -1 : text(a) > text(b) ? 1 : 0;
-  // Mirrors change_feed.KINDS: where each kind lives in the snapshot. Three shapes:
+  // Mirrors change_feed.KINDS (all but `snapshot`, which the server turns into snapshot-required): where each
+  // kind lives in the snapshot. Every change carries the entity's current value. Three shapes:
   //   list  - entities in a snapshot list, replaced or removed by key, then reordered like the server orders them;
   //   field - one snapshot field replaced as a whole;
   //   part  - the named fields of one snapshot object (null = the snapshot itself); other fields there belong to
@@ -21,6 +22,12 @@
     channel: {part:"channel", keys:["unread", "latest_id", "digest_id"]},
     sound_settings: {part:"sounds", keys:["preferences", "revision", "catalog", "missing"]},
     limits: {part:null, keys:["limits", "usage_scanned_at", "usage_error"]},
+    conversations: {part:null, keys:["leaders", "members", "attention", "native_approvals", "git_assistant", "git_branches", "candidates"]},
+    channel_digest: {part:"channel", keys:["digesting", "digest_error"]},
+    sound_events: {part:"sounds", keys:["events"]},
+    runtimes: {field:"runtimes"},
+    notification: {field:"notification"},
+    scanner: {part:null, keys:["agents_error", "vscode_error"]},
   };
   const RECONNECT_DELAYS = [1000, 2000, 5000, 10000];
   // A change this page cannot merge means the page is older than the server; only a reload helps.

@@ -7,7 +7,7 @@ import threading
 import unittest
 from unittest import mock
 
-from crew import board, channel, channel_digest, models, settings
+from crew import board, change_feed, channel, channel_digest, models, settings
 import test_channel
 
 CARD = "## 已定结论\nalpha 定了接口。\n## 未定的事 · 在等谁\n等 beta 确认。\n## 各组跨组相关进展\n暂无"
@@ -48,7 +48,7 @@ class DigestTests(unittest.TestCase):
         executable = mock.patch("crew.chat.shutil.which", return_value="C:/fake/claude.cmd")
         executable.start()
         self.addCleanup(executable.stop)
-        manager = channel_digest.Manager(self.home, threading.Lock(), self.factory)
+        manager = channel_digest.Manager(self.home, threading.Lock(), change_feed.Notifier(), self.factory)
         self.addCleanup(manager.close)
         return manager
 

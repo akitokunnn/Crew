@@ -326,7 +326,7 @@ def _batched(conn, session_id):
     """Notices the web service already put in a delivery batch for this leader's input; that batch owns them."""
     from .chat import Journal
     database = next(row["file"] for row in conn.execute("PRAGMA database_list") if row["name"] == "main")
-    events = Journal(Path(database).parent / "chat" / (session_id + ".jsonl")).events
+    events = Journal(Path(database).parent / "chat" / (session_id + ".jsonl"), None).events
     return {notice for event in events if event["type"] == "leader_notice_batch" for notice in event["notice_ids"]}
 
 
