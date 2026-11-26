@@ -1,7 +1,7 @@
-.remote-access p{line-height:1.7}.remote-addresses{display:grid;gap:8px;margin:18px 0}.remote-addresses a{color:var(--cs-accent,var(--accent-text));overflow-wrap:anywhere}.remote-actions{display:flex;flex-wrap:wrap;gap:10px;margin:20px 0}.remote-pair{display:grid;gap:6px;padding:18px 22px;border:1px solid var(--cs-line,var(--line));border-radius:12px;background:var(--cs-panel,var(--panel));margin:18px 0}.remote-pair strong{font-size:32px;letter-spacing:.15em;font-variant-numeric:tabular-nums}.remote-pair small,.remote-hint,.remote-device small{color:var(--cs-muted,var(--text-3));font-size:12px}.remote-device{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 0;border-bottom:1px solid var(--cs-line,var(--line))}.remote-device>div{display:grid;gap:5px;min-width:0;overflow-wrap:anywhere}.remote-devices{margin-bottom:18px}.remote-status{min-height:24px;margin-bottom:0}
+.remote-access p{line-height:1.7}.remote-addresses{display:grid;gap:8px;margin:18px 0}.remote-addresses a{color:var(--cs-accent,var(--accent-text));overflow-wrap:anywhere}.remote-actions{display:flex;flex-wrap:wrap;gap:10px;margin:20px 0}.remote-pair{display:grid;gap:6px;padding:14px 18px;border:1px solid var(--cs-border,var(--line));border-radius:12px;background:var(--cs-sheet,var(--surface));margin:12px 0}.remote-pair strong{font-size:26px;letter-spacing:.15em;font-variant-numeric:tabular-nums;font-weight:600}.remote-pair small,.remote-hint,.remote-device small{color:var(--cs-muted,var(--text-3));font-size:12px}.remote-device{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:1px solid var(--cs-line,var(--line))}.remote-device>div{display:grid;gap:5px;min-width:0;overflow-wrap:anywhere}.remote-devices{margin-bottom:18px}.remote-status{min-height:24px;margin-bottom:0}
 .remote-binding{margin:24px 0;padding:0;border:0;min-width:0}
 .remote-address-choice{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;max-width:620px;font-size:13px}
-.remote-address-choice select{box-sizing:border-box;min-height:44px;width:100%;min-width:0;padding:10px 12px;font:inherit;color:inherit;background:var(--cs-panel,var(--panel));border:1px solid var(--cs-line,var(--line));border-radius:8px;text-overflow:ellipsis}
+.remote-address-choice select{box-sizing:border-box;min-height:36px;width:100%;min-width:0;padding:6px 11px;font:inherit;color:inherit;background:var(--cs-sheet,var(--surface));border:1px solid var(--cs-border,var(--line));border-radius:9px;text-overflow:ellipsis}
 .remote-refresh{margin-top:12px}
 .remote-apply{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;margin-top:14px}
 .remote-binding:disabled{opacity:.65}
@@ -11,14 +11,8 @@
 .remote-device .remote-online{display:inline-flex;align-items:center;gap:6px;color:var(--working-text)}
 .remote-online::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--working);flex:none}
 @media(max-width:760px){.remote-access .cs-button{min-height:44px}}
-.remote-link{display:flex;align-items:center;gap:10px;margin-top:6px;min-width:0}.remote-link code{flex:1;min-width:0;padding:8px 10px;border-radius:8px;background:var(--cs-card,var(--surface));border:1px solid var(--cs-line,var(--line));font-size:12px;overflow-wrap:anywhere;user-select:all}.remote-link .cs-button{flex:none}
-@media(max-width:620px){.remote-apply .cs-button{width:100%}.remote-pair strong{font-size:28px}.remote-link{flex-direction:column;align-items:stretch}.remote-link .cs-button{width:100%}}
+.remote-link{display:flex;align-items:center;gap:10px;margin-top:6px;min-width:0}.remote-link code{flex:1;min-width:0;padding:7px 10px;border-radius:9px;background:var(--cs-sheet,var(--surface));border:1px solid var(--cs-border,var(--line));font-size:12px;overflow-wrap:anywhere;user-select:all}.remote-link .cs-button{flex:none}
+@media(max-width:620px){.remote-apply .cs-button{width:100%}.remote-link{flex-direction:column;align-items:stretch}.remote-link .cs-button{width:100%}}
 
 
-/* === Spatial Studio Remote Access (High-Density Direction C) === */
-.remote-pair{padding:14px 18px;border-radius:12px;background:var(--cs-sheet,var(--surface));border-color:var(--cs-border,var(--line));margin:12px 0}
-.remote-pair strong{font-size:26px;font-weight:600}
-.remote-address-choice select{min-height:36px;padding:6px 11px;border-radius:9px;background:var(--cs-sheet,var(--surface));border-color:var(--cs-border,var(--line))}
 @media(max-width:760px){.remote-address-choice select{min-height:44px}}
-.remote-device{padding:10px 0}
-.remote-link code{border-radius:9px;padding:7px 10px;background:var(--cs-sheet,var(--surface));border-color:var(--cs-border,var(--line))}

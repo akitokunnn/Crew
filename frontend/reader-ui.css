@@ -1,5 +1,5 @@
 /* Reading pane (reader-ui.js). split: conversation left, pane right. stack: pane on top, conversation below. full: pane only. */
-.reader-pane{position:absolute;inset:0;z-index:25;display:flex;flex-direction:column;min-width:0;background:var(--bg);transition:left .34s var(--ease),bottom .34s var(--ease),box-shadow .34s ease;animation:crew-reader-enter .34s var(--ease)}
+.reader-pane{position:absolute;inset:0;z-index:25;display:flex;flex-direction:column;min-width:0;transition:left .34s var(--ease),bottom .34s var(--ease),box-shadow .34s ease;animation:crew-reader-enter .34s var(--ease)}
 #main[data-reader=split]>.reader-pane{left:var(--reader-chat);border-left:1px solid var(--line-strong);box-shadow:-18px 0 36px -30px rgb(0 0 0 / .45)}
 #main[data-reader=stack]>.reader-pane{bottom:calc(100% - var(--reader-top))!important;border-bottom:1px solid var(--line-strong);animation-name:crew-reader-drop}
 .reader-pane.reader-leaving{animation:crew-reader-leave .26s var(--ease) forwards;pointer-events:none}
@@ -32,8 +32,8 @@
    is often much narrower than the window (split at its minimum width, a widened conversation, a larger font), so
    the head follows the pane, not the viewport: once the actions would leave the heading under a readable width,
    they move to their own row, right-aligned, instead of squeezing the heading into a single column. */
-.reader-pane{container:crew-reader/inline-size}
-.reader-pane>.head{flex-wrap:wrap;justify-content:flex-end;row-gap:8px}
+.reader-pane{container:crew-reader/inline-size;background:var(--studio-sheet)}
+.reader-pane>.head{flex-wrap:wrap;justify-content:flex-end;row-gap:8px;height:auto;min-height:52px;padding:8px 16px;background:var(--studio-glass);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px)}
 .reader-heading{flex:1 1 18em;min-width:0}
 .reader-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px}
 .reader-chat-toggle{display:inline-flex;align-items:center;gap:6px}
@@ -44,17 +44,16 @@
    names it), so the report's decision buttons and both toggles fit one row under the heading. Touch screens keep
    the label, since they have no hover title. */
 @media(min-width:761px){@container crew-reader (max-width:36em){
-  .reader-pane>.head{padding-left:16px;padding-right:16px}
   .reader-chat-toggle{padding-left:9px;padding-right:9px}
   .reader-chat-toggle>span{display:none!important}
 }}
 
-.reader-quote{position:absolute;z-index:4;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--line-strong);border-radius:999px;background:var(--surface);color:var(--text);font:inherit;font-size:calc(12px * var(--fs));white-space:nowrap;box-shadow:var(--shadow-lg);cursor:pointer;opacity:0;transform:translateY(6px) scale(.94);pointer-events:none;transition:opacity .16s ease,transform .2s var(--ease),color .16s ease,border-color .16s ease}
+.reader-quote{position:absolute;z-index:4;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--line-strong);border-radius:999px;background:var(--studio-glass);color:var(--text);font:inherit;font-size:calc(12px * var(--fs));white-space:nowrap;box-shadow:var(--shadow-lg);cursor:pointer;opacity:0;transform:translateY(6px) scale(.94);pointer-events:none;transition:opacity .16s ease,transform .2s var(--ease),color .16s ease,border-color .16s ease;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
 .reader-quote.show{opacity:1;transform:none;pointer-events:auto}
 .reader-quote:hover{color:var(--accent-text);border-color:var(--accent)}
 
 /* File preview inside the pane. */
-.file-reader .head{height:auto;min-height:62px;padding:12px 16px;gap:10px}
+.file-reader .head{gap:10px}
 .file-reader-heading .title{font-size:calc(14px * var(--fs));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .file-reader-heading .file-path{margin-top:3px;font-family:var(--font-mono);font-size:calc(11px * var(--fs));color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .file-reader .file-reader-actions{gap:6px}
@@ -63,9 +62,3 @@
 .file-reader-body>.markdown,.file-reader-body>.file-text,.file-reader-body>.note{max-width:860px;margin-left:auto;margin-right:auto}
 
 @media(prefers-reduced-motion:reduce){.reader-pane,.reader-pane.reader-leaving,#main>#chat-head,#chat-host,.reader-quote,.reader-divider::before,.reader-divider::after{animation:none!important;transition:none!important}}
-
-
-/* === Spatial Studio (High-Density Direction C) === */
-.reader-pane{background:var(--studio-sheet)}
-.reader-pane>.head{height:auto;min-height:52px;padding:8px 16px;background:var(--studio-glass);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px)}
-.reader-quote{background:var(--studio-glass);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
