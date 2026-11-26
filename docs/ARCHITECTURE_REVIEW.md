@@ -49,7 +49,7 @@
 | **SQLite WAL 领域模型** | 事务、并发读、单文件可备份；`goals.transaction`、`busy_timeout` 已用好。事件表、回执表直接加在同一库里 |
 | **会话日志（Journal）带序号 + SSE 订阅** | 已经是“快照 + 序号”的雏形：历史接口给全量，事件接口按 `seq` 续传，带 `X-Crew-Latest-Seq` 头（`web.py:2133`）。工作区事件流照抄这个模式 |
 | **原生载体子进程 + 宿主绑定身份** | Codex 工具由宿主对象绑定 session / execution（`codex_tools.py:315–358`），不信任模型传的调用者参数——这条原则搬到 MCP 令牌上 |
-| **零依赖 Hook 垫片** | `crew_hook.py` 用系统 Python 接入 CC 生命周期与守卫，不要求用户装任何东西；只需把会话身份从环境变量改为写死在 hook 命令参数里 |
+| **零依赖 Hook 垫片** | `crew_hook.py` 用系统 Python 接入 CC 生命周期与守卫，不要求用户装任何东西；只需把会话身份从环境变量改为按载体 payload 的 `session_id` 查库 |
 | **远程访问边界** | 配对码、设备 Cookie / Bearer、浏览器允许清单与桌面拒绝清单（`remote_access.py`、`remote_routes.py`）——手机端直接复用 |
 | **个人便笺的 `request_id` 回执** | 已经实现了“写请求只执行一次”，推广到全部写操作 |
 | **`frontend/` 独立目录 + `STATIC` 白名单** | 静态资源边界清楚，远程鉴权共用；拆 `app.js` 时沿用 |
@@ -221,7 +221,7 @@ interaction_requests(
 | 1 | **拆巨石**（纯搬移）：W1 → W2 → C1 → A1 | — | 拆分边界的核对脚本 + 全量测试差集为空 | 阶段二 1–3 |
 | 2 | **读路径卫生**：`state()` 不再调用 `scan_usage`、不拿写锁，扫描只在后台线程；GET 的副作用（文档刷新、建助手、标签补登记、用量扫描）改为显式写操作或后台步骤 | 1 | 性能基线脚本：`/api/state` 耗时与并发写请求的排队时间改前改后对比；相关 HTTP 测试 | 阶段二 5 |
 | 3 | **清单骨架**：`ops/` 包，W2 的路由表全部改为清单条目（处理函数不变），加覆盖测试与权限穷尽测试；`/api/op` 上线 | 1 | 覆盖测试全绿；全量测试差集为空 | 阶段三 R5 |
-| 4 | **MCP 与令牌**：`/mcp`、令牌签发与吊销、CC / Codex 启动参数注入；hooks 身份写死在命令参数；删除环境变量身份、Bash 调 `crew`、Codex 动态工具、`/api/assistant/native-action`；生成 CLI；守则精简 | 3 | 操作清单设计第 12 节实验在产品端点复跑；Haiku 5.5 + luna low 真实会话跑通核心工具；grep 旧路径为空 | 阶段三 R5 |
+| 4 | **MCP 与令牌**：`/mcp`、令牌签发与吊销、CC / Codex 启动参数注入；hooks 按 payload 的 `session_id` 查库认身份；删除环境变量身份、Bash 调 `crew`、Codex 动态工具、`/api/assistant/native-action`；生成 CLI；守则精简 | 3 | 操作清单设计第 12 节实验在产品端点复跑；Haiku 5.5 + luna low 真实会话跑通核心工具；grep 旧路径为空 | 阶段三 R5 |
 | 5 | **事件流**：`events` 表、写事务内落事件、`/api/snapshot`、`/api/events`；`frontend/app/15-data.js` 改为订阅；删除 3 秒轮询 | 2、3 | 断线续传 / `snapshot-required` / 不重发写请求的单测；两个页面同时打开时操作互相实时可见的浏览器走查；空闲时网络请求数为 0（除心跳） | 阶段三“增量事件流” |
 | 6 | **统一用户输入请求**：`interaction_requests` 表与 `request.respond`；Codex 审批、CC 提问 / 计划确认迁入；“待你处理”组件 | 5 | 双载体真实会话触发审批与提问并在桌面、窄屏各回答一次 | 阶段四前置 |
 | 7 | **桌面首页并入 frontend**：`desktop/src/home*` 的列表、目录、健康、设置改为 `frontend` 页面，桌面专有能力经 preload 桥接 | 3（UI 收尾主题完成后） | `smoke-workspaces.cjs`；三视口截图 | 阶段一 UI 收尾的后续 |
