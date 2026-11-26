@@ -794,7 +794,8 @@ def save_report(conn, goal_id, data, *, now=None):
     identity = uuid.uuid4().hex
     version = conn.execute('SELECT COALESCE(MAX(version),0)+1 FROM goal_reports WHERE goal_id=? AND round=?', (goal_id, goal['current_round'])).fetchone()[0]
     rendered = render_report(conn, goal_id, validated)
-    conn.execute('INSERT INTO goal_reports VALUES(?,?,?,?,?,?,?,?,?)', (identity, goal_id, goal['current_round'], validated['requirement_version'], version, validated['outcome'], _json(validated), rendered, board._time(now)))
+    requirement_version = validated.pop('requirement_version')
+    conn.execute('INSERT INTO goal_reports VALUES(?,?,?,?,?,?,?,?,?)', (identity, goal_id, goal['current_round'], requirement_version, version, validated['outcome'], _json(validated), rendered, board._time(now)))
     return get_report(conn, identity)
 
 
@@ -804,6 +805,7 @@ def get_report(conn, report_id):
         raise board.BoardError('目标报告不存在')
     value = dict(row)
     value['data'] = json.loads(value.pop('data_json'))
+    value['data']['requirement_version'] = row['requirement_version']
     goal = _row(conn, value['goal_id'])
     latest = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND round=? ORDER BY version DESC LIMIT 1',
                           (value['goal_id'], goal['current_round'])).fetchone()

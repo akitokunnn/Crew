@@ -35,7 +35,9 @@ class StorageV2ActivationTests(unittest.TestCase):
                  attempt_no=1,status='paused',requested_model='original-historical-model')
         self.add('reports','final-report',author_agent_id=self.data['agent'],goal_round_id=self.data['round'],kind='goal_delivery',
                  title='Actual final report title',summary='Actual final report summary',outcome='completed',body_markdown='Actual report body',
-                 data_json='{"summary":"Actual report summary","acceptance":[]}',html_artifact_version_id=self.data['artifact_version'])
+                 data_json='{"summary":"Actual report summary","acceptance":[],"requirement_version":99}',html_artifact_version_id=self.data['artifact_version'])
+        self.add('goal_report_versions','final-version',report_id=self.identity('final-report'),
+                 format_version=2,version=1,requirement_version=1)
         self.add('goal_acceptances','acceptance',goal_round_id=self.data['round'],report_id=self.identity('final-report'),
                  accepted=1,note_markdown='User accepted this report',author_user_id=self.fixture.user)
         for index,kind in enumerate(('user','assistant'),1):
@@ -81,6 +83,9 @@ class StorageV2ActivationTests(unittest.TestCase):
             self.assertEqual(len(goal['rounds']),1)
             self.assertEqual(c.execute('SELECT COUNT(*) FROM goal_assignments').fetchone()[0],1)
             self.assertEqual(c.execute('SELECT COUNT(*) FROM goal_reports').fetchone()[0],1)
+            report = c.execute('SELECT requirement_version,data_json FROM goal_reports').fetchone()
+            self.assertEqual(report['requirement_version'], 1)
+            self.assertNotIn('requirement_version', json.loads(report['data_json']))
             self.assertIn('Verified CPU report',c.execute('SELECT html FROM goal_reports').fetchone()[0])
             self.assertEqual(c.execute('SELECT COUNT(*) FROM documents').fetchone()[0],1)
             self.assertEqual(c.execute('SELECT COUNT(*) FROM goal_context_items').fetchone()[0],1)

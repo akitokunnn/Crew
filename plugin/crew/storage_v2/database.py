@@ -14,7 +14,8 @@ import uuid
 from .objects import ObjectInfo, ObjectStore, canonical_uuid
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+SCHEMA_UPGRADES = ((3, 'features.sql'), (4, 'report_versions.sql'))
 APPLICATION_ID = 0x43525732  # CRW2
 BUSY_TIMEOUT_MS = 5000
 
@@ -35,24 +36,32 @@ def now_iso():
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
 
 
-def domain_sql():
-    return (files(__package__).joinpath('domain.sql').read_text(encoding='utf-8') + '\n' +
-            files(__package__).joinpath('features.sql').read_text(encoding='utf-8') + '\nPRAGMA user_version=3;\n')
+def domain_sql(version=SCHEMA_VERSION):
+    sql = files(__package__).joinpath('domain.sql').read_text(encoding='utf-8')
+    for target, filename in SCHEMA_UPGRADES:
+        if version >= target:
+            sql += '\n' + files(__package__).joinpath(filename).read_text(encoding='utf-8') + f'\nPRAGMA user_version={target};\n'
+    return sql
 
 
 def local_sql():
     return files(__package__).joinpath('local.sql').read_text(encoding='utf-8')
 
 
-def schema_digest():
-    return hashlib.sha256((domain_sql() + '\n-- device schema --\n' + local_sql()).encode('utf-8')).hexdigest()
+def schema_digest(version=SCHEMA_VERSION):
+    return hashlib.sha256((domain_sql(version) + '\n-- device schema --\n' + local_sql()).encode('utf-8')).hexdigest()
 
 
-def create_domain(conn):
+def create_domain(conn, version=SCHEMA_VERSION):
     """Initialize an empty domain-only staging connection, never a live transaction."""
     if conn.in_transaction:
         raise StorageError('Create the domain schema before starting a data transaction')
-    conn.executescript(domain_sql())
+    conn.executescript(domain_sql(version))
+
+
+def mark_legacy_reports(conn):
+    conn.execute("INSERT INTO goal_report_versions(id,workspace_id,report_id,format_version,created_at) "
+                 "SELECT id,workspace_id,id,1,created_at FROM reports WHERE kind='goal_delivery' AND goal_round_id IS NOT NULL")
 
 
 @contextmanager
@@ -111,39 +120,38 @@ class Repository:
         with _initialization_lock(self.directory):
             if not self.path.exists():
                 self._initialize()
-            self._upgrade_features()
+            self._upgrade_schema()
             with closing(sqlite3.connect(self.path.as_uri() + '?mode=ro', uri=True)) as conn:
                 conn.row_factory = sqlite3.Row
                 self.device_id = self._validate_schema(conn)
         self.objects = ObjectStore(self.directory / 'objects')
 
-    def _upgrade_features(self):
-        """Only the exact trusted v2 schema can take the additive v3 upgrade."""
+    def _upgrade_schema(self):
+        """Apply each additive migration only to its trusted predecessor."""
         with closing(sqlite3.connect(self.path.as_uri() + '?mode=rw', uri=True, isolation_level=None)) as conn:
-            if conn.execute('PRAGMA user_version').fetchone()[0] != 2:
-                return
-            old = files(__package__).joinpath('domain.sql').read_text(encoding='utf-8')
-            digest = hashlib.sha256((old + '\n-- device schema --\n' + local_sql()).encode()).hexdigest()
-            applied = conn.execute('SELECT migration_sha256 FROM local_schema_migrations WHERE to_version=2 '
-                                   'ORDER BY applied_at DESC LIMIT 1').fetchone()
-            meta = conn.execute('SELECT schema_version,min_reader_version,min_writer_version FROM local_schema_metadata').fetchone()
-            if (conn.execute('PRAGMA application_id').fetchone()[0] != APPLICATION_ID or
-                    applied is None or applied[0] != digest or meta is None or tuple(meta) != (2,2,2)):
-                raise SchemaVersionError('Storage V2 metadata does not match the trusted migration source')
-            backup = self.directory / 'backups' / ('before-schema-3-' + uuid.uuid4().hex + '.sqlite3')
-            backup.parent.mkdir(exist_ok=True)
-            with closing(sqlite3.connect(backup)) as output:
-                conn.backup(output)
-            try:
-                conn.executescript('BEGIN IMMEDIATE;\n' + files(__package__).joinpath('features.sql').read_text(encoding='utf-8'))
-                conn.execute('UPDATE local_schema_metadata SET schema_version=3,min_reader_version=3,min_writer_version=3')
-                conn.execute('INSERT INTO local_schema_migrations VALUES(?,?,?,?,?)',
-                             (str(uuid.uuid4()),2,3,schema_digest(),now_iso()))
-                conn.execute('PRAGMA user_version=3')
-                conn.commit()
-            except BaseException:
-                conn.rollback()
-                raise
+            for target, filename in SCHEMA_UPGRADES:
+                previous = target - 1
+                if conn.execute('PRAGMA user_version').fetchone()[0] != previous:
+                    continue
+                applied = conn.execute('SELECT migration_sha256 FROM local_schema_migrations WHERE to_version=? '
+                                       'ORDER BY applied_at DESC LIMIT 1', (previous,)).fetchone()
+                meta = conn.execute('SELECT schema_version,min_reader_version,min_writer_version FROM local_schema_metadata').fetchone()
+                if (conn.execute('PRAGMA application_id').fetchone()[0] != APPLICATION_ID or
+                        applied is None or applied[0] != schema_digest(previous) or meta != (previous,) * 3):
+                    raise SchemaVersionError('Storage V2 metadata does not match the trusted migration source')
+                backup = self.directory / 'backups' / f'before-schema-{target}-{uuid.uuid4().hex}.sqlite3'
+                backup.parent.mkdir(exist_ok=True)
+                with closing(sqlite3.connect(backup)) as output:
+                    conn.backup(output)
+                with conn:
+                    conn.executescript('BEGIN IMMEDIATE;\n' + files(__package__).joinpath(filename).read_text(encoding='utf-8'))
+                    if target == 4:
+                        mark_legacy_reports(conn)
+                    conn.execute('UPDATE local_schema_metadata SET schema_version=?,min_reader_version=?,min_writer_version=?',
+                                 (target,) * 3)
+                    conn.execute('INSERT INTO local_schema_migrations VALUES(?,?,?,?,?)',
+                                 (str(uuid.uuid4()), previous, target, schema_digest(target), now_iso()))
+                    conn.execute(f'PRAGMA user_version={target}')
 
     def _initialize(self):
         temporary = self.directory / ('.initialize-' + uuid.uuid4().hex + '.sqlite3')
