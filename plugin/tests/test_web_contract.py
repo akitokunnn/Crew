@@ -14,6 +14,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
+from crew.web_api import routes
 from crew import frontend_root, session_ops, board, codex_runtime, decision_flow, goals, remote_routes, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
@@ -416,7 +417,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.conn.execute("INSERT INTO decision_holds(decision_id,held_at) VALUES(?,?)", (legacy, NOW))
         for path in ("/api/decision/hold", "/api/decision/unhold"):
             with self.subTest(path=path):
-                self.assertNotIn(path, web.POST_PATHS)
+                self.assertNotIn(path, routes.post_paths())
                 self.assertNotIn(path, remote_routes.POST_PATHS)
                 self.assertEqual(self.request(path, {"id": legacy})[0], 404)
         state = self.state()

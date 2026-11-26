@@ -259,7 +259,7 @@ def post_roster_move(service, path, data, project_name, conn, now, project):
                  session_ids=[_text(data, "session_id")] if data.get("session_id") is not None else [])
     if before:
         return {'ok': True, 'before': before, 'session': board.session(conn, data['session_id'])}
-    return UNHANDLED
+    return {'ok': True}
 
 
 def post_roster_remove(service, path, data, project_name, conn, now, project):
@@ -269,7 +269,7 @@ def post_roster_remove(service, path, data, project_name, conn, now, project):
                  session_ids=[_text(data, "session_id")] if data.get("session_id") is not None else [])
     if before:
         return {'ok': True, 'before': before, 'session': board.session(conn, data['session_id'])}
-    return UNHANDLED
+    return {'ok': True}
 
 
 def post_group_close(service, path, data, project_name, conn, now, project):

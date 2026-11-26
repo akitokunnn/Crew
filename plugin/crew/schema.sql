@@ -1044,3 +1044,16 @@ CREATE TABLE IF NOT EXISTS domain_boards (
     updated_at TEXT NOT NULL,
     direction  TEXT NOT NULL DEFAULT 'TB' CHECK (direction IN ('TB', 'LR'))
 );
+
+-- Operation receipts: a write retried with the same request_id runs once (OPERATIONS_REGISTRY_DESIGN §5.5).
+CREATE TABLE IF NOT EXISTS op_requests (
+ caller_key TEXT NOT NULL,
+ request_id TEXT NOT NULL,
+ op TEXT NOT NULL,
+ args_hash TEXT NOT NULL,
+ status TEXT NOT NULL CHECK (status IN ('running','done','failed','unknown')),
+ result TEXT,
+ created_at TEXT NOT NULL,
+ finished_at TEXT,
+ PRIMARY KEY (caller_key, request_id)
+);

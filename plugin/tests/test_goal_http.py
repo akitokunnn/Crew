@@ -1652,7 +1652,8 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         body = {'goal_id': goal['id'], 'action': 'accept', 'version': goal['version'], 'report_id': report['id']}
         code, denied, _ = self.request('/api/goals/agent?project=demo', {
             'actor_session_id': 's3', 'execution_id': execution_id, 'action': 'accept', 'data': {'goal_id': goal['id']}})
-        self.assertEqual(code, 400, denied)
+        # Acceptance is not an action of the AI goal URL: no operation is bound there.
+        self.assertEqual((code, denied['code']), (404, 'not_found'), denied)
         code, denied, _ = self.request('/api/goals/action?project=demo', {**body, 'actor_session_id': 's3'})
         self.assertEqual(code, 400, denied)
         code, denied, _ = self.request('/api/goals/action?project=demo', {**body, 'version': goal['version'] - 1})
