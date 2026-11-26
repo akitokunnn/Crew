@@ -648,7 +648,7 @@ function applyTheme(){
     let origin=null;try{origin=new URL(contents.getURL()).origin;}catch(_){}
     if(liveWindow()&&contents===window.webContents||tabs&&origin===tabs.origin)contents.send('desktop:theme',state);
   }
-  tabs?.setBackground?.(dark?'#1E1E1C':'#F6F5F1');
+  tabs?.setBackground?.(frame.color);
 }
 nativeTheme.on('updated',applyTheme);
 handle('desktop:prompts-get',query=>settingsRequest('/api/behavior-prompts?'+new URLSearchParams(query || {})));
@@ -867,8 +867,8 @@ else {
       tabs=new WorkspaceTabs(window,{origin:backend.url,
         createView:()=>{
           const view=new WebContentsView({webPreferences:{preload:path.join(__dirname,'workspace-preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}});
-          // Match the page's own first paint (system theme) so a loading page slides in without a white flash.
-          view.setBackgroundColor(nativeTheme.shouldUseDarkColors?'#1E1E1C':'#F6F5F1');return view;
+          // Match the Studio canvas the page paints first (panel colour, system theme) so a loading page slides in without a flash.
+          view.setBackgroundColor(chrome.colors(nativeTheme.shouldUseDarkColors).color);return view;
         },
         createStage:()=>new View(),
         prefersReducedMotion:()=>{const motion=systemPreferences.getAnimationSettings();return motion.prefersReducedMotion||!motion.shouldRenderRichAnimation;},
@@ -880,7 +880,7 @@ else {
         createView:()=>new WebContentsView({webPreferences:{preload:path.join(__dirname,'activity-preview-preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,backgroundThrottling:false}}),
         getTab:id=>tabs.state().tabs.find(tab=>tab.id===id&&tab.project),onSelect:id=>tabs.select(id)});
       window.on('blur',()=>activityPreview.hide());window.on('resize',()=>activityPreview.hide());
-      tabs.setBounds({x:7,y:75,width:1206,height:768});
+      tabs.setBounds({x:0,y:72,width:1220,height:778});
       window.once('ready-to-show', () => { if (!config.smoke && liveWindow()) window.show(); });
       for (const event of ['maximize', 'unmaximize', 'focus', 'blur']) window.on(event, () => {
         if (liveWindow()) window.webContents.send('desktop:window-state', currentWindowState());

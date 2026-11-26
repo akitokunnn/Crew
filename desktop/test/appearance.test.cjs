@@ -39,5 +39,5 @@ test('the window frame and Windows title bar overlay follow the display mode', (
   assert.equal(chrome.windowOptions('darwin', true).backgroundColor, chrome.DARK_COLOR);
   assert.equal(chrome.windowOptions('darwin').backgroundColor, chrome.COLOR);
   assert.deepEqual(chrome.windowOptions('win32', true).titleBarOverlay, { ...chrome.colors(true), height: chrome.HEIGHT });
-  assert.deepEqual(chrome.windowOptions('win32', false).titleBarOverlay, { color: chrome.COLOR, symbolColor: '#525252', height: chrome.HEIGHT });
+  assert.deepEqual(chrome.windowOptions('win32', false).titleBarOverlay, { color: chrome.COLOR, symbolColor: '#5F5D56', height: chrome.HEIGHT });
 });
