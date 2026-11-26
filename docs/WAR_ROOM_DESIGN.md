@@ -117,16 +117,13 @@ Leader 在房里说话不需要新命令：`crew say --reply-to <房内编号>` 
 
 ## 10. 与增量事件流、操作清单的衔接（待接线）
 
-- 事件流：新增 kind `war_room`（范围 `workspace`，实体 = 作战室 id），在所有作战室写操作的事务里 `change_feed.touch(conn, 'war_room', project, room_id)`；房内发言同时是交流区发言，已有的 `channel` 失效照常触发。builder `war_room:change_value(conn, project, room_id)` 返回列表卡片值（标题、状态、成员、未读、阻塞数）。事件流合入前，前端在 `/api/state` 的 `channel.latest_id` 或成员状态变化时重新拉 `war_room.get`。
+- 事件流（已接）：页面级 kind `war_room`（范围 `workspace`，实体 = 作战室 id，不进快照），builder `war_room:change_value` 返回列表卡片值；作战室各写操作在同一事务 `change_feed.touch`，房内发言（含 `crew say --reply-to` 落进房里的）在 `channel.post` 里 touch，拍板卡经 `board.answer` 答复由触发器 `feed_war_room_decisions_update` 失效所在作战室；房内发言的投递徽章沿用 `channel_message` 失效。前端 `app-data.js` 登记 `war_room: {page:"war-room"}`，作战室页按本房 `war_room` 变化重读、按 `channel_message` 替换徽章，交流区按任一 `war_room` 变化刷新作战室列表。
 - 操作清单 / MCP：Leader 调这些操作要靠 R5 的会话令牌与通用入口（`crew_do` 一类）；CLI 子命令（如 `crew room …`）与 Codex 工具说明由 R5 接线。
 
 **具体接法（交给增量事件流 / R5 / 主会话）**
 
 | 归属 | 位置 | 要做的事 |
 | --- | --- | --- |
-| 增量事件流 | `change_feed.KINDS` / `BUILDERS` | 加 `'war_room': 'workspace'`；builder `'war_room': 'war_room:change_value'`（实现为 `war_room._card(conn, room, HUMAN)`，房间不存在返回 `None`）；`frontend/app-data.js` 的 kind 表同步 |
-| 增量事件流 | `war_room.py` 各写函数 | 在 `start` / `change_members` / `set_item` / `set_contract` / `decide` / `close` / `mark_read` 的事务里 `change_feed.touch(conn, 'war_room', room['project'], room_id)`；`say` 走 `channel.post`，已有的 `channel` 失效顺带触发，再补一次 `war_room` 让未读数变化；拍板卡被答复时（`board.answer`）若在 `war_room_decisions` 里，也 touch 一次 |
-| 增量事件流 | 前端 | 作战室页订阅 `war_room` 与 `channel` 的失效：`war_room` 变化重拉 `war_room.get`，`channel` 变化按最新 id 增量拉发言；合入前先按 `/api/state` 的 `channel.latest_id` 与成员状态变化重拉 |
 | R5 | AI 通用入口 | Leader 令牌的 grants 含 `war_room.*` 十项；`crew_do` / `crew do`（或最终名字）能调用它们；Codex 工具说明与 CLI 帮助引用守则里的操作名 |
 | R5 | `ops/domains/_common.py` | 作战室没用 `route(...)`，在 `ops/domains/war_room.py` 用同字段的 `register(Operation(...))`，处理函数读 `ctx.caller` 判定说话人；若 R5 想统一，可给 `route` 加一个“把 caller 传给处理函数”的选项再迁过去 |
 | 主会话 | `remote_routes.py`、`tests/operations_expected.py` | 已加 `/api/war-room*` 十个地址（远程设备与人一样能看、能发言）；合并时留意 |
