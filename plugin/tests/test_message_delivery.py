@@ -1,6 +1,7 @@
 """Delivery states that leaders and the user can trust: queued, delivered and replied are told apart."""
 import tests  # Install the production-service connection guard.
 import contextlib
+from contextlib import closing
 import io
 import os
 import sqlite3
@@ -9,7 +10,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from crew import board, channel, cli, hooks, messaging, rules, store
+from crew import board, channel, chat, chat_delivery, cli, hooks, messaging, rules, runtimes, store
+import test_codex_runtime as codex_fixtures
 
 PLUGIN = Path(__file__).resolve().parents[1]
 NOW = "2026-11-27T08:00:00.000Z"
@@ -79,16 +81,26 @@ class PendingMentionTests(DeliveryFixture):
     def test_mention_already_owned_by_a_notice_batch_is_not_delivered_twice(self):
         message = self.post("batch owns this", to=["beta"])
         [notice] = self.notices("b")
-        # The web service wrote the batch into the journal before handing it to the leader's input.
-        journal = self.home / "chat" / "b.jsonl"
-        journal.parent.mkdir(parents=True, exist_ok=True)
-        journal.write_text('{"type":"leader_notice_batch","id":"leader-notices:x","text":"t","notice_ids":[%d]}\n'
-                           % notice["id"], encoding="utf-8")
+        # The web service claimed it for a batch before writing that batch into the leader's input.
+        self.assertEqual(chat_delivery.claim_batch(self.conn, [notice["id"]], "leader-notices:x"), [notice["id"]])
         text = self.context(self.hook("b")[1])
         self.assertNotIn("batch owns this", text)
         self.assertEqual([item["id"] for item in self.notices("b")], [notice["id"]])
         self.assertEqual(channel.state(self.conn, "demo", "b")["unread"], 0)
         self.assertEqual(channel.messages(self.conn, "demo")["messages"][0]["id"], message["id"])
+
+    def test_hook_claim_first_keeps_the_notice_out_of_a_later_batch(self):
+        self.post("hook first", to=["beta"])
+        [notice] = self.notices("b")
+        self.assertIn("hook first", self.context(self.hook("b")[1]))
+        self.assertEqual(chat_delivery.claim_batch(self.conn, [notice["id"]], "leader-notices:y"), [])
+        row = self.conn.execute("SELECT batch_id,delivered_via FROM leader_notices").fetchone()
+        self.assertEqual((row["batch_id"], row["delivered_via"]), (None, "hook"))
+
+    def test_channel_module_never_reads_chat_journals(self):
+        source = (PLUGIN / "crew" / "channel.py").read_text(encoding="utf-8")
+        self.assertNotIn("Journal", source)
+        self.assertNotIn(".jsonl", source)
 
     def test_user_mention_delivered_by_hook_is_never_settled_as_a_private_reply(self):
         asked = channel.post(self.conn, "demo", board.HUMAN, "进度怎样", ["beta"], source="web", now=NOW)
@@ -96,7 +108,7 @@ class PendingMentionTests(DeliveryFixture):
         self.assertIn("进度怎样", text)
         self.assertEqual(self.notices("b"), [])
         # The web service cannot see an external turn end; claiming "回复在私聊里" would be invented.
-        self.assertEqual(channel.settle(self.conn, "b", now=NOW), [])
+        self.assertEqual(channel.settle(self.conn, "b", {asked["id"]}, now=NOW), [])
         mention = channel.messages(self.conn, "demo")["messages"][0]["mentions"][0]
         self.assertEqual((mention["delivery"], mention["replied"]), ("delivered", False))
         self.assertEqual(self.latest()["id"], asked["id"])
@@ -114,7 +126,9 @@ class ReplyNotifiesAuthorTests(DeliveryFixture):
         self.assertIn("我在改，周五合", notice["text"])
         self.assertIn("交流区发言 #%d" % answer["id"], notice["text"])
         self.assertEqual(answer["mentions"], [])
-        self.assertEqual(answer["notified"], [{"session_id": "a", "name": "alpha", "delivery": "queued"}])
+        [told] = answer["notified"]
+        self.assertEqual((told["session_id"], told["name"], told["delivery"], told["queued_at"], told["delivered_at"],
+                          told["via"], told["waiting"], told["reply_id"]), ("a", "alpha", "queued", NOW, None, None, None, None))
         self.assertEqual(self.notices("b"), [])
 
     def test_self_reply_does_not_wake_the_speaker(self):
@@ -205,3 +219,76 @@ class DeliveryStateTests(DeliveryFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeliveryDetailTests(DeliveryFixture):
+    """What the badge needs: when it was queued, why it still waits, how and when it arrived, which post answered."""
+
+    def test_waiting_reason_is_kept_until_the_notice_is_sent(self):
+        self.post("ping", to=["beta"])
+        chat_delivery.note_waiting(self.conn, "b", "external")
+        mention = self.latest()["mentions"][0]
+        self.assertEqual((mention["delivery"], mention["waiting"]), ("queued", "external"))
+        chat_delivery.note_waiting(self.conn, "b", "busy")
+        self.assertEqual(self.latest()["mentions"][0]["waiting"], "busy")
+        self.deliver("b")
+        mention = self.latest()["mentions"][0]
+        self.assertEqual((mention["delivery"], mention["waiting"], mention["via"], mention["delivered_at"]),
+                         ("delivered", None, "input", NOW))
+        self.assertIn("对方在外部窗口运行", chat_delivery.WAITING["external"])
+
+    def test_replied_mention_points_at_the_answer(self):
+        asked = self.post("ping", to=["beta"])
+        self.deliver("b")
+        answer = self.post("pong", actor="b", reply_to=asked["id"])
+        mention = channel.messages(self.conn, "demo")["messages"][0]["mentions"][0]
+        self.assertEqual((mention["delivery"], mention["reply_id"]), ("replied", answer["id"]))
+
+    def test_self_mention_reports_nothing_to_deliver(self):
+        message = self.post("note to self", to=["alpha"])
+        mention = message["mentions"][0]
+        self.assertEqual((mention["delivery"], mention["queued_at"], mention["via"]), ("none", None, None))
+
+
+class CodexSummaryTests(DeliveryFixture):
+    """P5: a Codex leader's channel cursor moves only after its input was accepted."""
+
+    def test_preview_leaves_the_cursor_and_seen_moves_it(self):
+        self.post("news for beta")
+        text, upto = channel.preview(self.conn, "b")
+        self.assertIn("news for beta", text)
+        self.assertEqual(channel.state(self.conn, "demo", "b")["unread"], 1)
+        # A rejected input never calls seen: the same posts come back next time.
+        self.assertEqual(channel.preview(self.conn, "b"), (text, upto))
+        channel.seen(self.conn, "b", upto, now=NOW)
+        self.assertEqual(channel.state(self.conn, "demo", "b")["unread"], 0)
+        self.assertEqual(channel.preview(self.conn, "b"), (None, upto))
+
+
+class CodexChannelCursorTests(unittest.TestCase):
+    """P5 end to end: a Codex leader whose input was refused sees the same channel posts next turn."""
+    setUp = codex_fixtures.CodexRuntimeTests.setUp
+    make_running = codex_fixtures.CodexRuntimeTests.make_running
+
+    def test_refused_codex_input_keeps_channel_posts_for_the_next_turn(self):
+        with closing(store.connect(self.home)) as conn:
+            for sid in ("worker", "other"):
+                board.join(conn, sid, "demo", sid, self.root, None, None, role="leader", now=NOW)
+            runtimes.set(conn, "worker", "codex")
+            self.session = board.session(conn, "worker")
+            channel.post(conn, "demo", "other", "news for worker", now=NOW)
+        manager = chat.Manager(self.home, self.plugin, lambda: [])
+        self.addCleanup(manager.close)
+        running, client = self.make_running()
+        manager.processes["worker"] = running
+        client.fail_turn = True
+        with self.assertRaisesRegex(RuntimeError, "start refused"):
+            manager.send(self.session, "go", identity="first")
+        with closing(store.connect(self.home)) as conn:
+            self.assertEqual(channel.state(conn, "demo", "worker")["unread"], 1)
+        client.fail_turn = False
+        manager.send(self.session, "go again", identity="second")
+        text = [params for method, params in client.calls if method == "turn/start"][-1]["input"][-1]["text"]
+        self.assertIn("news for worker", text)
+        with closing(store.connect(self.home)) as conn:
+            self.assertEqual(channel.state(conn, "demo", "worker")["unread"], 0)
