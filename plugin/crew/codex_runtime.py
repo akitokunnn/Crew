@@ -364,6 +364,7 @@ class CodexRunning:
                 self._subagents = codex_subagents.Events(self.thread_id, self.journal.subagents.values())
                 self.applied = {"model": result["model"], "effort": result.get("reasoningEffort"),
                                 "speed": result.get("serviceTier")}
+                self.journal.changed()
             with closing(store.connect(self.home)) as conn:
                 if execution:
                     goals.bind_native(conn, execution['id'], 'codex', self.thread_id,
@@ -442,6 +443,7 @@ class CodexRunning:
                     settings = params["threadSettings"]
                     self.applied = {"model": settings["model"], "effort": settings.get("effort"),
                                     "speed": settings.get("serviceTier")}
+                    self.journal.changed()
                     self._settings_revision += 1
                     self._settings.notify_all()
                 if (method == "hook/completed" and params.get("run", {}).get("eventName") == "preToolUse"
@@ -460,6 +462,7 @@ class CodexRunning:
                         with self.journal.condition:
                             if self.journal.progress is not None:
                                 self.journal.progress.update(event)
+                        self.journal.changed()
                     elif kind == "status":
                         self._status(event["status"])
                     else:

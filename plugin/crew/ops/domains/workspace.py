@@ -1,9 +1,12 @@
 """Workspaces, workspace data packages and host folders (design §8.1)."""
 from ...web_api import admin, board as board_api, files, workspace
+from ...web_service import events as change_events
 from ._common import H, HBD, HD, route
 
 route('workspace.list', '列出工作区', 'GET', '/api/projects', workspace.get_projects, access='read')
 route('workspace.state', '读取工作区看板快照', 'GET', '/api/state', workspace.get_state, access='read')
+route('workspace.snapshot', '读取工作区快照及其覆盖到的增量序号', 'GET', '/api/snapshot', change_events.serve_snapshot,
+      access='read')
 route('workspace.activity', '读取多个工作区的活动概况', 'GET', '/api/workspaces/activity',
       workspace.get_workspaces_activity, access='read')
 route('workspace.register', '登记已有项目目录为工作区', 'POST', '/api/project/init', workspace.post_project_init,

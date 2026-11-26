@@ -291,6 +291,8 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.thread.start()
         self.addCleanup(self.close_server)
         self.assertTrue(self.server.service.agents_ready.wait(5))
+        # The first agents pass also auto-resumes natives; tests that crash one must not race that pass.
+        self.assertTrue(self.server.service.agents_passed.wait(5))
         self.url = "http://127.0.0.1:%d" % self.server.server_port
 
     def close_server(self):
@@ -969,9 +971,20 @@ class WebTests(ShellFixture, unittest.TestCase):
         self.assertFalse((self.home / "spawn").exists())
         self.assertEqual(self.processes, [])
 
+    def quiet_usage(self):
+        """Stop this server's background workers so the test runs each usage scan step itself."""
+        service = self.server.service
+        service.stop.set()
+        service.usage_worker.join(5)
+        self.assertFalse(service.usage_worker.is_alive())
+        return service
+
     def test_usage_reports_and_scan_throttle(self):
+        service = self.quiet_usage()
         real_scan = web.usage.scan
         with mock.patch("crew.web.usage.scan", wraps=real_scan) as scan:
+            service.scanned_at = None
+            service.scan_usage()
             for period in ("today", "week", "all", "2026-10-21..2026-10-21"):
                 code, result, _ = self.get("/api/usage?scope=machine&period=" + period)
                 self.assertEqual(code, 200)
@@ -979,13 +992,23 @@ class WebTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(result["summary"]["claude"]["requests"], 1)
                 self.assertEqual(len(result["codex"]), 1)
                 self.assertEqual(sum(row["tokens"] for row in result["tree"]), result["summary"]["claude"]["total_tokens"])
+            # Reports only read what the full step stored.
             self.assertEqual(scan.call_count, 1)
+            self.assertFalse(scan.call_args.kwargs["receipts_only"])
+            # Within the minute a step reads receipts only; a minute later it reads everything again.
+            service.scan_usage()
+            self.assertTrue(scan.call_args.kwargs["receipts_only"])
             self.clock += dt.timedelta(seconds=60)
+            service.scan_usage()
+            self.assertEqual(scan.call_count, 3)
+            self.assertFalse(scan.call_args.kwargs["receipts_only"])
             self.get("/api/usage?period=all")
-            self.assertEqual(scan.call_count, 2)
+            self.assertEqual(scan.call_count, 3)
         self.assertEqual(self.get("/api/usage?period=bad")[0], 400)
 
-    def test_concurrent_usage_scans_once(self):
+    def test_concurrent_usage_reads_never_scan(self):
+        service = self.quiet_usage()
+        service.scan_usage()
         real_scan = web.usage.scan
         with mock.patch("crew.web.usage.scan", wraps=real_scan) as scan:
             results = []
@@ -996,9 +1019,11 @@ class WebTests(ShellFixture, unittest.TestCase):
                 worker.join(10)
                 self.assertFalse(worker.is_alive())
         self.assertEqual(results, [200]*4)
-        self.assertEqual(scan.call_count, 1)
+        self.assertEqual(scan.call_count, 0)
 
     def test_export_bom_columns_attachment_and_rows(self):
+        # The export reads what the background usage scan stored; run one step before reading.
+        self.server.service.scan_usage()
         for what, fields in usage_cli.EXPORT_FIELDS.items():
             code, content, headers = self.get("/api/usage/export?scope=machine&what=" + what + "&period=all", raw=True)
             self.assertEqual(code, 200)

@@ -99,7 +99,7 @@ class StorageV2ActivationTests(unittest.TestCase):
             self.assertEqual(c.execute("SELECT COUNT(*) FROM sessions WHERE status NOT IN ('offline','closed')").fetchone()[0],0)
             self.assertEqual(c.execute('PRAGMA foreign_key_check').fetchall(),[])
         self.assertFalse(result['native_resume_supported'])
-        journal=chat.Journal(self.legacy_home/'chat'/(self.data['agent']+'.jsonl'))
+        journal=chat.Journal(self.legacy_home/'chat'/(self.data['agent']+'.jsonl'), None)
         visible=json.dumps(journal.events,ensure_ascii=False)
         self.assertIn('Original complete user message',visible)
         self.assertIn('Original complete assistant message',visible)

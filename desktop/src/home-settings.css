@@ -15,3 +15,10 @@ main:has(>#settings-page:not([hidden])){overflow:hidden}
 #native-settings-root .cs-native-health{margin-top:24px}
 @media(max-width:1100px){#native-settings-root :is(.cs-header,.cs-content){padding-right:22px;padding-left:22px}}
 @media(max-width:650px){#native-settings-root .cs-sidebar{flex-basis:auto}#native-settings-root :is(.cs-header,.cs-content){padding-right:16px;padding-left:16px}}
+/* Desktop appearance panel: display mode, font size and the first-run guide entry. */
+.hs-appearance{display:grid;gap:12px}
+.hs-font{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin-top:12px}
+.hs-font input{flex:1 1 200px;min-width:0;max-width:420px;accent-color:var(--accent)}
+.hs-font output{min-width:42px;font-size:12px;font-variant-numeric:tabular-nums;color:var(--text-2)}
+.hs-font .cs-button,.hs-guide{margin:0}
+.hs-guide{margin-top:12px}

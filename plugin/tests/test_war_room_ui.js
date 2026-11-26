@@ -9,7 +9,7 @@ const sandbox={document,setTimeout,clearTimeout,matchMedia:()=>({matches:false,a
 sandbox.window=sandbox;vm.createContext(sandbox);
 const folder=path.join(__dirname,"../../frontend");
 vm.runInContext(fs.readFileSync(path.join(folder,"channel.js"),"utf8"),sandbox);
-vm.runInContext(fs.readFileSync(path.join(folder,"war-room.js"),"utf8").replace("window.CrewWarRoom = {mount, update, unmount};","window.CrewWarRoom = {mount, update, unmount, since, contractVersion, timeline, timelineHTML, crewHTML, headHTML, asideHTML};"),sandbox);
+vm.runInContext(fs.readFileSync(path.join(folder,"war-room.js"),"utf8").replace("window.CrewWarRoom = {mount, update, changed, unmount};","window.CrewWarRoom = {mount, update, changed, unmount, since, contractVersion, timeline, timelineHTML, crewHTML, headHTML, asideHTML};"),sandbox);
 const W=sandbox.CrewWarRoom;
 const flush=async()=>{for(let i=0;i<20;i++)await Promise.resolve();};
 
@@ -138,5 +138,21 @@ test("a closed room is read-only: no composer, pause, reply, invite or close, an
   assert(f.nodes[".wr-pin"].innerHTML.includes("收尾结论")&&f.nodes[".wr-pin"].innerHTML.includes("三端已切到 v2"));
   f.click("[data-wr-row]",{wrRow:"2"});
   assert.equal(f.nodes[".wr-layerbox"].innerHTML,"");
+  W.unmount();
+});
+test("live changes: this room's war_room change re-reads it, another room's does not, a badge change replaces the post",async()=>{
+  const f=mounted();await flush();
+  const reads=()=>f.calls.filter(call=>call.route.startsWith("/api/war-room?id=3")).length;
+  assert.equal(reads(),1);
+  W.changed([{type:"war_room.updated",entity:"9",data:{}}]);await flush();
+  assert.equal(reads(),1);
+  W.changed([{type:"war_room.updated",entity:"3",data:{}}]);await flush();
+  assert.equal(reads(),2);
+  const shown=room().messages[0];
+  W.changed([{type:"channel_message.updated",entity:String(shown.id),data:{...shown,body:"徽章已更新的那条"}}]);await flush();
+  assert.equal(reads(),2);
+  assert(f.nodes[".wr-inner"].innerHTML.includes("徽章已更新的那条"));
+  W.changed(null);await flush();
+  assert.equal(reads(),3);
   W.unmount();
 });

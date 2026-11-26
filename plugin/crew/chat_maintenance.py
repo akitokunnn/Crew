@@ -118,3 +118,4 @@ class MaintenanceMixin:
                 self.stop_managed(key)
                 del self.processes[key]
             current.maintenance = None
+            self.changes.session(key)

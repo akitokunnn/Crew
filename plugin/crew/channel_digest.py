@@ -9,7 +9,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from . import behavior_prompts, board, channel, chat, codex_client, settings, store
+from . import behavior_prompts, board, change_feed, channel, chat, codex_client, settings, store
 
 HEADINGS = ("## 已定结论", "## 未定的事 · 在等谁", "## 各组跨组相关进展")
 DIGEST_TIMEOUT = 300
@@ -196,8 +196,9 @@ def generate(home, text, process_factory, cancelled=None):
 
 
 class Manager:
-    def __init__(self, home, write_lock, process_factory=subprocess.Popen):
-        self.home, self.write_lock, self.process_factory = Path(home), write_lock, process_factory
+    def __init__(self, home, write_lock, changes, process_factory=subprocess.Popen):
+        """`changes` (change_feed.Notifier) hears when a workspace's digesting or digest_error changes."""
+        self.home, self.write_lock, self.changes, self.process_factory = Path(home), write_lock, changes, process_factory
         self.lock = threading.Lock()
         self.running, self.errors, self.failed_upto, self.workers = set(), {}, {}, {}
         self.stopping = threading.Event()
@@ -276,6 +277,7 @@ class Manager:
             worker = threading.Thread(target=self._run, args=(project, previous, messages, trigger, boundary["cleanups"], job),
                                       name="crew-channel-digest", daemon=True)
             self.workers[project] = worker
+            self.changes.mark('channel_digest', project, project)
             worker.start()
             return True
 
@@ -297,13 +299,15 @@ class Manager:
             with self.write_lock, closing(store.connect(self.home)) as conn:
                 behavior_prompts.delivered(conn, application['id'], confirmed=True,
                     evidence='频道摘要载体 ' + runtime + ' 返回本次已验证结果；输入包含记录的配置')
-                with self.lock:
+                with self.lock, board.transaction(conn):
                     _check_cancelled(job['cancelled'])
                     if board.cleanup_boundary(conn, project)["cleanups"] != cleanups:
                         raise board.Conflict("工作区已在整理期间清理，本次要点卡基于清理前的交流，结果已作废")
                     conn.execute("INSERT INTO channel_digests(project,upto_message_id,body,message_count,trigger,model,"
                                  "cost_usd,created_at,runtime) VALUES(?,?,?,?,?,?,?,?,?)",
                                  (project, messages[-1]["id"], body, len(messages), trigger, model, cost, store.now_iso(), runtime))
+                    # The workspace snapshot names the latest card.
+                    change_feed.touch(conn, 'channel', project, project)
         except Exception as exc:
             # Worker boundary: expose failures to the web UI, including their real type.
             with self.lock:
@@ -314,9 +318,11 @@ class Manager:
                 self.failed_upto[project] = messages[-1]["id"]
                 self.running.remove(project)
                 del self.jobs[project]
+            self.changes.mark('channel_digest', project, project)
         else:
             with self.lock:
                 self.errors.pop(project, None)
                 self.failed_upto.pop(project, None)
                 self.running.remove(project)
                 del self.jobs[project]
+            self.changes.mark('channel_digest', project, project)

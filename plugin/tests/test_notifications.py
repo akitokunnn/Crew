@@ -139,7 +139,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
     def web_manager(self, sid=None):
         sid = self.assistant() if sid is None else sid
-        journal = chat.Journal(self.home / 'chat' / (sid + '.jsonl'))
+        journal = chat.Journal(self.home / 'chat' / (sid + '.jsonl'), None)
         journal.set_status('idle')
         folder = self.home / 'spawn'
         folder.mkdir(exist_ok=True)

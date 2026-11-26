@@ -18,7 +18,7 @@ POST = frozenset((
     '/api/host/workspace/existing', '/api/host/workspace/new', '/api/leader', '/api/leaders/order',
     '/api/maintenance/cleanup', '/api/maintenance/cleanup/preview', '/api/maintenance/department/compact',
     '/api/maintenance/department/preview', '/api/member-defaults', '/api/messages', '/api/native-approval',
-    '/api/notifications/away', '/api/personal/mindmap', '/api/personal/mindmap/convert',
+    '/api/notifications/away', '/api/onboarding', '/api/personal/mindmap', '/api/personal/mindmap/convert',
     '/api/personal/mindmap/preview', '/api/personal/notes', '/api/personal/notes/recovery',
     '/api/personal/notes/start', '/api/personal/tags', '/api/project/init', '/api/project/remove',
     '/api/project/theme', '/api/project/update', '/api/remote-access', '/api/roster/adopt', '/api/roster/move',
@@ -41,13 +41,14 @@ GET = frozenset((
     '/api/comments', '/api/connections', '/api/documents', '/api/domains', '/api/files/content',
     '/api/files/download', '/api/git', '/api/git/commit', '/api/git/settings', '/api/goal', '/api/goals',
     '/api/goals/report', '/api/host/folders', '/api/maintenance/archive', '/api/maintenance/jobs',
-    '/api/personal/mindmap', '/api/personal/notes', '/api/personal/notes/recovery', '/api/personal/tags',
-    '/api/project/settings', '/api/projects', '/api/remote-access', '/api/runtimes', '/api/session-library',
-    '/api/session-library/preview', '/api/session/avatar', '/api/settings', '/api/sounds/custom/file',
+    '/api/onboarding', '/api/personal/mindmap', '/api/personal/notes', '/api/personal/notes/recovery', '/api/personal/tags',
+    '/api/project/settings', '/api/projects', '/api/remote-access', '/api/runtimes', '/api/runtimes/readiness',
+    '/api/session-library',
+    '/api/session-library/preview', '/api/session/avatar', '/api/settings', '/api/snapshot', '/api/sounds/custom/file',
     '/api/state', '/api/storage', '/api/todos', '/api/trust/report', '/api/usage', '/api/usage/export',
     '/api/workspace-data/artifact', '/api/workspace-data/blob', '/api/workspace-data/download',
     '/api/workspace-data/history', '/api/workspaces/activity',
     '/api/war-room', '/api/war-rooms',
 ))
 # Not operations (design §8.14).
-TRANSPORT_GET = frozenset(('/api/admin/health', '/api/chat/events'))
+TRANSPORT_GET = frozenset(('/api/admin/health', '/api/chat/events', '/api/events'))

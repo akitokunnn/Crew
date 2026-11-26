@@ -17,7 +17,7 @@ class StatusMixin:
     def journal(self, session_id):
         with self.lock:
             if session_id not in self.journals:
-                self.journals[session_id] = Journal(self.path(session_id))
+                self.journals[session_id] = Journal(self.path(session_id), self.changes.session)
             else:
                 self.journals[session_id].refresh()
             return self.journals[session_id]

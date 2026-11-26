@@ -155,7 +155,9 @@ class ReplyNotifiesAuthorTests(DeliveryFixture):
         self.post("before upgrade", to=["beta"])
         self.conn.close()
         raw = sqlite3.connect(store.db_path(self.home))
-        raw.executescript("ALTER TABLE channel_mentions DROP COLUMN reason;"
+        # A database from before these columns also predates the change-feed trigger that reads them.
+        raw.executescript("DROP TRIGGER feed_channel_leader_notices_update;"
+                          "ALTER TABLE channel_mentions DROP COLUMN reason;"
                           "ALTER TABLE leader_notices DROP COLUMN delivered_via;")
         raw.close()
         for _ in range(2):  # Repeated opening is a no-op.

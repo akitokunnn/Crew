@@ -80,7 +80,7 @@ class AssistantHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(names, ['新对话', '新对话 2'])
 
     def test_new_page_assets_are_served_by_the_actual_backend(self):
-        for path in ('/assistant.html', '/assistant.js', '/assistant.css', '/workspace-home.js', '/workspace-home.css',
+        for path in ('/app-data.js', '/assistant.html', '/assistant.js', '/assistant.css', '/workspace-home.js', '/workspace-home.css',
                      '/workspace-entry.js', '/workspace-entry.css',
                      '/global-rail.js', '/voice.html', '/voice.js', '/voice.css', '/mindmap.js', '/mindmap-model.js', '/mindmap.css', '/personal-notes-ui.js', '/personal-notes-ui.css', '/behavior-prompts-ui.js', '/behavior-prompts-ui.css', '/channel.css', '/war-room.js', '/war-room.css'):
             code, content, _ = self.request(path, raw=True)

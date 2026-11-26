@@ -372,7 +372,6 @@
       if (!current(ctx)) return;
       if (ctx.room === null) { ctx.readFrom = room.read_id; position = "unread"; }
       ctx.room = room; ctx.readId = Math.max(ctx.readId, room.read_id);
-      ctx.pulse = pulseOf(ctx);
       render(ctx, position);
     } catch (error) {
       if (!current(ctx)) return;
@@ -502,11 +501,10 @@
     + '<aside class="wr-aside" id="wr-aside" aria-label="目标与状态板"></aside></div>'
     + '<div class="wr-backdrop" hidden></div><div class="cx-pop" role="dialog" aria-modal="false" aria-labelledby="cx-pop-title" hidden></div>'
     + '<div class="wr-sheet" role="dialog" aria-modal="true" aria-labelledby="wr-ms-title" hidden></div><div class="wr-menu" role="menu" hidden></div><div class="wr-layerbox" hidden></div>';
-  const pulseOf = ctx => JSON.stringify(ctx.room.members.map(m => { const l = ctx.state.leaders.find(item => item.session_id === m.session_id); return l ? [l.busy, l.where, l.notices_pending] : null; }));
   function mount(options) {
     unmount();
     const ctx = {...options, room:null, readFrom:0, readId:0, folds:new Set(), selected:new Set(), all:false, replyTo:null, doneOpen:false, contractOpen:false, asideOpen:false, member:null,
-      popFor:null, menuFor:null, dialogReturn:null, channelLatest:options.state.channel.latest_id, loading:false, again:false, reading:false, sending:false, busy:false, composing:false, version:0, minute:0, pulse:""};
+      popFor:null, menuFor:null, dialogReturn:null, loading:false, again:false, reading:false, sending:false, busy:false, composing:false, version:0, minute:0};
     active = ctx;
     const host = options.host, find = selector => host.querySelector(selector);
     host.innerHTML = LAYOUT;
@@ -597,9 +595,22 @@
     ctx.state = state;
     if (ctx.room === null) return;
     renderLive(ctx);
-    const pulse = pulseOf(ctx);
-    if (state.channel.latest_id !== ctx.channelLatest || pulse !== ctx.pulse) { ctx.channelLatest = state.channel.latest_id; ctx.pulse = pulse; load(ctx); }
-    else if (Math.floor(Date.now() / 60000) !== ctx.minute && ctx.popFor === null) renderFeed(ctx);
+    if (Math.floor(Date.now() / 60000) !== ctx.minute && ctx.popFor === null) renderFeed(ctx);
+  }
+  // Live changes (docs/EVENT_STREAM_DESIGN.md): null = a new snapshot; a `war_room` change of this room re-reads it
+  // (board, contract, cards, new posts); a `channel_message` change replaces a shown post's delivery badges.
+  function changed(changes) {
+    if (!active) return;
+    const ctx = active;
+    if (changes === null || changes.some(change => change.type.startsWith("war_room.") && Number(change.entity) === ctx.id)) { load(ctx); return; }
+    if (ctx.room === null) return;
+    let shown = false;
+    for (const change of changes) {
+      if (!change.type.startsWith("channel_message.") || change.data === null) continue;
+      const index = ctx.room.messages.findIndex(item => item.id === Number(change.entity));
+      if (index >= 0) { ctx.room.messages[index] = change.data; shown = true; }
+    }
+    if (shown && !ctx.loading) renderFeed(ctx);
   }
   function unmount() {
     if (!active) return;
@@ -608,5 +619,5 @@
     active.media.removeEventListener("change", active.relayout);
     active = null;
   }
-  window.CrewWarRoom = {mount, update, unmount};
+  window.CrewWarRoom = {mount, update, changed, unmount};
 })();

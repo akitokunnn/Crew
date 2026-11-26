@@ -208,3 +208,64 @@ class WarRoomOperationTests(ChannelHttpFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LiveUpdateTests(WarRoomFixture):
+    """Every write a room page shows marks the room changed in the same transaction (docs/EVENT_STREAM_DESIGN.md)."""
+
+    def room_changes(self, after):
+        from crew import change_feed
+        from test_change_feed import changes
+        return [item for item in changes(self.conn, after) if item["type"].startswith("war_room.")]
+
+    def test_each_room_write_reaches_readers_with_the_rooms_card(self):
+        from crew import change_feed
+        start = change_feed.latest_seq(self.conn)
+        room = self.open_room()
+        [opened] = self.room_changes(start)
+        self.assertEqual((opened["type"], opened["entity"], opened["data"]["title"]), ("war_room.updated", str(room["id"]), "签名 v2 联调"))
+        writes = [
+            lambda: war_room.say(self.conn, room["id"], "b", "收到契约", now=NOW),
+            lambda: war_room.set_item(self.conn, room["id"], "b", title="签名适配", status="blocked", now=NOW),
+            lambda: war_room.set_contract(self.conn, room["id"], "a", "POST /login", None, now=NOW),
+            lambda: war_room.change_members(self.conn, room["id"], "a", remove=["gamma"], now=NOW),
+            lambda: war_room.decide(self.conn, room["id"], "a", "兼容 v1 吗？", ["是", "否"], now=NOW),
+            lambda: war_room.mark_read(self.conn, room["id"], board.HUMAN, now=NOW),
+        ]
+        for write in writes:
+            before = change_feed.latest_seq(self.conn)
+            write()
+            self.assertEqual(len(self.room_changes(before)), 1, write)
+        before = change_feed.latest_seq(self.conn)
+        war_room.close(self.conn, room["id"], "a", "完成", now=NOW)
+        [closed] = self.room_changes(before)
+        self.assertEqual(closed["data"]["status"], "closed")
+
+    def test_a_reply_into_the_room_from_crew_say_updates_the_room(self):
+        from crew import change_feed
+        room = self.open_room(members=("beta",))
+        first = self.room_posts(room)[0]
+        before = change_feed.latest_seq(self.conn)
+        self.post("在看", actor="b", reply_to=first["id"])
+        [changed] = self.room_changes(before)
+        self.assertEqual(changed["data"]["latest_id"], self.room_posts(room)[-1]["id"])
+
+    def test_answering_the_rooms_decision_card_updates_the_room(self):
+        from crew import change_feed
+        room = self.open_room()
+        card = war_room.decide(self.conn, room["id"], "a", "兼容 v1 吗？", ["是", "否"], now=NOW)
+        before = change_feed.latest_seq(self.conn)
+        board.answer(self.conn, card["id"], "是", now=NOW)
+        [changed] = self.room_changes(before)
+        self.assertEqual((changed["entity"], changed["data"]["open_decisions"]), (str(room["id"]), 0))
+
+    def test_a_badge_change_on_a_room_post_replaces_that_post(self):
+        from crew import change_feed
+        from test_change_feed import changes
+        room = self.open_room(members=("beta",))
+        first = self.room_posts(room)[0]
+        before = change_feed.latest_seq(self.conn)
+        self.deliver("b")
+        [post] = [item for item in changes(self.conn, before) if item["type"] == "channel_message.updated"]
+        self.assertEqual((post["entity"], post["data"]["room_id"], post["data"]["mentions"][0]["delivery"]),
+                         (str(first["id"]), room["id"], "delivered"))

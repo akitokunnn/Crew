@@ -98,6 +98,7 @@ def add(conn, goal_id, key, title, acceptance, *, owner=None, dependencies=(), a
                       goals._json(dependencies), now, now))
         value = _item(conn.execute('SELECT * FROM goal_work_items WHERE id=?', (identity,)).fetchone())
         _record(conn, value, actor)
+        goals.touch(conn, goal_id)
         return value
 
 
@@ -146,6 +147,7 @@ def update(conn, goal_id, key, version, *, status=None, note=None, title=None, a
                       following['status'], following['note'], goal['requirement_version'], store.now_iso(), value['id']))
         result = _item(conn.execute('SELECT * FROM goal_work_items WHERE id=?', (value['id'],)).fetchone())
         _record(conn, result, actor)
+        goals.touch(conn, result['goal_id'])
         return result
 
 
@@ -165,6 +167,7 @@ def carry_forward(conn, goal_id, previous_version, *, actor):
                      (goal['requirement_version'], store.now_iso(), item['id']))
         row = conn.execute('SELECT * FROM goal_work_items WHERE id=?', (item['id'],)).fetchone()
         _record(conn, _item(row), actor)
+        goals.touch(conn, goal_id)
 
 
 def hand_over(conn, goal_id, owner, *, actor):
@@ -176,3 +179,4 @@ def hand_over(conn, goal_id, owner, *, actor):
                      'version=version+1,updated_at=? WHERE id=?', (owner, store.now_iso(), item['id']))
         row = conn.execute('SELECT * FROM goal_work_items WHERE id=?', (item['id'],)).fetchone()
         _record(conn, _item(row), actor)
+        goals.touch(conn, goal_id)

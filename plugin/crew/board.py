@@ -8,7 +8,7 @@ import json
 import os
 import re
 
-from . import store, themes
+from . import change_feed, store, themes
 
 # Actor recorded for actions taken by the human from the web page or a plain terminal.
 HUMAN = "user"
@@ -24,10 +24,14 @@ class Conflict(BoardError):
 @contextlib.contextmanager
 def transaction(conn):
     conn.execute("BEGIN IMMEDIATE")
+    change_feed.begin(conn)
     try:
         yield
+        # Snapshot entities the write touched are recorded with their final values in this transaction.
+        change_feed.flush(conn)
         conn.commit()
     finally:
+        change_feed.end(conn)
         if conn.in_transaction:
             conn.rollback()
 
@@ -58,31 +62,18 @@ def record_event(conn, kind, project=None, session_id=None, detail=None, now=Non
     _event(conn, kind, project, session_id, detail, now)
 
 
+def touch_project(conn, name):
+    """A workspace's name, display name, root or theme changed: the global list and the workspace both see it."""
+    change_feed.touch(conn, 'project', None, name)
+    change_feed.touch(conn, 'workspace', name, name)
+
+
 def _assign_project_themes(conn, now):
-    assigned = [row[0] for row in conn.execute("SELECT theme FROM project_themes")]
-    missing = conn.execute("SELECT p.name FROM projects p LEFT JOIN project_themes t ON t.project=p.name "
-                           "WHERE t.project IS NULL ORDER BY p.created_at,p.rowid").fetchall()
-    for row in missing:
-        unused = [theme for theme in themes.IDS if theme not in assigned]
-        theme = unused[0] if unused else themes.IDS[len(assigned) % len(themes.IDS)]
-        conn.execute("INSERT INTO project_themes(project,theme,assigned_at) VALUES(?,?,?)",
-                     (row[0], theme, _time(now)))
-        assigned.append(theme)
-
-
-def _ensure_project_themes(conn, now=None):
-    if conn.execute("SELECT 1 FROM projects p LEFT JOIN project_themes t ON t.project=p.name "
-                    "WHERE t.project IS NULL LIMIT 1").fetchone() is None:
-        return
-    if conn.in_transaction:
-        _assign_project_themes(conn, now)
-    else:
-        with transaction(conn):
-            _assign_project_themes(conn, now)
+    for name in store.assign_project_themes(conn, _time(now)):
+        touch_project(conn, name)
 
 
 def projects(conn, *, include_removed=False):
-    _ensure_project_themes(conn)
     fields = 'p.*,t.theme,s.display_name' + (',s.removed_at' if include_removed else '')
     return _rows(conn, "SELECT " + fields + " FROM projects p JOIN project_themes t ON t.project=p.name "
                  "LEFT JOIN project_settings s ON s.project=p.name " +
@@ -118,7 +109,6 @@ def project(conn, name, *, include_removed=False):
         raise BoardError("项目不存在: " + name)
     if row['removed_at'] is not None and not include_removed:
         raise Conflict("工作区已移除，请先重新打开工作区: " + name)
-    _ensure_project_themes(conn)
     value = dict(row)
     value.pop('removed_at')
     return {**value, "theme": conn.execute("SELECT theme FROM project_themes WHERE project=?", (name,)).fetchone()[0]}
@@ -130,6 +120,7 @@ def set_project_theme(conn, project_name, theme, now=None):
     if theme not in themes.IDS:
         raise BoardError("主题不存在: %s" % theme)
     conn.execute("UPDATE project_themes SET theme=?,assigned_at=? WHERE project=?", (theme, _time(now), project_name))
+    touch_project(conn, project_name)
     _event(conn, "project:theme", project_name, HUMAN, {"theme": theme}, now)
     return {"ok": True, "theme": theme}
 
@@ -310,6 +301,7 @@ def init_project(conn, name, root, now=None):
     old = next((p for p in matching if p['removed_at'] is None), matching[0] if matching else None)
     if old is not None and old['removed_at'] is not None:
         conn.execute("UPDATE project_settings SET removed_at=NULL,revision=revision+1 WHERE project=?", (old['name'],))
+        touch_project(conn, old['name'])
         _event(conn, 'project:restore', old['name'], HUMAN, {'root': root}, now)
         return project(conn, old['name'])
     old = old if old is not None else next((p for p in registered if p['name'] == name), None)
@@ -317,7 +309,8 @@ def init_project(conn, name, root, now=None):
         raise Conflict("项目名称或目录已被使用: " + old["name"])
     if old is None:
         conn.execute("INSERT INTO projects VALUES(?,?,?)", (name, root, _time(now)))
-    _ensure_project_themes(conn, now)
+    _assign_project_themes(conn, now)
+    touch_project(conn, name)
     _event(conn, "project:init", name, None, {"root": root}, now)
     return project(conn, name)
 
@@ -754,7 +747,7 @@ def unclaim(conn, session_id, pattern=None, now=None):
 @atomic
 def ask(conn, session_id, question, options=(), recommendation=None, blocking=False, now=None, *, brief=None, execution_id=None):
     s = session(conn, session_id)
-    from . import decision_briefs, trust_mode
+    from . import decision_briefs, snapshot_values, trust_mode
     if brief is not None:
         decision_briefs._text(question, "问题")
         brief = decision_briefs.validate(brief, options=list(options) if options else None, recommendation=recommendation)
@@ -762,6 +755,7 @@ def ask(conn, session_id, question, options=(), recommendation=None, blocking=Fa
     decision_id = conn.execute("INSERT INTO decisions(project,session_id,question,options,recommendation,blocking,created_at) VALUES(?,?,?,?,?,?,?)",
                                (s["project"], session_id, question, json.dumps(list(options), ensure_ascii=False), recommendation, int(blocking), _time(now))).lastrowid
     trust_mode.record_decision_scope(conn, decision_id, session_id)
+    snapshot_values.touch_decision(conn, decision_id)
     if execution_id is not None:
         from . import goal_links
         goal_links.bind(conn, 'decision', decision_id, execution_id)
@@ -796,6 +790,8 @@ def answer(conn, decision_id, text, actor=HUMAN, now=None, *, _human_origin=None
     if actor != HUMAN and not verified_remote_human and policy is not None and not policy['enabled']:
         raise BoardError('此任务当前需要用户拍板或已停止，AI 不能代替用户作答')
     conn.execute("UPDATE decisions SET status='answered',answer=?,answered_by=?,answered_at=? WHERE id=?", (text, actor, _time(now), decision_id))
+    from . import snapshot_values
+    snapshot_values.touch_decision(conn, decision_id)
     _event(conn, "decision:answer", d["project"], actor, {"id": decision_id, "answer": text, "goal_policy": policy}, now)
 
 
@@ -804,6 +800,8 @@ def withdraw(conn, session_id, decision_id, now=None):
     s = session(conn, session_id)
     if conn.execute("UPDATE decisions SET status='withdrawn' WHERE id=? AND session_id=? AND status='open'", (decision_id, session_id)).rowcount == 0:
         raise BoardError("只能撤回自己尚未答复的问题")
+    from . import snapshot_values
+    snapshot_values.touch_decision(conn, decision_id)
     _event(conn, "decision:withdraw", s["project"], session_id, {"id": decision_id}, now)
 
 

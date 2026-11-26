@@ -25,6 +25,8 @@ def post_session_runtime(service, path, data, project_name):
                 return service.chat.switch_runtime(conn,target['session_id'],data['preview_id'],data.get('confirm'),[],now=service.now().isoformat(timespec='milliseconds').replace('+00:00','Z'))
             desired=receipt['to_runtime']
     catalog=service.runtime_catalog.refresh(force=True) if desired=='codex' else service.runtime_catalog.snapshot()
+    if desired=='codex':
+        service.chat.changes.mark('runtimes', None, 'runtimes')
     with service.write_lock,closing(store.connect(service.home)) as conn:
         stamp=service.now().isoformat(timespec='milliseconds').replace('+00:00','Z')
         if path.endswith('/prepare'):

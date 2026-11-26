@@ -135,7 +135,7 @@ for line in sys.stdin:
 '''
         def process_factory(command, **kwargs):
             return subprocess.Popen([sys.executable, '-u', '-c', server], **kwargs)
-        journal = chat.Journal(self.home / 'chat' / 'worker.jsonl')
+        journal = chat.Journal(self.home / 'chat' / 'worker.jsonl', None)
         with mock.patch('crew.codex_runtime._ObservedClient', self.real_client):
             running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {'agent': None},
                 {'model': None, 'effort': None}, journal, None, process_factory=process_factory)
@@ -300,7 +300,7 @@ for line in sys.stdin:
             goal = goals.create(conn, 'demo', 'worker', 'Approval fixture', 'Measure one isolated change', ['A file is measured'])
             goals.transition(conn, goal['id'], 'running')
             execution = goals.create_execution(conn, goal['id'], 'worker', runtime='codex')
-        journal = chat.Journal(self.home / 'chat' / 'goal.jsonl')
+        journal = chat.Journal(self.home / 'chat' / 'goal.jsonl', None)
         running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {'agent': None},
             {'model': None, 'effort': None}, journal, None, execution=execution)
         self.addCleanup(running.close)

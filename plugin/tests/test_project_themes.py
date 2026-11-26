@@ -39,20 +39,24 @@ class ProjectThemeTests(unittest.TestCase):
         self.assertEqual(self.add('second')['theme'], 'celadon')
         self.assertEqual(self.add('third')['theme'], 'wisteria')
 
-    def test_first_list_read_assigns_legacy_projects_by_enable_order_and_persists(self):
+    def test_opening_the_database_assigns_legacy_projects_by_enable_order_and_persists(self):
         self.legacy('alpha', now='2026-10-23T08:00:00.000Z')
         self.legacy('zeta', now='2026-10-21T08:00:00.000Z')
         self.legacy('beta', now='2026-10-21T08:00:00.000Z')
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM project_themes').fetchone()[0], 0)
+        # Reading never writes: a workspace from before themes is not listed until the database is opened again.
+        self.assertEqual(board.projects(self.conn), [])
+        store.connect(self.root / 'home').close()
         self.assertEqual({p['name']: p['theme'] for p in board.projects(self.conn)},
                          {'zeta': 'celadon', 'beta': 'indigo', 'alpha': 'wisteria'})
         before = [tuple(row) for row in self.conn.execute('SELECT * FROM project_themes ORDER BY project')]
-        board.projects(self.conn)
+        store.connect(self.root / 'home').close()
         self.assertEqual(before, [tuple(row) for row in self.conn.execute('SELECT * FROM project_themes ORDER BY project')])
 
-    def test_single_project_read_assigns_all_legacy_projects_before_new_project(self):
+    def test_opening_assigns_all_legacy_projects_before_a_new_project(self):
         self.legacy('first')
         self.legacy('second')
+        store.connect(self.root / 'home').close()
         self.assertEqual(board.project(self.conn, 'second')['theme'], 'indigo')
         self.assertEqual(self.add('third')['theme'], 'wisteria')
         self.assertEqual(board.project(self.conn, 'first')['theme'], 'celadon')
@@ -69,11 +73,13 @@ class ProjectThemeTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM project_themes').fetchone()[0], 1)
 
     def test_assignment_participates_in_outer_transaction(self):
-        self.conn.execute('BEGIN IMMEDIATE')
-        self.legacy('temporary')
-        self.assertEqual(board.project(self.conn, 'temporary')['theme'], 'celadon')
-        self.assertTrue(self.conn.in_transaction)
-        self.conn.rollback()
+        class Rollback(Exception):
+            pass
+        with self.assertRaises(Rollback), board.transaction(self.conn):
+            board.init_project.__wrapped__(self.conn, 'temporary', self.root / 'temporary', now=NOW)
+            self.assertEqual(board.project(self.conn, 'temporary')['theme'], 'celadon')
+            self.assertTrue(self.conn.in_transaction)
+            raise Rollback
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM project_themes').fetchone()[0], 0)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM projects').fetchone()[0], 0)
 

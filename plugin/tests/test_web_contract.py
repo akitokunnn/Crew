@@ -35,6 +35,10 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         poll = mock.patch.object(web.Service, "_poll_notices", return_value=None)
         poll.start()
         self.addCleanup(poll.stop)
+        # Usage scan steps are run explicitly too, so scan counts and scan times are deterministic.
+        usage_poll = mock.patch.object(web.Service, "_poll_usage", return_value=None)
+        usage_poll.start()
+        self.addCleanup(usage_poll.stop)
         executable = mock.patch("crew.chat.shutil.which", return_value="C:/fixture/claude.exe")
         executable.start()
         self.addCleanup(executable.stop)
@@ -75,6 +79,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, state)
         return state
 
+    def scanned_state(self, project="demo"):
+        """One background usage scan step, then the page's read."""
+        self.service.scan_usage()
+        return self.state(project)
+
     def start_leader(self, name="background-leader"):
         code, created, _ = self.request("/api/leader", {"name": name, "task": "Coordinate work"})
         self.assertEqual(code, 200, created)
@@ -84,10 +93,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
                     "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
                     "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant", "git_branches",
-                    "domains", "usage_scanned_at"}
-        state = self.state()
+                    "domains", "usage_scanned_at", "usage_error"}
+        state = self.scanned_state()
         self.assertEqual(set(state), expected)
         self.assertEqual(state["usage_scanned_at"], self.clock.isoformat())
+        self.assertIsNone(state["usage_error"])
         self.assertEqual(state["domains"], {"version": 0, "paths": {}})
 
         self.assertEqual(set(state["project"]), {"name", "display_name", "root", "theme"})
@@ -100,7 +110,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(state['native_approvals'], [])
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
-            "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
+            "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "channel_queued_id", "member_ids",
             "model", "effort", "speed", "applied", "activity", "context", "where", "codex", "codex_older", "dispatches",
             "pinned", "runtime", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
             "member_defaults", "color", "avatar_version"})
@@ -119,11 +129,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertIsNone(state['git_assistant'])
         self.assertNotIn('is_git_admin', leader)
         self.clock += dt.timedelta(seconds=59)
-        landing = self.state(None)
+        landing = self.scanned_state(None)
         self.assertEqual(set(landing), expected)
         self.assertEqual(landing["usage_scanned_at"], state["usage_scanned_at"])
         self.clock += dt.timedelta(seconds=1)
-        self.assertEqual(self.state()["usage_scanned_at"], self.clock.isoformat())
+        self.assertEqual(self.scanned_state()["usage_scanned_at"], self.clock.isoformat())
         self.assertIsNone(landing["project"])
         self.assertIsNone(landing['git_assistant'])
         self.assertEqual(landing["channel"], {"unread": 0, "latest_id": 0, "digesting": False, "digest_error": None, "digest_id": None})
@@ -342,7 +352,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                           ended_at=None, exit_code=None,pid=os.getpid(),pid_created=codex_runtime.process_identity(os.getpid()))
         records.append(leader_run)
         self.write(self.runs, records)
-        state = self.state()
+        state = self.scanned_state()
         self.assertEqual([row["id"] for row in state["leaders"][0]["codex"]], ["leader-run"])
         members = {member["session_id"]: member for member in state["members"]}
         self.assertEqual({sid: row["where"] for sid, row in members.items()},
@@ -552,7 +562,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                     "credits": {"balance": "0"}, "plan_type": "pro"}}})
         # Quotas are account wide even when the recording belongs to another directory.
         self.rollout("outside", str(self.root / "other"), records=records)
-        limits = self.state()["limits"]
+        limits = self.scanned_state()["limits"]
         self.assertEqual(limits["codex"], {"used_percent": 42, "resets_at": "2026-10-21T09:00:00.000Z",
                                         "captured_at": "2026-10-21T07:59:00.000Z", "expired": False})
         self.clock += dt.timedelta(hours=1)
@@ -566,7 +576,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
     def test_claude_crew_week_state_shape_and_usage_contract(self):
         self.week_limit((self.clock + dt.timedelta(days=1)).isoformat())
         self.main_file([assistant("crew-leader")], session="s3")
-        crew = self.state(None)["limits"]["claude"]["seven_day"]["crew"]
+        crew = self.scanned_state(None)["limits"]["claude"]["seven_day"]["crew"]
         self.assertEqual(set(crew), {"cost_usd", "points", "low", "high", "usd_per_point",
                                      "usd_per_point_range", "since"})
         self.assertAlmostEqual(crew["cost_usd"], 0.01275)
@@ -587,42 +597,42 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         path = self.main_file([assistant("first-crew-request")], session="s3")
         with mock.patch.object(usage, "crew_weekly", wraps=usage.crew_weekly) as estimate, \
                 mock.patch.object(usage, "scan", wraps=usage.scan) as scan:
-            first = self.state()["limits"]["claude"]["seven_day"]["crew"]
+            first = self.scanned_state()["limits"]["claude"]["seven_day"]["crew"]
             self.write(path, [assistant("second-crew-request", seconds=20, tool="second-tool")], append=True)
             self.clock += dt.timedelta(seconds=59)
-            self.assertEqual(self.state()["limits"]["claude"]["seven_day"]["crew"], first)
+            self.assertEqual(self.scanned_state()["limits"]["claude"]["seven_day"]["crew"], first)
             self.assertEqual((scan.call_count, sum(not call.kwargs['receipts_only'] for call in scan.call_args_list), estimate.call_count), (2, 1, 1))
             self.clock += dt.timedelta(seconds=1)
-            updated = self.state()["limits"]["claude"]["seven_day"]["crew"]
+            updated = self.scanned_state()["limits"]["claude"]["seven_day"]["crew"]
             self.assertAlmostEqual(updated["cost_usd"], first["cost_usd"] * 2)
             self.assertEqual((scan.call_count, sum(not call.kwargs['receipts_only'] for call in scan.call_args_list), estimate.call_count), (3, 2, 2))
 
     def test_claude_crew_missing_unknown_or_expired_window_is_omitted(self):
-        self.assertIsNone(self.state()["limits"]["claude"]["seven_day"])
+        self.assertIsNone(self.scanned_state()["limits"]["claude"]["seven_day"])
         for reset, percent in ((None, 25), ((self.clock + dt.timedelta(days=1)).isoformat(), None),
                                (self.clock.isoformat(), 25)):
             with self.subTest(reset=reset, percent=percent):
                 self.week_limit(reset, percent)
                 self.service.scanned_at = None
-                self.assertNotIn("crew", self.state()["limits"]["claude"]["seven_day"])
+                self.assertNotIn("crew", self.scanned_state()["limits"]["claude"]["seven_day"])
 
     def test_claude_crew_expiry_and_new_window_do_not_reuse_previous_cache(self):
         self.week_limit((self.clock + dt.timedelta(seconds=5)).isoformat())
         with mock.patch.object(usage, "crew_weekly", wraps=usage.crew_weekly) as estimate:
-            self.assertIn("crew", self.state()["limits"]["claude"]["seven_day"])
+            self.assertIn("crew", self.scanned_state()["limits"]["claude"]["seven_day"])
             self.clock += dt.timedelta(seconds=6)
-            self.assertNotIn("crew", self.state()["limits"]["claude"]["seven_day"])
+            self.assertNotIn("crew", self.scanned_state()["limits"]["claude"]["seven_day"])
             self.week_limit((self.clock + dt.timedelta(days=7)).isoformat())
-            self.assertNotIn("crew", self.state()["limits"]["claude"]["seven_day"])
+            self.assertNotIn("crew", self.scanned_state()["limits"]["claude"]["seven_day"])
             self.assertEqual(estimate.call_count, 1)
             self.clock += dt.timedelta(seconds=54)
-            self.assertIn("crew", self.state()["limits"]["claude"]["seven_day"])
+            self.assertIn("crew", self.scanned_state()["limits"]["claude"]["seven_day"])
             self.assertEqual(estimate.call_count, 2)
 
     def test_claude_crew_unpriced_request_keeps_null_contract(self):
         self.week_limit((self.clock + dt.timedelta(days=1)).isoformat())
         self.main_file([assistant("unpriced-crew-request", model="unpriced")], session="s3")
-        crew = self.state()["limits"]["claude"]["seven_day"]["crew"]
+        crew = self.scanned_state()["limits"]["claude"]["seven_day"]["crew"]
         for field in ("cost_usd", "points", "low", "high"):
             self.assertIsNone(crew[field], field)
         self.assertEqual(crew["usd_per_point_range"], [16, 27])

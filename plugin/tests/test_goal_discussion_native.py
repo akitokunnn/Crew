@@ -64,7 +64,7 @@ class GoalDiscussionNativeTests(GoalFixture):
 
     def test_native_response_preserves_delivery_and_then_uses_fresh_requirement_after_amend(self):
         accepted, report, execution = self.prepared('codex')
-        journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'))
+        journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'), None)
         with mock.patch('crew.codex_runtime._ObservedClient', FakeClient):
             running = codex_runtime.CodexRunning(self.home, PLUGIN, board.session(self.conn, 'chief-id'),
                 {'agent': None}, {'model': None, 'effort': None}, journal, None, execution=execution)
@@ -92,7 +92,7 @@ class GoalDiscussionNativeTests(GoalFixture):
 
     def test_discussion_command_approval_keeps_guard_and_edit_requires_amend(self):
         accepted, _, execution = self.prepared('codex')
-        journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'))
+        journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'), None)
         with mock.patch('crew.codex_runtime._ObservedClient', FakeClient):
             running = codex_runtime.CodexRunning(self.home, PLUGIN, board.session(self.conn, 'chief-id'),
                 {'agent': None}, {'model': None, 'effort': None}, journal, None, execution=execution)

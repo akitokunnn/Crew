@@ -22,6 +22,7 @@ class ControlMixin:
             if subtype == "get_settings" and response["subtype"] == "success":
                 applied = response["response"]["applied"]
                 current.applied = {"model": applied["model"], "effort": applied["effort"]}
+                current.journal.changed()
             elif subtype == "get_context_usage" and response["subtype"] == "success":
                 usage = response["response"]
                 current.context = {"used": usage["totalTokens"], "max": usage["maxTokens"], "source": "live"}

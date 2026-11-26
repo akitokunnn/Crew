@@ -5,7 +5,7 @@ channel's (docs/WAR_ROOM_DESIGN.md). ``actor`` is a leader's session id or ``boa
 """
 import json
 
-from . import board, channel
+from . import board, change_feed, channel
 
 TITLE_LIMIT, GOAL_LIMIT, ITEM_LIMIT, CONTRACT_LIMIT = 30, 200, 60, 8000
 ITEM_STATES = {'todo': '待办', 'doing': '进行中', 'blocked': '阻塞', 'done': '完成'}
@@ -70,6 +70,17 @@ def _name(conn, session_id):
     return row['crew_name'] if row is not None else session_id
 
 
+def _touch(conn, room_id, project_name):
+    """Readers of this room (its page, the channel's room list) take its new card."""
+    change_feed.touch(conn, 'war_room', project_name, room_id)
+
+
+def change_value(conn, project_name, room_id):
+    """The room's card as `rooms` lists it, or None once it is gone or belongs elsewhere."""
+    row = conn.execute('SELECT * FROM war_rooms WHERE id=? AND project=?', (room_id, project_name)).fetchone()
+    return None if row is None else _card(conn, dict(row), board.HUMAN)
+
+
 def _source(actor):
     return 'web' if actor == board.HUMAN else 'crew'
 
@@ -127,6 +138,7 @@ def start(conn, project_name, actor, title, goal, member_names, from_message=Non
     first = _post(conn, room, actor, '作战室开了。目标：%s。%s成员之间直接 @，各自把负责的那块写进状态板；'
                   '需要用户定的告诉牵头 %s。' % (goal, origin, names[0]), to=invited, now=now)
     _event(conn, room_id, actor, 'opened', {'members': names}, now)
+    _touch(conn, room_id, project_name)
     return {**get(conn, room_id, actor), 'first_message': first}
 
 
@@ -153,6 +165,7 @@ def change_members(conn, room_id, actor, add=(), remove=(), now=None):
             '、'.join(added), room['goal']), to=added, now=now)
     if added or removed:
         _event(conn, room_id, actor, 'members', {'added': added, 'removed': removed}, now)
+        _touch(conn, room_id, room['project'])
     return get(conn, room_id, actor)
 
 
@@ -198,6 +211,7 @@ def set_item(conn, room_id, actor, title=None, owner=None, status=None, note=Non
                                           'was': None if before is None else before['status'], 'note': item['note'],
                                           'owner': None if item['owner_session_id'] is None else
                                           _name(conn, item['owner_session_id'])}, now)
+    _touch(conn, room_id, room['project'])
     return _item(conn, item)
 
 
@@ -213,6 +227,7 @@ def set_contract(conn, room_id, actor, text, expected_updated_at=None, now=None)
     conn.execute('UPDATE war_rooms SET contract=?,contract_updated_at=?,contract_updated_by=? WHERE id=?',
                  (text, board._time(now), actor, room_id))
     _event(conn, room_id, actor, 'contract', {'length': len(text)}, now)
+    _touch(conn, room_id, room['project'])
     return get(conn, room_id, actor)['contract']
 
 
@@ -226,6 +241,7 @@ def decide(conn, room_id, actor, question, options=(), recommendation=None, now=
                                         options, recommendation, now=now)
     conn.execute('INSERT INTO war_room_decisions(decision_id,room_id) VALUES(?,?)', (decision_id, room_id))
     _event(conn, room_id, actor, 'decision', {'id': decision_id, 'question': question}, now)
+    _touch(conn, room_id, room['project'])
     return _decision(conn, decision_id)
 
 
@@ -248,6 +264,7 @@ def close(conn, room_id, actor, summary, now=None):
             board._queue_leader_notice(conn, member['session_id'], '作战室 #%d《%s》已收尾，结论：%s。回到原岗位继续你自己的任务。' % (
                 room_id, room['title'], summary), _source(actor), now, wake=False)
     _event(conn, room_id, actor, 'closed', {'summary': summary}, now)
+    _touch(conn, room_id, room['project'])
     return get(conn, room_id, actor)
 
 
@@ -268,8 +285,9 @@ def _latest(conn, room_id):
 
 @board.atomic
 def mark_read(conn, room_id, reader, message_id=None, now=None):
-    _room(conn, room_id)
+    room = _room(conn, room_id)
     mark_seen(conn, room_id, reader, _latest(conn, room_id) if message_id is None else message_id, now)
+    _touch(conn, room_id, room['project'])
     return {'read_id': _read_id(conn, room_id, reader), 'unread': _unread(conn, room_id, reader)}
 
 

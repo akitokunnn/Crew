@@ -1,8 +1,10 @@
 "use strict";
 (() => {
   const $ = id => document.getElementById(id);
-  let mounted=null, opened=false, loading=false, timer=null, toastTimer=null, assistantSession=null, note=null, notePrefill=false;
+  let mounted=null, opened=false, loading=false, timer=null, toastTimer=null, assistantSession=null, note=null, notePrefill=false, opening=null, lastState=null;
   const NOTE_OPENING="帮我把这个想法想清楚";
+  // "助手开局" on a blank workspace opens #opening=<project>: the intent is written into the composer, nothing is sent.
+  const OPENING=name=>`我想在工作区「${name}」开局，请你来起盘：先问我 2–3 个关键问题，对齐目标、范围和优先级；再给出领域划分、各领域的 leader 编制（载体与模型）和首批任务清单。等我确认方案后再创建和启动，先不要直接动手。`;
   const systemTheme=matchMedia("(prefers-color-scheme: dark)");
   function theme(){let selected="system";if(!window.crewDesktopTheme)try{selected=localStorage.getItem("crew.theme")||selected;}catch{}document.documentElement.dataset.theme=selected==="system"?(systemTheme.matches?"dark":"light"):selected;}
   theme();systemTheme.addEventListener("change",theme);window.addEventListener("storage",theme);window.addEventListener("crew:theme-change",theme);
@@ -40,9 +42,10 @@
     try {
       if(!opened){await api("/api/assistant/open",{});opened=true;}
       const state=await api("/api/assistant/state");assistantSession=state.assistant.session_id;CrewSound.observe(state.sounds,state.now);overview(state);error("");
-      const identity=state.assistant.session_id;
+      const identity=state.assistant.session_id;lastState=state;
       if(mounted!==identity){CrewChat.unmount();CrewChat.mount({host:$("assistant-chat"),session:state.assistant,state,api,toast,onRouted:()=>{},onNoteCleared:dropNote});mounted=identity;attachNote();}
       else CrewChat.update(state);
+      attachOpening();
     }catch(failure){error(failure.message||"暂时连不上助手");}
     finally{loading=false;timer=setTimeout(refresh,4000);}
   }
@@ -60,8 +63,16 @@
     if(!found){toast("没有找到这条想法，可能已被删除。");dropNote();return;}
     note={id,title:found.title||found.text.split("\n").map(line=>line.trim()).find(Boolean)};notePrefill=true;attachNote();
   }
-  window.addEventListener("hashchange",()=>{void readNote();});
+  function readOpening(){const project=new URLSearchParams(location.hash.slice(1)).get("opening");if(project){opening=project;attachOpening();}}
+  function attachOpening(){
+    if(opening===null||mounted===null||lastState===null)return;
+    const name=opening,found=(lastState.projects||[]).find(item=>item.name===name);opening=null;
+    history.replaceState(null,"",location.pathname+location.search);
+    if(!found){toast(`没有找到工作区「${name}」，可能已被移除。`);return;}
+    if(!CrewChat.prefill(OPENING(found.display_name||found.name)))toast("输入框里有未发送的内容，开局说明没有覆盖它；发送或清空后再点一次“让助手开局”。");
+  }
+  window.addEventListener("hashchange",()=>{void readNote();readOpening();});
   $("assistant-prompts").onclick=()=>{const dialog=document.createElement("dialog");dialog.className="personal-notes-dialog assistant-prompts-dialog";dialog.innerHTML='<header><h2>助手行为配置</h2><button class="btn ghost" data-close aria-label="关闭行为配置">×</button></header><div data-prompts></div>';document.body.append(dialog);dialog.showModal();const cleanup=CrewBehaviorPrompts.mount(dialog.querySelector('[data-prompts]'),{read:query=>api("/api/behavior-prompts?"+new URLSearchParams(query)),save:body=>api("/api/behavior-prompts",body),session:assistantSession});const close=()=>{cleanup();dialog.close();dialog.remove();};dialog.querySelector('[data-close]').onclick=close;dialog.oncancel=event=>{event.preventDefault();close();};};
   $("assistant-notes").onclick=()=>CrewPersonalNotes.create({api}).open();
-  (async()=>{if(window.CrewAccess && !await CrewAccess.ready)return;$("assistant-prompts").hidden=Boolean(window.CrewAccess&&!CrewAccess.local_controls);CrewChat.initFiles(api,toast);void refresh();void readNote();})();
+  (async()=>{if(window.CrewAccess && !await CrewAccess.ready)return;$("assistant-prompts").hidden=Boolean(window.CrewAccess&&!CrewAccess.local_controls);CrewChat.initFiles(api,toast);readOpening();void refresh();void readNote();})();
 })();

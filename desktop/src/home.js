@@ -221,6 +221,18 @@ $('refresh').addEventListener('click', () => action(refresh));
 // Shortcut into “设置 → 后台与运维 → 连接与目录”: add a LAN host here, or preview switching back from one.
 $('connection-switch').addEventListener('click', () => { void window.CrewHomeSettings.show('backend', {launch:remote ? 'local' : 'pair'}); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('create-panel').hidden && !busy) closeCreate(); });
+// First-run guide: its last step hands over to the same open / create flows as the menu and tray.
+function openOnboarding() {
+  return window.CrewOnboarding.open({onWorkspace:next => { homeActions.push(next); void flushHomeActions(); },
+    onClose:() => { if (!busy && $('create-panel').hidden) $('existing').focus({preventScroll:true}); }});
+}
+window.CrewHomeOnboarding = {open:openOnboarding};
+async function maybeOnboard(state) {
+  // Only this computer's own first start, before any workspace exists, asks the backend at all.
+  if (remote || state.pendingAction || state.projects.length) return;
+  const {status} = await window.crewDesktop.onboardingGet();
+  if (window.CrewOnboarding.shouldOpen({remote, projects:state.projects.length, pendingAction:state.pendingAction || null, status})) openOnboarding();
+}
 async function finishStartup(state) {
   await window.crewDesktop.ready({ projects: state.projects.length, nodeAvailable: typeof require !== 'undefined',
     bridgeMethods: Object.keys(window.crewDesktop), title: document.title });
@@ -318,7 +330,7 @@ function applyConnection(state) {
   if (recovered && homeReady) void action(refresh);
 }
 if (remote) window.crewDesktop.onConnection(applyConnection);
-(remote ? window.crewDesktop.connection().then(applyConnection) : Promise.resolve()).then(refresh).then(finishStartup, async error => {
+(remote ? window.crewDesktop.connection().then(applyConnection) : Promise.resolve()).then(refresh).then(async state => { await finishStartup(state); await maybeOnboard(state); }, async error => {
   failure(error);
   // The persistent picker must still receive native menu actions after a failed first refresh.
   await finishStartup({ projects:[] });

@@ -226,9 +226,9 @@
 | 归属 | 位置 | 要做的事 |
 | --- | --- | --- |
 | 主会话（合并时留意） | `plugin/crew/web.py` 的 `STATIC` | 本分支已加一行 `/channel.css`；若主会话统一管静态表，按原样保留或挪到统一位置 |
-| 增量事件流 | `web_service/workers.py` | 本分支把 `deliver_notices` 的通知投递与代发委托给 `chat_delivery`；rebase 时以本分支为准，事件生产写在 `chat_delivery` 的这几处 |
-| 增量事件流 | `change_feed` 生产点 | 登记 `channel_message` 类实体，在同一事务里 `updated` 整条发言（`channel._message` 的结果）：`channel.post`、`channel.settle`、`chat_delivery.claim_for_hook`（钩子认领）、`deliver_leader_notices` 里 `mark_notice_sent` 之后、`note_waiting` 实际改了行时；前端 `CrewChannel.update` 收到后按 id 合并即可，不必整页刷新 |
-| 增量事件流 | `app.js` 数据层 / 侧栏 | leader 行显示 `notices_pending`（“N 条通知排队中”），点击 `openChannel()` 定位到最早一条排队点名 |
+| 增量事件流（**已接线**，第 4 轮） | `web_service/workers.py` | 合并时以本分支结构为准：投递与代发留在 `chat_delivery`，`workers.py` 只加回增量记录线程 |
+| 增量事件流（**已接线**，第 4 轮） | `change_feed` 生产点 | 登记 `channel_message`（页面类 kind，值为 `channel.listed_message`，即 `/api/channel` 列出的整条发言）。按事件流的“只记失效、发送前现算”实现：`deliver_leader_notices` 的 `mark_notice_sent` / `note_waiting` 是自动提交的单句、不在 `board.transaction` 里，所以投递列（`sent_at`、`delivered_via`、`waiting`）的变化由 `leader_notices` 的更新触发器标记（同时覆盖 `claim_for_hook`），`chat_delivery.py` 未改；`channel.post` 的 `reply_to` 与 `channel.settle` 直接标记被回复的发言。前端 `CrewChannel.changed` 按 id 替换已加载的发言，删除了按 leader 状态变化重读最新页的近似做法。见 `docs/EVENT_STREAM_DESIGN.md` 4.3、5.3、第 7 节 |
+| 增量事件流（**已接线**，第 4 轮） | `app.js` 数据层 / 侧栏 | leader 行在 `notices_pending > 0` 时显示“N 条通知排队中”；卡片新字段 `channel_queued_id` 不为空时可点，打开交流区并定位到最早一条排队点名（已在交流区时直接跳到该发言） |
 | 前端私聊（`chat.js` 归属方） | 私聊气泡 | 交流区转来的用户原话（`channel:<id>:` 开头的消息）和 `crew send` 消息显示同一套徽章；对方私聊底部加“待送达：交流区 #id”标记，交流区排队徽章的私聊按钮落到这里 |
 | 操作清单（R5） | `codex_tools.py` / `cli.py` | 本轮不需要改工具说明；`crew_channel` 的 JSON 自动多出 `queued_at`、`delivered_at`、`via`、`waiting`、`reply_id`，若清单对输出字段有登记，补上这五个 |
 | 操作清单（R5） | `hooks.py` 身份 | 钩子用“进程里有没有 `CREW_SESSION_ID`”判断外部会话并传 `carry_pending`；改成 MCP 令牌绑定身份时同步改这里，否则外部 leader 的待送点名会丢 |

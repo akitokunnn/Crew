@@ -9,13 +9,16 @@ from ..ops import executor, registry
 from ..ops.caller import HUMAN
 from ..ops.errors import OpError
 from ..ops.legacy import Content
+from ..web_service import events as change_events
 from . import admin, goals, sessions
 
 OP_PATH = '/api/op'
 # Not operations: the report preview worker's private protocol, the chat
 # event stream and the process health probe (design §8.14).
+# Server-sent streams hold the open HTTP response, so they are transport, not operations (registry design §8.14).
 TRANSPORT_GET = {'/api/admin/health': admin.get_admin_health,
-                 '/api/chat/events': sessions.get_chat_history_or_events}
+                 '/api/chat/events': sessions.get_chat_history_or_events,
+                 '/api/events': change_events.serve_events}
 
 
 def post_paths():

@@ -5,7 +5,7 @@ from . import report_preview
 
 
 GET_PATHS = frozenset((
-    '/api/access/context', '/api/state', '/api/projects', '/api/workspaces/activity',
+    '/api/access/context', '/api/state', '/api/snapshot', '/api/events', '/api/projects', '/api/workspaces/activity',
     '/api/assistant/state', '/api/personal/notes', '/api/personal/notes/recovery', '/api/personal/tags', '/api/personal/mindmap',
     '/api/goals', '/api/goal', '/api/goals/report', '/api/documents', '/api/comments',
     '/api/chat/history', '/api/chat/events', '/api/chat/file', '/api/session/avatar', '/api/files/content', '/api/files/download',

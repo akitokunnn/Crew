@@ -28,7 +28,7 @@ def task(subtype='task_started', **fields):
 class ClaudeChildEventTests(UsageFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
-        self.journal = chat.Journal(self.home / 'chat' / 'journal.jsonl')
+        self.journal = chat.Journal(self.home / 'chat' / 'journal.jsonl', None)
 
     def row(self):
         self.assertEqual(len(self.journal.subagents), 1)
@@ -37,7 +37,7 @@ class ClaudeChildEventTests(UsageFixture, unittest.TestCase):
     def test_agent_and_legacy_task_foreground_calls_share_task_rows_and_replay_is_idempotent(self):
         for name in ('Agent', 'Task'):
             with self.subTest(name=name):
-                journal = chat.Journal(self.home / 'chat' / (name + '.jsonl'))
+                journal = chat.Journal(self.home / 'chat' / (name + '.jsonl'), None)
                 journal.consume(call(name=name))
                 journal.consume(call(name=name))
                 self.assertEqual(len(journal.subagents), 1)
@@ -45,7 +45,7 @@ class ClaudeChildEventTests(UsageFixture, unittest.TestCase):
                 journal.consume(result())
                 journal.consume(result())
                 self.assertEqual(next(iter(journal.subagents.values()))['status'], 'succeeded')
-                self.assertEqual(chat.Journal(journal.path).subagents, journal.subagents)
+                self.assertEqual(chat.Journal(journal.path, None).subagents, journal.subagents)
 
     def test_background_launch_receipt_and_parent_finish_do_not_finish_child(self):
         self.journal.consume(call(background=True))
@@ -71,7 +71,7 @@ class ClaudeChildEventTests(UsageFixture, unittest.TestCase):
         self.journal.consume(task('task_progress', description='界面' * 100))
         self.assertLessEqual(len(self.row()['task_name']), 48)
         self.assertTrue(self.row()['task_name'].endswith('…'))
-        self.assertEqual(chat.Journal(self.journal.path).subagents, self.journal.subagents)
+        self.assertEqual(chat.Journal(self.journal.path, None).subagents, self.journal.subagents)
 
     def test_foreground_moved_to_background_requires_notification_even_without_structured_output(self):
         self.journal.consume(call())
@@ -103,7 +103,7 @@ class ClaudeChildEventTests(UsageFixture, unittest.TestCase):
         self.journal.consume(call(background=True))
         self.journal.consume(result(status='async_launched'))
         self.assertEqual(self.row()['native_task_id'], 'agent-1')
-        self.assertEqual(chat.Journal(self.journal.path).subagents, self.journal.subagents)
+        self.assertEqual(chat.Journal(self.journal.path, None).subagents, self.journal.subagents)
         done = task('task_notification', status='completed', summary='完成')
         done.pop('tool_use_id')
         self.journal.consume(done)
@@ -121,7 +121,7 @@ class ClaudeChildEventTests(UsageFixture, unittest.TestCase):
     def test_reconnect_restores_aliases_and_waits_for_current_native_evidence(self):
         self.journal.consume(call(background=True))
         self.journal.consume(task(is_backgrounded=True))
-        restored = chat.Journal(self.journal.path)
+        restored = chat.Journal(self.journal.path, None)
         restored.bind_claude_subagents('native-cc')
         restored.consume({'type': 'system', 'subtype': 'init', 'session_id': 'native-cc'})
         self.assertEqual(next(iter(restored.subagents.values()))['status'], 'unknown')
