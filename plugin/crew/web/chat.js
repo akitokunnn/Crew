@@ -28,9 +28,10 @@
     const level = value.ratio === null ? "unknown" : value.ratio >= CONTEXT_DANGER ? "danger" : value.ratio >= CONTEXT_WARN ? "warn" : "calm";
     const text = value.percent !== null ? `${value.percent}%` : value.used !== null ? tokens(value.used) : "";
     const caption = text ? `<span class="context-pct" aria-hidden="true">${escape(text)}</span>` : "";
+    const action = target.showAction ? `<span class="context-action-label" aria-hidden="true">${phase === "queued" ? "等待压缩" : phase ? "压缩中" : "压缩上下文"}</span>` : "";
     const state = phase === "queued" ? " is-queued" : phase ? " is-compacting" : target.failed ? " has-failed" : "";
     // Data attributes stay identical across states so a re-render keeps keyboard focus on the ring.
-    return `<button type="button" class="context-ring ${level}${state}" data-act="context-compact" data-id="${escape(target.id)}" title="${escape(label)}" aria-label="${escape(label)}" ${phase ? 'aria-busy="true" aria-disabled="true"' : ""}><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7.5"/>${value.ratio === null ? "" : `<circle class="context-arc" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="${Math.min(100, value.ratio * 100)} 100"/>`}</svg>${caption}</button>`;
+    return `<button type="button" class="context-ring ${level}${state}" data-act="context-compact" data-id="${escape(target.id)}" title="${escape(label)}" aria-label="${escape(label)}" ${phase ? 'aria-busy="true" aria-disabled="true"' : ""}><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7.5"/>${value.ratio === null ? "" : `<circle class="context-arc" cx="10" cy="10" r="7.5" pathLength="100" stroke-dasharray="${Math.min(100, value.ratio * 100)} 100"/>`}</svg>${caption}${action}</button>`;
   }
   // A freshly resumed Codex thread reports no size before compaction.
   const compactSize = value => value === null ? "未知" : tokens(value);

@@ -17,6 +17,11 @@
 .git-read-meta{display:block;font-size:calc(11px * var(--fs));color:var(--text-3);margin-top:3px}.git-head>.right{gap:8px}
 
 .head.git-head{height:auto;min-height:76px;flex-wrap:wrap;padding-top:12px;padding-bottom:12px}.git-head>div:first-child{flex:1 1 220px;min-width:0}.git-head .title{overflow-wrap:anywhere}.git-head>.right{max-width:100%;flex-wrap:wrap;justify-content:flex-end}
+.git-assistant-title{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px}
+.git-assistant-title .context-ring{min-height:32px;padding:4px 8px}
+.git-assistant-title .context-ring:not(.is-compacting,.is-queued,.has-failed){box-shadow:inset 0 0 0 1px var(--line-strong)}
+.git-assistant-title .context-action-label{margin-inline-start:3px;color:var(--text);font-size:calc(12px * var(--fs));white-space:nowrap}
+@media(max-width:760px){.git-assistant-title .context-ring{min-height:44px}}
 
 
 .git-assistant-summary{display:flex;align-items:center;flex-wrap:wrap;gap:6px 18px;padding:12px 24px;font-size:calc(12px * var(--fs));color:var(--text-2);border-bottom:1px solid var(--line);flex:none}.git-assistant-branches{margin-right:auto}.git-assistant-branches b{color:var(--text);font-weight:500}.git-body{flex:1;min-height:0;display:flex}.git-body>#git-chat-host{flex:1;min-width:0;min-height:0}.git-body>.git-page{width:min(440px,42%);flex:none;overflow:auto;border-left:1px solid var(--line)}.git-body>.git-page>.git-page-in{padding:16px 18px 24px}.git-operation-error:empty{display:none}.git-operation-error .git-error{margin:8px 24px}@media(max-width:760px){.git-assistant-summary{padding:10px 12px;gap:6px 12px}}@media(max-width:999px){.git-body{flex-direction:column}.git-body>.git-page{width:auto;max-height:38vh;border-left:0;border-bottom:1px solid var(--line);order:-1}}

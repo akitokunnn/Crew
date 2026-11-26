@@ -1023,6 +1023,7 @@ const fixture={enabled:true,repository:'Demo',config:{base:'develop',integration
   integration:null,branches,requests,merged_hidden:11,last_fetch_at:null,pull_requests_at:'2026-11-09T00:58:00Z'};
 const colors=new Map([['侧栏 leader','#137f6d'],['归档 leader','#8844aa'],['另一位 leader','#a06020']]);
 const settings={project:'demo',root:'C:\\fixture\\demo\\',state:{git_assistant:assistant},chatAccess:()=>({readonly:false}),
+  contextControls:()=>'',replace:(element,markup)=>{element.innerHTML=markup;},
   api:async(route,body)=>{assert.equal(body,undefined);calls.push(route);return JSON.parse(JSON.stringify(fixture));},toast(){},
   leader:id=>id===visible.session_id?visible:undefined,
   avatar:(name,size)=>`<i data-avatar="${name}" data-size="${size}"></i>`,tint:name=>{assert(colors.has(name));return colors.get(name);}};
