@@ -3,6 +3,6 @@
 The user-facing domains register first; ``agents`` and ``agent_work`` then open
 operations to AI roles and add the AI-only ones.
 """
-from . import admin, board, confirmations, desktop_ipc, git, goals, personal, sessions, workspace  # noqa: F401
+from . import admin, board, confirmations, desktop_ipc, git, goals, personal, sessions, war_room, workspace  # noqa: F401
 from . import agents, agent_work  # noqa: F401  (must follow: they amend the operations above)
 from . import assistant_cover  # noqa: F401  (last: opens every remaining user operation to the assistant)

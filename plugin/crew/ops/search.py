@@ -37,7 +37,8 @@ def describe(op, caller, exposure='core'):
     how = ('用 crew_call 调用：op="%s"，args 按 params 填写' % op.name if caller.runtime == 'codex' and exposure == 'core'
            else '直接调用工具 %s' % op.tool_name)
     return {'op': op.name, 'tool': op.tool_name, 'summary': op.summary, 'when': op.description_for(caller),
-            'access': op.access, 'risk': RISK_NOTE[op.risk] or None, 'params': params, 'how': how}
+            'access': op.access,
+            'risk': (RISK_NOTE[op.risk] if op.risk != 'confirm' or caller.role == 'assistant' else '') or None, 'params': params, 'how': how}
 
 
 def search(ops, query, domain, caller, exposure='core'):

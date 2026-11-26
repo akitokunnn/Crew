@@ -29,6 +29,9 @@ DEVICE_BROWSER = frozenset((
     'tag.create', 'tag.merge', 'tag.pin', 'tag.recolor', 'tag.remove', 'tag.rename', 'tag.reorder', 'tags.list',
     'todo.list', 'todo.resolve', 'todo.undo', 'usage.export', 'usage.report', 'workspace.activity',
     'workspace.list', 'workspace.snapshot', 'workspace.state', 'workspace.theme.set',
+    # War rooms (docs/WAR_ROOM_DESIGN.md §6).
+    'war_room.close', 'war_room.contract', 'war_room.decide', 'war_room.get', 'war_room.item', 'war_room.list',
+    'war_room.mark_read', 'war_room.members', 'war_room.open', 'war_room.post',
 ))
 DEVICE_DESKTOP = frozenset((
     'interaction.list', 'interaction.resolve',
@@ -64,6 +67,9 @@ DEVICE_DESKTOP = frozenset((
     'workspace.register', 'workspace.remove', 'workspace.settings.get', 'workspace.snapshot', 'workspace.state',
     'workspace.theme.set',
     'workspace.update',
+    # War rooms (docs/WAR_ROOM_DESIGN.md §6).
+    'war_room.close', 'war_room.contract', 'war_room.decide', 'war_room.get', 'war_room.item', 'war_room.list',
+    'war_room.mark_read', 'war_room.members', 'war_room.open', 'war_room.post',
 ))
 
 # Operations-worker actions that only concern this computer's Crew HOME and deployment;

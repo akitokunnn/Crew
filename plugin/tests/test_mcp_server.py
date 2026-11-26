@@ -9,7 +9,7 @@ from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from crew import board, guard, hooks, runtimes, store, web
+from crew import board, guard, hooks, runtimes, store, war_room, web
 from crew.ops import guide, launch, registry, tokens
 from test_shell import NOW, PLUGIN, ShellFixture
 
@@ -282,6 +282,20 @@ class McpServerTests(ShellFixture, unittest.TestCase):
                 if role in op.scopes:
                     self.assertIn('`%s`' % op.tool_name, text)
 
+
+    def test_only_the_assistant_is_told_to_cite_the_user_message(self):
+        self.assertNotIn('message_id', guide.render('leader'))
+        self.assertIn('message_id', guide.render('assistant'))
+        token, _ = self.grant('s3', runtime='codex')  # Codex gets search results as a plain tool result
+        error, found = self.call(token, 'crew_search', {'query': '作战室状态板'})
+        self.assertFalse(error, found)
+        item = next(result for result in found['results'] if result['op'] == 'war_room.item')
+        self.assertIsNone(item['risk'])
+        # War room trial feedback: a new item carries no id, and the title limit is in the parameter itself.
+        self.assertIn('新增时不要带', item['params']['properties']['id']['description'])
+        self.assertEqual(item['params']['properties']['title']['maxLength'], war_room.ITEM_LIMIT)
+        self.assertIn('最多 %d 字' % war_room.ITEM_LIMIT, item['params']['properties']['title']['description'])
+        self.assertNotIn('project', item['params']['properties'])
 
 if __name__ == '__main__':
     unittest.main()

@@ -22,6 +22,7 @@
     domains: {field:"domains"},
     channel: {part:"channel", keys:["unread", "latest_id", "digest_id"]},
     channel_message: {page:"channel"},
+    war_room: {page:"war-room"},
     sound_settings: {part:"sounds", keys:["preferences", "revision", "catalog", "missing"]},
     limits: {part:null, keys:["limits", "usage_scanned_at", "usage_error"]},
     conversations: {part:null, keys:["leaders", "members", "attention", "native_approvals", "git_assistant", "git_branches", "candidates"]},

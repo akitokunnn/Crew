@@ -37,11 +37,12 @@ _WORKSPACE = 'workspace:'
 # every kind but `snapshot`, which is never sent: it makes every reader of the workspace start over.
 # `limits` is recorded with its value by the usage scan; every other kind is recorded as invalidated.
 # `channel_message` is not in the snapshot: it is one channel post, which the channel page replaces
-# when its delivery badges change (docs/MESSAGE_DELIVERY_DESIGN.md §12).
+# when its delivery badges change (docs/MESSAGE_DELIVERY_DESIGN.md §12). `war_room` is not in the snapshot either: a
+# war room's card, which its page and the channel's room list re-read (docs/WAR_ROOM_DESIGN.md §10).
 KINDS = {
     'todo': 'workspace', 'project': 'global', 'workspace': 'workspace', 'ai': 'global',
     'decision': 'workspace', 'goal': 'workspace', 'domains': 'workspace', 'channel': 'workspace',
-    'channel_message': 'workspace',
+    'channel_message': 'workspace', 'war_room': 'workspace',
     'sound_settings': 'global', 'limits': 'global',
     'conversations': 'workspace', 'channel_digest': 'workspace', 'sound_events': 'global',
     'runtimes': 'global', 'notification': 'global', 'scanner': 'global',
@@ -61,10 +62,11 @@ BUILDERS = {
     'domains': 'snapshot_values:domains',
     'channel': 'snapshot_values:channel',
     'channel_message': 'snapshot_values:channel_message',
+    'war_room': 'war_room:change_value',
     'sound_settings': 'snapshot_values:sound_settings',
 }
 # Logged entity ids are text; these kinds' builders take the integer id.
-INTEGER_ENTITIES = frozenset({'todo', 'decision', 'channel_message'})
+INTEGER_ENTITIES = frozenset({'todo', 'decision', 'channel_message', 'war_room'})
 # A task's or a decision's change also changes the conversation cards of its workspace: the leaders'
 # pending decisions and active tasks, and the attention list.
 DERIVED = {'goal': 'conversations', 'decision': 'conversations'}
