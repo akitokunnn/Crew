@@ -30,7 +30,7 @@ python -m compileall -q plugin/crew
 ```
 
 - 改前先在同一 worktree 跑一次得到 `py_before.log` / `js_before.log`；交付里给出改前、改后失败用例集合与差集（必须为空）。
-- 基线已知失败：`test_web_contract.FrontendChannelContractTests` 4 条 `CrewBrowser is not defined`（交接文档 3.1-3）。本会话在 `3fdfbec` 实测的全量结果记在 §5。
+- 基线已知失败：`test_web_contract.FrontendChannelContractTests` 4 条 `CrewBrowser is not defined`（交接文档 3.1-3）；`3fdfbec` 全量 2621 个用例只有这 4 个失败，详见 §5。
 
 ### 0.2 纯搬移核对脚本（主会话验收时也跑）
 
@@ -324,7 +324,7 @@ node -e "const fs=require('fs');const n=s=>s.replace(/\r\n/g,'\n');const a=n(fs.
 ## 5. 基线实测记录（`3fdfbec`，本会话 2026-11-27）
 
 - `node --test plugin/tests/test_*.js`：283 通过，0 失败，约 1 秒。
-- Python 全量：见下方结果行（本会话后台跑完后补记）。
+- Python 全量（`python -m unittest discover -s tests`，已清会话身份变量）：`Ran 2621 tests in 843.993s`，`FAILED (failures=4, skipped=14)`；4 个失败全部是 `test_web_contract.FrontendChannelContractTests`（`test_channel_assets_navigation_and_shared_markdown_renderer`、`test_channel_input_ime_multiselect_send_and_clear`、`test_channel_paging_refresh_and_bottom_read`、`test_channel_send_fetches_posts_arriving_during_request`），即交接文档所说的既有问题。墙钟约 14 分钟，每步全量请放后台跑。
 - `same_bodies.py` 自检：web.py 93 / chat.py 93 个定义，0 不一致。`same_route_blocks.py` 识别 154 个路由分支。
 
 ---
