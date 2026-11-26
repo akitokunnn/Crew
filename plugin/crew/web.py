@@ -166,6 +166,7 @@ POST_PATHS.update({'/api/messages', '/api/todo/resolve', '/api/todo/undo'})
 POST_PATHS.update({'/api/assistant/open', '/api/assistant/native-action'})
 POST_PATHS.update({'/api/personal/notes', '/api/personal/notes/start', '/api/behavior-prompts'})
 POST_PATHS.add('/api/personal/notes/recovery')
+POST_PATHS.update({'/api/personal/mindmap', '/api/personal/mindmap/preview', '/api/personal/mindmap/convert'})
 POST_PATHS.add('/api/personal/tags')
 POST_PATHS.update({'/api/goals/create', '/api/goals/action', '/api/goals/context', '/api/goals/agent', '/api/chat/interrupt', '/api/decision/discuss', '/api/decision/ready'})
 POST_PATHS.update({'/api/trust', '/api/comments', '/api/decision/clarify'})
@@ -260,6 +261,9 @@ STATIC['/global-rail.js'] = ('global-rail.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/voice.html': ('voice.html', 'text/html; charset=utf-8'),
                '/voice.js': ('voice.js', 'text/javascript; charset=utf-8'),
                '/voice.css': ('voice.css', 'text/css; charset=utf-8')})
+STATIC.update({'/mindmap.js': ('mindmap.js', 'text/javascript; charset=utf-8'),
+               '/mindmap-model.js': ('mindmap-model.js', 'text/javascript; charset=utf-8'),
+               '/mindmap.css': ('mindmap.css', 'text/css; charset=utf-8')})
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/leader-look.js'] = ('leader-look.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/architecture.js': ('architecture.js', 'text/javascript; charset=utf-8'),

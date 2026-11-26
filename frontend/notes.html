@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light dark"><title>想法 · Crew</title>
-  <link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/notes.css">
+  <link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/notes.css"><link rel="stylesheet" href="/mindmap.css">
   <script src="/access-context.js" defer></script>
   <script src="/browser-utils.js" defer></script>
   <script src="/themes.js" defer></script><script src="/global-rail.js" defer></script>
-  <script src="/notes-model.js" defer></script><script src="/notes.js" defer></script>
+  <script src="/notes-model.js" defer></script><script src="/mindmap-model.js" defer></script><script src="/mindmap.js" defer></script><script src="/notes.js" defer></script>
   <link rel="stylesheet" href="/mobile.css" media="(max-width:760px)"><link rel="stylesheet" href="/mobile-home.css" media="(max-width:760px)"><link rel="stylesheet" href="/mobile-chat.css" media="(max-width:760px)"><link rel="stylesheet" href="/mobile-pages.css" media="(max-width:760px)"><script src="/mobile-shell.js" defer></script>
 </head>
 <body class="notes-page">
@@ -16,8 +16,9 @@
     <header class="nw-head">
       <div><h1>想法</h1><p class="nw-sub">随手记下，定期回顾；准备好了去聊聊，或转成任务。</p></div>
       <div class="nw-head-acts">
+        <div class="nw-seg nw-layout" role="radiogroup" aria-label="想法的看法"><button type="button" role="radio" data-act="layout" data-value="wall" aria-checked="true" aria-label="卡片墙" title="卡片墙"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg><span>卡片墙</span></button><button type="button" role="radio" data-act="layout" data-value="map" aria-checked="false" aria-label="导图" title="导图"><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="9.5" width="6" height="5" rx="1.5"/><rect x="15.5" y="3.5" width="6" height="5" rx="1.5"/><rect x="15.5" y="15.5" width="6" height="5" rx="1.5"/><path d="M8.5 12H11M11 12c1.8 0 1.8-6 4.5-6M11 12c1.8 0 1.8 6 4.5 6"/></svg><span>导图</span></button></div>
         <button type="button" class="btn" id="nw-review" data-act="review" aria-keyshortcuts="R">回顾</button>
-        <button type="button" class="btn ghost" id="nw-select-mode" data-act="select-mode" aria-pressed="false">多选</button>
+        <button type="button" class="btn ghost nw-wall-only" id="nw-select-mode" data-act="select-mode" aria-pressed="false">多选</button>
         <button type="button" class="btn ghost nw-narrow-only" data-act="manage-tags">管理标签</button>
       </div>
     </header>
@@ -33,6 +34,7 @@
     <div class="nw-filters" id="nw-filters" role="group" aria-label="筛选与排序"></div>
     <div id="nw-error" class="nw-error" role="alert" hidden></div>
     <div id="nw-wall" class="nw-wall"></div>
+    <div id="nw-map" class="nw-map" hidden></div>
   </main>
   <aside class="nw-side" id="nw-side" aria-label="标签与归档"></aside>
   <div class="nw-bulk" id="nw-bulk" role="region" aria-label="批量操作" hidden></div>

@@ -68,6 +68,11 @@ def summary(conn, project):
 @board.atomic
 def apply(conn, project, ops, base_version=None, now=None):
     """Apply a batch of board edits in order; any invalid one rejects the whole batch."""
+    return apply_ops(conn, project, ops, base_version, now)
+
+
+def apply_ops(conn, project, ops, base_version=None, now=None):
+    """``apply`` inside the caller's transaction, for features that write the board together with their own rows."""
     board.project(conn, project)
     if base_version is not None:
         if type(base_version) is not int:

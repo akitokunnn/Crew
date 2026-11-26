@@ -12,6 +12,7 @@
   let loaded = false, view = M.parseHash(location.hash), selectMode = false, review = null, menu = null, toastTimer = null;
   let captureProject = view.ws, capturePending = null, suggest = null;
   const selected = new Set(), expanded = new Set(), starting = new Map();
+  let mindmap = null;
 
   const systemTheme = matchMedia("(prefers-color-scheme: dark)");
   function theme() { let selectedTheme = "system"; if (!window.crewDesktopTheme) try { selectedTheme = localStorage.getItem("crew.theme") || selectedTheme; } catch {} document.documentElement.dataset.theme = selectedTheme === "system" ? (systemTheme.matches ? "dark" : "light") : selectedTheme; }
@@ -90,6 +91,7 @@
     const wasWs = view.ws;
     view = {...view, ...patch};
     if (view.ws !== wasWs) captureProject = view.ws;
+    if (view.layout === "map") { selected.clear(); selectMode = false; }
     history.replaceState(null, "", location.pathname + location.search + M.toHash(view));
     render();
   }
@@ -178,7 +180,7 @@
       + `<button type="button" class="btn sm ghost-line" data-act="untagged" aria-pressed="${view.untagged}">无标签</button>`
       + `<select data-act="scope" aria-label="工作区"><option value="" ${scope === "" ? "selected" : ""}>全部工作区</option><option value="global" ${scope === "global" ? "selected" : ""}>全局</option>${allProjects.map(item => `<option value="ws:${esc(item.name)}" ${scope === `ws:${item.name}` ? "selected" : ""}>${esc(item.display_name || item.name)}</option>`).join("")}${view.ws !== null && !allProjects.some(item => item.name === view.ws) ? `<option value="ws:${esc(view.ws)}" selected>${esc(view.ws)}</option>` : ""}</select>`
       + `<select data-act="sort" aria-label="排序"><option value="updated" ${view.sort === "updated" ? "selected" : ""}>最近更新</option><option value="created" ${view.sort === "created" ? "selected" : ""}>创建时间</option><option value="discussed" ${view.sort === "discussed" ? "selected" : ""}>最近讨论</option></select>`
-      + `<div class="nw-seg" role="radiogroup" aria-label="分组"><button type="button" role="radio" aria-checked="${view.group === "time"}" data-act="group" data-value="time">按时间</button><button type="button" role="radio" aria-checked="${view.group === "stage"}" data-act="group" data-value="stage">按阶段</button></div>`
+      + `<div class="nw-seg nw-wall-only" role="radiogroup" aria-label="分组"><button type="button" role="radio" aria-checked="${view.group === "time"}" data-act="group" data-value="time">按时间</button><button type="button" role="radio" aria-checked="${view.group === "stage"}" data-act="group" data-value="stage">按阶段</button></div>`
       + `<select class="nw-narrow-only" data-act="view" aria-label="查看">${Object.entries(viewNames).map(([key, label]) => `<option value="${key}" ${view.view === key ? "selected" : ""}>${label}</option>`).join("")}</select>`
       + (filtered ? `<button type="button" class="btn sm ghost" data-act="clear-filters">清除筛选</button>` : "")
       + (view.view !== "open" ? `<span class="nw-viewing">正在看：${viewNames[view.view]}<button type="button" class="btn sm ghost" data-act="view-open">返回全部想法</button></span>` : "");
@@ -195,6 +197,8 @@
   function renderCaptureExtra() {
     const parts = [];
     if (captureProject !== null) parts.push(`<span class="nw-chip">工作区：${esc(projectName(captureProject))}<button type="button" data-act="capture-global" aria-label="改为全局想法">×</button></span>`);
+    const hang = view.layout === "map" ? mindmap.captureTarget() : null;
+    if (hang) parts.push(`<span class="nw-chip">记下后挂到「${esc(hang.title)}」下<button type="button" data-act="capture-detach" aria-label="只记下，不挂到导图">×</button></span>`);
     const auto = view.untagged ? [] : view.tags;
     if (auto.length) parts.push(`<span class="nw-auto">会自动带上 ${auto.map(name => `#${esc(name)}`).join(" ")}</span>`);
     $("nw-capture-extra").innerHTML = parts.join("");
@@ -211,7 +215,14 @@
     const count = M.counts(notes);
     $("nw-review").innerHTML = `回顾${count.stale ? `<b class="nw-badge">${count.stale}</b>` : ""}`;
     $("nw-review").title = count.stale ? `${count.stale} 条想法超过 ${staleDays} 天没动（R）` : "逐张回顾当前的想法（R）";
-    renderFilters(); renderSide(); renderCaptureExtra(); renderWall(); renderBulk();
+    for (const button of document.querySelectorAll('[data-act="layout"]')) button.setAttribute("aria-checked", String(button.dataset.value === view.layout));
+    const onMap = view.layout === "map";
+    document.body.classList.toggle("nw-map-mode", onMap);
+    $("nw-map").hidden = !onMap;
+    if (onMap && !mindmap.active()) mindmap.mount($("nw-map"));
+    if (!onMap && mindmap.active()) mindmap.unmount();
+    renderFilters(); renderSide(); renderCaptureExtra(); renderBulk();
+    if (onMap) mindmap.render(); else renderWall();
   }
 
   // ---- dialogs ----------------------------------------------------------------
@@ -641,17 +652,22 @@
     if (capturePending?.fingerprint !== fingerprint) capturePending = {fingerprint, id: window.CrewBrowser.requestId()};
     const button = $("nw-capture").querySelector("[type=submit]");
     button.disabled = true; status.textContent = "正在记下…";
-    try { await api("/api/personal/notes", {action: "capture", data, request_id: capturePending.id}); }
+    const hang = view.layout === "map" ? mindmap.captureTarget() : null;
+    let captured;
+    try { captured = await api("/api/personal/notes", {action: "capture", data, request_id: capturePending.id}); }
     catch (error) { status.textContent = `没记下：${error.message}（内容还在输入框里）`; button.disabled = false; input.focus(); return; }
     capturePending = null; input.value = ""; saveDraft(); resizeInput(); captureProject = view.ws;
     button.disabled = false; input.focus();
     await reload();
-    status.textContent = "已记下。不会因此启动 AI。";
+    if (hang) await mindmap.attach(captured.note.id);
+    status.textContent = hang ? `已记下，挂到「${hang.title}」下。不会因此启动 AI。` : "已记下。不会因此启动 AI。";
   });
 
   // ---- events -----------------------------------------------------------------------
   function target() {
     if (selected.size) return {kind: "notes", ids: [...selected]};
+    const mapped = view.layout === "map" ? mindmap.selectedNote() : null;
+    if (mapped) return mapped.state === "open" ? {kind: "notes", ids: [mapped.id]} : {kind: "filter"};
     const focused = document.activeElement?.closest?.("#nw-wall .nw-card");
     return focused && byId(focused.dataset.id).state === "open" ? {kind: "notes", ids: [focused.dataset.id]} : {kind: "filter"};
   }
@@ -694,6 +710,8 @@
     else if (act === "review") startReview();
     else if (act === "select-mode") { selectMode = !selectMode; if (!selectMode) selected.clear(); render(); }
     else if (act === "capture-global") { captureProject = null; renderCaptureExtra(); input.focus(); }
+    else if (act === "capture-detach") { mindmap.detachCapture(); renderCaptureExtra(); input.focus(); }
+    else if (act === "layout") setView({layout: control.dataset.value});
     else if (act === "expand") { if (expanded.has(note.id)) expanded.delete(note.id); else expanded.add(note.id); renderWall(); }
     else if (act === "promote") promoteDialog(note);
     else if (act === "recover") void recoverDialog(note);
@@ -724,11 +742,17 @@
   const visible = () => document.visibilityState === "visible" && window.crewTabVisible !== false;
   function onVisibility(event) {
     if (event.type === "crew-tab-visibility") window.crewTabVisible = event.detail.visible;
-    if (visible() && loaded) void refresh().then(render, error => showError(error.message));
+    if (visible() && loaded) void refresh().then(render, error => showError(error.message)).then(() => view.layout === "map" ? mindmap.refresh() : null);
   }
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("crew-tab-visibility", onVisibility);
 
+  mindmap = window.CrewMindmap.create({
+    api, esc, M, toast, dialog, head, formStatus, lockForm, editDialog, promoteDialog, recoverDialog, chatUrl, projectName, byId, tagInfo,
+    notes: () => notes, loaded: () => loaded, view: () => view, projects: () => projects, closeMenu: () => closeMenu(false),
+    openNoteMenu: (button, note) => { if (menu?.button === button) closeMenu(); else openMenu(button, note); },
+    onSelection: () => renderCaptureExtra()
+  });
   resizeInput();
   (async () => { if (window.CrewAccess && !await CrewAccess.ready) return; render(); await boot(); })();
 })();

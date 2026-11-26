@@ -3,8 +3,8 @@
 // and the URL hash. The server owns note state; nothing here writes.
 (() => {
   const DAY = 86400000;
-  const SORTS = ["updated", "created", "discussed"], GROUPS = ["time", "stage"], VIEWS = ["open", "stale", "promoted", "archived"];
-  const DEFAULTS = Object.freeze({tags: [], mode: "all", untagged: false, ws: null, global: false, sort: "updated", group: "time", view: "open"});
+  const SORTS = ["updated", "created", "discussed"], GROUPS = ["time", "stage"], VIEWS = ["open", "stale", "promoted", "archived"], LAYOUTS = ["wall", "map"];
+  const DEFAULTS = Object.freeze({tags: [], mode: "all", untagged: false, ws: null, global: false, sort: "updated", group: "time", view: "open", layout: "wall"});
   const STAGES = [["new", "新想法"], ["discussed", "讨论过"], ["promoted", "已转任务"]];
 
   const firstLine = text => text.split("\n").map(line => line.trim()).find(Boolean) || "";
@@ -27,6 +27,7 @@
     if (SORTS.includes(params.get("sort"))) state.sort = params.get("sort");
     if (GROUPS.includes(params.get("group"))) state.group = params.get("group");
     if (VIEWS.includes(params.get("view"))) state.view = params.get("view");
+    if (LAYOUTS.includes(params.get("layout"))) state.layout = params.get("layout");
     return state;
   }
   function toHash(state) {
@@ -36,7 +37,7 @@
     if (state.untagged) params.set("untagged", "1");
     if (state.ws !== null) params.set("ws", state.ws);
     else if (state.global) params.set("global", "1");
-    for (const key of ["sort", "group", "view"]) if (state[key] !== DEFAULTS[key]) params.set(key, state[key]);
+    for (const key of ["sort", "group", "view", "layout"]) if (state[key] !== DEFAULTS[key]) params.set(key, state[key]);
     const text = params.toString();
     return text ? "#" + text : "";
   }
