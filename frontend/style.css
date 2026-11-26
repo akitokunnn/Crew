@@ -789,13 +789,7 @@ button.tool.indent,button.mline.indent{width:calc(100% - 42px)}
 
 /* Application structure uses native buttons for every action. */
 .brand-logo{display:block;width:28px;height:28px;flex:none;color:var(--accent)}
-.brand-logo svg,.workspace-logo svg,.project-logo svg{display:block;width:100%;height:100%}
-.workspace-logo{display:inline-block;width:42px;height:42px;color:var(--accent)}
-.project-entry{--project-accent:var(--project-accent-light);--project-text:var(--project-text-light);gap:12px;text-decoration:none;color:var(--text);border-left:3px solid var(--project-accent)}
-.project-logo{display:block;width:28px;height:28px;flex:none;color:var(--project-accent)}
-.project-theme-name{font-size:calc(12px * var(--fs));color:var(--project-text)}
-:root[data-theme="dark"] .project-entry{--project-accent:var(--project-accent-dark);--project-text:var(--project-text-dark)}
-@media(prefers-color-scheme:dark){:root:not([data-theme="light"]) .project-entry{--project-accent:var(--project-accent-dark);--project-text:var(--project-text-dark)}}
+.brand-logo svg{display:block;width:100%;height:100%}
 .heading-meta{min-width:0}
 .theme-button{margin-left:auto}
 button.quota{width:100%;text-align:left;color:inherit;cursor:pointer}
@@ -817,8 +811,6 @@ a.btn{color:inherit;text-decoration:none}
 .m-back,#m-tabbar,#m-sheet,#m-sheet-backdrop{display:none}
 .workspace-home{width:min(560px,100%);margin:auto;padding:15vh 24px 40px}
 .workspace-home h1{font-size:var(--fs-xl);font-weight:500}
-.workspace-home a.li{color:inherit;text-decoration:none}
-.workspace-home a.li:hover{background:var(--hover)}
 .error-line{color:var(--danger);font-size:calc(13px * var(--fs));line-height:1.6;overflow-wrap:anywhere}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .qq-meta{opacity:1}
