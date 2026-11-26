@@ -136,6 +136,21 @@
 })();
 (() => {
   const markdown = window.markdownit({ html: false, breaks: true, linkify: true });
+  const messageLists = window.markdownit("zero", {breaks:true}).enable(["list", "newline", "fence", "code"]);
+  messageLists.renderer.rules.list_item_open = (tokens, index, options, env, renderer) => {
+    const token = tokens[index];
+    if (/^\d+$/.test(token.info)) token.attrSet("value", token.info);
+    return renderer.renderToken(tokens, index, options);
+  };
+  function userText(text) {
+    if (/^ {0,3}(?:\d{1,9}[.)]|[-+*])[ \t]+\S/m.test(text)) {
+      const tokens = messageLists.parse(text, {});
+      if (tokens.some(token => token.type === "list_item_open")) {
+        return `<div class="message-text message-lists">${messageLists.renderer.render(tokens, messageLists.options, {})}</div>`;
+      }
+    }
+    return `<span class="message-text">${escape(text).replace(/\n/g, "<br>")}</span>`;
+  }
   // Same rule as notifications.cjk_bold: "**标题：**正文" is not bold under CommonMark, so move the punctuation outside.
   const BOLD_PUNCT = String.raw`\u2010-\u2027\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65.,:;!?()\[\]"'`;
   const BOLD_TAIL = new RegExp(`\\*\\*([^*\\n]+?)([${BOLD_PUNCT}]+)\\*\\*(?=[^\\s*${BOLD_PUNCT}])`, 'g');
@@ -438,7 +453,7 @@
     const hasContent = context.input.value.trim().length > 0 || context.cache.images.length > 0;
     context.send.disabled = context.loading || context.cache.sending || !hasContent;
     const external = context.session.where === "vscode";
-    context.hint.textContent = context.busy || context.cache.sending ? "" : external ? "会话仍在原工具中；退出并交给 Crew 后才能接话" : "Enter 发送 · Shift+Enter 换行";
+    context.hint.textContent = context.busy || context.cache.sending ? "" : external ? "会话仍在原工具中；退出并交给 Crew 后才能接话" : "Enter 发送 · Shift+Enter 换行或续列表";
     context.hint.classList.toggle("key-hint", !external);
     context.send.hidden = context.busy && !hasContent;
     context.send.title = context.busy ? "工作中插话" : "发送";
@@ -618,7 +633,7 @@
     }
     if (item.source === "crew" && typeof item.id === "string" && item.id.startsWith("channel:")) {
       // The user's own words from the Leader channel, delivered here as a mention.
-      return `<div class="m-user from-channel"><div class="bubble"><span class="message-text">${escape(item.text).replace(/\n/g, "<br>")}</span></div><div class="m-meta"><button type="button" class="text-link chat-channel-origin" data-chat-channel="${escape(item.id.split(":")[1])}">来自交流区 ↗</button>${item.at ? ` · ${escape(timeOf(item.at))}` : ""}</div></div>`;
+      return `<div class="m-user from-channel"><div class="bubble">${userText(item.text)}</div><div class="m-meta"><button type="button" class="text-link chat-channel-origin" data-chat-channel="${escape(item.id.split(":")[1])}">来自交流区 ↗</button>${item.at ? ` · ${escape(timeOf(item.at))}` : ""}</div></div>`;
     }
     if (item.source === "peer" || item.source === "crew") {
       const sender = item.source === "crew" && !Object.hasOwn(item, "sender") ? "Crew" : item.sender === "user" ? "用户" : nameOf(context, item.sender);
@@ -646,7 +661,7 @@
     const remoteSource = {qq:"QQ", lark:"Lark / 飞书"}[item.source];
     const delivery = item.deliveryError || (item.delivery === "pending" ? "待确认" : "");
     const metadata = [remoteSource ? `来自 ${remoteSource}` : "", delivery, timeOf(item.at)].filter(Boolean).map(escape).join(" · ");
-    return `<div class="m-user${item.delivery === "pending" ? " pending" : item.delivery === "failed" ? " failed" : ""}"><div class="bubble"><span class="message-text">${escape(item.text).replace(/\n/g, "<br>")}</span>${images}</div><div class="m-meta${remoteSource ? " qq-meta" : ""}">${item.taskTitle ? `<span class="chat-task-label">→ ${escape(item.taskTitle)}</span>` : ""}${metadata}</div></div>`;
+    return `<div class="m-user${item.delivery === "pending" ? " pending" : item.delivery === "failed" ? " failed" : ""}"><div class="bubble">${userText(item.text)}${images}</div><div class="m-meta${remoteSource ? " qq-meta" : ""}">${item.taskTitle ? `<span class="chat-task-label">→ ${escape(item.taskTitle)}</span>` : ""}${metadata}</div></div>`;
   }
   function* timeline(context) {
     for (const scope of [context]) {
@@ -1110,6 +1125,7 @@
       context.readingButton = options.host.querySelector(".chat-reading-chip");
       context.readingButton.onclick = () => { reading.attached = !reading.attached; readingComposer(context); };
       context.input.value = cache.text;
+      CrewBrowser.enableChatLists(context.input);
       context.skills = CrewSkillPicker.attach({input: context.input, host: options.host.querySelector("form"), load: refresh => {
         const params = query(context); if (refresh) params.set("refresh", "1");
         return context.api(`/api/chat/skills?${params}`);
@@ -1117,7 +1133,7 @@
       context.input.oninput = () => { context.cache.version += 1; saveDraft(context); resizeInput(context); composerState(context); context.skills.update(); };
       context.input.onkeydown = event => {
         if (context.skills.keydown(event)) return;
-        if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!context.send.disabled) send(context); }
+        if (CrewBrowser.chatSendKey(event)) { event.preventDefault(); if (!context.send.disabled) send(context); }
       };
       context.input.onpaste = event => {
         const files = Array.from(event.clipboardData.items).filter(item => item.type.startsWith("image/")).map(item => item.getAsFile());

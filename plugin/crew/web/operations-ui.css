@@ -30,6 +30,7 @@
 .co-composer textarea::placeholder{color:var(--cs-muted);opacity:.8}
 .co-compose-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:6px}
 .co-compose-footer>span{color:var(--cs-muted);font-size:calc(10.5px * var(--cs-scale))}
+@media(pointer:coarse){.co-compose-footer>span{display:none}.co-compose-footer{justify-content:flex-end}}
 .co-compose-footer>div{display:flex;gap:8px}
 .co-compose-footer .cs-button{min-height:31px;padding:5px 12px}
 .co-status-row{display:flex;align-items:baseline;gap:12px;min-height:43px;padding:10px 22px 14px}

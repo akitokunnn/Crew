@@ -673,6 +673,12 @@ button.tool.indent,button.mline.indent{width:calc(100% - 42px)}
 .tool-steps pre{margin:5px 0;max-height:260px;overflow:auto;white-space:pre-wrap;font-family:var(--font-mono);font-size:calc(12px * var(--fs));line-height:1.7}
 .mfull{white-space:pre-wrap;overflow-wrap:anywhere}
 .bubble{white-space:pre-wrap;overflow-wrap:anywhere}
+.bubble .message-lists{white-space:normal;text-align:start}
+.message-lists>:first-child{margin-top:0}
+.message-lists>:last-child{margin-bottom:0}
+.message-lists :is(ol,ul){margin:0.4em 0;padding-inline-start:1.65em}
+.message-lists li>p{margin:0}
+.message-lists pre{white-space:pre-wrap}
 .m-lead .body,.m-lead .markdown{overflow-wrap:anywhere}
 .m-lead .body strong{font-weight:500}
 .m-lead .body a{color:var(--accent-text);text-underline-offset:3px}
@@ -750,6 +756,7 @@ button.tool.indent,button.mline.indent{width:calc(100% - 42px)}
    mid-word; a notice in the same place (the session is still in its own tool) always stays. */
 .composer{container:crew-composer/inline-size}
 @container crew-composer (max-width:30em){.c-row .hint.key-hint{display:none}}
+@media(pointer:coarse){.c-row .hint.key-hint{display:none}}
 .composer textarea:focus-visible{outline:none}
 .btn:disabled,.opt:disabled{opacity:.45}
 .btn.danger,.danger-text{color:var(--danger)}

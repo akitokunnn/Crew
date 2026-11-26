@@ -29,8 +29,12 @@ test("operations form rejects malformed JSON and commands without program names"
 function operationsHarness(){
   const element=()=>({innerHTML:"",textContent:"",hidden:false,classList:{toggle(){},add(){}},setAttribute(){},addEventListener(){},append(){},replaceChildren(){},querySelector(){return element();},querySelectorAll(){return [];},focus(){},scrollIntoView(){}});
   const panel=element(),root={...element(),querySelector:selector=>selector===".co-panel"?panel:element()};
-  const sandbox={window:{},document:{createElement:()=>root,addEventListener(){},hidden:false},setTimeout,clearTimeout};
-  vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/operations-ui.js"),"utf8"),sandbox);
+  const sandbox={document:{createElement:()=>root,addEventListener(){},hidden:false},setTimeout,clearTimeout};
+  sandbox.window=sandbox;
+  vm.createContext(sandbox);
+  for (const script of ["browser-utils.js", "operations-ui.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web",script),"utf8"),sandbox);
+  }
   return {ui:sandbox.window.CrewOperations,root,panel,sandbox};
 }
 test("a LAN host keeps its operations chat and repair policy on the host: only status and connection remain",()=>{

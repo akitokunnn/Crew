@@ -33,10 +33,50 @@
   function keyboardShortcut(key, {shift = false, platform = globalThis.navigator?.userAgentData?.platform || globalThis.navigator?.platform} = {}) {
     return /^Mac/i.test(platform) ? `${shift ? "⇧" : ""}⌘${key}` : `Ctrl+${shift ? "Shift+" : ""}${key}`;
   }
+  function chatSendKey(event) {
+    return event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229 && !matchMedia("(pointer: coarse)").matches;
+  }
+  function insideCodeFence(text) {
+    let open;
+    for (const [, fence, suffix] of text.matchAll(/^ {0,3}(`{3,}|~{3,})([^\n]*)/gm)) {
+      if (open) {
+        if (fence[0] === open[0] && fence.length >= open.length && !suffix.trim()) open = undefined;
+      } else if (fence[0] === "~" || !suffix.includes("`")) {
+        open = fence;
+      }
+    }
+    return Boolean(open);
+  }
+  function enableChatLists(input) {
+    input.enterKeyHint = "enter";
+    input.addEventListener("beforeinput", event => {
+      if (!event.cancelable || event.isComposing || !["insertLineBreak", "insertParagraph"].includes(event.inputType)) return;
+      const {value, selectionStart: end, selectionEnd, maxLength} = input;
+      if (end !== selectionEnd || (end < value.length && value[end] !== "\n")) return;
+      const lineStart = value.slice(0, end).lastIndexOf("\n") + 1;
+      const match = /^( {0,3})(?:(\d{1,9})([.)])|([-+*]))[ \t]+(.*)$/.exec(value.slice(lineStart, end));
+      if (!match || insideCodeFence(value.slice(0, lineStart))) return;
+      const [, indent, number, delimiter, bullet, content] = match;
+      const next = number === undefined ? bullet : `${Number(number) + 1}${delimiter}`;
+      const hasContent = Boolean(content.trim());
+      const start = hasContent ? end : lineStart;
+      // Keep a blank separator so text typed after the list becomes a new paragraph.
+      const replacement = hasContent ? `\n${indent}${next} ` : lineStart === 0 ? "" : "\n";
+      if (hasContent && number === "999999999") return;
+      if (maxLength >= 0 && value.length - (end - start) + replacement.length > maxLength) return;
+      event.preventDefault();
+      input.setSelectionRange(start, end);
+      // Use the browser edit history so Undo can remove the generated marker or restore an empty item.
+      if (!document.execCommand(replacement ? "insertText" : "delete", false, replacement)) {
+        input.setRangeText(replacement, start, end, "end");
+        input.dispatchEvent(new Event("input", {bubbles:true}));
+      }
+    });
+  }
   // Saves a same-origin file response (Content-Disposition names it); a Crew desktop client asks where to save.
   function download(url) {
     const link = document.createElement("a"); link.href = url; link.download = ""; link.hidden = true;
     document.body.append(link); link.click(); link.remove();
   }
-  window.CrewBrowser = {requestId, copyText, keyboardShortcut, download};
+  window.CrewBrowser = {requestId, copyText, keyboardShortcut, chatSendKey, enableChatLists, download};
 })();
