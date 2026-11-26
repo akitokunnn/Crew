@@ -7,23 +7,23 @@ test('opening a new folder preserves the existing relocation choice without prep
   const relocation={relocation:{directory:'D:/moved',projects:[{name:'old'}]}};
   core.request=async(_base,route)=>{calls.push(route);return {status:'new'};};
   core.existingWorkspace=async()=>relocation;
-  try{assert.equal(await storage.openDirectory('D:/moved','base'),relocation);assert.deepEqual(calls,['/api/workspace-data/discover']);}
+  try{assert.equal(await storage.openDirectory('D:/moved','base'),relocation);assert.deepEqual(calls,['/api/op/data.discover']);}
   finally{core.request=request;core.existingWorkspace=existing;}
 });
 
 test('opening ready history refreshes by identity without another upgrade prompt',async()=>{
   const original=core.request,calls=[];const project={name:'p',root:'D:/project',workspace_id:'stable'};
-  core.request=async(_base,route,body)=>{calls.push([route,body]);return route.endsWith('/discover')?{status:'ready',project}:{project};};
-  try{const result=await storage.prepare(project,'http://127.0.0.1:7122',()=>{throw Error('unexpected prompt');});assert.equal(result.workspace_id,'stable');assert.deepEqual(calls.map(c=>c[0]),['/api/workspace-data/discover','/api/workspace-data/open']);}finally{core.request=original;}
+  core.request=async(_base,route,body)=>{calls.push([route,body]);return route === '/api/op/data.discover'?{status:'ready',project}:{project};};
+  try{const result=await storage.prepare(project,'http://127.0.0.1:7122',()=>{throw Error('unexpected prompt');});assert.equal(result.workspace_id,'stable');assert.deepEqual(calls.map(c=>c[0]),['/api/op/data.discover','/api/op/data.open']);}finally{core.request=original;}
 });
 test('cancelling a detected legacy history never registers an empty workspace',async()=>{
   const original=core.request,calls=[];
   core.request=async(_base,route)=>{calls.push(route);return {status:'upgrade_required',candidates:[{id:'old',counts:{sessions:7}}]};};
-  try{assert.equal(await storage.openDirectory('D:/project','base',async()=>null),undefined);assert.deepEqual(calls,['/api/workspace-data/discover']);}finally{core.request=original;}
+  try{assert.equal(await storage.openDirectory('D:/project','base',async()=>null),undefined);assert.deepEqual(calls,['/api/op/data.discover']);}finally{core.request=original;}
 });
 test('a chosen old source is passed explicitly and a portable archive needs no execution setup',async()=>{
   const original=core.request,calls=[];
-  core.request=async(_base,route,body)=>{calls.push([route,body]);return route.endsWith('/discover')?{status:'upgrade_required',candidates:[{id:'old',counts:{sessions:7}}]}:{project:{name:'p',workspace_id:'stable'}};};
+  core.request=async(_base,route,body)=>{calls.push([route,body]);return route === '/api/op/data.discover'?{status:'upgrade_required',candidates:[{id:'old',counts:{sessions:7}}]}:{project:{name:'p',workspace_id:'stable'}};};
   try{await storage.prepare({name:'p',root:'D:/project'},'base',async()=>({action:'upgrade',candidate_id:'old'}));assert.equal(calls[1][1].candidate_id,'old');const archive={name:'storage:stable',read_only:true};assert.equal(await storage.prepare(archive,'base'),archive);assert.equal(calls.length,2);}finally{core.request=original;}
 });
 test('an identity marker with missing history reports recovery instead of registering empty data',async()=>{
@@ -40,7 +40,7 @@ test('a user can explicitly open a V1 folder with fresh V2 records and cancel wi
   },()=>{},request),undefined);
   assert.equal(calls.length,0);
   assert.equal(await storage.resolveDiscovery(discovery,'D:/MIB','base',async()=>({action:'fresh'}),()=>{},request),project);
-  assert.deepEqual(calls,[{route:'/api/workspace-data/open',body:{root:'D:/MIB',action:'fresh'}}]);
+  assert.deepEqual(calls,[{route:'/api/op/data.open',body:{root:'D:/MIB',action:'fresh'}}]);
 });
 test('an older borrowed backend gives an actionable update message instead of creating empty history',async()=>{
   const http=require('node:http');let requests=0;

@@ -158,7 +158,7 @@
     renderLeaderRuntime();
     runtimesPromise = (async () => {
       try {
-        const result = await api("/api/runtimes");
+        const result = await api("/api/op/runtimes.list");
         if (!Array.isArray(result.runtimes)) throw new Error("执行工具列表格式无效");
         runtimesCache = result.runtimes;
       } catch (error) { runtimesError = error.message; }
@@ -196,14 +196,14 @@
   const openTodos = () => (Array.isArray(state?.todos) ? state.todos : []).filter(item => item.status === undefined || item.status === "open");
   const todoById = id => openTodos().find(item => String(item.id) === String(id));
   const todosOf = id => openTodos().filter(item => item.leader_session_id === id || item.session_id === id);
-  function queryPath(path) { const url = new URL(path, location.origin); if (project !== null && url.pathname !== "/api/settings") url.searchParams.set("project", project); return url.pathname + url.search; }
+  function queryPath(path) { const url = new URL(path, location.origin); if (project !== null && !["/api/op/settings.get", "/api/op/settings.save"].includes(url.pathname)) url.searchParams.set("project", project); return url.pathname + url.search; }
   async function api(path, data) {
-    const sentAfter = path === "/api/chat/send" ? (leader(data.session_id) || member(data.session_id))?.last_seq || 0 : null;
-    const response = await fetch(queryPath(path), data === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json", "X-Crew":"1"}, body:JSON.stringify(data)});
+    const sentAfter = path === "/api/op/chat.send" ? (leader(data.session_id) || member(data.session_id))?.last_seq || 0 : null;
+    const response = await fetch(queryPath(path), data === undefined ? {} : window.CrewBrowser.postOptions(data));
     const result = await response.json();
     if (!response.ok) { const error = new Error(result.error || "请求失败，请重试。"); error.status = response.status; error.details = result; throw error; }
-    if (path === "/api/chat/send" && data.goal_id == null && member(data.session_id)) waitingSounds.set(data.session_id, {generation:++soundGeneration, afterSeq:sentAfter});
-    else if (["/api/session/stop", "/api/session/archive", "/api/session/delete"].includes(path)) waitingSounds.delete(data.session_id);
+    if (path === "/api/op/chat.send" && data.goal_id == null && member(data.session_id)) waitingSounds.set(data.session_id, {generation:++soundGeneration, afterSeq:sentAfter});
+    else if (["/api/op/session.stop", "/api/op/session.archive", "/api/op/session.delete"].includes(path)) waitingSounds.delete(data.session_id);
     return result;
   }
   function toast(message, undo = null) {
@@ -289,7 +289,7 @@
   const sortableLeaders = item => state.leaders.filter(leader => leader.pinned === item.pinned);
   async function saveLeaders(pinned, normal) {
     leaderOrderSaving = true;
-    try { await api("/api/leaders/order", {project:state.project.name, order:[...pinned, ...normal], pinned}); }
+    try { await api("/api/op/leaders.order.set", {project:state.project.name, order:[...pinned, ...normal], pinned}); }
     finally { leaderOrderSaving = false; await loadState(true); }
   }
   async function setPinned(id, pinned) {
@@ -805,11 +805,11 @@
     catch (error) { if (draft) { draft.error = error.message; renderTodoSurface(); } return; }
     todoSaving.add(key); renderTodoSurface();
     try {
-      const result = await api("/api/todo/resolve", payload);
+      const result = await api("/api/op/todo.resolve", payload);
       todoActions.delete(key); todoExpanded.delete(key);
       await loadState(true);
       toast(payload.status === "done" ? "已标记做完" : "已标记不做", async () => {
-        await api("/api/todo/undo", {id:item.id, before:result.before, version:result.version});
+        await api("/api/op/todo.undo", {id:item.id, before:result.before, version:result.version});
         await loadState(true); toast("已撤销");
       });
     } catch (error) {
@@ -902,14 +902,14 @@
       else if (usageTab === "daily") table = `<table class="utable"><thead><tr><th>日期</th><th>会话</th><th class="num">Token</th><th class="num">折合</th></tr></thead><tbody>${usage.daily.map(row => `<tr><td>${esc(row.date)}</td><td>${esc(row.display_name)}</td><td class="num">${tokens(row.total_tokens)}</td><td class="num">${money(row.cost_usd)}</td></tr>`).join("")}</tbody></table>`;
       else table = `<table class="utable"><thead><tr><th>模型</th><th>来源</th><th class="num">输入</th><th class="num">输出</th><th class="num">合计</th></tr></thead><tbody>${usage.models.map(row => `<tr><td>${esc(row.model)}</td><td>${esc(row.source)}</td><td class="num">${tokens(row.input_tokens)}</td><td class="num">${tokens(row.output_tokens)}</td><td class="num">${tokens(row.total_tokens)}</td></tr>`).join("")}</tbody></table>`;
     }
-    replace($("main"), `<div class="head big"><div><div class="title">用量</div><div class="sub">${esc(projectDisplay(state.project))} · ${{today:"今天", week:"本周", all:"全部"}[period]}</div></div><div class="right" style="gap:10px"><div class="seg">${[["today", "今天"], ["week", "本周"], ["all", "全部"]].map(([key, name]) => `<button class="${period === key ? "on" : ""}" data-act="usage-period" data-period="${key}">${name}</button>`).join("")}</div><a class="btn" href="${esc(queryPath(`/api/usage/export?period=${period}&what=${usageTab === "daily" ? "daily" : "sessions"}`))}" download>${ic("download", "sm")}导出</a></div></div><div class="page"><div class="page-in"><div class="qcards${budget ? " two" : ""}">${budget ? budgetCard(budget) : ""}${quotas().map(([label, limit]) => quotaCard(label, limit)).join("")}</div><div class="usage-tabs"><div class="seg">${[["tree", "按结构"], ["daily", "按天"], ["models", "按模型"], ...(budget ? [] : [["weeks", "每周额度"]])].map(([key, name]) => `<button class="${usageTab === key ? "on" : ""}" data-act="usage-tab" data-tab="${key}">${name}</button>`).join("")}</div><span style="font-size:calc(12.5px * var(--fs));color:var(--text-3)">${total}</span></div>${table}<div class="note">${budget ? "折合金额按 API 价换算；API 额度只算这台电脑的 Claude 请求，其他电脑或程序用同一账户的花费不在内，以 Console 账单为准；" : "折合金额按 API 价换算，只用于比较；额度是账户级；"}界面字体 HarmonyOS Sans（华为，按其许可证随附）</div></div></div>`);
+    replace($("main"), `<div class="head big"><div><div class="title">用量</div><div class="sub">${esc(projectDisplay(state.project))} · ${{today:"今天", week:"本周", all:"全部"}[period]}</div></div><div class="right" style="gap:10px"><div class="seg">${[["today", "今天"], ["week", "本周"], ["all", "全部"]].map(([key, name]) => `<button class="${period === key ? "on" : ""}" data-act="usage-period" data-period="${key}">${name}</button>`).join("")}</div><a class="btn" href="${esc(queryPath(`/api/op/usage.export?period=${period}&what=${usageTab === "daily" ? "daily" : "sessions"}`))}" download>${ic("download", "sm")}导出</a></div></div><div class="page"><div class="page-in"><div class="qcards${budget ? " two" : ""}">${budget ? budgetCard(budget) : ""}${quotas().map(([label, limit]) => quotaCard(label, limit)).join("")}</div><div class="usage-tabs"><div class="seg">${[["tree", "按结构"], ["daily", "按天"], ["models", "按模型"], ...(budget ? [] : [["weeks", "每周额度"]])].map(([key, name]) => `<button class="${usageTab === key ? "on" : ""}" data-act="usage-tab" data-tab="${key}">${name}</button>`).join("")}</div><span style="font-size:calc(12.5px * var(--fs));color:var(--text-3)">${total}</span></div>${table}<div class="note">${budget ? "折合金额按 API 价换算；API 额度只算这台电脑的 Claude 请求，其他电脑或程序用同一账户的花费不在内，以 Console 账单为准；" : "折合金额按 API 价换算，只用于比较；额度是账户级；"}界面字体 HarmonyOS Sans（华为，按其许可证随附）</div></div></div>`);
   }
   function refreshUsage(reopened = false) {
     if (view === "usage" && !usageLoading && (reopened || usage === null || usageScannedAt !== state.usage_scanned_at)) loadUsage();
   }
   async function loadUsage() {
     const sequence = ++usageRequest; usageLoading = true; usageScannedAt = state.usage_scanned_at;
-    try { const result = await api(`/api/usage?period=${period}`); if (sequence === usageRequest) { usage = result; if (view === "usage") renderUsage(); } }
+    try { const result = await api(`/api/op/usage.report?period=${period}`); if (sequence === usageRequest) { usage = result; if (view === "usage") renderUsage(); } }
     catch (error) { if (sequence === usageRequest) { toast(error.message); if (view === "usage") { const note = $("main").querySelector(".page-in"); note.append(Object.assign(document.createElement("p"), {className:"error-line", textContent:error.message})); } } }
     finally { if (sequence === usageRequest) usageLoading = false; }
   }
@@ -1063,7 +1063,7 @@
     try { if (draft.avatar) body.avatar = {type:draft.avatar.type, data:await window.CrewLook.toBase64(draft.avatar.blob)}; else if (draft.avatar === null) body.avatar = null; }
     catch (error) { draft.error = error.message; renderLeaderSettings(); return; }
     draft.saving = true; draft.error = ""; renderLeaderSettings();
-    try { await api("/api/session/appearance", body); }
+    try { await api("/api/op/session.appearance.set", body); }
     catch (error) { draft.saving = false; draft.error = error.message; renderLeaderSettings(); return; }
     if (draft.preview) URL.revokeObjectURL(draft.preview);
     lookDraft = null; $("backdrop").querySelector("form")?.removeAttribute("data-saving"); closeBackdrop();
@@ -1076,7 +1076,7 @@
     for (const control of form.querySelectorAll("input,button")) control.disabled = true;
     let nativeWarnings = [];
     try {
-      const result = await api("/api/session/rename", {session_id:form.dataset.id,name});
+      const result = await api("/api/op/session.rename", {session_id:form.dataset.id,name});
       nativeWarnings = result.native_warnings || [];
     } catch (error) {
       form.dataset.saving = "false"; $("rename-error").textContent = error.message;
@@ -1102,7 +1102,7 @@
     if (enabled && goal === "") { $("trust-error").textContent = "开启自主推进前，请写明授权范围。"; form.elements.goal.focus(); return; }
     const controls = form.querySelectorAll("input,textarea,button");
     form.dataset.saving = "true"; for (const control of controls) control.disabled = true;
-    try { await api("/api/trust", {leader_session_id:form.dataset.id, enabled, goal}); }
+    try { await api("/api/op/trust.set", {leader_session_id:form.dataset.id, enabled, goal}); }
     catch (error) { form.dataset.saving = "false"; for (const control of controls) control.disabled = false; $("trust-error").textContent = error.message; return; }
     form.dataset.saving = "false"; closeBackdrop(); await loadState(true); toast("已保存 leader 授权，下次正常输入时传达。");
   }
@@ -1140,21 +1140,21 @@
   }
   function settingsConnections(host) {
     return window.CrewConnections.mount(host, {
-      read:() => api("/api/connections"),
-      configure:body => api("/api/connections/configure", body),
-      action:body => api("/api/connections/action", body),
-      preferences:body => api("/api/connections/preferences", body),
-      away:value => api("/api/notifications/away", {away:value})
+      read:() => api("/api/op/connections.get"),
+      configure:body => api("/api/op/connections.configure", body),
+      action:body => api("/api/op/connections.action", body),
+      preferences:body => api("/api/op/connections.preferences.set", body),
+      away:value => api("/api/op/notifications.away.set", {away:value})
     });
   }
   function settingsStorage(host) {
     return window.CrewStorage.mount(host, {
-      read:() => api('/api/storage'),
-      preview:body => api('/api/storage/preview', body),
-      clean:body => api('/api/storage/clean', body),
-      restore:body => api('/api/storage/restore', body),
-      emptyTrash:body => api('/api/storage/trash/empty', body),
-      savePolicy:body => api('/api/storage/policy', body)
+      read:() => api('/api/op/storage.get'),
+      preview:body => api('/api/op/storage.preview', body),
+      clean:body => api('/api/op/storage.clean', body),
+      restore:body => api('/api/op/storage.restore', body),
+      emptyTrash:body => api('/api/op/storage.trash_empty', body),
+      savePolicy:body => api('/api/op/storage.policy.set', body)
     });
   }
   function openWorkspaceSettings() {
@@ -1200,7 +1200,7 @@
       pending.close = await CrewChat.watchCompact(id, {state, api, toast:message => toast(`「${item.name}」：${message}`), onFinish:finish,
         onState(value) { if (compactions.get(key) !== pending) return; pending.live = value; if (pending.phase !== "submitting" && value.compaction) pending.phase = value.compaction; render(); }});
       if (compactions.get(key) !== pending) { pending.close(); return; }
-      const result = await api("/api/session/compact", {session_id:id, after_turn:true});
+      const result = await api("/api/op/session.compact", {session_id:id, after_turn:true});
       if (compactions.get(key) === pending) {
         pending.phase = result.queued ? "queued" : "compacting"; render();
         toast(`「${item.name}」：${result.message || (result.queued ? "已排队，本轮回复结束后压缩" : "已请求压缩")}`);
@@ -1276,7 +1276,7 @@
   async function saveBudget(budget) {
     const form = $("budget-form");
     form.dataset.saving = "true"; $("budget-error").textContent = "";
-    try { state.limits.claude.budget = (await api("/api/claude-budget", {budget})).budget; delete form.dataset.saving; closeBackdrop(); render(); }
+    try { state.limits.claude.budget = (await api("/api/op/claude_budget.set", {budget})).budget; delete form.dataset.saving; closeBackdrop(); render(); }
     catch (error) { delete form.dataset.saving; $("budget-error").textContent = error.message; }
   }
   function submitBudget(form) {
@@ -1366,7 +1366,7 @@
     statePromise = new Promise(resolve => { complete = resolve; });
     const requestedGeneration = soundGeneration;
     try {
-      const result = await api("/api/state"), previous = state; state = result;
+      const result = await api("/api/op/workspace.state"), previous = state; state = result;
       CrewSound.observe(state.sounds, state.now);
       nativeApprovals?.sync(state); CrewActivity.sync(state); applyTheme(); renderSettings();
       if (project === null) { $("app").className = "workspace-entry"; $("leader-panel").hidden = true; $("right-panel").hidden = true; renderEntrySidebar(); replace($("main"), CrewWorkspaceEntry.render(state, {esc, ic, display: projectDisplay})); document.title = "工作区 · Crew"; if (pendingSettingsHash) { pendingSettingsHash = false; history.replaceState(null, "", `${location.pathname}${location.search}`); openSettings("ai"); } return; }
@@ -1391,12 +1391,12 @@
   }
   async function answer(id, text) {
     const item = state.decisions.find(item => item.id === id);
-    const result = await api("/api/answer", {id, text});
+    const result = await api("/api/op/decision.answer", {id, text});
     decisionsOpen.delete(id); toast(`已答复 ${item.asker}，${result.routed_to === null ? "它下一轮会收到" : `${result.routed_to} 会叫醒它`}`); await loadState(true);
   }
   async function changeSession(id, path, label, undoable) {
     const result = await api(path, {session_id:id});
-    hideMenu(); if (cardId === id) closeCard(); await loadState(true); toast(label, undoable ? async () => { await api("/api/session/undo", {session_id:id, before:result.before}); await loadState(true); toast("已撤销"); } : null);
+    hideMenu(); if (cardId === id) closeCard(); await loadState(true); toast(label, undoable ? async () => { await api("/api/op/session.undo", {session_id:id, before:result.before}); await loadState(true); toast("已撤销"); } : null);
   }
   async function setup() {
     if (window.CrewAccess && !await CrewAccess.ready) return;
@@ -1418,25 +1418,25 @@
     window.addEventListener("resize", syncSidecar);
     maintenance = window.CrewMaintenance.create({api,
       async onCleaned() { await loadState(true); if (view !== "all") navigate("all"); toast("已归档旧工作，可以重新开始"); }});
-    gitSettings = CrewGitSettings.create({read:name => api(`/api/git/settings?project=${encodeURIComponent(name)}`), save:body => api("/api/git/settings", body),
+    gitSettings = CrewGitSettings.create({read:name => api(`/api/op/git.settings.get?project=${encodeURIComponent(name)}`), save:body => api("/api/op/git.settings.set", body),
       onSaved:async() => { await loadState(true); CrewGit.reload(project); }, toast,
       onDefaults:() => openSettings("ai"), onCreate:() => { navigate("git"); CrewGit.reload(project); }});
-    workspaceSettings = window.CrewWorkspaceSettings.create({read:name => api(`/api/project/settings?project=${encodeURIComponent(name)}`),
-      update:body => api("/api/project/update", body), remove:body => api("/api/project/remove", body),
+    workspaceSettings = window.CrewWorkspaceSettings.create({read:name => api(`/api/op/workspace.settings.get?project=${encodeURIComponent(name)}`),
+      update:body => api("/api/op/workspace.update", body), remove:body => api("/api/op/workspace.remove", body),
       openCleanup:(name, label) => { void maintenance.openCleanup(name, label); },
       onSaved:() => { void loadState(true); }, onRemoved:() => location.assign("/"),
       onClose:() => { workspaceOpen = false; if (state !== null && project !== null) { render(); $("sidebar").querySelector('[data-act="workspace-settings"]')?.focus({preventScroll:true}); } }});
-    settingsUI = window.CrewSettings.create({host:$("settings-surface"), read:async() => { await api("/api/runtimes?refresh=1"); return api("/api/settings"); }, save:body => api("/api/settings",body), onClose:closeSettings, service:() => location.origin,
+    settingsUI = window.CrewSettings.create({host:$("settings-surface"), read:async() => { await api("/api/op/runtimes.list?refresh=1"); return api("/api/op/settings.get"); }, save:body => api("/api/op/settings.save",body), onClose:closeSettings, service:() => location.origin,
       remote:Boolean(window.CrewAccess?.remote),
-      operations:hostAdmin() ? {snapshot:() => api('/api/admin/chat'), send:body => api('/api/admin/chat/send',body),
-        interrupt:() => api('/api/admin/chat/interrupt',{}), configGet:() => api('/api/admin/config'),
-        configSave:body => api('/api/admin/config',body)} : undefined,
+      operations:hostAdmin() ? {snapshot:() => api('/api/op/ops_chat.get'), send:body => api('/api/op/ops_chat.send',{...body, request_id:body.message_id}),
+        interrupt:() => api('/api/op/ops_chat.interrupt',{}), configGet:() => api('/api/op/ops_config.get'),
+        configSave:body => api('/api/op/ops_config.save',body)} : undefined,
       onSnapshot(value) { if (state !== null) state.ai = value.ai; runtimesCache = value.runtimes; renderLeaderRuntime(); },
       panels:{
         // The library adopts into the current workspace, so the workspace list page has no library.
         ...(project !== null ? {library:host => { mountSessionLibrary(host); }} : {}),
-        sounds:host => window.CrewSoundSettings.mount(host,{read:()=>api("/api/settings"),save:body=>api("/api/settings",body),api,toast}),
-        ...(hostAdmin() ? {remote:host => window.CrewRemoteAccess.mount(host,{read:()=>api("/api/remote-access"),action:body=>api("/api/remote-access",body)})} : {}),prompts:host => window.CrewBehaviorPrompts.mount(host,{read:query => api("/api/behavior-prompts?"+new URLSearchParams(query)),save:body => api("/api/behavior-prompts",body),project,session:behaviorSession || (view === "chat" ? readOnlyId || leaderId : null),execution:goals?.executionFor(behaviorSession || readOnlyId || leaderId)?.id}),appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections, storage:settingsStorage}});
+        sounds:host => window.CrewSoundSettings.mount(host,{read:()=>api("/api/op/settings.get"),save:body=>api("/api/op/settings.save",body),api,toast}),
+        ...(hostAdmin() ? {remote:host => window.CrewRemoteAccess.mount(host,{read:()=>api("/api/op/remote_access.get"),action:body=>api("/api/op/remote_access.action",body)})} : {}),prompts:host => window.CrewBehaviorPrompts.mount(host,{...window.CrewBehaviorPrompts.requests(api),project,session:behaviorSession || (view === "chat" ? readOnlyId || leaderId : null),execution:goals?.executionFor(behaviorSession || readOnlyId || leaderId)?.id}),appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections, storage:settingsStorage}});
     if (desktopTheme) {
       desktopTheme.onChange(value => { if (["system", "light", "dark"].includes(value?.mode)) { theme = value.mode; applyTheme(); renderSettings(); if (state !== null && project !== null) renderSidebar(); } });
       void desktopTheme.get().then(value => { if (["system", "light", "dark"].includes(value?.mode)) { theme = value.mode; renderSettings(); if (state !== null && project !== null) renderSidebar(); } }).catch(error => toast(error.message));
@@ -1457,8 +1457,8 @@
       onChanged:async(id,parent)=>{await loadState(true);if(id){navigate("chat",parent,id,null);}}});
     if (window.CrewRuntimeSwitch) runtimeSwitch = window.CrewRuntimeSwitch.create({
       getMember:id => state?.members.concat(state?.leaders || []).find(item => item.session_id === id), catalog:runtimeList, effortsFor:modelEfforts,
-      refreshCatalog:refreshRuntimes, prepare:body => api("/api/session/runtime/prepare",body),
-      switchRuntime:body => api("/api/session/runtime/switch",body), onChanged:() => { goals?.invalidate(); return loadState(true); }, toast});
+      refreshCatalog:refreshRuntimes, prepare:body => api("/api/op/session.runtime.prepare",body),
+      switchRuntime:body => api("/api/op/session.runtime.switch",body), onChanged:() => { goals?.invalidate(); return loadState(true); }, toast});
     // While a report or file is open the leader column steps aside for the conversation; it is not saved as a preference.
     window.CrewReader.configure({
       onActive:active => { reportReaderOpen = active; $("chat-attention").inert = active || $("chat-attention").hidden; if ($("task-list")) $("task-list").inert = active || !tasksOpen; },
@@ -1531,7 +1531,7 @@
         if (Boolean(item.trust?.enabled) === enabled) return;
         // Turning autonomy on needs a written scope; without one the user writes it in the dialog.
         if (enabled && !item.trust?.goal) openTrust(id, true);
-        else action(`trust:${id}`, async () => { await api("/api/trust", {leader_session_id:id, enabled, goal:item.trust?.goal ?? ""}); await loadState(true); toast("已保存 leader 授权，下次正常输入时传达。"); });
+        else action(`trust:${id}`, async () => { await api("/api/op/trust.set", {leader_session_id:id, enabled, goal:item.trust?.goal ?? ""}); await loadState(true); toast("已保存 leader 授权，下次正常输入时传达。"); });
       }
       else if (act === "session-rename") openRename(id);
       else if (act === "leader-settings") openLeaderSettings(id);
@@ -1546,11 +1546,11 @@
         await (item.pinned ? saveLeaders(order, state.leaders.filter(item => !item.pinned).map(item => item.session_id)) : saveLeaders(pinnedIds(), order));
       });
       else if (act === "close-group") action(`group:${id}`, async () => {
-        const group = leader(id).name, result = await api("/api/group/close", {group, with_members:button.dataset.withMembers === "true"});
+        const group = leader(id).name, result = await api("/api/op/group.close", {group, with_members:button.dataset.withMembers === "true"});
         if (cardId !== null) closeCard(); await loadState(true);
-        toast("已结束 leader", async () => { await api("/api/group/undo", {group, before:result.before}); await loadState(true); toast("已撤销"); });
+        toast("已结束 leader", async () => { await api("/api/op/group.undo", {group, before:result.before}); await loadState(true); toast("已撤销"); });
       });
-      else if (act === "wake-session") action(`wake:${id}`, async () => { await api("/api/wake", {session_id:id, text:"用户叫醒了你，请继续当前任务。"}); await loadState(true); toast("已叫醒"); });
+      else if (act === "wake-session") action(`wake:${id}`, async () => { await api("/api/op/session.wake", {session_id:id, text:"用户叫醒了你，请继续当前任务。"}); await loadState(true); toast("已叫醒"); });
       else if (act === "leader") { tasksOpen = !narrowLayout(); if (cardId !== null) closeCard(); navigate("chat", id, null, null); }
       else if (act === "member-chat") { const item = member(id); if (item) { if (button.dataset.goalId) memberScopes.set(item.session_id, button.dataset.goalId); if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id, null); } }
       else if (act === "view") { if (settingsOpen) closeSettings(false); if (narrowLayout() && leadersOpen) setLeadersOpen(false); if (cardId !== null) closeCard(); if (button.dataset.view === "all") allTab = "overview"; navigate(button.dataset.view); }
@@ -1577,19 +1577,20 @@
       }
       else if (act === "card") openCard(id);
       else if (act === "card-close") closeCard();
-      else if (act === "decision-clarify") action(`clarify:${id}`, async () => { button.disabled = true; try { await api("/api/decision/clarify", {id:Number(id)}); await loadState(true); toast("已请 leader 补充说明"); } finally { button.disabled = false; } });
+      else if (act === "decision-clarify") action(`clarify:${id}`, async () => { button.disabled = true; try { await api("/api/op/decision.clarify", {id:Number(id)}); await loadState(true); toast("已请 leader 补充说明"); } finally { button.disabled = false; } });
       else if (act === "decision-discuss" || act === "decision-ready") action(`discuss:${id}`, async () => {
         const item = state.decisions.find(item => String(item.id) === id);
-        const response = await api(act === "decision-discuss" ? "/api/decision/discuss" : "/api/decision/ready", {id:Number(id)}); await loadState(true);
+        // crew-op: decision.discuss decision.ready
+      const response = await api(act === "decision-discuss" ? "/api/op/decision.discuss" : "/api/op/decision.ready", {id:Number(id)}); await loadState(true);
         const owner = item && (leader(item.leader_session_id) || leader(item.session_id) || leader(member(item.session_id)?.leader_session_id));
         const discussionGoal = Object.prototype.hasOwnProperty.call(response,"conversation_goal_id") ? response.conversation_goal_id : item?.goal_id || null;
         if (act === "decision-discuss" && owner) navigate("chat", owner.session_id, null, discussionGoal);
       });
       else if (act === "answer-option") action(`answer:${id}`, () => answer(Number(id), state.decisions.find(item => item.id === Number(id)).options[Number(button.dataset.option)]));
-      else if (act === "away") action("away", async () => { await api("/api/notifications/away", {away:!state.notification.manual_away}); await loadState(true); });
+      else if (act === "away") action("away", async () => { await api("/api/op/notifications.away.set", {away:!state.notification.manual_away}); await loadState(true); });
       else if (act === "theme") action("theme", () => chooseTheme({system:"light", light:"dark", dark:"system"}[theme]));
       else if (act === "theme-select") action("theme", () => chooseTheme(button.dataset.themeMode));
-      else if (act === "project-theme") action("project-theme", async () => { const result = await api("/api/project/theme", {project:state.project.name, theme:button.dataset.themeId}); state.project.theme = result.theme; state.projects.find(item => item.name === state.project.name).theme = result.theme; applyTheme(); renderSettings(); renderSidebar(); await loadState(true); });
+      else if (act === "project-theme") action("project-theme", async () => { const result = await api("/api/op/workspace.theme.set", {project:state.project.name, theme:button.dataset.themeId}); state.project.theme = result.theme; state.projects.find(item => item.name === state.project.name).theme = result.theme; applyTheme(); renderSettings(); renderSidebar(); await loadState(true); });
       else if (act === "runtime-switch") runtimeSwitch?.open(id);
       else if (act === "font-reset") { setFontScale(1); renderSettings(); }
       else if (act === "attention") toggleSidecar("attention");
@@ -1643,7 +1644,7 @@
       else if (act === "set-model" || act === "set-effort" || act === "set-speed") action(`options:${id}`, async () => {
         const field = {"set-model":"model", "set-effort":"effort", "set-speed":"speed"}[act], value = button.dataset[field] === "" ? null : button.dataset[field];
         const item = sessionItem(id), changes = optionChange(item, field, value);
-        hideMenu(); await api("/api/session/options", {session_id:id, ...changes}); await loadState(true);
+        hideMenu(); await api("/api/op/session.options.set", {session_id:id, ...changes}); await loadState(true);
         toast(optionChangeNotice(item, changes));
       });
       else if (act === "modal-close") closeBackdrop();
@@ -1653,16 +1654,16 @@
       else if (act === "rename") openRename(cardId);
       else if (act === "move-menu") { const item = member(id); showMenu(button, state.leaders.filter(group => group.session_id !== item.leader_session_id).map(group => `<button data-act="move-to" data-id="${esc(id)}" data-group="${esc(group.name)}">${av(group.name, 20)}${esc(group.name)}</button>`).join("")); }
       else if (act === "more-menu") showMenu(button, `<button data-act="leave-group" data-id="${esc(id)}">${ic("leave", "sm")}退组</button><button class="danger" data-act="delete-session" data-id="${esc(id)}">${ic("x", "sm")}删除…</button>`);
-      else if (act === "move-to") action("move", async () => { const item = member(id); await api("/api/roster/move", {session_id:item.session_id, name:item.name, from:item.group, to:button.dataset.group}); hideMenu(); await loadState(true); toast(`已换到 ${button.dataset.group} 组`); });
-      else if (act === "leave-group") action("leave", async () => { const item = member(id); await api("/api/roster/remove", {session_id:item.session_id, name:item.name, group:item.group}); hideMenu(); closeCard(); await loadState(true); toast("已退组，可以在待收编里重新收编"); });
-      else if (act === "archive") action("archive", () => changeSession(id, "/api/session/archive", "已归档", true));
+      else if (act === "move-to") action("move", async () => { const item = member(id); await api("/api/op/roster.move", {session_id:item.session_id, name:item.name, from:item.group, to:button.dataset.group}); hideMenu(); await loadState(true); toast(`已换到 ${button.dataset.group} 组`); });
+      else if (act === "leave-group") action("leave", async () => { const item = member(id); await api("/api/op/roster.remove", {session_id:item.session_id, name:item.name, group:item.group}); hideMenu(); closeCard(); await loadState(true); toast("已退组，可以在待收编里重新收编"); });
+      else if (act === "archive") action("archive", () => changeSession(id, "/api/op/session.archive", "已归档", true));
       else if (act === "delete-session") openDelete(id);
       else if (act === "delete-confirm") action(`delete:${id}`, async () => {
-        const result = await api("/api/session/delete", {session_id:id});
+        const result = await api("/api/op/session.delete", {session_id:id});
         closeBackdrop(); hideMenu(); if (result.deleted.includes(cardId)) closeCard(); await loadState(true);
         toast(result.errors.length ? `已从 Crew 删除，但有 ${result.errors.length} 项原生记录没删掉：${result.errors.join("；")}` : "已删除");
       });
-      else if (act === "stop") action("stop", async () => { await api("/api/session/stop", {session_id:id}); await loadState(true); toast("已请求中断本轮，正在等待停止确认"); });
+      else if (act === "stop") action("stop", async () => { await api("/api/op/session.stop", {session_id:id}); await loadState(true); toast("已请求中断本轮，正在等待停止确认"); });
       else if (act === "member-history") { const item = member(id); if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id, null); }
     });
     document.addEventListener("change", event => {
@@ -1688,7 +1689,7 @@
       else if (form.id === "leader-settings-form") { event.preventDefault(); void saveLeaderSettings(); }
       else if (form.id === "trust-form") { event.preventDefault(); void saveTrust(form); }
       else if (form.id === "budget-form") { event.preventDefault(); submitBudget(form); }
-      else if (form.id === "leader-form") { event.preventDefault(); action("leader", async () => { const button = form.querySelector('[type="submit"]'); button.disabled = true; try { const result = await api("/api/leader", leaderPayload(form)); closeBackdrop(); await loadState(true); navigate("chat", result.session_id); } catch (error) { if ($("leader-error")) $("leader-error").textContent = error.message; } finally { button.disabled = !runtimeInfo(form.elements.runtime.value).available; } }); }
+      else if (form.id === "leader-form") { event.preventDefault(); action("leader", async () => { const button = form.querySelector('[type="submit"]'); button.disabled = true; try { const result = await api("/api/op/leader.create", leaderPayload(form)); closeBackdrop(); await loadState(true); navigate("chat", result.session_id); } catch (error) { if ($("leader-error")) $("leader-error").textContent = error.message; } finally { button.disabled = !runtimeInfo(form.elements.runtime.value).available; } }); }
     });
     document.addEventListener("toggle", event => {
       const details = event.target;

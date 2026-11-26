@@ -5,7 +5,7 @@
 (function () {
   const SIZE = 256, MAX_BYTES = 200 * 1024, MAX_INPUT = 30 * 1024 * 1024;
   const avatarUrl = person => person && person.avatar_version
-    ? `/api/session/avatar?${new URLSearchParams({session_id:person.session_id, v:String(person.avatar_version)})}` : null;
+    ? `/api/op/session.avatar.get?${new URLSearchParams({session_id:person.session_id, v:String(person.avatar_version)})}` : null;
   async function decode(file) {
     if (typeof createImageBitmap === "function") {
       try { return await createImageBitmap(file); } catch { /* fall back to <img>, which decodes more formats in some browsers */ }

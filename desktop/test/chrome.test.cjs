@@ -8,7 +8,7 @@ test('desktop chrome is restricted to the exact local home or trusted applicatio
   assert.equal(chrome.pageKind(home, home, origin), 'home');
   assert.equal(chrome.pageKind('file:///C:/Crew/error.html',home,origin,'file:///C:/Crew/error.html'),'error');
   assert.equal(chrome.pageKind(origin + '/?project=one#todos', home, origin), 'workspace');
-  for (const url of ['file:///C:/Crew/other.html', home+'?other=1', origin+'/api/trust/report', origin+'/preview.html',
+  for (const url of ['file:///C:/Crew/other.html', home+'?other=1', origin+'/api/op/trust.report', origin+'/preview.html',
     'http://127.0.0.1:1235/', 'https://127.0.0.1:1234/', 'http://user@127.0.0.1:1234/', 'https://example.com/', 'bad']) {
     assert.equal(chrome.pageKind(url, home, origin), null, url);
   }

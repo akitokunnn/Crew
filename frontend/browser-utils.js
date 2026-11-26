@@ -13,6 +13,13 @@
     // Operation identifiers are for deduplication, never authentication.
     return `web-${Date.now().toString(36)}-${++sequence}-${Math.random().toString(36).slice(2)}`;
   }
+  function postOptions({request_id = window.CrewBrowser.requestId(), ...body}) {
+    return {
+      method: "POST",
+      headers: {"Content-Type":"application/json", "X-Crew":"1", "X-Crew-Request-Id":request_id},
+      body: JSON.stringify(body)
+    };
+  }
   async function copyText(text) {
     if (globalThis.navigator?.clipboard?.writeText) {
       try { await navigator.clipboard.writeText(text); return; } catch (_) { /* Try the user-gesture copy path below. */ }
@@ -78,5 +85,5 @@
     const link = document.createElement("a"); link.href = url; link.download = ""; link.hidden = true;
     document.body.append(link); link.click(); link.remove();
   }
-  window.CrewBrowser = {requestId, copyText, keyboardShortcut, chatSendKey, enableChatLists, download};
+  window.CrewBrowser = {requestId, postOptions, copyText, keyboardShortcut, chatSendKey, enableChatLists, download};
 })();

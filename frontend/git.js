@@ -140,7 +140,7 @@ const CrewGit = (() => {
     render();
     const requestGeneration = generation;
     try {
-      const fresh = await options.api("/api/git");
+      const fresh = await options.api("/api/op/git.overview");
       if (generation !== requestGeneration) return;
       data = fresh;
       loadedAt = new Date().toISOString(); errorText = "";
@@ -153,7 +153,8 @@ const CrewGit = (() => {
     loading = false;
     operation = name; errorText = ""; render();
     try {
-      const result = await options.api(`/api/git/${name}`, {project:options.project, ...body});
+      // crew-op: git.adopt git.enable git.fetch
+      const result = await options.api("/api/op/git." + name, {project:options.project, ...body});
       if (generation !== requestGeneration) return;
       if (name === "fetch" && !result.ok) { errorText = result.error; data.last_fetch_at = result.last_fetch_at; }
       else { await load(); if (name !== "fetch") await options.onChanged(); if (generation === requestGeneration) options.toast(name === "enable" ? "已启用 Git 助手" : name === "disable" ? "已停用 Git 助手" : name === "adopt" ? `${result.branch} 已交给 ${result.leader.name}` : `${result.output === "" ? "fetch 完成" : result.output}${result.pull_requests_error ? `\nPR 列表未更新：${result.pull_requests_error}` : ""}`); }

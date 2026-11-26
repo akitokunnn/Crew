@@ -10,7 +10,7 @@ async function directory(t) { const root = await fs.mkdtemp(path.join(os.tmpdir(
 async function fixture(t, known = []) {
   const calls = []; const server = http.createServer(async (request, response) => {
     calls.push(request.url); response.setHeader('Content-Type', 'application/json');
-    if (request.url.split('?')[0] === '/api/projects') { response.end(JSON.stringify({ projects: known })); return; }
+    if (request.url.split('?')[0] === '/api/op/workspace.list') { response.end(JSON.stringify({ projects: known })); return; }
     response.writeHead(404); response.end(JSON.stringify({ error: 'missing' }));
   });
   await listen(server);
@@ -33,7 +33,7 @@ const TOKEN = 'a'.repeat(43);
 
 test('service URLs reject remote hosts, credentials, redirects paths and untrusted protocols', () => {
   assert.equal(core.loopback('http://127.0.0.1:1234/'), 'http://127.0.0.1:1234');
-  for (const value of ['https://example.com/', 'http://example.com:1234/', 'file:///x', 'http://user@127.0.0.1:1234/', 'http://127.0.0.1:1234/api/state', 'http://127.0.0.1:1234/?x=1']) assert.throws(() => core.loopback(value));
+  for (const value of ['https://example.com/', 'http://example.com:1234/', 'file:///x', 'http://user@127.0.0.1:1234/', 'http://127.0.0.1:1234/api/op/workspace.state', 'http://127.0.0.1:1234/?x=1']) assert.throws(() => core.loopback(value));
 });
 
 test('native model discovery can wait beyond the normal API deadline', async t => {
@@ -42,7 +42,7 @@ test('native model discovery can wait beyond the normal API deadline', async t =
   });
   await listen(server);
   t.after(() => new Promise(resolve => server.close(resolve)));
-  const result = await core.request(`http://127.0.0.1:${server.address().port}`, '/api/runtimes?refresh=1', undefined, 45000);
+  const result = await core.request(`http://127.0.0.1:${server.address().port}`, '/api/op/runtimes.list?refresh=1', undefined, 45000);
   assert.equal(result.runtimes[0].id, 'detected-native');
 });
 test('a caller can abort a read-only request without waiting for its HTTP deadline', async t => {
@@ -103,34 +103,34 @@ test('LAN host addresses accept only private IPv4 hosts with a port and no path'
     assert.throws(() => core.lanAddress(value), /主机地址/, value);
 });
 test('the device token is sent only to the authorized LAN host and a 401 reports the lost authorization', async t => {
-  const lan = await host(t, { '/api/state':[200, { ok:true }], '/api/projects':[401, { error:'设备授权已失效，请在主机上重新生成配对码' }] });
-  const local = await host(t, { '/api/state':[200, { ok:true }] });
-  const other = await host(t, { '/api/state':[200, { ok:true }] });
+  const lan = await host(t, { '/api/op/workspace.state':[200, { ok:true }], '/api/op/workspace.list':[401, { error:'设备授权已失效，请在主机上重新生成配对码' }] });
+  const local = await host(t, { '/api/op/workspace.state':[200, { ok:true }] });
+  const other = await host(t, { '/api/op/workspace.state':[200, { ok:true }] });
   let expired = 0; core.authorizeRemote({ origin:lan.url, token:TOKEN, onUnauthorized:() => { expired++; } });
   t.after(() => core.authorizeRemote(null));
-  await core.request(lan.url, '/api/state'); await core.request(local.url, '/api/state');
+  await core.request(lan.url, '/api/op/workspace.state'); await core.request(local.url, '/api/op/workspace.state');
   assert.equal(lan.requests[0].headers.authorization, 'Bearer ' + TOKEN);
   assert.equal(local.requests[0].headers.authorization, undefined, 'a loopback service never receives the LAN token');
-  await assert.rejects(core.request(lan.url, '/api/projects'), error => error.status === 401 && /重新生成配对码/.test(error.message));
+  await assert.rejects(core.request(lan.url, '/api/op/workspace.list'), error => error.status === 401 && /重新生成配对码/.test(error.message));
   assert.equal(expired, 1);
   assert.throws(() => core.serviceOrigin('http://192.168.1.21:47812'), /loopback/);
   core.authorizeRemote(null);
-  await core.request(other.url, '/api/state'); assert.equal(other.requests[0].headers.authorization, undefined);
+  await core.request(other.url, '/api/op/workspace.state'); assert.equal(other.requests[0].headers.authorization, undefined);
   assert.throws(() => core.authorizeRemote({ origin:lan.url, token:'short', onUnauthorized() {} }), TypeError);
 });
 test('workspace folders are checked, resolved and created by the backend for both local and LAN connections', async t => {
   const project = { name:'demo', root:'D:\\demo', directory_state:{ status:'ready' } };
-  const service = await host(t, { '/api/host/workspace/existing':[200, project], '/api/host/workspace/new':[400, { error:'[WinError 183] 当文件已存在时，无法创建该文件。' }],
-    '/api/host/folders':[200, { path:'D:\\', parent:null, home:'C:\\Users\\x', roots:['C:\\', 'D:\\'], entries:[], truncated:false }] });
+  const service = await host(t, { '/api/op/workspace.add_existing':[200, project], '/api/op/workspace.create_folder':[400, { error:'[WinError 183] 当文件已存在时，无法创建该文件。' }],
+    '/api/op/workspace.host_folders':[200, { path:'D:\\', parent:null, home:'C:\\Users\\x', roots:['C:\\', 'D:\\'], entries:[], truncated:false }] });
   assert.deepEqual(await core.existingWorkspace('D:\\demo\\src', service.url), project);
   assert.deepEqual(await core.existingWorkspace('D:\\demo', service.url, { newProject:true }), project);
   await assert.rejects(core.newWorkspace('D:\\', 'demo', service.url), /当文件已存在时/);
   assert.equal((await core.hostFolders(service.url, 'D:\\')).path, 'D:\\');
   assert.deepEqual(service.requests.map(({ method, url, body }) => ({ method, url, body })), [
-    { method:'POST', url:'/api/host/workspace/existing', body:{ directory:'D:\\demo\\src', new_project:false } },
-    { method:'POST', url:'/api/host/workspace/existing', body:{ directory:'D:\\demo', new_project:true } },
-    { method:'POST', url:'/api/host/workspace/new', body:{ parent:'D:\\', name:'demo' } },
-    { method:'GET', url:'/api/host/folders?path=D%3A%5C', body:null }]);
+    { method:'POST', url:'/api/op/workspace.add_existing', body:{ directory:'D:\\demo\\src', new_project:false } },
+    { method:'POST', url:'/api/op/workspace.add_existing', body:{ directory:'D:\\demo', new_project:true } },
+    { method:'POST', url:'/api/op/workspace.create_folder', body:{ parent:'D:\\', name:'demo' } },
+    { method:'GET', url:'/api/op/workspace.host_folders?path=D%3A%5C', body:null }]);
 });
 test('the workspace list must carry the backend directory state for every writable workspace', async t => {
   const ready = { name:'demo', root:'C:\\demo', directory_state:{ status:'missing' } }, history = { name:'storage:w1', root:'已保存的工作区历史', read_only:true };
@@ -141,16 +141,16 @@ test('the workspace list must carry the backend directory state for every writab
 test('a host download streams into the chosen file and a failed download leaves no file behind', async t => {
   const root = await directory(t), destination = path.join(root, '导出.crewpack');
   const server = http.createServer((request, response) => {
-    if (request.url === '/api/workspace-data/download?id=ok') { assert.equal(request.headers.authorization, 'Bearer ' + TOKEN); response.writeHead(200, { 'Content-Type':'application/zip' }); response.end(Buffer.alloc(300000, 7)); }
+    if (request.url === '/api/op/data.download?id=ok') { assert.equal(request.headers.authorization, 'Bearer ' + TOKEN); response.writeHead(200, { 'Content-Type':'application/zip' }); response.end(Buffer.alloc(300000, 7)); }
     else { response.writeHead(400, { 'Content-Type':'application/json' }); response.end(JSON.stringify({ error:'导出文件已失效，请重新导出' })); }
   });
   await listen(server); t.after(() => new Promise(resolve => server.close(resolve)));
   const url = `http://127.0.0.1:${server.address().port}`;
   core.authorizeRemote({ origin:url, token:TOKEN, onUnauthorized() {} }); t.after(() => core.authorizeRemote(null));
-  assert.deepEqual(await core.download(url, '/api/workspace-data/download?id=ok', destination), { path:destination, bytes:300000 });
+  assert.deepEqual(await core.download(url, '/api/op/data.download?id=ok', destination), { path:destination, bytes:300000 });
   assert.deepEqual(await fs.readFile(destination), Buffer.alloc(300000, 7));
   const failed = path.join(root, 'failed.crewpack');
-  await assert.rejects(core.download(url, '/api/workspace-data/download?id=gone', failed), /导出文件已失效/);
+  await assert.rejects(core.download(url, '/api/op/data.download?id=gone', failed), /导出文件已失效/);
   assert.deepEqual((await fs.readdir(root)).sort(), ['导出.crewpack']);
 });
 test('a large host package survives the host closing its connection, and a cut-off body is refused', async t => {
@@ -158,7 +158,7 @@ test('a large host package survives the host closing its connection, and a cut-o
   const root = await directory(t), net = require('node:net'), size = 6 * 1024 * 1024;
   const server = net.createServer(socket => {
     socket.once('data', request => {
-      const full = request.toString().startsWith('GET /api/workspace-data/download?id=full ');
+      const full = request.toString().startsWith('GET /api/op/data.download?id=full ');
       socket.write('HTTP/1.0 200 OK\r\nContent-Type: application/zip\r\nContent-Length: ' + size + '\r\nConnection: close\r\n\r\n');
       for (let index = 0; index < (full ? 6 : 2); index++) socket.write(Buffer.alloc(1024 * 1024, index));
       socket.end();
@@ -168,9 +168,9 @@ test('a large host package survives the host closing its connection, and a cut-o
   const url = `http://127.0.0.1:${server.address().port}`;
   core.authorizeRemote({ origin:url, token:TOKEN, onUnauthorized() {} }); t.after(() => core.authorizeRemote(null));
   const destination = path.join(root, 'large.crewpack');
-  assert.equal((await core.download(url, '/api/workspace-data/download?id=full', destination)).bytes, size);
+  assert.equal((await core.download(url, '/api/op/data.download?id=full', destination)).bytes, size);
   assert.equal((await fs.readFile(destination)).subarray(5 * 1024 * 1024)[0], 5);
-  await assert.rejects(core.download(url, '/api/workspace-data/download?id=cut', path.join(root, 'cut.crewpack')), /主机在下载完成前断开了连接/);
+  await assert.rejects(core.download(url, '/api/op/data.download?id=cut', path.join(root, 'cut.crewpack')), /主机在下载完成前断开了连接/);
   assert.deepEqual(await fs.readdir(root), ['large.crewpack']);
 });
 test('desktop pairing asks for a device token without a cookie or page origin', async t => {

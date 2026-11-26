@@ -219,7 +219,7 @@
     async function readJobs() {
       const params = {project, kind:mode === "department" ? "department_compact" : "workspace_cleanup"};
       if (mode === "department") params.leader_session_id = leader.session_id;
-      const result = await api(`/api/maintenance/jobs?${query(params)}`);
+      const result = await api(`/api/op/maintenance.jobs?${query(params)}`);
       history = result.jobs; cleanups = result.cleanups;
       return result.jobs;
     }
@@ -241,8 +241,8 @@
         const active = jobs.find(entry => entry.status === "running");
         if (active) { job = active; view = "job"; render(); poll(); return; }
         const next = mode === "department"
-          ? await api("/api/maintenance/department/preview", {project, leader_session_id:leader.session_id})
-          : await api("/api/maintenance/cleanup/preview", {project});
+          ? await api("/api/op/maintenance.department.preview", {project, leader_session_id:leader.session_id})
+          : await api("/api/op/maintenance.cleanup.preview", {project});
         if (requested !== generation) return;
         preview = next; selected.clear();
         if (mode === "department") for (const person of next.people) for (const context of person.contexts) if (context.available) selected.add(context.target);
@@ -258,8 +258,8 @@
       submitting = true; setNote(mode === "department" ? "正在提交压缩…" : "正在提交清理…");
       await guarded(async requested => {
         const next = mode === "department"
-          ? await api("/api/maintenance/department/compact", {project, leader_session_id:leader.session_id, preview_id:preview.preview_id, targets:[...selected]})
-          : await api("/api/maintenance/cleanup", {project, preview_id:preview.preview_id, confirm:true});
+          ? await api("/api/op/maintenance.department.compact", {project, leader_session_id:leader.session_id, preview_id:preview.preview_id, targets:[...selected]})
+          : await api("/api/op/maintenance.cleanup.run", {project, preview_id:preview.preview_id, confirm:true});
         if (requested !== generation) return;
         submitting = false; job = next; view = "job"; note = "已提交，后台执行中。"; noteFailed = false;
         finished(); render(); poll();
@@ -270,7 +270,7 @@
       await guarded(async requested => {
         const params = {project, job_id:jobId, kind};
         if (before !== null) params.before = before;
-        const next = await api(`/api/maintenance/archive?${query(params)}`);
+        const next = await api(`/api/op/maintenance.archive.get?${query(params)}`);
         if (requested !== generation) return;
         if (before !== null && archive) {
           if (kind === "channel") next.messages = [...next.messages, ...archive.messages];

@@ -290,7 +290,7 @@ const CrewArchitecture = (() => {
   async function load(clearHistory = false) {
     const token = ++loadToken, name = project;
     try {
-      const result = await options.api(`/api/domains?project=${encodeURIComponent(name)}`);
+      const result = await options.api(`/api/op/domains.get?project=${encodeURIComponent(name)}`);
       if (token !== loadToken || name !== project) return;
       board = result; errorText = ""; cached = null; pendingDirection = null;
       if (clearHistory) { undoStack = []; redoStack = []; }
@@ -317,7 +317,7 @@ const CrewArchitecture = (() => {
     return queue;
   }
   async function send(ops) {
-    const result = await options.api("/api/domains", {project, base_version:board.version, ops});
+    const result = await options.api("/api/op/domains.apply", {project, base_version:board.version, ops});
     board = result.board; cached = null;
     return result;
   }

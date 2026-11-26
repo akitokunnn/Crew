@@ -12,7 +12,7 @@
     function remember(){try{localStorage.setItem(draftKey,field().value);}catch{}}
     function lock(value){busy=value;for(const control of dialog.querySelectorAll('textarea,button[type="submit"]'))control.disabled=value;}
     async function recent(){
-      const result=await api('/api/personal/notes');if(!dialog)return;
+      const result=await api('/api/op/notes.list');if(!dialog)return;
       const items=result.notes.slice().sort((a,b)=>Date.parse(b.created_at)-Date.parse(a.created_at)).slice(0,3);
       dialog.querySelector('.pn-items').innerHTML=items.length?items.map(item=>`<article class="pn-item"><p>${esc(item.title||firstLine(item.text))}</p><small>${esc(item.project||"全局想法")}${item.tags.length?` · ${item.tags.map(esc).join(" · ")}`:""}</small></article>`).join(""):'<p class="note">还没有想法。记下的第一条会出现在这里。</p>';
     }
@@ -22,7 +22,7 @@
       // An unconfirmed capture retries with the same request id, so it lands once.
       if(pending?.text!==text)pending={text,id:window.CrewBrowser.requestId()};
       lock(true);notice("正在记下…");
-      try{await api('/api/personal/notes',{action:"capture",data:{text},request_id:pending.id});}
+      try{await api('/api/op/note.capture',{data:{text},request_id:pending.id});}
       catch(error){notice(`没记下：${error.message}（内容还在输入框里）`);lock(false);return;}
       pending=null;field().value="";remember();lock(false);field().focus();notice("已记下。不会因此启动 AI。");
       try{await recent();}catch(error){notice(`已记下，但最近记录读取失败：${error.message}`);}

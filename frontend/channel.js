@@ -285,7 +285,7 @@
     if (context.digestButton.disabled) return;
     context.requestingDigest = true; digestState(context);
     try {
-      await context.api("/api/channel/digest", {project:context.state.project.name});
+      await context.api("/api/op/channel.digest.start", {project:context.state.project.name});
       context.state.channel.digesting = true; context.digestError = null;
     } catch (error) {
       if (current(context)) context.toast(error.message);
@@ -300,7 +300,7 @@
     context.loadingOriginals = true; renderMessages(context);
     try {
       const before = context.originalMessages.length === 0 ? context.digest.upto_message_id + 1 : context.originalMessages[0].id;
-      const result = await context.api(`/api/channel?limit=20&before=${before}`);
+      const result = await context.api(`/api/op/channel.list?limit=20&before=${before}`);
       if (!current(context) || context.digest.id !== digestId) return;
       context.originalMessages = [...result.messages, ...context.originalMessages];
       context.hasMoreOriginals = result.has_more;
@@ -318,7 +318,7 @@
     context.reading = true;
     let succeeded = false;
     try {
-      const result = await context.api("/api/channel/read", {project:context.state.project.name, id:context.latestId});
+      const result = await context.api("/api/op/channel.mark_read", {project:context.state.project.name, id:context.latestId});
       context.readId = result.read_id;
       succeeded = true;
       if (current(context)) context.onRead(result);
@@ -329,7 +329,7 @@
   async function load(context) {
     context.loading = true;
     try {
-      const result = await context.api("/api/channel?limit=20");
+      const result = await context.api("/api/op/channel.list?limit=20");
       if (!current(context)) return;
       context.digest = result.digest; context.messages = []; context.originalMessages = [];
       context.originalsOpen = false; context.hasMoreOriginals = context.digest !== null;
@@ -351,7 +351,7 @@
     if (context.loadingOlder || !context.hasMore) return;
     context.loadingOlder = true; context.older.disabled = true; context.older.textContent = "正在加载…";
     try {
-      const result = await context.api(`/api/channel?limit=20&before=${context.pageBefore}`);
+      const result = await context.api(`/api/op/channel.list?limit=20&before=${context.pageBefore}`);
       if (!current(context)) return;
       merge(context, afterDigest(context, result.messages));
       context.pageBefore = result.messages[0].id;
@@ -367,7 +367,7 @@
     let before = null, succeeded = false;
     try {
       while (true) {
-        const result = await context.api(`/api/channel?limit=20${before === null ? "" : `&before=${before}`}`);
+        const result = await context.api(`/api/op/channel.list?limit=20${before === null ? "" : `&before=${before}`}`);
         if (!current(context)) return;
         if ((result.digest === null ? null : result.digest.id) !== (context.digest === null ? null : context.digest.id)) {
           await load(context); return;
@@ -392,7 +392,7 @@
     const to = allLeaders ? ["*"] : context.state.leaders.filter(item => context.selected.has(item.session_id)).map(item => item.name);
     context.sending = true; composerState(context);
     try {
-      const result = await context.api("/api/channel", {project:context.state.project.name, body, to, ...(reply === null ? {} : {reply_to:reply.id})});
+      const result = await context.api("/api/op/channel.post", {project:context.state.project.name, body, to, ...(reply === null ? {} : {reply_to:reply.id})});
       if (!current(context)) return;
       if (context.version === version) { context.input.value = ""; resizeInput(context); }
       context.selected.clear(); context.allLeaders = false; context.replyTo = null; renderTargets(context);

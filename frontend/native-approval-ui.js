@@ -25,7 +25,7 @@
     async function decide(id, allow) {
       id = String(id); if (saving.has(id) || !pending().some(item => String(item.id) === id)) return;
       saving.add(id); expanded.add(id); errors.delete(id); options.onChange();
-      try { await options.api("/api/native-approval", {id,allow}); acknowledged.add(id); await options.refreshState(); }
+      try { await options.api("/api/op/approval.resolve", {id,allow}); acknowledged.add(id); await options.refreshState(); }
       catch (error) { errors.set(id,error.message); options.toast(error.message); }
       finally { saving.delete(id); options.onChange(); }
     }

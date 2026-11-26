@@ -139,10 +139,10 @@
   // Request shapes; api(path, body) is the page's JSON helper (GET without a body).
   function client(api) {
     return {
-      load: () => api("/api/personal/mindmap"),
-      edit: (ops, base_version) => api("/api/personal/mindmap", {ops, base_version}),
-      preview: request => api("/api/personal/mindmap/preview", request),
-      convert: (request, versions) => api("/api/personal/mindmap/convert", {...request, map_version: versions.map_version, board_version: versions.board_version})
+      load: () => api("/api/op/mindmap.get"),
+      edit: (ops, base_version) => api("/api/op/mindmap.edit", {ops, base_version}),
+      preview: request => api("/api/op/mindmap.preview", request),
+      convert: (request, versions) => api("/api/op/mindmap.convert", {...request, map_version: versions.map_version, board_version: versions.board_version})
     };
   }
 

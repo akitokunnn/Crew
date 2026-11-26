@@ -207,7 +207,7 @@
       if (window.CrewAccess && !await CrewAccess.ready) return;
       if (projects.length) return;
       try {
-        const res = await fetch("/api/projects", {headers: {"X-Crew": "1"}});
+        const res = await fetch("/api/op/workspace.list", {headers: {"X-Crew": "1"}});
         if (!res.ok) return;
         const data = await res.json();
         if (Array.isArray(data.projects) && !projects.length) update({projects: data.projects});

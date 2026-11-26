@@ -27,8 +27,8 @@ async function fixture(t,options={}) {
     if(options.startupFailure)throw Error('启动失败后不应调用坏 HTTP');
     if(options.offline)throw Object.assign(Error('connection refused'),{code:'ECONNREFUSED'});
     if(route==='/api/admin/health')return health(url);
-    if(route==='/api/admin/connection/plan')return{sessions:[{session_id:'one',name:'组长',project:'测试',running:true,busy:false}],goals_count:2,running_count:1,repair_active:false,operations_chat_busy:true};
-    if(route==='/api/admin/connection/prepare'){assert.deepEqual(body,{instance_id:'fixture-instance'});if(options.prepareFailure)throw Error('运维修复仍在运行');return{ok:true,pid:101,instance_id:'fixture-instance',managed_pids:[102],gate_id:'fixture-gate'};}
+    if(route==='/api/op/admin.connection.plan')return{sessions:[{session_id:'one',name:'组长',project:'测试',running:true,busy:false}],goals_count:2,running_count:1,repair_active:false,operations_chat_busy:true};
+    if(route==='/api/op/admin.connection.prepare'){assert.deepEqual(body,{instance_id:'fixture-instance'});if(options.prepareFailure)throw Error('运维修复仍在运行');return{ok:true,pid:101,instance_id:'fixture-instance',managed_pids:[102],gate_id:'fixture-gate'};}
     throw Error('Unexpected route '+route);
   };
   const hostHealth={ok:true,service:'crew',version:options.hostVersion||'0.0.0-test',home:'/Users/host/.crew',instance_id:'host-instance',host_name:'书房的 Mac',pid:7,warnings:[]};
@@ -61,7 +61,7 @@ test('existing connection reads its actual HOME and never prepares or stops the 
   const f=await fixture(t,{borrowed:true});
   const result=await f.manager.apply({settings:{...f.settings,mode:'existing',home:'ignored old HOME',service_url:'http://127.0.0.1:52346/'},home_action:'existing'});
   assert.equal(result.settings.home,await fs.realpath(f.target));assert.equal(result.settings.service_url,'http://127.0.0.1:52346');assert.equal(result.restarting,true);
-  assert.ok(!f.calls.includes('stop'));assert.ok(!f.calls.includes('home-copy'));assert.ok(!f.calls.includes('/api/admin/connection/prepare'));
+  assert.ok(!f.calls.includes('stop'));assert.ok(!f.calls.includes('home-copy'));assert.ok(!f.calls.includes('/api/op/admin.connection.prepare'));
   assert.ok(!f.calls.includes('prepare-home'));assert.ok(!f.calls.includes('reset-deployment'));
 });
 
@@ -80,7 +80,7 @@ test('owned HOME copy pauses and drains before copy, saves atomically, then requ
   const f=await fixture(t);
   const result=await f.manager.apply({settings:{...f.settings,home:f.target},home_action:'copy'});
   assert.equal(result.ok,true);assert.equal(result.impact.copy_required,true);assert.equal(readSync(f.config.launchSettingsPath).home,f.target);
-  for(const [before,after]of [['lock','/api/admin/connection/prepare'],['/api/admin/connection/prepare','stop'],['stop','stopped'],['stopped','home-copy'],['home-copy','prepare-home'],['prepare-home','relaunch'],['relaunch','unlock']])assert.ok(f.calls.indexOf(before)<f.calls.indexOf(after),before+' before '+after);
+  for(const [before,after]of [['lock','/api/op/admin.connection.prepare'],['/api/op/admin.connection.prepare','stop'],['stop','stopped'],['stopped','home-copy'],['home-copy','prepare-home'],['prepare-home','relaunch'],['relaunch','unlock']])assert.ok(f.calls.indexOf(before)<f.calls.indexOf(after),before+' before '+after);
   assert.deepEqual(f.preparedHomes,[{home:f.target,reset_deployment:true}]);
 });
 
@@ -190,7 +190,7 @@ test('a different offline existing HOME is prepared before a local launch withou
   const f=await fixture(t,{borrowed:true,targetKind:'crew'});
   const result=await f.manager.apply({settings:{...f.settings,home:f.target},home_action:'existing'});
   assert.equal(result.ok,true);assert.deepEqual(f.preparedHomes,[{home:f.target,reset_deployment:true}]);
-  assert.ok(!f.calls.includes('stop'));assert.ok(!f.calls.includes('/api/admin/connection/prepare'));assert.ok(!f.calls.includes('home-copy'));
+  assert.ok(!f.calls.includes('stop'));assert.ok(!f.calls.includes('/api/op/admin.connection.prepare'));assert.ok(!f.calls.includes('home-copy'));
   assert.ok(f.calls.indexOf('prepare-home')<f.calls.indexOf('relaunch'));
 });
 
@@ -300,7 +300,7 @@ test('switching an owned local backend to a LAN host safely stops its sessions b
   const f=await fixture(t);
   const result=await f.manager.apply({settings:{...f.settings,mode:'remote',remote_backend:'saved-host'},home_action:'existing'});
   assert.equal(result.restarting,true);assert.equal(result.impact.running_count,1);
-  for(const [before,after]of [['lock','/api/admin/connection/prepare'],['/api/admin/connection/prepare','stop'],['stop','stopped'],['stopped','relaunch'],['relaunch','unlock']])assert.ok(f.calls.indexOf(before)<f.calls.indexOf(after),before+' before '+after);
+  for(const [before,after]of [['lock','/api/op/admin.connection.prepare'],['/api/op/admin.connection.prepare','stop'],['stop','stopped'],['stopped','relaunch'],['relaunch','unlock']])assert.ok(f.calls.indexOf(before)<f.calls.indexOf(after),before+' before '+after);
   assert.ok(!f.calls.includes('prepare-home'));assert.equal(readSync(f.config.launchSettingsPath).mode,'remote');
 });
 
@@ -323,7 +323,7 @@ test('a LAN window switches back to this computer without probing the host as a 
   assert.equal(current.reconnect_required,true);assert.equal(current.remote_backends[0].id,'saved-host');assert.equal(typeof current.device_name,'string');
   const result=await f.manager.apply({settings:{...current.settings,mode:'local',remote_backend:''},home_action:'existing'});
   assert.equal(result.restarting,true);assert.deepEqual(f.preparedHomes,[{home:f.home,reset_deployment:false}]);
-  assert.ok(!f.calls.includes('stop'));assert.ok(!f.calls.includes('/api/admin/connection/plan'));
+  assert.ok(!f.calls.includes('stop'));assert.ok(!f.calls.includes('/api/op/admin.connection.plan'));
   assert.equal(f.calls.filter(call=>call==='/api/admin/health').length,1,'only the LAN health read in get(); the host is never treated as a local service');
   assert.deepEqual(readSync(f.config.launchSettingsPath),{...f.settings,mode:'local',remote_backend:''});
 });

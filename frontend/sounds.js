@@ -68,11 +68,11 @@
     for (const [offset, startHz, endHz, duration, peak] of notes) note(destination, at + offset, startHz, endHz, duration, peak);
   }
   function forget(id) { decoded.delete(id); decoding.delete(id); }
-  async function bufferFor(id, url) {
+  async function bufferFor(id) {
     if (decoded.has(id)) return decoded.get(id);
     if (decoding.has(id)) return decoding.get(id);
     const request = (async () => {
-      const response = await fetch(url);
+      const response = await fetch("/api/op/sounds.custom.file?id=" + encodeURIComponent(id));
       if (!response.ok) throw Error(`自定义音效加载失败：${response.status} ${response.statusText}`);
       const buffer = await context.decodeAudioData(await response.arrayBuffer());
       if (decoding.get(id) === request) decoded.set(id, buffer);
@@ -83,7 +83,7 @@
   }
   async function renderPreset(id, preset, volume) {
     if (preset.url) {
-      const buffer = await bufferFor(id, preset.url), source = context.createBufferSource();
+      const buffer = await bufferFor(id), source = context.createBufferSource();
       source.buffer = buffer; source.connect(destinationFor(volume, buffer.duration * 1000 + 100)); source.onended = () => source.disconnect(); source.start();
     } else renderNotes(preset.notes, volume);
   }
