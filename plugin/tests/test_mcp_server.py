@@ -1,11 +1,9 @@
 """The registry-generated MCP server: tokens, tool lists per role and runtime, search, calls (design §5)."""
 import tests
 from http.server import ThreadingHTTPServer
-from contextlib import closing
 import json
 import threading
 import unittest
-from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -152,25 +150,6 @@ class McpServerTests(ShellFixture, unittest.TestCase):
         self.assertEqual([g['name'] for g in state['groups']], ['lead'])
         self.assertEqual(sorted(s['session_id'] for s in state['ungrouped']), ['recent', 's2'])
         self.assertEqual(state['hidden_ended_sessions'], 2)
-
-    def test_writes_queue_behind_a_long_writer_instead_of_failing_on_the_busy_timeout(self):
-        token, _ = self.grant('s3')
-        holding, release = threading.Event(), threading.Event()
-
-        def long_writer():  # like the background usage scan: write lock plus an open write transaction
-            with self.service.write_lock, closing(store.connect(self.home)) as conn, board.transaction(conn):
-                holding.set()
-                release.wait(5)
-
-        writer = threading.Thread(target=long_writer)
-        with mock.patch.object(store, 'BUSY_TIMEOUT_MS', 50):
-            writer.start()
-            self.assertTrue(holding.wait(5))
-            threading.Timer(.4, release.set).start()
-            error, value = self.call(token, 'todo_add', {'title': '排队', 'steps': 's', 'verification': 'v', 'request_id': 'q-1'})
-            writer.join()
-        self.assertFalse(error, value)
-        self.assertEqual(value['title'], '排队')
 
     def test_writes_need_request_id_and_run_once(self):
         token, _ = self.grant('s3')

@@ -387,17 +387,20 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         service.scanned_at=None
         snapshot=threading.Event();attempted=threading.Event();written=threading.Event()
         writer_errors=[]
-        def scan(conn,*args,receipts_only=False):
+        def scan(conn,*args,receipts_only=False,writer=None):
             self.assertFalse(receipts_only)
+            # The scan holds the service write lock around each of its batches (usage.scan).
+            self.assertIs(writer,service.write_lock)
             # Reproduce SQLite's deferred read -> write hazard. The competing
-            # service writer must wait until this complete scan releases its lock.
-            conn.execute('SAVEPOINT timing_scan')
-            conn.execute('SELECT COUNT(*) FROM sessions').fetchone()
-            snapshot.set()
-            if not attempted.wait(3):raise AssertionError('writer never attempted')
-            written.wait(.15)
-            conn.execute('PRAGMA user_version=2')
-            conn.execute('RELEASE timing_scan')
+            # service writer must wait until this batch releases the lock.
+            with writer:
+                conn.execute('SAVEPOINT timing_scan')
+                conn.execute('SELECT COUNT(*) FROM sessions').fetchone()
+                snapshot.set()
+                if not attempted.wait(3):raise AssertionError('writer never attempted')
+                written.wait(.15)
+                conn.execute('PRAGMA user_version=2')
+                conn.execute('RELEASE timing_scan')
             return {'inserted': 0, 'updated': 0, 'skipped': 0, 'bad_lines': []}
         def write():
             try:

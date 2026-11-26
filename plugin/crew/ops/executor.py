@@ -46,12 +46,8 @@ def _args_hash(name, args):
 
 
 def _receipt_begin(service, caller, op, request_id, digest):
-    """Reserve (caller, request_id) or return the earlier outcome (design §5.5).
-
-    Receipts are writes like any other: they queue on the service write lock instead of failing on the
-    database busy timeout while another writer (a long usage scan) holds the database.
-    """
-    with service.write_lock, closing(store.connect(service.home)) as conn, board.transaction(conn):
+    """Reserve (caller, request_id) or return the earlier outcome (design §5.5)."""
+    with closing(store.connect(service.home)) as conn, board.transaction(conn):
         row = conn.execute('SELECT * FROM op_requests WHERE caller_key=? AND request_id=?',
                            (caller.key, request_id)).fetchone()
         if row is None:
@@ -78,7 +74,7 @@ def _receipt_end(service, caller, request_id, status, result):
         text = json.dumps(result, ensure_ascii=False)
     except (TypeError, ValueError):
         text = None
-    with service.write_lock, closing(store.connect(service.home)) as conn, board.transaction(conn):
+    with closing(store.connect(service.home)) as conn, board.transaction(conn):
         conn.execute('UPDATE op_requests SET status=?, result=?, finished_at=? WHERE caller_key=? AND request_id=?',
                      (status, text, _stamp(service), caller.key, request_id))
 
