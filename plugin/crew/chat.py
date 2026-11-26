@@ -1158,8 +1158,8 @@ class Manager:
                             goal_receipt.update(self.goal_controller.send(bound_goal, session_id, task, source='crew'))
                             return
                         plan["command"] = self._launch(session, spec)
-                        text = (spec["task"] if chosen_runtime == "codex" else "用 Read 工具读取 " + spec["md"] +
-                                " 并照做，这是 Crew 给你的任务说明。")
+                        # Claude used to fetch this brief with Read before seeing the task.
+                        text = plan["files"][spec["md"]] if chosen_runtime == "claude" else spec["task"]
                         self._send(session_id, text, spec["task"], source="crew")
                 except Exception:
                     live = [key for key in self._identity_keys(conn, session_id) if self.running(key)]

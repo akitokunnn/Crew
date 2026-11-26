@@ -66,6 +66,21 @@ class ChatHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, result)
         return result
 
+    def test_claude_receives_first_task_inline_and_chat_preserves_original(self):
+        task = "先梳理服务端通讯。\n列出需要确认的问题。"
+        for path, name in (("/api/leader", "server-lead"), ("/api/spawn", "server-worker")):
+            with self.subTest(path=path):
+                code, result, _ = self.request(path + "?project=demo", {"name": name, "task": task})
+                self.assertEqual(code, 200, result)
+                process = self.processes[-1]
+                records = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+                sent, = [record for record in records if record["type"] == "user"]
+                self.assertIn(task, sent["message"]["content"])
+                self.assertNotIn("用 Read 工具读取", sent["message"]["content"])
+                messages = [event for event in self.history(result["session_id"])["events"]
+                            if event["type"] == "message"]
+                self.assertEqual([(event["source"], event["text"]) for event in messages], [("crew", task)])
+
     def test_stopped_owned_process_does_not_become_external_until_discovery_refreshes(self):
         leader_id, _ = self.start_leader('stop-presence')
         service = self.server.service
