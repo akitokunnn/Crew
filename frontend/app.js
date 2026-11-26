@@ -18,7 +18,7 @@
   let channelFocus = null, chatFocus = null;
   let settingsUI = null, settingsOpen = false, settingsReturn = null;
   let workspaceSettings = null, workspaceOpen = false, maintenance = null, gitSettings = null;
-  let nativeApprovals = null, memberUI = null, adoptLeaderId = null, sessionLibrary = null;
+  let nativeApprovals = null, memberUI = null, sessionLibrary = null;
   let stopConfirmation = null;
   let documents = null, runtimeSwitch = null, goals = null, goalId = null;
   let leaderDrag = null, leaderOrderSaving = false;
@@ -857,8 +857,7 @@
   }
   function renderAdopt() { mountSessionLibrary($("main")); }
   function mountSessionLibrary(host) {
-    if (sessionLibrary === null) sessionLibrary = CrewSessionLibrary.create({api, toast,
-      preferredLeader:() => leader(adoptLeaderId)?.name || "", changed:() => loadState(true),
+    if (sessionLibrary === null) sessionLibrary = CrewSessionLibrary.create({api, toast, changed:() => loadState(true),
       open:item => { const owner = item.role === "leader" ? item : state.leaders.find(person => person.name === item.group);
         if (owner) navigate("chat", owner.session_id, item.role === "leader" ? null : item.session_id); }});
     sessionLibrary.mount(host, state);
@@ -1116,7 +1115,6 @@
     $("backdrop").classList.add("show"); $("backdrop").querySelector('[data-act="modal-close"]').focus();
     return new Promise(resolve => { stopConfirmation = resolve; });
   }
-  function hideSettings() { if (settingsOpen) closeSettings(); }
   function closeSettings(restoreView = true) {
     settingsOpen = false; settingsUI?.hide(); $("app").inert = false; $("leader-panel").inert = !leadersOpen; $("main").inert = false;
     if (restoreView && state !== null) {
@@ -1535,7 +1533,6 @@
         if (enabled && !item.trust?.goal) openTrust(id, true);
         else action(`trust:${id}`, async () => { await api("/api/trust", {leader_session_id:id, enabled, goal:item.trust?.goal ?? ""}); await loadState(true); toast("已保存 leader 授权，下次正常输入时传达。"); });
       }
-      else if (act === "member-adopt") { hideMenu();adoptLeaderId=id;navigate("adopt"); }
       else if (act === "session-rename") openRename(id);
       else if (act === "leader-settings") openLeaderSettings(id);
       else if (act === "look-color" && lookDraft) { lookDraft.color = button.dataset.color; lookDraft.error = ""; renderLeaderSettings(); }
@@ -1555,7 +1552,6 @@
       });
       else if (act === "wake-session") action(`wake:${id}`, async () => { await api("/api/wake", {session_id:id, text:"用户叫醒了你，请继续当前任务。"}); await loadState(true); toast("已叫醒"); });
       else if (act === "leader") { tasksOpen = !narrowLayout(); if (cardId !== null) closeCard(); navigate("chat", id, null, null); }
-      else if (act === "active-goal") { const target = (state.goals || []).find(goal => String(goal.id) === button.dataset.goalId); if (target) { navigate("chat",target.leader_session_id,id === target.leader_session_id ? null : id,target.id); } }
       else if (act === "member-chat") { const item = member(id); if (item) { if (button.dataset.goalId) memberScopes.set(item.session_id, button.dataset.goalId); if (cardId !== null) closeCard(); navigate("chat", item.leader_session_id, item.session_id, null); } }
       else if (act === "view") { if (settingsOpen) closeSettings(false); if (narrowLayout() && leadersOpen) setLeadersOpen(false); if (cardId !== null) closeCard(); if (button.dataset.view === "all") allTab = "overview"; navigate(button.dataset.view); }
       else if (act === "todo-toggle") { if (todoExpanded.has(id)) todoExpanded.delete(id); else todoExpanded.add(id); renderTodoSurface(); }
@@ -1581,7 +1577,6 @@
       }
       else if (act === "card") openCard(id);
       else if (act === "card-close") closeCard();
-      else if (act === "decision-toggle") { const key = Number(id); if (decisionsOpen.has(key)) decisionsOpen.delete(key); else decisionsOpen.add(key); if (view === "chat") renderChat(); else renderAll(); }
       else if (act === "decision-clarify") action(`clarify:${id}`, async () => { button.disabled = true; try { await api("/api/decision/clarify", {id:Number(id)}); await loadState(true); toast("已请 leader 补充说明"); } finally { button.disabled = false; } });
       else if (act === "decision-discuss" || act === "decision-ready") action(`discuss:${id}`, async () => {
         const item = state.decisions.find(item => String(item.id) === id);

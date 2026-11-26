@@ -70,7 +70,7 @@
       try {
         const result = await options.api(`/api/session-library/preview?scope=${scope}&key=${encodeURIComponent(key)}`);
         if (revision !== previewRequest) return;
-        detail = result; draft = {name:result.item.name || result.item.title.slice(0,20),group:options.preferredLeader?.() || ""}; renderDetail();
+        detail = result; draft = {name:result.item.name || result.item.title.slice(0,20),group:""}; renderDetail();
         const panel = find(".sl-preview"); panel.tabIndex = -1; panel.focus({preventScroll:true}); panel.scrollIntoView({block:"nearest"});
       } catch (caught) { if (revision === previewRequest) { error = caught.message || String(caught); selected = null; renderDetail(); notices(); } }
     }
