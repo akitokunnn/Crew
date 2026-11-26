@@ -81,6 +81,7 @@ class AssistantHttpTests(ShellFixture, unittest.TestCase):
 
     def test_new_page_assets_are_served_by_the_actual_backend(self):
         for path in ('/assistant.html', '/assistant.js', '/assistant.css', '/workspace-home.js', '/workspace-home.css',
+                     '/workspace-entry.js', '/workspace-entry.css',
                      '/global-rail.js', '/personal-notes-ui.js', '/personal-notes-ui.css', '/behavior-prompts-ui.js', '/behavior-prompts-ui.css'):
             code, content, _ = self.request(path, raw=True)
             self.assertEqual(code, 200, path)
