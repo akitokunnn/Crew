@@ -1171,7 +1171,7 @@ function fixture() {
   const original = Object.getOwnPropertyDescriptor(inner, "innerHTML");
   Object.defineProperty(inner, "innerHTML", {get:original.get, set(value) { original.set.call(inner, value); scroll.scrollHeight = 40 + [...value.matchAll(/data-channel-id=/g)].length * 100; }});
   const nodes = {".cx-pin":element(), ".cx-scroll":scroll, ".cx-inner":inner, ".cx-older":older, ".cx-targets":targets, textarea:input, ".cx-send":send, form};
-  for (const selector of [".cx-digest-btn", ".cx-pendingbar", ".cx-composer-wrap", ".cx-replybar", ".cx-aside", ".cx-members", ".cx-pending", ".cx-count", ".cx-backdrop", ".cx-pop"]) nodes[selector] = element();
+  for (const selector of [".cx-digest-btn", ".cx-pendingbar", ".cx-composer-wrap", ".cx-replybar", ".cx-aside", ".cx-members", ".cx-pending", ".cx-count", ".cx-backdrop", ".cx-pop", ".cx-room"]) nodes[selector] = element();
   Object.assign(scroll, {addEventListener() {}});
   inner.querySelector = () => null;
   nodes[".cx-pin"].addEventListener = () => {};
@@ -1184,6 +1184,7 @@ function fixture() {
   const api = async (route, data) => {
     calls.push({route, data});
     if (route === "/api/channel/read") return {read_id:data.id, unread:0, latest_id:messages[messages.length - 1].id};
+    if (route === "/api/war-rooms") return {rooms:[]};
     if (route === "/api/channel") {
       if (interloper) messages.push(message(messages.length + 1, "发送期间到达的发言"));
       const posted = message(messages.length + 1, data.body, "user");
@@ -1213,7 +1214,8 @@ function fixture() {
         index = (assets / "index.html").read_text(encoding="utf-8")
         app = (assets / "app.js").read_text(encoding="utf-8")
         self.assertLess(index.index('src="/chat.js"'), index.index('src="/channel.js"'))
-        self.assertLess(index.index('src="/channel.js"'), index.index('src="/app.js"'))
+        self.assertLess(index.index('src="/channel.js"'), index.index('src="/war-room.js"'))
+        self.assertLess(index.index('src="/war-room.js"'), index.index('src="/app.js"'))
         self.assertLess(app.index('data-view="all"'), app.index('data-view="channel"'))
         self.assertIn('state.channel.unread', app)
         self.assertIn('"channel", "adopt"', app)
