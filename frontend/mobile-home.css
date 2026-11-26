@@ -234,20 +234,6 @@ button.wh-overview-item:active{background:var(--hover)}
 #channel-host .channel-composer .hint{display:none}
 #channel-host .channel-composer .send{width:var(--m-tap);height:var(--m-tap);min-height:var(--m-tap);border-radius:22px}
 
-/* ===================== 工作区入口（/） ===================== */
-.workspace-home{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;align-content:start;column-gap:8px;width:100%;max-width:none;margin:0;padding:calc(var(--m-safe-t) + 12px) var(--m-gutter) 32px;box-sizing:border-box}
-.workspace-home>.workspace-logo{grid-row:1;grid-column:1;width:36px;height:36px}
-.workspace-home>[data-act="settings"]{grid-row:1;grid-column:2;min-height:var(--m-tap);padding:0 12px;font-size:var(--m-fs-body);color:var(--accent-text)}
-.workspace-home>h1{grid-row:2;grid-column:1/-1;margin:18px 0 4px;font-size:30px;font-weight:700;line-height:1.2;letter-spacing:-.02em}
-.workspace-home>.note{grid-row:3;grid-column:1/-1;margin:0 0 16px;font-size:var(--m-fs-body);color:var(--text-2)}
-.workspace-home>.list{grid-row:4;grid-column:1/-1;border-radius:var(--m-radius)}
-.workspace-home>a.btn{grid-row:5;grid-column:1/-1;display:flex;align-items:center;min-height:52px;margin-top:16px;padding:0 16px;border:1px solid var(--line);border-radius:var(--m-radius);background:var(--surface);color:var(--text);font-size:16px}
-.workspace-home>a.btn::after{content:"›";margin-left:auto;font-size:22px;line-height:1;color:var(--text-3)}
-.workspace-home .project-entry{gap:14px;min-height:64px;padding:10px 16px;box-sizing:border-box}
-.workspace-home .project-entry:active{background:var(--hover)}
-.workspace-home .project-logo{width:36px;height:36px;flex:none}
-.workspace-home .project-entry>.grow{font-size:17px;font-weight:600;overflow-wrap:anywhere}
-.workspace-home .project-theme-name{flex:none;font-size:var(--m-fs-meta)}
 /* 手机上这些 summary 改成 flex 后失去默认三角，补一个折叠箭头，避免看起来像纯文字（拍板背景的 › 提示在 style.css）。 */
 :is(.wh-history,.channel-digest)>summary{list-style:none}
 :is(.wh-history,.channel-digest)>summary::-webkit-details-marker{display:none}

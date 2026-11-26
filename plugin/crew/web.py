@@ -836,7 +836,9 @@ STATIC.update({'/maintenance-ui.js': ('maintenance-ui.js', 'text/javascript; cha
 STATIC.update({'/storage-history.js': ('storage-history.js', 'text/javascript; charset=utf-8'),
                '/storage-history.css': ('storage-history.css', 'text/css; charset=utf-8')})
 STATIC.update({'/workspace-home.js': ('workspace-home.js', 'text/javascript; charset=utf-8'),
-               '/workspace-home.css': ('workspace-home.css', 'text/css; charset=utf-8')})
+               '/workspace-home.css': ('workspace-home.css', 'text/css; charset=utf-8'),
+               '/workspace-entry.js': ('workspace-entry.js', 'text/javascript; charset=utf-8'),
+               '/workspace-entry.css': ('workspace-entry.css', 'text/css; charset=utf-8')})
 STATIC.update({'/assistant.html': ('assistant.html', 'text/html; charset=utf-8'),
                '/assistant.js': ('assistant.js', 'text/javascript; charset=utf-8'),
                '/assistant.css': ('assistant.css', 'text/css; charset=utf-8')})

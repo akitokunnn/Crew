@@ -1,19 +1,12 @@
-.crew-self-update-card{margin-bottom:24px;border-color:#cbd7d1}
-.crew-self-update-card .tool-card-actions{flex-wrap:wrap;justify-content:flex-end}
-.crew-self-download{display:flex;align-items:center;gap:12px;margin:0 0 12px;font-size:11px;color:#777;font-variant-numeric:tabular-nums}
-.crew-self-download progress{flex:1;min-width:0;height:6px;appearance:none;border:0;border-radius:3px;background:#ececec;overflow:hidden}
-.crew-self-download progress::-webkit-progress-bar{background:#ececec;border-radius:3px}
-.crew-self-download progress::-webkit-progress-value{background:#4f7a68;border-radius:3px}
-.crew-self-notes{font-size:11px;color:#777}
-.crew-self-notes summary{cursor:pointer}
-.crew-self-notes p{margin:8px 0 0;max-height:220px;overflow:auto;white-space:pre-wrap;line-height:1.7;overflow-wrap:anywhere}
-.crew-self-updated{color:#3f6b57}
-.crew-self-blocked{margin:4px 0 0;padding-left:18px;font-size:11px;color:#8a5a1f;line-height:1.7}
-.crew-self-footer{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
-.crew-self-footer p{margin:6px 0 0;font-size:11px;color:#999;line-height:1.7}
-:root[data-theme=dark] .crew-self-update-card{border-color:#3d4a44}
-:root[data-theme=dark] .crew-self-download,:root[data-theme=dark] .crew-self-notes,:root[data-theme=dark] .crew-self-footer p{color:var(--muted)}
-:root[data-theme=dark] .crew-self-download progress,:root[data-theme=dark] .crew-self-download progress::-webkit-progress-bar{background:#333}
-:root[data-theme=dark] .crew-self-download progress::-webkit-progress-value{background:#7fae98}
-:root[data-theme=dark] .crew-self-updated{color:#8fc3a9}
-:root[data-theme=dark] .crew-self-blocked{color:#e0b47a}
+.crew-self-download{display:flex;align-items:center;gap:12px;margin:0 0 12px;font-size:11.5px;color:var(--text-2);font-variant-numeric:tabular-nums}
+.crew-self-download progress{flex:1;min-width:0;height:6px;appearance:none;border:0;border-radius:999px;background:var(--hover);overflow:hidden}
+.crew-self-download progress::-webkit-progress-bar{background:var(--hover);border-radius:999px}
+.crew-self-download progress::-webkit-progress-value{background:var(--accent);border-radius:999px}
+.crew-self-notes{font-size:11.5px;color:var(--text-2)}
+.crew-self-notes summary{width:max-content;cursor:pointer}
+.crew-self-notes summary:hover{color:var(--text)}
+.crew-self-notes p{max-height:220px;margin:8px 0 0;padding:10px 12px;overflow:auto;border-radius:10px;background:var(--hover-2);white-space:pre-wrap;line-height:1.7;overflow-wrap:anywhere}
+.crew-self-updated{color:var(--working-text)}
+.crew-self-blocked{margin:4px 0 0;padding-left:18px;font-size:11.5px;line-height:1.7;color:var(--warn)}
+.crew-self-footer{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.crew-self-footer p{margin:6px 0 0;font-size:11px;line-height:1.7;color:var(--text-3)}

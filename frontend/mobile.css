@@ -65,13 +65,13 @@ body.m-chat .main{height:100dvh!important}
 .leader-panel-head>h2{font-size:28px!important;font-weight:700!important;letter-spacing:-.01em!important}
 .leader-panel-head>span{font-size:var(--m-fs-meta)!important}
 .leader-panel-channel{margin:0 var(--m-gutter) 10px!important;min-height:52px;padding:0 16px!important;border-radius:var(--m-radius)!important;font-size:16px!important}
-.leader-panel-leaders{padding:4px 8px 16px!important;-webkit-overflow-scrolling:touch}
+.leader-panel-leaders{padding:4px var(--m-gutter) 16px!important;-webkit-overflow-scrolling:touch}
 .leader-row{gap:12px!important;min-height:64px;padding:12px 10px!important;border-radius:var(--m-radius-sm)!important}
 .leader-row-name>strong{font-size:16px!important}
 .leader-row .goal{font-size:var(--m-fs-meta)!important}
 .leader-row-sub>:is(.st,.group-work-label){font-size:var(--m-fs-min)!important}
 .leader-panel-new{min-height:var(--m-tap);margin-top:8px!important;font-size:15px!important}
-.leader-panel-quota{flex-direction:row!important;gap:16px!important;padding:12px var(--m-gutter)!important}
+.leader-panel-quota{margin:4px var(--m-gutter) 8px;flex-direction:row!important;gap:16px!important;padding:12px var(--m-gutter)!important}
 .leader-panel-quota-row{flex:1;min-width:0}
 
 /* ---- 对话页返回键（桌面隐藏，见 style.css） ---- */

@@ -1,10 +1,11 @@
 'use strict';
 
 const HEIGHT = 36;
-const COLOR = '#f3f3f3';
-// The frame around the content follows the desktop display mode; it must match chrome.css.
-const DARK_COLOR = '#171716';
-const colors = dark => dark ? { color: DARK_COLOR, symbolColor: '#b9b6ad' } : { color: COLOR, symbolColor: '#525252' };
+// The title bar band is the Studio panel colour of the current display mode; it must match
+// --cd-panel and --cd-text-2 in chrome.css, because the Windows caption buttons take one plain colour.
+const COLOR = '#EFEEE8';
+const DARK_COLOR = '#191917';
+const colors = dark => dark ? { color: DARK_COLOR, symbolColor: '#ADA99E' } : { color: COLOR, symbolColor: '#5F5D56' };
 
 function pageKind(value, home, origin, errorPage) {
   if (value === home) return 'home';
