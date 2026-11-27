@@ -94,3 +94,10 @@
 | 后端 | M1、M5、M6、M7（守则与接入）、M8、M9–M11、迁移、工作区包、遗留池、确认范围、错误码；对应测试（盘点 Q7） | 会话「后端」：Claude 主控 + Codex astra 施工，分支 `claude/wa-backend` |
 | 前端与桌面 | M2、M3、M12–M16、文案；前端 / 桌面测试；浅深 · 宽窄截图 | 会话「前端」：Claude，分支 `claude/wa-frontend`；后端未好前用接口约定的样例响应桩测 |
 | 合并验收 | 合并两分支、相关测试、真 AI 实测（CC haiku + Codex luna low，隔离 HOME）、三要点、补手测流程 | 本会话 |
+
+## 契约补充（施工中由后端会话提出、主会话认可，2026-11-27）
+
+1. 错误响应沿用 `{error, code, detail}`，另加顶层 `error_code`（五类之一，HTTP 404/404/409/409/202）；其他错误不带。
+2. 人用 `GET note.get?project=X&note_id=…` → `{note:{…}}`，与 notes.list 元素同形。
+3. `interaction.list` 保持 `{requests:[…]}`，元素含 id, op, project, session_id, status, args, summary；GET 或 POST `{project?}`。
+4. `assistant.open` 身份对象的 `project` 为字符串或 null；`assistant.state.project` 为项目对象。
