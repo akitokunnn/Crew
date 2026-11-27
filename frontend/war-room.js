@@ -498,7 +498,7 @@
       + `<button type="submit" class="cx-btn cx-primary">${icon("check", "sm")}保存契约</button></div></form>`;
   }
   function budgetDialogHTML(ctx) {
-    const b = ctx.room.budget, floor = Math.max(10000, b.spent + 1), value = Math.max(b.tokens * 2, floor);
+    const b = ctx.room.budget, floor = Math.max(100000, b.spent + 1), value = Math.max(b.tokens * 2, floor);
     return `<form class="wr-dialog" data-wr-form="budget" role="dialog" aria-modal="true" aria-labelledby="wr-dialog-title"><h2 id="wr-dialog-title">${icon("gauge")}追加预算并继续</h2>`
       + `<p>已用 <b>${tokens(b.spent)}</b> / 原上限 ${tokens(b.tokens)} tokens。新上限要大于已用、不少于 1 万；${b.paused_at ? "保存后作战室继续，停下的成员接着推进。" : "到了新上限才会暂停。"}</p>`
       + field("新上限（tokens）", `<input name="budget" type="number" inputmode="numeric" required min="${floor}" step="1" value="${value}"><output class="wr-budget-out" aria-live="polite">= ${tokens(value)} tokens</output>`)

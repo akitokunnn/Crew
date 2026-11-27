@@ -177,9 +177,62 @@ H = 本机界面，B / D = 远程浏览器 / 远程桌面（与 `domains.apply` 
 - 第 1 轮助手不肯在房里发言（`war_room_post` 要用户消息编号）→ 助手在自己牵头的房里发言、改状态板、收尾不再要编号。
 - 第 2 轮助手按“状态板都完成”就收尾，正式任务仍是 running → 守则改为“首批任务都交付到待验收（看 `goal_list`）再收尾，并提醒用户验收”（改后未再跑）。
 
-仍未解决（不在本次改动内，交主会话）：
+上面三条遗留问题在 §12 修掉，结论见那里。
 
-- **任务轮次收不了尾**：前端（Codex luna）这一轮报告已提交（`finish_pending: true`，工作项 1/1），但 15 分钟仍是 running，`goal_accept` 报“只有等待用户验收的当前轮次可以决定”；后端（Claude haiku）的任务也一直 running。两轮实测都出现。
-- **重整预览漏了这类阻塞**：`domains.restructure.preview` 通过，`apply` 才报“本轮已提交交付、等待收尾；收尾后再交接”。预览应同样检查 `goals.request_transfer` 的前提。
-- 助手页在一次长等待后没有自动显示助手的新回复，刷新页面才出现（只见一次，未定位）。
 - 预算计数依赖后台用量扫描，有一次扫描的滞后；实测里 3 分钟内从 0 涨到 12 万、19 万，能起作用。
+
+## 12. 遗留问题修复与场景 8 复跑（2026-11-27）
+
+### 12.1 任务轮次收不了尾
+
+收尾的推进者是目标控制器 `goal_runtime.sync`（服务后台每 2 秒一次，加上各状态读取）：`goals.request_finish` 写一条 pending 的 `goal_round_finishes`，`sync` 对每条 pending 调 `goals.finalize_finish`；后者在暂停 / 等用户、有取消请求、或本轮还有 `running` / `pausing` 的执行时不收尾。执行状态由 `sync` 按托管进程的 `busy`（日志状态是否 working）回写。
+
+复现（隔离服务、真 Codex luna）：任务要求起一个后台服务，Codex 申请命令权限后停在原生审批上，执行一直 `running`，任务卡片只显示“执行中”，什么都不提示。原生审批只存在载体进程内存里，只有页面列出审批（`workspace.state` 调 `pending_approvals()`）时才会复核；复核会按 `goals.dispatch_check` 让“本轮已请求最终交付”“暂停”“取消”“交接中”的审批失效并拒绝。没人打开审批面板时，交付之后这条审批永远不复核，执行永远卡在原生轮次里，`finalize_finish` 永远等“原生执行实际结束”。
+
+修法：
+- 目标控制器每次 `sync` 先复核本机任务执行里挂着的原生审批（`Controller.approvals`），交付已提交等情况下按现有规则失效并拒绝，执行这一轮结束后自动转待验收。复现测试：`test_native_approvals.test_final_delivery_releases_a_pending_approval_nobody_lists_and_the_task_shows_the_wait`（去掉修复即超时失败）。
+- `goal.list` / `goal.get` 增加 `waiting`：列出执行在等用户确认的权限请求，以及“交付已提交、等执行结束”的说明；任务详情显示“等你确认权限”横幅；助手守则写明卡住时照实转告。
+- `sync` 里各任务的收尾 / 取消 / 交接各自成事务，一个任务出错不再拖住其它任务。
+
+另一个实测时出现的“running 收不了尾”来自作战室预算（见 12.4）：停下正在干活的 leader 后任务进入 pausing，`finalize_finish` 在暂停期间本来就不收尾。
+
+### 12.2 重整预览漏查交接前提
+
+交接前提抽成 `goals.transfer_blocker`（已结束、正交给另一位 leader、本轮已提交交付等待收尾、已请求取消），`request_transfer` 与 `domains.restructure.preview` 共用；预览对显式改派和合并 / 退役带来的隐式改派都逐条列出，例如“「前端」的任务「登录页」：本轮已提交交付、等待收尾；收尾后再交接（任务暂停中，继续推进后会自动收尾）”。测试：`test_campaign_structure.test_preview_lists_what_would_stop_a_task_handover_at_apply`。
+
+### 12.3 助手页偶尔不自动显示新回复
+
+排查：助手页每 4 秒轮询 `assistant.state`，对话内容只靠 `chat.js` 的 SSE（`/api/chat/events?after=<cursor>`）画出来。页面不可见时（`visibilityState` 或桌面标签 `crew-tab-visibility`）主动断开事件流，可见时靠这两个事件重连；连接出错后 3 秒重连，但前提是当时可见。轮询结果只用来更新“忙 / 闲”，即使看到 `last_seq` 比页面新也不会补读。所以只要漏掉一次“变为可见”的通知（上次实测用的是后台运行的内置浏览器窗格；桌面版标签切换靠 `executeJavaScript` 发通知），或事件流无错误地停住，新回复就一直不出现，刷新才出来。
+
+修法：`CrewChat.update` 在每次状态轮询时自愈：事件流已断且没有在等重连就立即重连；连着但 `last_seq` 比页面新超过 8 秒就断开重连（`after` 续传，不重复）。测试：`test_chat_connection.js` 的 “a state poll that sees newer events reconnects …”（修复前失败）。本次复跑全程助手页都自动显示了新回复。
+
+### 12.4 场景 8 复跑发现并修掉的两处
+
+- 预算下限 1 万 tokens 连一轮都不够：第一局助手按“预算给小一点”选了下限，两位 leader 开工 20 秒用了约 15 万，作战室立即暂停。下限改为 10 万，开局字段说明与助手守则写明按“人数 × 轮数 × 每轮 5–20 万”估；第二局助手估了 40 万。
+- 追加预算后任务不恢复：停下干活中的 leader 时任务先 `pausing`（原因“明确停止此人员”），执行真停后 `confirm_paused` 把原因清空，`war_room.set_budget` 按原因找不到任务。`confirm_paused` 现在保留暂停请求时的原因（leader 离开、取消途中同理）。测试：`test_war_room.test_raising_the_cap_resumes_tasks_that_were_running_when_the_pause_stopped_them`。
+
+- 助手不会被首批任务交付叫醒：交付通知只发给任务自己的 leader，守则里“首批任务都到待验收后收尾”没有触发点（第二局要用户提醒才收尾）。现在 `finalize_finish` 交付或未达标结束时，若负责人在助手牵头的开放作战室里，就给助手投一条唤醒通知，附各成员任务现状；房间收尾后不再通知。测试：`test_war_room.test_a_members_delivered_task_tells_the_assistant_where_every_members_task_stands`。
+
+### 12.5 场景 8 复跑结果（总计划阶段五）
+
+隔离环境：临时 CREW_HOME、空白工作区、独立端口，测试进程去掉 `CREW_SESSION_ID` / `CLAUDE_CODE_SESSION_ID` / `ELECTRON_RUN_AS_NODE`；助手与后端 leader 为 Claude `claude-haiku-5-5`，前端 leader 为 Codex `gpt-6-luna`（low）。用户动作都走真实界面（助手页发言、确认卡“确认执行”、任务详情“通过”）；拍板答复调用的是界面背后同一个 `decision.answer`。
+
+共跑三局：第一局发现 12.4 第一条（开局即暂停），第二局发现 12.4 第二、三条（第二局重启服务载入修复后走完了验收、交棒、合并），第三局在全部修复上从头跑通：
+
+| 步骤 | 第三局实际情况 |
+| --- | --- |
+| 让助手开局 | 从“让助手开局”入口带入开局说明；助手读工作区后先问 3 个关键问题，不建任何东西 |
+| 方案与确认 | 助手 `campaign_preview` 无错误后 `campaign_launch`，预算按新守则估 60 万；用户在确认卡上确认，建好领域、2 位 leader、2 个首批任务、助手牵头的作战室 |
+| 两位 leader 做首批任务 | 后端写契约 v1；前端误改了 `products.json`（整数 id），后端发现后用拍板卡问用户（任务转 waiting_user）；用户选“改回字符串 id”，后端按 v2 重做，前端按 v2 复核 |
+| 进入待验收 | 前端（Codex）交付后 `goal.list` 的 `waiting` 先显示“交付已提交，等执行这一轮实际结束后自动转为待验收”，随后转待验收；后端（Claude）随后转待验收。两种载体都自动收尾，没有卡在 running |
+| 助手收尾交棒 | 前端交付时助手被通知、看到后端还在做而暂不收尾；后端交付时再次被通知，`war_room_close` 并提醒用户验收。预算用约 28.7 万 / 60 万，未暂停 |
+| 用户验收 | 用户实测 `list_products.py`（7 条、P001–P007）与 `index.html`（P006 显示售罄）后在任务详情点“通过”，两个任务 completed |
+| 小重整 | 用户要求合并两位 leader；助手 `domains_restructure_preview` 无错误后 `leader_merge`（交接稿精简为三条、不唤醒）；用户确认后执行成功：架构图版本 3（source=restructure），前端会话归档保留，交接稿投给后端，无任务改派或作废 |
+
+不符合预期（未改）：
+- 助手收尾结论写成“契约 v1 修订版”，实际生效的是用户拍板的 v2；它在随后的回复里自己发现并更正，但作战室结论已不能改。
+- 后端第一次发现数据冲突时，先在自己的任务对话里问用户、结束了这一轮，随后才补发拍板卡；作战室里没有先 @前端核对。
+- `runtimes_list` 的 Claude 模型列表里没有 `claude-haiku-5-5`，助手每次开局都提醒“可能启动失败”（实际可用）。
+- 两位 leader 共用同一个工作区目录，前端改写了后端负责的文件；开局方案没有约定各自的文件边界。
+
+截图（1280 / 758 / 375 × 浅色 / 深色，无头 Chrome 按真实视口截取）：开局确认卡、作战室、重整确认卡取自第二局，助手交棒后页面取自第三局，追加预算确认卡取自第一局。路径见交付说明。

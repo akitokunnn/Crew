@@ -190,9 +190,9 @@ class WarRoomOperationTests(ChannelHttpFixture):
         from crew import messaging
         service = self.server.service
         room = war_room.start(self.conn, 'demo', board.HUMAN, '联调', '打通登录', ['web'], lead='lead',
-                              budget_tokens=10_000, now=NOW)
+                              budget_tokens=100_000, now=NOW)
         self.conn.execute("INSERT INTO claude_requests(request_key,session_id,ts,model,input_tokens,output_tokens) "
-                          "VALUES('r','s4',?,'m',12000,0)", (NOW,))
+                          "VALUES('r','s4',?,'m',120000,0)", (NOW,))
         service.chat._pause_over_budget(self.conn, NOW)
         self.assertTrue(messaging.stopped(self.conn, 's4'))
         self.assertTrue(messaging.stopped(self.conn, 's3'))
@@ -298,6 +298,32 @@ class AssistantLeadTests(WarRoomFixture):
         self.assertEqual((first["speaker_name"], [m["name"] for m in first["mentions"]]), ("助手", ["alpha", "beta"]))
         self.assertEqual(self.main()[-1]["speaker_name"], "助手")
 
+    def test_a_members_delivered_task_tells_the_assistant_where_every_members_task_stands(self):
+        """Nothing else wakes the lead when a task comes back; its rules wrap the room up once the first tasks wait."""
+        from crew import goals
+        from tests.test_goals import GoalFixture
+        room = war_room.start(self.conn, "demo", self.assistant, "开局", "跑通首个里程碑", ["alpha", "beta"], now=NOW)
+        ids = {}
+        for sid, title in (("a", "签名验签"), ("b", "登录页")):
+            ids[sid] = goals.create(self.conn, "demo", sid, title, "需求：" + title,
+                                    [{"id": "short", "title": "The new short speaker is identified"}], now=NOW)["id"]
+            goals.transition(self.conn, ids[sid], "running")
+        report = goals.save_report(self.conn, ids["a"], GoalFixture.report(None, "awaiting_acceptance"))
+        goals.request_finish(self.conn, ids["a"], report["id"])
+        goals.finalize_finish(self.conn, ids["a"])
+        [note] = self.conn.execute("SELECT text,wake FROM leader_notices WHERE session_id=?", (self.assistant,)).fetchall()
+        self.assertEqual(note["wake"], 1)
+        self.assertIn("作战室 #%d" % room["id"], note["text"])
+        self.assertIn("「alpha」的任务「签名验签」已交付，等用户验收", note["text"])
+        self.assertIn("「beta」登录页：执行中", note["text"])
+        self.assertIn("war_room.close", note["text"])
+        war_room.close(self.conn, room["id"], self.assistant, "首批都交付了", now=NOW)
+        report = goals.save_report(self.conn, ids["b"], GoalFixture.report(None, "awaiting_acceptance"))
+        goals.request_finish(self.conn, ids["b"], report["id"])
+        goals.finalize_finish(self.conn, ids["b"])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM leader_notices WHERE session_id=?",
+                                           (self.assistant,)).fetchone()[0], 1, "a closed room tells nobody")
+
     def test_leaders_reach_the_assistant_by_name_or_by_answering_it(self):
         room = war_room.start(self.conn, "demo", self.assistant, "开局", "跑通首个里程碑", ["alpha", "beta"], now=NOW)
         first = self.room_posts(room)[0]
@@ -323,12 +349,12 @@ class BudgetTests(WarRoomFixture):
 
     def test_reaching_the_cap_pauses_once_and_raising_it_lets_the_members_go(self):
         from crew import messaging
-        room = self.open_room(members=("beta",), budget_tokens=50_000)
-        self.spend("b", 30_000, ts="2026-11-27T07:00:00.000Z")  # before the room opened: not counted
-        self.spend("b", 30_000)
-        self.assertEqual(war_room.get(self.conn, room["id"])["budget"], {"tokens": 50_000, "spent": 30_000, "paused_at": None})
+        room = self.open_room(members=("beta",), budget_tokens=500_000)
+        self.spend("b", 300_000, ts="2026-11-27T07:00:00.000Z")  # before the room opened: not counted
+        self.spend("b", 300_000)
+        self.assertEqual(war_room.get(self.conn, room["id"])["budget"], {"tokens": 500_000, "spent": 300_000, "paused_at": None})
         self.assertEqual(war_room.over_budget(self.conn, now=NOW), [])
-        self.spend("a", 25_000)
+        self.spend("a", 250_000)
         [(paused, stopped)] = war_room.over_budget(self.conn, now=NOW)
         self.assertEqual((paused, sorted(stopped)), (room["id"], ["a", "b"]))
         self.assertEqual(war_room.over_budget(self.conn, now=NOW), [])
@@ -337,13 +363,31 @@ class BudgetTests(WarRoomFixture):
         self.assertIn("预算到了", detail["messages"][-1]["body"])
         self.conn.execute("INSERT INTO session_stop_gates(session_id,stopped_at,stopped_by) VALUES('b',?,?)", (NOW, board.HUMAN))
         with self.assertRaisesRegex(board.BoardError, "只能由用户"):
-            war_room.set_budget(self.conn, room["id"], "a", 200_000, now=NOW)
+            war_room.set_budget(self.conn, room["id"], "a", 2_000_000, now=NOW)
         with self.assertRaisesRegex(board.BoardError, "要大于已用"):
-            war_room.set_budget(self.conn, room["id"], board.HUMAN, 50_000, now=NOW)
-        resumed = war_room.set_budget(self.conn, room["id"], board.HUMAN, 200_000, now=NOW)
-        self.assertEqual((resumed["budget"]["paused_at"], resumed["budget"]["tokens"]), (None, 200_000))
+            war_room.set_budget(self.conn, room["id"], board.HUMAN, 500_000, now=NOW)
+        resumed = war_room.set_budget(self.conn, room["id"], board.HUMAN, 2_000_000, now=NOW)
+        self.assertEqual((resumed["budget"]["paused_at"], resumed["budget"]["tokens"]), (None, 2_000_000))
         self.assertFalse(messaging.stopped(self.conn, "b"))
         self.assertIn("用户确认继续", resumed["messages"][-1]["body"])
+
+    def test_raising_the_cap_resumes_tasks_that_were_running_when_the_pause_stopped_them(self):
+        """The pause stops a working leader like the stop button: its running task goes pausing, then paused once
+        the native ends. Raising the cap must find that task again, not only tasks that were idle at the pause."""
+        from crew import goals
+        room = self.open_room(members=("beta",), budget_tokens=100_000)
+        goal = goals.create(self.conn, "demo", "b", "接口签名", "换成 v2", ["联调通过"], now=NOW)["id"]
+        goals.transition(self.conn, goal, "running")
+        execution = goals.create_execution(self.conn, goal, "b", runtime="claude")
+        goals.set_execution_status(self.conn, execution["id"], "running")
+        goals.request_pause(self.conn, goal, manual=True, reason="明确停止此人员")   # what stop_identity does
+        self.assertEqual(goals.get(self.conn, goal)["status"], "pausing")
+        goals.set_execution_status(self.conn, execution["id"], "paused")
+        goals.confirm_paused(self.conn, goal)                                         # the host saw the native end
+        self.assertEqual(goals.get(self.conn, goal)["status"], "paused")
+        self.conn.execute("UPDATE war_rooms SET paused_at=? WHERE id=?", (NOW, room["id"]))
+        war_room.set_budget(self.conn, room["id"], board.HUMAN, 2_000_000, now=NOW)
+        self.assertNotIn(goals.get(self.conn, goal)["status"], ("paused", "pausing"))
 
     def test_codex_usage_counts_only_what_grew_after_joining(self):
         self.conn.execute("INSERT INTO session_runtime_bindings(session_id,runtime,native_id,updated_at) VALUES('b','codex','thread-b',?)", (NOW,))
@@ -355,4 +399,4 @@ class BudgetTests(WarRoomFixture):
 
     def test_the_cap_has_sensible_bounds(self):
         with self.assertRaisesRegex(board.BoardError, "预算上限"):
-            self.open_room(budget_tokens=10)
+            self.open_room(budget_tokens=99_999)

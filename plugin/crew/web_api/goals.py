@@ -24,10 +24,17 @@ def get_goals(handler, service, url, query):
     with closing(store.connect(service.home)) as conn:
         project = service.selected_project(conn, query.get('project', [None])[0])
         if url.path == '/api/goals':
-            handler._send(200, {'goals': [goal_api.card(conn, goal) for goal in goals.list_goals(conn, project)]})
+            with service.chat.lock:
+                approvals = service.chat.goal_controller.approvals()
+            cards = [goal_api.card(conn, goal) for goal in goals.list_goals(conn, project)]
+            waits = {card['id']: goal_api.waiting(card, approvals) for card in cards}
+            handler._send(200, {'goals': cards, 'waiting': {key: value for key, value in waits.items() if value}})
         elif url.path == '/api/goal':
-            handler._send(200, goal_api.detail(conn, project, query.get('id', [''])[0],
-                                          context_state=service.chat.context_state))
+            identity = query.get('id', [''])[0]
+            with service.chat.lock:
+                approvals = service.chat.goal_controller.approvals(identity)
+            handler._send(200, goal_api.detail(conn, project, identity, context_state=service.chat.context_state,
+                                               approvals=approvals))
         else:
             goal_id = query.get('goal_id', [''])[0]
             goals.get(conn, goal_id, project)

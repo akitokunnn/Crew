@@ -316,3 +316,39 @@ for line in sys.stdin:
         self.assertEqual(code, 409)
         self.assertTrue(done.wait(2))
         self.assertEqual(result, {'decision': 'decline'})
+
+    def test_final_delivery_releases_a_pending_approval_nobody_lists_and_the_task_shows_the_wait(self):
+        """A round whose delivery is in must not stay "running" behind a native approval nobody looks at."""
+        from tests.test_goals import GoalFixture
+        with closing(store.connect(self.home)) as conn:
+            board.join(conn, 'worker', 'demo', 'worker', self.root, self.root, 'main', role='leader')
+            self.session = board.session(conn, 'worker')
+            goal = goals.create(conn, 'demo', 'worker', 'Approval fixture', 'Measure one isolated change',
+                                [{'id': 'short', 'title': 'The new short speaker is identified'}])
+            goals.transition(conn, goal['id'], 'running')
+            execution = goals.create_execution(conn, goal['id'], 'worker', runtime='codex')
+        journal = chat.Journal(self.home / 'chat' / 'goal.jsonl', None)
+        running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {'agent': None},
+            {'model': None, 'effort': None}, journal, execution=execution)
+        self.addCleanup(running.close)
+        client = self.clients[-1]
+        running.send('One bounded task', 'initial')
+        _, request = self.start_http(running, key=execution['id'])
+        result, done = self.pending(running, client)
+        code, value = request('/api/op/goal.list?project=demo')
+        self.assertEqual(code, 200, value)
+        wait = value['waiting'][goal['id']]
+        self.assertEqual([(item['kind'], item['command']) for item in wait['approvals']],
+                         [('commandExecution', 'git add source.txt')])
+        self.assertIn('确认', wait['note'])
+        code, value = request('/api/op/goal.get?project=demo&id=' + goal['id'])
+        self.assertEqual(value['waiting'], wait)
+        with closing(store.connect(self.home)) as conn:
+            report = goals.save_report(conn, goal['id'], GoalFixture.report(None, 'awaiting_acceptance'))
+            goals.request_finish(conn, goal['id'], report['id'])
+        # No page lists approvals here: the host's own goal sync must re-check the request and release it.
+        self.assertTrue(done.wait(8), 'approval still holds the native turn after the final delivery')
+        self.assertEqual(result, {'decision': 'decline'})
+        event = [e for e in running.journal.events if e['type'] == 'native_approval'][-1]['approval']
+        self.assertEqual(event['status'], 'invalidated')
+        self.assertIn('最终交付', event['resolution_reason'])

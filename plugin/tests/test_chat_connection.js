@@ -770,3 +770,25 @@ test("a member page can show one task execution record and talk to that task",as
   const general=h.mount("member",async url=>{calls.push([url]);return history();});await tick();
   assert.doesNotMatch(calls.at(-1)[0],/goal_id/);assert.match(general.innerHTML,/placeholder="跟 member 说…（可以直接粘贴截图）"/);h.chat.unmount();
 });
+
+test("a state poll that sees newer events reconnects a stream lost to a missed visibility notice or a silent stall",async()=>{
+  for(const desktop of [false,true]){
+    const h=harness();let now=1000;h.sandbox.Date=class extends Date{static now(){return now;}};
+    const target=h.mount("assistant",async()=>({...history(),events:[{seq:1,type:"message",id:"first",text:"第一句"}]}),{last_seq:1});await tick();
+    assert.equal(h.connections.length,1);
+    // The page is hidden, then shown again without the notice ever arriving (a background pane, a desktop tab
+    // switch whose script did not run): before, nothing reopened the stream and replies stayed off screen.
+    h.visibility(false,desktop);await tick();assert.equal(h.connections[0].signal.aborted,true);
+    if(desktop)h.sandbox.crewTabVisible=true;else h.sandbox.document.visibilityState="visible";
+    h.update("assistant",{last_seq:2,busy:false});await tick();
+    assert.equal(h.connections.length,2,"the next state poll reopens the stream");assert.match(h.connections[1].url,/after=1/);
+    h.connections[1].emit({seq:2,type:"message",id:"reply",text:"新回复"});await tick();h.flushFrames();
+    assert.match(rendered(target).join(""),/新回复/);
+    // An open stream that silently stops delivering: the poll keeps seeing newer events than the page has.
+    h.update("assistant",{last_seq:3});await tick();assert.equal(h.connections.length,2,"one poll behind is normal latency");
+    now+=4000;h.update("assistant",{last_seq:3});await tick();assert.equal(h.connections.length,2);
+    now+=5000;h.update("assistant",{last_seq:3});await tick();
+    assert.equal(h.connections[1].signal.aborted,true);assert.equal(h.connections.length,3);assert.match(h.connections[2].url,/after=2/);
+    h.chat.unmount();
+  }
+});

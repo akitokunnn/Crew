@@ -7,6 +7,7 @@ from .ops import launch
 from . import behavior_prompts
 import subprocess
 import threading
+import traceback
 import uuid
 
 from . import board, goal_context, goals, install, messaging, models, report_preview, runtimes, spawn, store, trust_mode
@@ -469,6 +470,22 @@ class Controller:
             self.sync(conn, goal_id)
             return goals.get(conn, goal_id)
 
+    def approvals(self, goal_id=None):
+        """Native approvals still waiting in this host's task executions.
+
+        Listing re-checks each request against its task, so one the task no longer allows (delivery in,
+        paused, cancelled, handed over) is released with a decline instead of holding the native turn
+        until someone happens to open the approvals panel.
+        """
+        waiting = []
+        for current in list(self.manager.processes.values()):
+            execution = getattr(current, 'execution', None)
+            if execution is None or not hasattr(current, 'pending_approvals'):
+                continue
+            if goal_id is None or execution['goal_id'] == goal_id:
+                waiting.extend(current.pending_approvals())
+        return waiting
+
     def sync(self, conn, goal_id=None):
         """Runs from existing service work/state calls, never another polling thread."""
         unavailable = {row['session_id'] for row in conn.execute(
@@ -535,18 +552,24 @@ class Controller:
             executions = conn.execute('SELECT id FROM goal_executions WHERE goal_id=?', (identity,)).fetchall()
             if not any(self.manager.busy(row['id']) for row in executions):
                 goals.confirm_paused(conn, identity)
+        # A round whose delivery is in finishes once its executions end; an approval asked before the
+        # delivery would otherwise keep that execution mid-turn for good.
+        self.approvals(goal_id)
         pending = conn.execute("SELECT goal_id FROM goal_round_finishes WHERE status='pending'" +
                                (' AND goal_id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall()
-        for row in pending:
-            goals.finalize_finish(conn, row['goal_id'])
         cancellations = conn.execute('SELECT goal_id FROM goal_cancellations' +
                                      (' WHERE goal_id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall()
-        for row in cancellations:
-            goals.finalize_cancel(conn, row['goal_id'])
         transfers = conn.execute("SELECT goal_id FROM goal_transfers WHERE status='pending'" +
                                  (' AND goal_id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall()
-        for row in transfers:
-            self.finalize_transfer(conn, row['goal_id'])
+        # Each step is its own transaction: one task whose delivery no longer validates must not hold
+        # every other task's wrap-up behind it on each pass.
+        for finalize, rows in ((goals.finalize_finish, pending), (goals.finalize_cancel, cancellations),
+                               (self.finalize_transfer, transfers)):
+            for row in rows:
+                try:
+                    finalize(conn, row['goal_id'])
+                except board.BoardError:
+                    traceback.print_exc()
         running = conn.execute("SELECT id,leader_session_id FROM goals WHERE status='running' AND manual_pause=0" +
                                (' AND id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall()
         for value in running:

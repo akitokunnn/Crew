@@ -1179,6 +1179,22 @@
     } else void load(context);
     return { update, unmount };
   }
+  // Only the event stream paints new replies. A missed visibility notice (a background pane, a desktop tab
+  // switch whose script did not run) or a stream that stops delivering without an error would leave the page
+  // silent; the state poll knows the latest event, so it reopens a lost stream and replaces one stuck behind.
+  const STREAM_STALL_MS = 8000;
+  function heal(context, latest) {
+    if (context.loading || !visible()) return;
+    if (context.stream === null) {
+      context.behindSince = null;
+      if (context.reconnectTimer === null) void connect(context);
+      return;
+    }
+    if (latest <= context.cursor) { context.behindSince = null; return; }
+    if (context.behindSince == null) { context.behindSince = Date.now(); return; }
+    if (Date.now() - context.behindSince < STREAM_STALL_MS) return;
+    context.behindSince = null; disconnect(context); void connect(context);
+  }
   function update(state) {
     if (!active) return;
     const oldNames = JSON.stringify([active.session.name, ...active.state.leaders.concat(active.state.members).map(person => [person.cc_name, person.name])]);
@@ -1188,6 +1204,7 @@
     if (session) {
       active.session = session;
       if (!active.readonly && session.last_seq >= active.cursor) setBusy(active, session.busy, session.last_seq);
+      if (!active.readonly && !active.goalId) heal(active, session.last_seq);
     }
     composerState(active);
     if (!active.loading) {

@@ -34,8 +34,9 @@ PLAN = {
     'room': {'type': ['object', 'null'], 'additionalProperties': False, 'required': ['title', 'goal'],
              'description': '开局作战室：助手牵头，新 leader 都是成员；盯到首轮里程碑后收尾交棒',
              'properties': {'title': {**_STRING, 'maxLength': 30}, 'goal': {**_STRING, 'maxLength': 200},
-                            'budget_tokens': {'type': 'integer', 'minimum': 10000,
-                                              'description': '成员合计 token 上限，到了暂停等用户确认'}}},
+                            'budget_tokens': {'type': 'integer', 'minimum': 100000,
+                                              'description': '成员合计 token 上限，到了暂停等用户确认；'
+                                                             '一位 leader 干一轮通常要 5–20 万'}}},
     'start': {'type': 'boolean', 'description': 'true 建完立刻开工；false 先只建架构图，不启动模型'},
 }
 

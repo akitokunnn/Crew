@@ -320,6 +320,28 @@ class RestructureTests(ShellFixture, unittest.TestCase):
         self.assertNotIn('l-net', {l['session_id'] for l in domains.snapshot(self.conn, 'demo')['leaders']})
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM leader_notices WHERE source='web'").fetchone()[0], 0)
 
+    def test_preview_lists_what_would_stop_a_task_handover_at_apply(self):
+        """The preview checks the same task preconditions the apply does, so nothing fails only on confirm."""
+        from tests.test_goals import GoalFixture
+        delivered = goals.create(self.conn, 'demo', 's3', '登录页', '需求：登录页',
+                                 [{'id': 'short', 'title': 'The new short speaker is identified'}], now=NOW)['id']
+        goals.transition(self.conn, delivered, 'running')
+        report = goals.save_report(self.conn, delivered, GoalFixture.report(None, 'awaiting_acceptance'))
+        goals.request_finish(self.conn, delivered, report['id'])
+        goals.request_pause(self.conn, delivered, manual=True)
+        merge = {'type': 'leader.merge', 'leader': 's3', 'into': 'l-ui'}
+        plan = self.preview(merge)
+        self.assertFalse(plan['ok'])
+        self.assertEqual([e['index'] for e in plan['errors']], [0])
+        self.assertIn('「登录页」', plan['errors'][0]['message'])
+        self.assertIn('本轮已提交交付、等待收尾', plan['errors'][0]['message'])
+        plan = self.preview({'type': 'goal.transfer', 'goal': delivered, 'to': 'l-net'})
+        self.assertIn('本轮已提交交付、等待收尾', plan['errors'][0]['message'])
+        moving = self.goal('l-net', '网关')
+        goals.request_transfer(self.conn, moving, 'l-ui')
+        plan = self.preview({'type': 'goal.transfer', 'goal': moving, 'to': 's3'})
+        self.assertIn('任务正在交给另一位 leader', plan['errors'][0]['message'])
+
     def test_a_successor_cannot_leave_in_the_same_plan(self):
         plan = self.preview({'type': 'leader.retire', 'leader': 'l-net', 'successor': 'l-ui'},
                             {'type': 'leader.merge', 'leader': 'l-ui', 'into': 's3'})
