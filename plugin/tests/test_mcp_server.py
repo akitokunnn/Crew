@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 from crew import board, channel, guard, hooks, runtimes, store, war_room, web
 from crew.ops import guide, launch, registry, tokens
 from test_shell import NOW, PLUGIN, ShellFixture
+from test_war_room_plan import approve_assignments
 
 
 class LiveProcess:
@@ -173,11 +174,13 @@ class McpServerTests(ShellFixture, unittest.TestCase):
         board.join(self.conn, 'author', 'demo', '牵头人', self.project, None, None, role='leader', now=NOW)
         board.join(self.conn, 'third', 'demo', '成员', self.project, None, None, role='leader', now=NOW)
         token, _ = self.grant('s3')
-        room = war_room.start(self.conn, 'demo', 'author', '一起核对', '确认分支', ['lead', '成员'], now=NOW)
-        original = room['first_message']
+        room = war_room.start(self.conn, 'demo', 'author', '一起核对', '确认分支', now=NOW)
+        approve_assignments(self.conn, room, ['lead', '成员'])
+        original = war_room.say(self.conn, room['id'], 'author', '请核对分支', to=['lead'], now=NOW)
         notice_id = self.conn.execute('SELECT notice_id FROM channel_mentions WHERE message_id=? AND session_id=?',
                                       (original['id'], 's3')).fetchone()[0]
-        [notice] = board.pending_notices(self.conn, 's3')
+        [notice] = [item for item in board.pending_notices(self.conn, 's3') if item['id'] == notice_id]
+        self.assertEqual(notice['room_id'], room['id'])
         self.assertIn('channel_post', notice['text'])
         self.assertNotIn('war_room_', notice['text'])
         board.mark_notice_sent(self.conn, notice_id, now=NOW)
@@ -192,7 +195,7 @@ class McpServerTests(ShellFixture, unittest.TestCase):
         war_room.change_members(self.conn, room['id'], 'author', remove=['lead'], now=NOW)
         self.assertTrue(reply('room-left')[0])
         war_room.change_members(self.conn, room['id'], 'author', add=['lead'], now=NOW)
-        war_room.close(self.conn, room['id'], 'author', '完成', now=NOW)
+        war_room.close(self.conn, room['id'], board.HUMAN, now=NOW, reason='user_stop')
         self.assertTrue(reply('room-closed')[0])
 
     def test_search_loads_tools_for_claude_with_list_changed(self):
