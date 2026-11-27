@@ -172,6 +172,26 @@ test("prefill writes only into an empty composer and reports whether it did, wit
   h.chat.unmount();
 });
 
+test("an empty conversation shows its starting points only once history is known empty, and picking one only fills the composer",async()=>{
+  const guide={title:"从哪里聊起？",text:"点一个示例填进输入框",prompts:[{label:"汇总 <近况>",detail:"说明",icon:["M4 5h16"],text:"汇总一下近况"},{label:"记想法",detail:"说明",icon:["M4 20h4"],text:"帮我记一个想法："}]};
+  const h=harness(),calls=[],toasts=[];let release;
+  const target=h.mount("assistant",(url,data)=>{calls.push({url,data});return url.startsWith("/api/op/chat.history?")?new Promise(resolve=>{release=resolve;}):Promise.resolve({});},{},{emptyGuide:guide,toast:text=>toasts.push(text)});
+  await tick();assert.equal(rendered(target).length,0,"nothing is offered while the history is still loading");
+  release(history());await tick();
+  const html=rendered(target).join("");
+  assert.match(html,/从哪里聊起？/);assert.match(html,/汇总 &lt;近况&gt;/);assert.match(html,/data-chat-prompt="1"/);
+  const pick=index=>target.querySelector(".chat-inner").onclick({target:{closest:selector=>selector==="[data-chat-prompt]"?{dataset:{chatPrompt:String(index)}}:null}});
+  const input=target.querySelector("textarea");
+  await pick(1);assert.equal(input.value,"帮我记一个想法：");
+  await pick(0);assert.equal(input.value,"帮我记一个想法：","an existing draft is never replaced");assert.match(toasts.at(-1),/输入框里有未发送的内容，示例没有覆盖它/);
+  assert(!calls.some(call=>call.url==="/api/op/chat.send"),"a starting point is never sent by itself");
+  h.chat.unmount();
+  const used=harness(),filled=used.mount("assistant",async()=>({...history(),events:[{seq:1,type:"message",id:"first",text:"已有对话"}]}),{},{emptyGuide:guide});
+  await tick();used.flushFrames();assert.doesNotMatch(rendered(filled).join(""),/从哪里聊起/);used.chat.unmount();
+  const plain=harness(),leader=plain.mount("leader",async()=>history());
+  await tick();assert.equal(rendered(leader).length,0,"conversations without a guide stay as they were");plain.chat.unmount();
+});
+
 test("a rejected task supplement keeps the exact backend reason, draft and target on retry",async()=>{
   const h=harness(),toasts=[],sent=[];let fail=true;
   const target=h.mount("leader",async(url,data)=>{if(url!=="/api/op/chat.send")return history();sent.push(data);if(fail)throw Error("该目标已暂停，请先恢复");return {accepted:true};},{},{toast:text=>toasts.push(text)});

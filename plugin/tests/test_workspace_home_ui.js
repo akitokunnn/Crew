@@ -99,5 +99,5 @@ test("home acceptance supplements preserve folding, version order, authors and e
 });
 test("home names working sessions and dispatches separately from its task total",()=>{
   const html=render(data({leaders:[{session_id:"L",status:"working",codex:[{source:"skill_dispatch",status:"running"}]}],goals:[{id:"g",leader_session_id:"L",status:"running"}]}));
-  assert.match(html,/<strong>1<\/strong>项任务/);assert.match(html,/<strong>2<\/strong>个会话 \/ 派工执行中/);
+  assert.match(html,/<strong>1<\/strong>项任务/);assert.match(html,/<strong>2<\/strong><span class="wh-overview-label"><span>个会话 \/<\/span> <span>派工执行中<\/span><\/span>/,"the label breaks only between its two phrases on narrow screens");
 });

@@ -103,3 +103,18 @@
 @media(max-width:620px){.ac-facts{grid-template-columns:minmax(0,1fr);gap:0}.ac-facts dt{margin-top:6px;font-size:11.5px}.ac-facts dt:first-child{margin-top:0}.ac-row small{margin-left:0;flex-basis:100%}.ac-list,.ac-sec>.ac-facts{padding-left:0;margin-left:0}}
 /* An opening plan is the costliest thing confirmed here: give the panel room so the cost part shows without scrolling. */
 .assistant-confirmations:has(.ac-cost){max-height:70dvh}
+
+/* An empty conversation: a few starting points, each only fills the composer. Same card language as the blank-workspace paths. */
+.chat-empty-guide{max-width:640px;margin:min(12vh,96px) auto 24px}
+.chat-empty-guide h2{margin:0;font-size:calc(17px * var(--fs));font-weight:600;letter-spacing:-.2px;color:var(--text)}
+.chat-empty-guide>p{margin:5px 0 16px;font-size:calc(13px * var(--fs));line-height:1.6;color:var(--text-2)}
+.chat-empty-prompts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.chat-empty-prompt{display:flex;align-items:flex-start;gap:12px;min-width:0;padding:14px;border:1px solid var(--studio-border);border-radius:14px;background:var(--studio-card);box-shadow:var(--studio-shadow-sm);color:var(--text);font:inherit;text-align:left;cursor:pointer;transition:border-color .15s,background .15s}
+.chat-empty-prompt:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--studio-border))}
+.chat-empty-prompt:active{background:var(--hover)}
+.chat-empty-mark{flex:none;display:grid;place-items:center;width:32px;height:32px;border-radius:10px;background:var(--accent-soft);color:var(--accent-text)}
+.chat-empty-mark svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.chat-empty-text{display:flex;flex-direction:column;gap:3px;min-width:0}
+.chat-empty-text strong{font-size:calc(14px * var(--fs));font-weight:600;line-height:1.45}
+.chat-empty-text span{font-size:calc(12.5px * var(--fs));line-height:1.55;color:var(--text-2);overflow-wrap:anywhere}
+@media(max-width:620px){.chat-empty-guide{margin-top:16px}.chat-empty-prompts{grid-template-columns:minmax(0,1fr);gap:8px}.chat-empty-prompt{padding:12px 14px;min-height:56px;align-items:center}}

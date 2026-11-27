@@ -23,13 +23,16 @@
 .wh-head .icon-btn{width:var(--m-tap);height:var(--m-tap);border-radius:22px;color:var(--text-2)}
 .wh-head .icon-btn .i{width:22px;height:22px}
 .wh-head .btn.primary{min-height:40px;margin:2px 0;padding:0 16px;border-radius:20px;font-size:var(--m-fs-body);font-weight:600}
-.wh-page{padding:0 var(--m-gutter) 32px}
+/* The stat cards start below the header band, so their whole outline sits on the page background. */
+.wh-page{padding:12px var(--m-gutter) 32px}
 
 /* ===================== 统计条：三格数字 + 架构图入口行 ===================== */
 .wh-overview{display:grid;align-items:stretch;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 28px;padding:0;border:0}
 .wh-overview-item{position:relative;display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:2px;min-width:0;min-height:78px;margin:0;padding:12px;box-sizing:border-box;border:1px solid var(--studio-border);border-radius:var(--m-radius);background:var(--studio-card);color:var(--text-2);font-size:var(--m-fs-min);line-height:1.35;text-align:left;overflow-wrap:anywhere}
 .wh-overview-item strong{font-size:24px;line-height:1.2;font-weight:700;font-variant-numeric:tabular-nums;color:var(--text)}
 .wh-overview-item>.dot{position:absolute;top:14px;right:12px;margin:0}
+/* Two-part labels break only between their phrases, never inside one. */
+.wh-overview-label>span{display:inline-block}
 button.wh-overview-item:active{background:var(--hover)}
 .wh-overview .wh-people{grid-column:1/-1;display:flex;align-items:center;gap:12px;width:100%;min-height:52px;margin:0;padding:0 16px;box-sizing:border-box;border:1px solid var(--line);border-radius:var(--m-radius);background:var(--surface);color:var(--text);font-size:var(--m-fs-body);font-weight:500}
 .wh-overview .wh-people .i{width:20px;height:20px;color:var(--accent-text)}

@@ -522,6 +522,7 @@
 | `assistant.note-attach` | 从想法墙去聊聊 → 查找想法并挂到助手输入框，删除关联时从 URL 清除 | `frontend/assistant.js:52-63` | `#note`、`/api/personal/notes` | `plugin/tests/test_notes_ui.js::assistant page attaches the idea from #note, prefills without sending, and clears the hash once the idea is used`；`desktop/test/tabs.test.cjs::“去聊聊” hands its note hash to the assistant, reusing an open assistant without reloading its draft` | 手动 · 1280×800 · 从想法墙去聊聊，核对查找想法并挂到助手输入框，删除关联时从 URL 清除 |
 | `assistant.note-missing` | 通过无效想法链接进入 → 显示缺失或读取错误 | `frontend/assistant.js:58-60` | `dropNote`、`toast` | 无 | 手动 · 1280×800 · 通过无效想法链接进入，核对显示缺失或读取错误 |
 | `assistant.opening` | 经 `#opening=<工作区>` 进入或已开着时 hash 变化 → 开局意图写入空输入框（有草稿则提示不覆盖），从不自动发送，工作区不存在时提示，hash 用后清除 | `frontend/assistant.js`（`readOpening`、`attachOpening`）、`frontend/chat.js`（`prefill`） | `CrewChat.prefill` | `plugin/tests/test_assistant_opening.js`；`plugin/tests/test_chat_connection.js::prefill writes only into an empty composer and reports whether it did, without sending` | 手动 · 隔离桌面 · 从空白工作区点让助手开局 |
+| `assistant.empty-prompts` | 助手对话还没有任何记录时 → 显示“从哪里聊起？”和四个示例（汇总各工作区近况、记一个想法、让助手开局、给 leader 建任务）；点击只把示例写入空输入框并聚焦，有草稿则提示不覆盖，从不自动发送；历史读取中、有更早记录或已有消息时不显示 | `frontend/assistant.js`（`EMPTY_GUIDE`）、`frontend/chat.js`（`emptyGuideHTML`、`render`） | `.chat-empty-guide`、`data-chat-prompt`、`CrewChat.prefill` | `plugin/tests/test_chat_connection.js::an empty conversation shows its starting points only once history is known empty, and picking one only fills the composer`；`plugin/tests/test_assistant_opening.js::the assistant hands its chat four starting points that are only written into the composer` | 截图走查 · 1280×800、758×900、375×812 浅深色 · 新助手点示例，核对只填入输入框 |
 | `assistant.prompts` | 点助手行为配置 → 打开会话级配置弹窗并能关闭 | `frontend/assistant.js:64` | `#assistant-prompts`、`/api/behavior-prompts` | 无 | 手动 · 1280×800 · 点助手行为配置，核对打开会话级配置弹窗并能关闭 |
 | `assistant.jot` | 点随手记 → 打开笔记表单并显示最近三条 | `frontend/assistant.js:65`、`frontend/personal-notes-ui.js:31` | `#assistant-notes`、`.jot-dialog` | 无 | 手动 · 1280×800 · 点随手记，核对打开笔记表单并显示最近三条 |
 | `assistant.jot-submit` | 点记下来 → 成功清空、刷新最近记录，失败保留文字 | `frontend/personal-notes-ui.js:23`、`frontend/personal-notes-ui.js:38` | `.jot-dialog form` | `plugin/tests/test_assistant_http.py::test_quick_note_capture_edit_and_start_keep_original_and_never_duplicate_leader` | 手动 · 1280×800 · 点记下来，核对成功清空、刷新最近记录，失败保留文字 |
@@ -1018,7 +1019,7 @@
 | Git 与 Git 助手 | 26 | 18 |
 | 会话库 | 13 | 7 |
 | 想法墙 | 68 | 38 |
-| 全局助手与随手记 | 15 | 11 |
+| 全局助手与随手记 | 16 | 11 |
 | 用量与额度 | 9 | 6 |
 | 设置、默认大脑与权限 | 14 | 7 |
 | 外观、字号与配色 | 7 | 7 |
@@ -1041,7 +1042,7 @@
 | 应用、源码与工具更新 | 15 | 6 |
 | 桌面系统管理员 | 5 | 0 |
 | 手机、窄屏与无障碍显示 | 44 | 43 |
-| **合计** | **796** | **479** |
+| **合计** | **797** | **479** |
 
 ### 拆分中最容易丢失的 15 条
 

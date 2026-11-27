@@ -5,6 +5,12 @@
   const NOTE_OPENING="帮我把这个想法想清楚";
   // "助手开局" on a blank workspace opens #opening=<project>: the intent is written into the composer, nothing is sent.
   const OPENING=name=>`我想在工作区「${name}」开局，请你来起盘：先问我 2–3 个关键问题，对齐目标、范围和优先级；再给出领域划分、各领域的 leader 编制（载体与模型）和首批任务清单。等我确认方案后再创建和启动，先不要直接动手。`;
+  // An empty conversation offers a few starting points; picking one only writes it into the composer.
+  const EMPTY_GUIDE={title:"从哪里聊起？",text:"点一个示例填进输入框，改好再发送。",prompts:[
+    {label:"汇总各工作区近况",detail:"在推进什么、卡在哪、等你处理什么",icon:["M4 5h16v14H4z","M8 9h8M8 13h5"],text:"汇总一下各个工作区的近况：各自在推进什么、卡在哪里、有哪些事在等我处理。"},
+    {label:"记一个想法",detail:"先记下来，之后再慢慢想清楚",icon:["M4 20h4L19 9l-4-4L4 16v4Z","m13.5 6.5 4 4"],text:"帮我在想法墙记一个想法："},
+    {label:"让助手开局",detail:"先对齐目标，再给出结构和首批任务",icon:["M12 3v7M5 10h14M5 10v5m14-5v5","M8 3h8v4H8zM2 15h6v5H2zm14 0h6v5h-6z"],text:"帮我给一个工作区开局：先问我是哪个工作区，再问 2–3 个关键问题，对齐目标、范围和优先级；然后给出领域划分、各领域的 leader 编制和首批任务清单。等我确认方案后再创建和启动，先不要直接动手。"},
+    {label:"给 leader 建任务",detail:"说清要做成什么样，确认后再创建",icon:["M9 6h11M9 12h11M9 18h11","m3 6 1.5 1.5L7 5M3 12l1.5 1.5L7 11M3 18l1.5 1.5L7 17"],text:"帮我给一个 leader 建任务：先问清是哪个工作区、交给哪位 leader、要做成什么样；整理出任务标题、要求和验收标准，等我确认后再创建。"}]};
   const systemTheme=matchMedia("(prefers-color-scheme: dark)");
   function theme(){let selected="system";if(!window.crewDesktopTheme)try{selected=localStorage.getItem("crew.theme")||selected;}catch{}document.documentElement.dataset.theme=selected==="system"?(systemTheme.matches?"dark":"light"):selected;}
   theme();systemTheme.addEventListener("change",theme);window.addEventListener("storage",theme);window.addEventListener("crew:theme-change",theme);
@@ -33,7 +39,7 @@
     window.CrewGlobalRail?.update({projects: state.projects || [], todos: state.todos || [], goals: state.goals || []});
     const node=$("assistant-overview");node.replaceChildren(
       section("我的 TODO",(state.todos||[]).filter(item=>item.status==null||item.status==="open"),item=>item.title||item.text||"待办",item=>item.project,"暂时没有需要你动手的事项。"),
-      section("进行中的任务",(state.goals||[]).filter(item=>!["completed","cancelled"].includes(item.status)),item=>item.title,item=>item.project,"你可以让我汇总项目近况，或记下新想法。"),
+      section("进行中的任务",(state.goals||[]).filter(item=>!["completed","cancelled"].includes(item.status)),item=>item.title,item=>item.project,"各工作区暂时没有进行中的任务。"),
       section("工作区",state.projects||[],item=>item.display_name||item.name,item=>item.name,"先打开一个文件夹，开始项目。")
     );
   }
@@ -141,7 +147,7 @@
       const state=await api("/api/op/assistant.state");assistantSession=state.assistant.session_id;CrewSound.observe(state.sounds,state.now);overview(state);error("");
       await loadConfirmations();
       const identity=state.assistant.session_id;lastState=state;
-      if(mounted!==identity){CrewChat.unmount();CrewChat.mount({host:$("assistant-chat"),session:state.assistant,state,api,toast,onRouted:()=>{},onNoteCleared:dropNote});mounted=identity;attachNote();}
+      if(mounted!==identity){CrewChat.unmount();CrewChat.mount({host:$("assistant-chat"),session:state.assistant,state,api,toast,onRouted:()=>{},onNoteCleared:dropNote,emptyGuide:EMPTY_GUIDE});mounted=identity;attachNote();}
       else CrewChat.update(state);
       attachOpening();
     }catch(failure){error(failure.message||"暂时连不上助手");}

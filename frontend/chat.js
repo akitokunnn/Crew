@@ -687,6 +687,10 @@
       }
     }
   }
+  function emptyGuideHTML(guide) {
+    const prompts = guide.prompts.map((prompt, index) => `<button type="button" class="chat-empty-prompt" data-chat-prompt="${index}"><span class="chat-empty-mark" aria-hidden="true"><svg viewBox="0 0 24 24">${prompt.icon.map(d => `<path d="${escape(d)}"/>`).join("")}</svg></span><span class="chat-empty-text"><strong>${escape(prompt.label)}</strong><span>${escape(prompt.detail)}</span></span></button>`).join("");
+    return `<section class="chat-empty-guide" aria-label="${escape(guide.title)}"><h2>${escape(guide.title)}</h2><p>${escape(guide.text)}</p><div class="chat-empty-prompts">${prompts}</div></section>`;
+  }
   function render(context) {
     context.frame = null;
     if (!current(context)) return;
@@ -702,6 +706,8 @@
       if (scope === context && (item.id === context.cache.unreadAnchor || item.unreadIds?.includes(context.cache.unreadAnchor))) desired.push({ key: "unread", className: "div unread unread-div", html: "以下是你离开后的消息" });
       desired.push({ key, className: "chat-event", html: itemHTML(scope, item) });
     }
+    // A conversation with nothing in it yet may offer starting points; they are shown only once the history is known to be empty.
+    if (context.emptyGuide && !context.loading && !context.hasMore && !context.busy && !desired.length) desired.push({ key:"empty", className:"chat-empty", html:emptyGuideHTML(context.emptyGuide) });
     let anchor = null;
     if (!follow && context.initialPosition === null) {
       const viewport = context.scroll.getBoundingClientRect();
@@ -1089,6 +1095,11 @@
     context.scroll.onscroll = () => { if (!current(context)) return; context.cache.scrollTop = context.scroll.scrollTop; context.jump.classList.toggle("show", !atBottom(context)); scheduleRead(context); };
     context.inner.onclick = async event => {
       if (event.target.closest("[data-chat-earlier]")) { await loadEarlier(context); return; }
+      const promptButton = event.target.closest("[data-chat-prompt]");
+      if (promptButton) {
+        if (!prefill(context.emptyGuide.prompts[Number(promptButton.dataset.chatPrompt)].text)) context.toast("输入框里有未发送的内容，示例没有覆盖它；发送或清空后再点。");
+        return;
+      }
       const channelButton = event.target.closest("[data-chat-channel]");
       if (channelButton) { context.openChannel?.(Number(channelButton.dataset.chatChannel)); return; }
       const goalButton = event.target.closest("[data-chat-goal]");

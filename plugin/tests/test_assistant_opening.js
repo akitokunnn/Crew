@@ -71,3 +71,16 @@ test("an already open assistant takes a later opening through the hash change", 
   assert.equal(page.prefills.length, 1);
   assert.match(page.prefills[0], /工作区「乙」开局/);
 });
+
+test("the assistant hands its chat four starting points that are only written into the composer", async () => {
+  let mounted;
+  const page = assistantPage("", {projects: []});
+  page.sandbox.CrewChat.mount = options => { mounted = options; };
+  await settle(); await settle();
+  const guide = mounted.emptyGuide;
+  assert.equal(guide.prompts.map(item => item.label).join("|"), "汇总各工作区近况|记一个想法|让助手开局|给 leader 建任务");
+  assert.match(guide.text, /填进输入框/);
+  assert.match(guide.prompts[2].text, /等我确认方案后再创建和启动/);
+  assert.match(guide.prompts[3].text, /等我确认后再创建/);
+  assert(!page.calls.some(call => call.url === "/api/op/chat.send"));
+});
