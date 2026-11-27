@@ -157,3 +157,29 @@ H = 本机界面，B / D = 远程浏览器 / 远程桌面（与 `domains.apply` 
 - **确认卡**：助手页“等你确认”对 `campaign.launch` 先读一次预览，最醒目处写“会花什么”，再分区列“建什么”；`war_room.budget` 显示作战室已用 / 原上限 / 新上限。
 - **守则**：`plugin/prompts/roles/assistant.md` “开局与重整（作战）”一节：探底 → 方案 → 确认 → 执行 → 交棒，盯作战室、预算暂停时只等用户决定。
 - **重整**沿用 §4–§5 的 `domains.restructure.preview / apply`（`leader.merge` / `retire`）；确认卡里嵌 `CrewRestructure` 面板仍按 §9 待接线。
+- **重整确认卡**（§9 待接线已做）：助手页对 `domains.restructure.apply`、`leader.merge`、`leader.retire` 的确认请求重新读一次重整预览，显示会动什么、是否唤醒模型、改前 / 改后（复用 `CrewRestructure.compare`）、受影响的 leader 与任务；预览已过期时列出原因。`domains.rollback` 的确认卡仍是通用参数行。
+
+## 11. 真实模型实测（2026-11-27）
+
+真实 Crew 服务跑在临时 `CREW_HOME`、独立端口、空白工作区 `shop`，子进程从服务继承 `CREW_HOME`；助手用 `claude-haiku-5-5`，两位 leader 由方案指定：后端 Claude `claude-haiku-5-5`，前端 Codex `gpt-6-luna`（low）。从新手引导的“让助手开局”入口（`/assistant.html#opening=shop`）进入，浏览器里真实发消息、点确认。跑了两轮，第 1 轮暴露的问题修完后跑第 2 轮。
+
+| 环节 | 实际表现 | 结论 |
+| --- | --- | --- |
+| 探底 | 只读：`workspace_state`、看目录、`mindmap_get`、`runtimes_list`、`domains_get`；空白工作区问了 3 个关键问题，先给暂定草稿，明确说确认前不创建 | 符合 |
+| 方案 | `campaign_preview` 无错，讲清 2 位 leader、载体和模型、首批任务、30 万 tokens 预算与估算金额；如实说明 gpt-6-luna 没计入估算、`claude-haiku-5-5` 不在本机载体列表（第 2 轮还擅自换成 haiku-4-5 并请用户拍板，用户坚持后照办） | 符合（换模型是先问后做） |
+| 确认与执行 | 一次 `campaign_launch` → 助手页“开局方案”确认卡（会花什么在最前）→ 用户确认一次 → 领域、leader、首批任务、助手牵头的作战室一次建好 | 符合 |
+| 作战室 | 第 2 轮：后端写契约、状态板并直接 @前端；前端写状态板、@助手报完成；助手被房内通知叫醒，自己读代码核对契约，报告预算 45% → 64%，首轮完成后收尾交棒 | 符合；见下“不符合” |
+| 小重整（合并前端到后端） | 先读任务状态再 `domains_restructure_preview`；发现前端任务在跑就停下给两种做法；用户选暂停后预览通过、讲清改前 / 改后、交接稿不唤醒、任务转后端仍暂停；确认后执行失败，助手如实汇报，不擅自验收 | 助手行为符合；执行失败见下 |
+
+不符合预期 / 已修：
+
+- 第 1 轮 Claude leader 说没有作战室工具（`war_room_*` 不在默认工具里，它没去搜）→ 守则与房内通知写明先 `crew_search` 搜“作战室”载入；第 2 轮后端照做。
+- 第 1 轮助手不肯在房里发言（`war_room_post` 要用户消息编号）→ 助手在自己牵头的房里发言、改状态板、收尾不再要编号。
+- 第 2 轮助手按“状态板都完成”就收尾，正式任务仍是 running → 守则改为“首批任务都交付到待验收（看 `goal_list`）再收尾，并提醒用户验收”（改后未再跑）。
+
+仍未解决（不在本次改动内，交主会话）：
+
+- **任务轮次收不了尾**：前端（Codex luna）这一轮报告已提交（`finish_pending: true`，工作项 1/1），但 15 分钟仍是 running，`goal_accept` 报“只有等待用户验收的当前轮次可以决定”；后端（Claude haiku）的任务也一直 running。两轮实测都出现。
+- **重整预览漏了这类阻塞**：`domains.restructure.preview` 通过，`apply` 才报“本轮已提交交付、等待收尾；收尾后再交接”。预览应同样检查 `goals.request_transfer` 的前提。
+- 助手页在一次长等待后没有自动显示助手的新回复，刷新页面才出现（只见一次，未定位）。
+- 预算计数依赖后台用量扫描，有一次扫描的滞后；实测里 3 分钟内从 0 涨到 12 万、19 万，能起作用。
