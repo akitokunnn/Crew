@@ -161,6 +161,8 @@ class SnapshotMixin:
         with self.scan_lock:
             titles = usage.session_titles(self.claude_root, [s['session_id'] for s in sessions], self.title_cache)
         result['native_approvals'] = self.native_approvals(name)
+        from .. import war_room_work
+        working_rooms = war_room_work.working_rooms(self.chat, conn, name)
         histories, active_scopes, active_goals, active_goal_ids = {}, {}, {}, {}
         for session in sessions:
             sid = session['session_id']
@@ -219,7 +221,7 @@ class SnapshotMixin:
                                for t in recent_tasks],
                          codex_older=len(own_tasks) - len(recent_tasks), dispatches=dispatches)
             if session['role'] == 'leader':
-                notices = board.pending_notices(conn, sid)
+                notices = [notice for notice in board.pending_notices(conn, sid) if notice['room_id'] is None]
                 waking = [notice for notice in notices if notice['wake'] == 1]
                 reasons = {}
                 for notice in waking:
@@ -238,7 +240,7 @@ class SnapshotMixin:
                 read_seq = board.read_seq(conn, sid)
                 result['leaders'].append(dict(
                     session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
-                    member_defaults=member_choices.get(sid), **looks.get(sid, {'color': None, 'avatar_version': None}),
+                    working_room_id=working_rooms.get(sid), member_defaults=member_choices.get(sid), **looks.get(sid, {'color': None, 'avatar_version': None}),
                     active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
                     active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
                     runtime=binding['runtime'],
@@ -259,7 +261,7 @@ class SnapshotMixin:
                     # The earliest channel post whose mention of this leader is still queued: the sidebar jumps there.
                     channel_queued_id=conn.execute(
                         'SELECT MIN(t.message_id) FROM channel_mentions t JOIN leader_notices n ON n.id=t.notice_id '
-                        'WHERE t.session_id=? AND n.sent_at IS NULL AND n.wake=1', (sid,)).fetchone()[0],
+                        'WHERE t.session_id=? AND n.room_id IS NULL AND n.sent_at IS NULL AND n.wake=1', (sid,)).fetchone()[0],
                     member_ids=[s['session_id'] for s in sessions if s['role'] != 'leader' and s['crew_name']
                                 and member_leaders[s['session_id']] is not None
                                 and member_leaders[s['session_id']]['session_id'] == sid]))
@@ -269,6 +271,7 @@ class SnapshotMixin:
                 result['members'].append(dict(
                     session_id=sid, name=session['crew_name'], title=titles.get(sid),
                     active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
+                    working_room_id=working_rooms.get(sid),
                     active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
                     execution_records=self.member_execution_records(conn, sid, active_scopes[sid]),
                     general_has_output=sid in histories and chat.has_native_output(histories[sid]['events']),

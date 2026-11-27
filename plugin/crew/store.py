@@ -44,11 +44,44 @@ def connect(home):
         _migrate_project_themes(conn)
         _migrate_workspace_notes(conn, notes)
         _migrate_mindmap_positions(conn)
+        _migrate_war_room_plans(conn)
         change_triggers.install(conn)
     except BaseException:
         conn.close()
         raise
     return conn
+
+
+def _migrate_war_room_plans(conn):
+    # All rows predating the phase column are historical. New rooms specify preparing explicitly.
+    columns = {
+        'war_rooms': {'phase': "TEXT NOT NULL DEFAULT 'active' CHECK(phase IN ('preparing','active'))",
+                      'draft_version': 'INTEGER NOT NULL DEFAULT 0', 'approved_version': 'INTEGER',
+                      'legacy': 'INTEGER NOT NULL DEFAULT 1', 'close_reason': 'TEXT', 'open_request_id': 'TEXT'},
+        'war_room_items': {'entry_id': 'TEXT', 'kind': 'TEXT', 'plan_version': 'INTEGER', 'answer': 'TEXT',
+                           'goal_id': 'TEXT REFERENCES goals(id)'},
+        'war_room_decisions': {'answer_notice_id':'INTEGER REFERENCES leader_notices(id)'},
+        'leader_notices': {'room_id': 'INTEGER REFERENCES war_rooms(id)'},
+    }
+
+    def missing():
+        for table, definitions in columns.items():
+            present = {row['name'] for row in conn.execute('PRAGMA table_info(%s)' % table)}
+            for name, definition in definitions.items():
+                if name not in present:
+                    yield table, name, definition
+
+    if any(missing()):
+        from . import board
+        with board.transaction(conn):
+            for table, name, definition in list(missing()):
+                conn.execute('ALTER TABLE %s ADD COLUMN %s %s' % (table, name, definition))
+                if table == 'leader_notices' and name == 'room_id':
+                    conn.execute('UPDATE leader_notices SET room_id=(SELECT m.room_id FROM channel_mentions t '
+                                 'JOIN channel_messages m ON m.id=t.message_id WHERE t.notice_id=leader_notices.id) '
+                                 'WHERE id IN (SELECT notice_id FROM channel_mentions WHERE notice_id IS NOT NULL)')
+                if table == 'war_rooms' and name == 'close_reason':
+                    conn.execute("UPDATE war_rooms SET close_reason='legacy' WHERE status='closed'")
 
 
 def _migrate_mindmap_positions(conn):

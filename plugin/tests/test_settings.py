@@ -63,7 +63,7 @@ class SettingsTests(unittest.TestCase):
                 self.assertIs(mindmap_api.snapshot(self.home, 'demo')['canvas_wheel_zoom'], value)
 
     def test_saved_home_options_survive_connections_and_task_null_follows_default(self):
-        ai = {'default': choice('codex', 'future-provider/custom-model', 'future-effort'),
+        ai = {**settings.DEFAULT, 'default': choice('codex', 'future-provider/custom-model', 'future-effort'),
               'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': choice('claude'), 'operations': choice('codex', None, 'low-latency')}
         self.assertEqual(settings.save(self.home, ai), ai)
         with closing(store.connect(self.home)) as conn:
@@ -142,7 +142,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.get(self.home), original)
 
     def test_save_and_resolve_use_callers_transaction_without_extra_connection_or_commit(self):
-        original = {'default': choice('claude'), 'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': None, 'operations': None}
+        original = {**settings.DEFAULT, 'default': choice('claude'), 'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': None, 'operations': None}
         settings.save(self.home, original)
         with closing(store.connect(self.home)) as conn:
             with self.assertRaises(Rollback), board.transaction(conn):

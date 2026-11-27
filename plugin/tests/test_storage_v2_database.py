@@ -198,7 +198,7 @@ class StorageV2DatabaseTests(unittest.TestCase):
                 old_tables = {r[0] for r in previous.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertEqual(len(old_tables), 57)
             self.assertEqual(tables, old_tables | {'note_tag_settings','mindmaps','mindmap_nodes','mindmap_domains',
-                                                   'mindmap_conversions','workspace_assistant_agents','note_discussions'})
+                                                   'mindmap_conversions', 'workspace_assistant_agents', 'note_discussions', 'canvas_positions'})
             self.assertFalse(any(name.startswith('local_') for name in tables))
             c.execute('BEGIN')
             with self.assertRaises(StorageError):

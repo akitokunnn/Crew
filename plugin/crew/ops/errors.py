@@ -1,7 +1,8 @@
 """Structured operation errors (design §5.7)."""
 
 PUBLIC_CODES = {'project_unavailable': 404, 'not_visible': 404, 'version_conflict': 409,
-                'request_conflict': 409, 'outcome_unknown': 202}
+                'request_conflict': 409, 'outcome_unknown': 202, 'room_occupied': 409, 'invalid_plan': 400,
+                'missing_recommendation': 400, 'invalid_criteria': 400, 'criteria_incomplete': 409}
 ALIASES = {'request_id_reused': 'request_conflict', 'unknown_outcome': 'outcome_unknown'}
 CODES = frozenset(PUBLIC_CODES) | frozenset(('forbidden', 'invalid_arguments', 'not_found', 'conflict', 'request_id_reused',
                    'awaiting_user', 'paused_for_update', 'unknown_outcome', 'internal'))

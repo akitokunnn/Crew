@@ -44,7 +44,7 @@ def claim_batch(conn, notice_ids, batch_id):
 def claim_for_hook(conn, session_id, now=None):
     """An external session's prompt hook takes this leader's queued channel notices no batch owns."""
     pending = board._rows(conn, 'SELECT n.id,n.text,n.session_id FROM channel_mentions t JOIN leader_notices n ON n.id=t.notice_id '
-                                'WHERE t.session_id=? AND n.sent_at IS NULL AND n.batch_id IS NULL ORDER BY n.id',
+                                'WHERE t.session_id=? AND n.room_id IS NULL AND n.sent_at IS NULL AND n.batch_id IS NULL ORDER BY n.id',
                           (session_id,))
     return [channel.mention_text_for_delivery(conn, notice, frozenset()) for notice in pending if conn.execute(
         "UPDATE leader_notices SET sent_at=?,delivered_via='hook' WHERE id=? AND sent_at IS NULL AND batch_id IS NULL",
@@ -56,6 +56,8 @@ def note_waiting(conn, session_id, reason, notice_ids=None):
     sql = ('UPDATE leader_notices SET waiting=? WHERE session_id=? AND sent_at IS NULL '
            'AND wake=1 AND waiting IS NOT ?')
     args = [reason, session_id, reason]
+    if notice_ids is None:
+        sql += ' AND room_id IS NULL'
     if reason is None:
         sql += " AND waiting NOT GLOB 'failed|*'"
     if notice_ids is not None:
@@ -274,7 +276,7 @@ class DeliveryMixin:
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='personal_assistant'").fetchone() else "")
         leaders = [dict(row) for row in conn.execute(
             "SELECT DISTINCT s.* FROM sessions s JOIN leader_notices n ON n.session_id=s.session_id "
-            "WHERE n.sent_at IS NULL AND n.wake=1 AND s.status!='closed' AND (s.role='leader'" + assistant +
+            "WHERE n.room_id IS NULL AND n.sent_at IS NULL AND n.wake=1 AND s.status!='closed' AND (s.role='leader'" + assistant +
             " OR s.session_id IN (SELECT a.session_id FROM workspace_assistants a LEFT JOIN project_settings p "
             "ON p.project=a.project WHERE p.removed_at IS NULL))")]
         for leader in leaders:
@@ -311,7 +313,7 @@ class DeliveryMixin:
                             self.journal(sid).set_status('idle')
                     note_waiting(conn, sid, None)
                     journal = self.journal(sid)
-                    batch = self._notice_batch(conn, journal, board.pending_notices(conn, sid))
+                    batch = self._notice_batch(conn, journal, [n for n in board.pending_notices(conn, sid) if n['room_id'] is None])
                     if batch is None:
                         continue
                     receipt = self.send(leader, batch['text'], source='crew', identity=batch['id'],
@@ -343,13 +345,7 @@ class DeliveryMixin:
         if moment - getattr(self, '_budget_checked', 0) < 30:
             return
         self._budget_checked = moment
-        for room_id, member_ids in war_room.over_budget(conn, now):
-            for sid in member_ids:
-                try:
-                    self.stop_identity(sid)
-                except (board.BoardError, codex_client.CodexError, OSError) as exc:
-                    board.record_event(conn, 'war_room:budget_stop_error', None, sid,
-                                       {'room': room_id, 'error': '%s: %s' % (type(exc).__name__, exc)}, now=now)
+        war_room.over_budget(conn, now)
 
     def _notice_batch(self, conn, journal, pending):
         """The batch to write now: the one already claimed, or a new claim recorded before the journal entry."""
@@ -389,7 +385,7 @@ class DeliveryMixin:
     def settle_channel_mentions(self, conn, now):
         """A user mention the leader answered only in private gets a channel pointer once that turn ended well."""
         for row in conn.execute("SELECT DISTINCT t.session_id FROM channel_mentions t JOIN leader_notices n "
-                                "ON n.id=t.notice_id WHERE t.await_reply=1 AND n.sent_at IS NOT NULL "
+                                "ON n.id=t.notice_id WHERE n.room_id IS NULL AND t.await_reply=1 AND n.sent_at IS NOT NULL "
                                 "AND n.delivered_via IS NULL").fetchall():
             sid = row['session_id']
             with self.lock:

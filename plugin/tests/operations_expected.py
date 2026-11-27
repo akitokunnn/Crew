@@ -32,6 +32,7 @@ DEVICE_BROWSER = frozenset((
     # War rooms (docs/WAR_ROOM_DESIGN.md §6).
     'war_room.close', 'war_room.contract', 'war_room.decide', 'war_room.get', 'war_room.item', 'war_room.list',
     'war_room.mark_read', 'war_room.members', 'war_room.open', 'war_room.post', 'war_room.budget',
+    'war_room.plan.approve', 'war_room.stop', 'war_room.cancel', 'war_room.end_budget',
     'campaign.preview', 'campaign.launch',
     # Board versions, rollback, restructure and leader merge / retire (docs/ASSISTANT_CAMPAIGN_DESIGN.md §5).
     'domains.restructure.apply', 'domains.restructure.preview', 'domains.rollback', 'domains.version.get',
@@ -74,6 +75,7 @@ DEVICE_DESKTOP = frozenset((
     # War rooms (docs/WAR_ROOM_DESIGN.md §6).
     'war_room.close', 'war_room.contract', 'war_room.decide', 'war_room.get', 'war_room.item', 'war_room.list',
     'war_room.mark_read', 'war_room.members', 'war_room.open', 'war_room.post', 'war_room.budget',
+    'war_room.plan.approve', 'war_room.stop', 'war_room.cancel', 'war_room.end_budget',
     'campaign.preview', 'campaign.launch',
     # Board versions, rollback, restructure and leader merge / retire (docs/ASSISTANT_CAMPAIGN_DESIGN.md §5).
     'domains.restructure.apply', 'domains.restructure.preview', 'domains.rollback', 'domains.version.get',
@@ -99,4 +101,5 @@ WORKSPACE_ASSISTANT = frozenset((
     'domains.restructure.preview', 'domains.restructure.apply', 'leader.merge', 'leader.retire', 'leader.create',
     'war_room.list', 'war_room.get', 'war_room.open', 'war_room.members', 'war_room.post', 'war_room.item',
     'war_room.contract', 'war_room.decide', 'war_room.close', 'war_room.mark_read', 'war_room.budget',
+    'war_room.plan.update', 'war_room.abandon', 'war_room.cancel', 'war_room.consult',
 ))

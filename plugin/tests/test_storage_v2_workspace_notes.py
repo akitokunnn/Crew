@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 import zipfile
 
-from crew import mindmap, personal, settings, store, workspace_assistant
+from crew import board, mindmap, personal, settings, store, workspace_assistant
 from crew.storage_v2 import Repository, StorageConflict, activation, database, features, legacy, packages
 from tests import test_workspace_notes_migration as old_notes
 
@@ -21,7 +21,7 @@ def restore_schema_four(repo):
     with closing(sqlite3.connect(repo.path)) as conn:
         for table in reversed(features.NOTE_TABLES):
             conn.execute('DROP TABLE ' + table)
-        conn.execute('UPDATE local_schema_migrations SET to_version=4,migration_sha256=? WHERE to_version=5', (digest,))
+        conn.execute('UPDATE local_schema_migrations SET to_version=4,migration_sha256=? WHERE to_version=?', (digest, database.SCHEMA_VERSION))
         conn.execute('UPDATE local_schema_metadata SET schema_version=4,min_reader_version=4,min_writer_version=4')
         conn.execute('PRAGMA user_version=4')
         conn.commit()
@@ -47,6 +47,9 @@ class WorkspacePackageTests(unittest.TestCase):
             conn.execute("INSERT INTO personal_mindmap_links VALUES('aIdea','A','board-child',?)", (stamp,))
             conn.execute("INSERT INTO personal_mindmap_links VALUES('inner','A','deleted-part',?)", (stamp,))
             conn.execute("INSERT INTO sessions(session_id,project,crew_name,started_at) VALUES('ordinary','A','助手',?)", (stamp,))
+            conn.execute("UPDATE personal_mindmap_nodes SET x=-23.5,y=418.25 WHERE id='aIdea'")
+            board.join(conn, 'canvas-lead', 'A', '画布成员', self.base, None, None, role='leader')
+            conn.execute("INSERT INTO domain_leaders(session_id,project,x,y,updated_at) VALUES('canvas-lead','A',77.5,-31,?)", (stamp,))
             sid = workspace_assistant.ensure(conn, self.home, 'A', selection=settings.DEFAULT['default'])['session_id']
             admin = personal.ensure_assistant(conn, self.home, selection=settings.DEFAULT['default'])['session_id']
             personal.record_discussion(conn, 'a', sid, 'source-message-PRIVATE', 19, now=stamp)
@@ -74,7 +77,7 @@ class WorkspacePackageTests(unittest.TestCase):
         original = self.source()
         path = self.base / 'A.crewpack'
         manifest = self.repo.export_workspace(original, path)
-        self.assertEqual(manifest['schema_version'], 5)
+        self.assertEqual(manifest['schema_version'], 6)
         with zipfile.ZipFile(path) as archive:
             raw = b''.join(archive.read(name) for name in archive.namelist())
             for private in [self.admin, self.sid, 'PRIVATE_TOKEN', 'PRIVATE_PENDING', 'B-private-read',
@@ -108,6 +111,8 @@ class WorkspacePackageTests(unittest.TestCase):
         with closing(store.connect(local)) as conn:
             self.assertEqual([tuple(r) for r in conn.execute('SELECT name,color,pinned,sort_order,version,created_at,updated_at '
                              'FROM workspace_note_tags ORDER BY name')], self.tags)
+            self.assertEqual(tuple(conn.execute("SELECT x,y FROM personal_mindmap_nodes WHERE x IS NOT NULL").fetchone()), (-23.5, 418.25))
+            self.assertEqual(tuple(conn.execute("SELECT x,y FROM domain_leaders WHERE domain_id IS NULL").fetchone()), (77.5, -31))
             mapping = {}
             with closing(dest.connect()) as imported:
                 for source_table, target in [('personal_mindmap_nodes','mindmap_nodes'), ('personal_notes','workspace_feature_records')]:
@@ -142,7 +147,7 @@ class WorkspacePackageTests(unittest.TestCase):
             for table in ('mcp_tokens','interaction_requests','personal_assistant','unassigned_note_tags'):
                 self.assertEqual(conn.execute('SELECT count(*) FROM '+table).fetchone()[0], 0)
             self.assertEqual(conn.execute('SELECT count(*) FROM session_runtimes WHERE native_id IS NOT NULL').fetchone()[0], 0)
-            self.assertEqual(conn.execute('SELECT count(*) FROM session_stop_gates').fetchone()[0], 2)
+            self.assertEqual(conn.execute('SELECT count(*) FROM session_stop_gates').fetchone()[0], 3)
             self.assertEqual(conn.execute('PRAGMA foreign_key_check').fetchall(), [])
         with closing(dest.connect()) as conn:
             before = {t: [dict(r) for r in conn.execute('SELECT * FROM '+t+' ORDER BY id')] for t in features.NOTE_TABLES}
@@ -188,7 +193,7 @@ class WorkspacePackageTests(unittest.TestCase):
             self.assertEqual({r[0] for r in conn.execute('SELECT name FROM note_tag_settings')}, {'shared','implicit'})
             self.assertCountEqual([r[0] for r in conn.execute('SELECT transform_version FROM import_batches')],
                                   ['crew-v1-to-v2/2', legacy.TRANSFORM_VERSION])
-            self.assertEqual(tuple(conn.execute('SELECT schema_version,min_reader_version,min_writer_version FROM local_schema_metadata').fetchone()), (5,5,5))
+            self.assertEqual(tuple(conn.execute('SELECT schema_version,min_reader_version,min_writer_version FROM local_schema_metadata').fetchone()), (6, 6, 6))
         self.assertEqual(hashlib.sha256((self.home/'crew.db').read_bytes()).digest(), before)
         with closing(sqlite3.connect(self.home/'crew.db')) as conn:
             self.assertEqual(conn.execute('SELECT version FROM personal_mindmap').fetchone()[0], 12)

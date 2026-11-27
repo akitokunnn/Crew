@@ -230,7 +230,8 @@ class PortableFeatureTests(RuntimeFixture):
         old_data.write_bytes(entries['data.sqlite'])
         account, user = repo.ensure_local_identity()
         manifest = json.loads(entries['manifest.json'])
-        for schema, removed in ((4, features.NOTE_TABLES), (3, ('goal_report_versions',)), (2, ('workspace_feature_records',))):
+        for schema, removed in ((5, ('canvas_positions',)), (4, tuple(t for t in features.NOTE_TABLES if t != 'canvas_positions')),
+                                (3, ('goal_report_versions',)), (2, ('workspace_feature_records',))):
             with self.subTest(schema=schema):
                 with closing(sqlite3.connect(old_data)) as conn:
                     for table in reversed(removed):
@@ -250,7 +251,7 @@ class PortableFeatureTests(RuntimeFixture):
                 self.assertEqual(packages.preview_package(old)['integrity'], 'ok')
                 with closing(repo.connect()) as conn:
                     result = packages.import_package(conn, repo.objects, old, target_account_id=account, actor_user_id=user)
-                    order = 'v.version' if schema == 4 else 'r.created_at,r.id'
+                    order = 'v.version' if schema >= 4 else 'r.created_at,r.id'
                     expected = list(conn.execute("SELECT r.id,v.created_at,v.requirement_version FROM reports r "
                         "JOIN goal_report_versions v ON v.report_id=r.id WHERE r.workspace_id=? "
                         "AND r.kind='goal_delivery' ORDER BY " + order, (result['workspace_id'],)))
@@ -260,13 +261,14 @@ class PortableFeatureTests(RuntimeFixture):
                 with closing(store.connect(local)) as conn:
                     actual = conn.execute('SELECT id,created_at,version,requirement_version FROM goal_reports ORDER BY version')
                     self.assertEqual([tuple(row) for row in actual],
-                                     [(row[0], row[1], i, row[2] if schema == 4 else 2) for i, row in enumerate(expected, 1)])
+                                     [(row[0], row[1], i, row[2] if schema >= 4 else 2) for i, row in enumerate(expected, 1)])
                     restored = conn.execute('SELECT id FROM goals').fetchone()[0]
                     self.assertTrue(goal_api.card(conn, goals.get(conn, restored))['report_available'])
                     from crew import mindmap
                     project = conn.execute('SELECT name FROM projects').fetchone()[0]
                     self.assertEqual(mindmap.snapshot(conn, project), dict(project=project, version=0, links=[], nodes=[]))
-                    self.assertEqual(personal.list_tags(conn, project)['tags'], [])
+                    self.assertEqual([t['name'] for t in personal.list_tags(conn, project)['tags']],
+                                     ['unconfigured'] if schema >= 5 else [])
                     self.assertEqual([r[0] for r in conn.execute('SELECT text FROM personal_notes')],
                                      ['Early note'] if schema >= 3 else [])
 

@@ -264,7 +264,9 @@ class WorkersMixin:
                     continue
                 try:
                     with self.chat.lock, closing(store.connect(self.home)) as conn:
+                        from .. import war_room
                         self.chat.goal_controller.sync(conn)
+                        war_room.resume_budget_work(conn)
                         self.chat.goal_controller.resume_operations(conn)
                     self.chat.deliver_messages()
                     self.deliver_notices()
@@ -278,14 +280,21 @@ class WorkersMixin:
                 break
 
     def deliver_notices(self):
-        with self.write_lock, closing(store.connect(self.home)) as conn:
-            self.deliver_git_results(conn)
-            now = self.now().isoformat()
-            self.chat.settle_channel_mentions(conn, now)
-            with self.agents_lock:
-                live = (None if self.agents_error is not None or not self.agents_ready.is_set()
-                        else frozenset(agent['sessionId'] for agent in self.agents))
-            self.chat.deliver_leader_notices(conn, live, now)
+        from .. import war_room_work
+        with closing(store.connect(self.home)) as conn:
+            with self.write_lock:
+                self.deliver_git_results(conn)
+                now = self.now().isoformat()
+                self.chat.settle_channel_mentions(conn, now)
+                with self.agents_lock:
+                    live = (None if self.agents_error is not None or not self.agents_ready.is_set()
+                            else frozenset(agent['sessionId'] for agent in self.agents))
+                with self.chat.lock:
+                    war_room_work.stop_room_processes(self.chat, conn)
+                    war_room_work.watch(self.chat, conn, live, now)
+                self.chat.deliver_leader_notices(conn, live, now)
+            # Do not hold the service write lock while waiting for a carrier receipt.
+            war_room_work.deliver(self.chat, conn, live, now)
 
     def deliver_git_results(self, conn):
         pending = conn.execute(
