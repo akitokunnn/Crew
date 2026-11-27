@@ -237,7 +237,8 @@ class Journal:
                     fields["images"] = images
                 self.emit("message", **fields)
 
-    def consume(self, record):
+    def consume(self, record, interrupted=False):
+        """``interrupted``: Crew asked the carrier to stop this turn, so its aborted result is not a failure."""
         with self.condition:
             self.refresh()
             if self._claude_subagents is None:
@@ -291,17 +292,37 @@ class Journal:
             metadata = record["compact_metadata"]
             self.emit("compact", pre_tokens=metadata["pre_tokens"], post_tokens=metadata["post_tokens"])
         elif kind == "result":
-            if record.get("is_error"):
+            aborted = interrupted and record.get("is_error")
+            if record.get("is_error") and not aborted:
                 self.emit("error", text="\n".join(record.get("errors", [])) or record.get("result") or record.get("subtype", "Claude 本轮执行失败"))
             if not record.get("parent_tool_use_id"):
-                self.emit("turn_result", status="failed" if record.get("is_error") else "completed",
-                          success=not bool(record.get("is_error")))
+                if record.get("local_command") == "compact" and not record.get("is_error"):
+                    self._end_unconfirmed_compact()
+                if aborted:
+                    self.emit("turn_result", status="interrupted", success=False, reason="user_interrupt")
+                else:
+                    self.emit("turn_result", status="failed" if record.get("is_error") else "completed",
+                              success=not bool(record.get("is_error")))
                 self.set_status("idle")
         elif kind == "command_lifecycle" and record["state"] == "started" and not record.get("parent_tool_use_id"):
             self.set_status("working")
         elif kind == "control_response" and record["response"]["subtype"] != "success":
             response = record["response"]
             self.emit("error", text=str(response.get("error") or response.get("message") or response["subtype"]))
+
+    def _end_unconfirmed_compact(self):
+        """A /compact the CLI refuses ends without a boundary; its synthetic reply is the reason."""
+        with self.condition:
+            self.refresh()
+            replies = []
+            for event in reversed(self.events):
+                if event["type"] == "compact":
+                    return
+                if event["type"] == "compact_request":
+                    break
+                if event["type"] == "assistant":
+                    replies[:0] = [block["text"] for block in event["content"] if block["type"] == "text"]
+            self.emit("compact_cancelled", reason="\n".join(replies) or "Claude 结束了压缩命令，但没有报告压缩完成")
 
     def after(self, sequence, wait=False):
         with self.condition:

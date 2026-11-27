@@ -438,6 +438,38 @@ class CodexToolsTests(unittest.TestCase):
         self.assertIn('document_html', finish)
         self.assertIn('[Crew final_report]', finish)
 
+    def test_finish_declares_report_as_an_object(self):
+        # A real Haiku run sent the report as JSON text or as top-level fields five times in a row.
+        report = registry.operations()['goal.finish'].params['properties'].get('report', {})
+        self.assertEqual(report['type'], 'object')
+        self.assertEqual(report['required'], ['outcome', 'summary', 'acceptance'])
+        self.assertEqual(report['properties']['document_html']['maxLength'], 512 * 1024)
+        self.assertEqual(report['properties']['acceptance']['items']['required'], ['criterion_id', 'status'])
+        self.assertIn('不是 JSON 字符串', report['description'])
+        # Codex once wrote the words 工作区根目录 as the folder; the field says what a path looks like.
+        self.assertIn('根目录填 .', report['properties']['folder']['description'])
+        for value in ('{"outcome": "awaiting_acceptance"}', None):
+            args = {'outcome': 'awaiting_acceptance'} if value is None else {'report': value}
+            with self.subTest(report=value):
+                self.assertEqual(self.rejected('goal.finish', args).code, 'invalid_arguments')
+
+    def test_goal_create_declares_the_leader_field(self):
+        # A real Haiku global assistant first omitted the leader and had to guess the field name.
+        leader = registry.operations()['goal.create'].ai_params['properties']['leader_session_id']
+        self.assertIn('全局助手必填', leader['description'])
+
+    def test_work_items_declare_their_fields(self):
+        # A real Haiku run sent version "1" (text) four times and could never mark its work done.
+        operations = registry.operations()
+        add, update = operations['goal.work.add'].params, operations['goal.work.update'].params
+        self.assertEqual(add['required'], ['key', 'title', 'acceptance'])
+        self.assertEqual(update['required'], ['key', 'version'])
+        self.assertEqual(update['properties']['version']['type'], 'integer')
+        self.assertEqual(update['properties']['status']['enum'], ['planned', 'doing', 'blocked', 'done', 'cancelled'])
+        error = self.rejected('goal.work.update', {'key': 'W1', 'version': '1', 'status': 'done', 'note': 'ok'})
+        self.assertEqual(error.code, 'invalid_arguments')
+        self.assertIn('version', str(error))
+
     def test_unknown_tools_and_bad_inputs_do_not_mutate_the_board(self):
         for name, args in (("shell", {"command": "anything"}), ("session.task.set", {"text": ""}),
                            ("session.task.set", {"text": "x", "session_id": "claude-crew"}),

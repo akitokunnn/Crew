@@ -37,11 +37,12 @@ def goal_params(required=(), **properties):
     return _object({'goal_id': GOAL_ID, **properties}, required, open_fields=True)
 
 
-def goal_op(name, action, summary, *, access, scopes, description='', core_for=(), risk='normal', admission='model_work'):
+def goal_op(name, action, summary, *, access, scopes, description='', core_for=(), risk='normal', admission='model_work',
+            params=None):
     return register(Operation(
         name=name, summary=summary, description=(description + '\n' + FIELDS_NOTE).strip(), access=access, risk=risk,
         scopes=frozenset(scopes), target='own_goal', lock='none', project='none', admission=admission,
-        handler=_goal(action), params=goal_params(), core_for=frozenset(core_for),
+        handler=_goal(action), params=params or goal_params(), core_for=frozenset(core_for),
         emits=(name,) if access != 'read' else ()))
 
 
@@ -57,6 +58,7 @@ share('goal.get', goal_get, scopes=(A, L, E), core_for=(A, L, E), ai_params=goal
 share('goal.create', _goal('create'), scopes=(A, L), risk='confirm',
       ai_params=goal_params(('title', 'request', 'acceptance'),
                             title=_string('任务标题', 300), request=_string('用户原话'),
+                            leader_session_id=_string('主责 leader 的会话 ID；全局助手必填，leader 不填即为自己', 300),
                             acceptance={'type': 'array', 'minItems': 1, 'items': {
                                 'type': ['string', 'object'], 'additionalProperties': True,
                                 'description': '一条验收标准：文字，或带自定义编号的对象（如 {id, title}）'}},
@@ -88,13 +90,40 @@ for action, old in (('put', 'add'), ('correct', 'correct'), ('expire', 'expire')
           ai_params=goal_params())
 goal_op('goal.amend', 'amend', '修订任务要求', access='write', scopes=(L, E))
 goal_op('goal.assign', 'assign', '指派任务负责人', access='write', scopes=(L,))
+REPORT = {**_object({
+    'outcome': {'type': 'string', 'enum': ['awaiting_acceptance', 'failed', 'cancelled', 'progress', 'completed'],
+                'description': 'awaiting_acceptance 交给用户验收；failed 或 cancelled 如实结束'},
+    'summary': _string('一两句结论'),
+    'document_html': _string('自包含 HTML 报告全文', 512 * 1024),
+    'acceptance': {'type': 'array', 'description': '逐条对应全部验收标准', 'items': _object({
+        'criterion_id': _string('验收标准编号，如 a1', 160),
+        'status': {'type': 'string', 'enum': ['passed', 'failed', 'unverified', 'simulated']},
+        'evidence': {'type': 'array', 'description': 'passed / failed 必填', 'items': _object({
+            'label': _string('如何验证', 500), 'reference': _string('在哪复查', 4096)}, ('label', 'reference'))},
+    }, ('criterion_id', 'status'), open_fields=True)},
+    'unresolved': {'type': 'array', 'items': _string('没覆盖的验证边界', 2000),
+                   'description': '有 unverified / simulated 时必填'},
+    'folder': _string('交付文件所在目录的路径：相对工作区根目录（根目录填 .）或绝对路径', 1000),
+}, ('outcome', 'summary', 'acceptance'), open_fields=True),
+    'description': '报告对象本身（不是 JSON 字符串）；其余字段见 goal_report_template'}
 goal_op('goal.finish', 'finish', '交付任务', access='write', scopes=(L, E), core_for=(L, E),
+        params=goal_params(('report',), report=REPORT),
         description='用 report 交付：outcome=awaiting_acceptance、简短 summary、自包含的 document_html，以及逐条验收标准的结果。'
                     '字段见 goal_report_template，写法与预览见注入的 [Crew final_report]。')
 goal_op('goal.work.list', 'work.list', '列出任务内的 AI 工作项', access='read', scopes=(L, E))
+WORK_KEY = _string('稳定的工作项 key，如 W1', 160)
+WORK_FIELDS = {'owner_session_id': _string('负责这项工作的会话 ID，不填为任务 leader', 300),
+               'dependencies': {'type': 'array', 'items': WORK_KEY, 'description': '要先完成的工作项 key'}}
 goal_op('goal.work.add', 'work.add', '添加任务内的 AI 工作项', access='write', scopes=(L, E),
+        params=goal_params(('key', 'title', 'acceptance'), key=WORK_KEY, title=_string('工作内容', 2000),
+                           acceptance=_string('完成条件'), **WORK_FIELDS),
         description='AI 工作用 key（稳定）、title、acceptance，可选 owner_session_id、dependencies。AI 工作不要放进人工待办。')
 goal_op('goal.work.update', 'work.update', '更新任务内的 AI 工作项', access='write', scopes=(L, E), core_for=(E,),
+        params=goal_params(('key', 'version'), key=WORK_KEY,
+                           version={'type': 'integer', 'minimum': 1, 'description': '工作项当前的 version（整数，见 goal_work_list）'},
+                           status={'type': 'string', 'enum': ['planned', 'doing', 'blocked', 'done', 'cancelled']},
+                           note=_string('done 写验收证据；blocked / cancelled 写原因', 8000),
+                           title=_string('新的工作内容', 2000), acceptance=_string('新的完成条件', 8000), **WORK_FIELDS),
         description='用 key、version、status 与证据或原因说明更新。')
 goal_op('goal.report.template', 'report-template', '读取交付报告模板', access='read', scopes=(L, E))
 goal_op('goal.report.get', 'report.get', '读取任务报告内容', access='read', scopes=(L, E))

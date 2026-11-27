@@ -620,6 +620,7 @@
     if (item.kind === "process") return processHTML(context, item.view);
     if (item.kind === "compact_request" || item.kind === "compact") return `<div class="context-divider">${item.kind === "compact_request" ? "压缩上下文" : `上下文已压缩：${CrewContext.compactSize(item.pre_tokens)} → ${CrewContext.compactSize(item.post_tokens)}`}</div>`;
     if (item.kind === "error") return `<div class="chat-error" role="alert">${escape(item.text)}</div>`;
+    if (item.kind === "compact_cancelled") return `<div class="context-divider compact-cancelled" role="status">压缩未完成：${escape(item.reason)}</div>`;
     if (item.kind === "native_replaced") return `<div class="context-divider native-replaced" role="status">${escape(item.text)}</div>`;
     if (item.kind === "tool_result") {
       const output = typeof item.content === "string" ? item.content : JSON.stringify(item.content, null, 2);
@@ -841,7 +842,7 @@
       if (event.status !== "working") context.settledSeq = event.seq;
       setBusy(context, event.status === "working", event.seq);
     }
-    else if (event.type === "compact_request" || event.type === "compact") {
+    else if (event.type === "compact_request" || event.type === "compact" || event.type === "compact_cancelled") {
       context.items.push({...event, id:`${event.type}:${event.seq}`, kind:event.type, lastSeq:event.seq});
       if (incremental && event.type === "compact") notifyCompact(context.session.session_id, event, context.toast);
     }
