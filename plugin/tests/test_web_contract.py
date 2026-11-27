@@ -101,7 +101,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(set(state), expected)
         self.assertEqual(state["usage_scanned_at"], self.clock.isoformat())
         self.assertIsNone(state["usage_error"])
-        self.assertEqual(state["domains"], {"version": 0, "paths": {}})
+        self.assertEqual(state["domains"], {"version": 0, "paths": {}, "canvas_wheel_zoom": False})
 
         self.assertEqual(set(state["project"]), {"name", "display_name", "root", "theme"})
         self.assertEqual(state["projects"], [{"name": "demo", "display_name": None, "theme": "celadon"}])
@@ -117,7 +117,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             "notices_quiet", "notices_waiting", "channel_queued_id", "member_ids",
             "model", "effort", "speed", "applied", "activity", "context", "where", "codex", "codex_older", "dispatches",
             "pinned", "runtime", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
-            "member_defaults", "color", "avatar_version"})
+            "working_room_id", "member_defaults", "color", "avatar_version"})
+        self.assertIsNone(leader["working_room_id"])
         self.assertIsNone(leader['member_defaults'])
         self.assertIsNone(leader['active_goal_id']); self.assertIsNone(leader['active_execution_id'])
         self.assertEqual(set(leader['runtime_switch']), {'allowed', 'reason', 'pending_handoff', 'last_switch_at'})
@@ -362,7 +363,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             "status_note", "where", "task", "scope", "done_when", "branch", "worktree", "cwd", "cc_name",
             "web_chat", "progress", "codex", "codex_older", "dispatches", "leases", "claims", "model", "effort", "speed", "applied", "activity",
             "context", "busy", "running", "runtime", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
-            "execution_records", "general_has_output"})
+            "execution_records", "general_has_output", "working_room_id"})
+        self.assertIsNone(member["working_room_id"])
         self.assertEqual((member["name"], member["leader_session_id"], member["group"], member["scope"], member["done_when"]),
                          ("one", "s3", "lead", "Backend", "Tests pass"))
         self.assertEqual([row["text"] for row in member["progress"]], ["progress-" + str(i) for i in (6, 5, 4, 3, 2)])
