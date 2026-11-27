@@ -1,6 +1,8 @@
 """Task cards, read cursors and the queue of things Crew must tell a leader."""
 import tests  # Install the production-service connection guard.
-from crew import session_ops, board
+from contextlib import closing
+from unittest import mock
+from crew import session_ops, board, channel, store
 from test_core import CoreCase, NOW
 
 LATER = "2026-10-22T09:00:00.000Z"
@@ -50,3 +52,27 @@ class CardsNoticesTests(CoreCase):
             board.queue_leader_notice(self.conn, "s2", "成员不是 leader", "web", now=NOW)
         with self.assertRaises(Exception):
             board.queue_leader_notice(self.conn, "s1", "来源不合法", "mail", now=NOW)
+
+    def test_waiting_migration_preserves_notice_and_channel_reference(self):
+        old_schema = self.root / 'old-schema.sql'
+        old_schema.write_text(store.SCHEMA_FILE.read_text(encoding='utf-8').replace(
+            "CHECK (waiting IN ('external', 'busy', 'stopped', 'maintenance', 'liveness_unknown')\n"
+            "                           OR waiting GLOB 'failed|?*|?*')",
+            "CHECK (waiting IN ('external', 'busy', 'stopped'))"), encoding='utf-8')
+        home = self.root / 'old-home'
+        with mock.patch.object(store, 'SCHEMA_FILE', old_schema), mock.patch.object(store, '_migrate_notice_waiting'):
+            with closing(store.connect(home)) as conn:
+                board.init_project(conn, 'demo', self.root, now=NOW)
+                board.join(conn, 's1', 'demo', 'lead', self.root, self.root, 'main', role='leader', now=NOW)
+                post = channel.post(conn, 'demo', board.HUMAN, '确认', ['lead'], source='web', now=NOW)
+                [notice] = board.pending_notices(conn, 's1')
+                conn.execute("UPDATE leader_notices SET waiting='external' WHERE id=?", (notice['id'],))
+        for reason in ['maintenance', 'liveness_unknown', 'failed|' + LATER + '|NativeReceiptUnknown']:
+            with closing(store.connect(home)) as conn:
+                [updated] = board.pending_notices(conn, 's1')
+                self.assertEqual((updated['id'], updated['waiting']), (notice['id'], 'external'))
+                conn.execute('UPDATE leader_notices SET waiting=? WHERE id=?', (reason, notice['id']))
+                [post] = channel.messages(conn, 'demo')['messages']
+                self.assertEqual(post['mentions'][0]['waiting'], reason.split('|')[0])
+                self.assertEqual(list(conn.execute('PRAGMA foreign_key_check')), [])
+                conn.execute("UPDATE leader_notices SET waiting='external' WHERE id=?", (notice['id'],))

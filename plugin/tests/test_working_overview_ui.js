@@ -20,7 +20,8 @@ function harness(snapshot){
 }
 const person=(id,extra={})=>({session_id:id,name:id,status:"offline",runtime:"codex",where:"offline",busy:false,
   running:false,active_goal_id:null,context:null,applied:null,model:null,effort:null,codex:[],pinned:false,
-  task:null,goal:"leader 的任务",pending:0,comments_count:0,...extra});
+  task:null,goal:"leader 的任务",pending:0,comments_count:0,notices_pending:0,notices_quiet:0,
+  notices_waiting:[],channel_queued_id:null,...extra});
 const state=(leaders,members=[])=>({project:{name:"fixture"},leaders,members,decisions:[],todos:[],goals:[{id:"g1"},{id:"g2"},{id:"g3"}],
   runtimes:[{id:"codex",name:"Codex",models:[],efforts:[]},{id:"claude",name:"Claude Code",models:[],efforts:[]}]});
 const count=html=>Number(html.match(/data-tab="working"[^>]*>[\s\S]*?<b>(\d+)<\/b>/)[1]);

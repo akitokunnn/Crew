@@ -410,7 +410,8 @@ CREATE TABLE IF NOT EXISTS leader_notices (
     wake       INTEGER NOT NULL DEFAULT 1,  -- 0: wait for the leader's next conversation instead of starting a turn
     delivered_via TEXT CHECK (delivered_via IN ('hook')),  -- NULL: written into the leader's input; hook: carried by an external session's prompt hook
     batch_id   TEXT,                       -- the web service's input batch that owns delivering it; the hook never takes these
-    waiting    TEXT CHECK (waiting IN ('external', 'busy', 'stopped'))  -- why it is still queued, as last seen by the web service
+    waiting    TEXT CHECK (waiting IN ('external', 'busy', 'stopped', 'maintenance', 'liveness_unknown')
+                           OR waiting GLOB 'failed|?*|?*')  -- failure also carries the attempt time and error
 );
 CREATE INDEX IF NOT EXISTS leader_notices_pending ON leader_notices (session_id, sent_at);
 

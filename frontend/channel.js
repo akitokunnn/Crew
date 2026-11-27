@@ -240,7 +240,9 @@
     let text = kind === "notified" ? `这条发言回复了 ${name} 的发言，虽然没写 @，Crew 也会通知它。` : "";
     if (s.key === "queued") {
       const wait = {external:`${item.name} 在外部窗口运行，下次在那边提示时才会带上这条${what}`, busy:`${item.name} 正在忙，这一轮结束后才会送进它的输入`,
-        stopped:`你已停止 ${item.name}，你再给它发话之前不会送达`}[item.waiting] || `${item.name} 空下来时才会送进它的输入`;
+        stopped:`你已停止 ${item.name}，你再给它发话之前不会送达`,
+        maintenance:`${item.name} 正在维护`, liveness_unknown:`${item.name} 的在线状态未知`,
+        failed:`给 ${item.name} 的通知投递失败`}[item.waiting] || `${item.name} 空下来时才会送进它的输入`;
       text += `${escape(wait)}。<b>它还没看到</b>。${s.stale ? "等得有点久了，可以打开私聊看看它在忙什么，必要时在私聊里直接说。" : ""}`;
       facts.push(["已排队", `${s.age} 分钟${s.stale ? "（超过 10 分钟）" : ""}`]);
     } else if (s.key === "delivered") {

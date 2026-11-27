@@ -26,7 +26,7 @@
     workspace_activity: {page:"workspace-entry"},
     sound_settings: {part:"sounds", keys:["preferences", "revision", "catalog", "missing"]},
     limits: {part:null, keys:["limits", "usage_scanned_at", "usage_error"]},
-    conversations: {part:null, keys:["leaders", "members", "attention", "native_approvals", "git_assistant", "git_branches", "candidates"]},
+    conversations: {part:null, keys:["leaders", "members", "notice_history", "attention", "native_approvals", "git_assistant", "git_branches", "candidates"]},
     channel_digest: {part:"channel", keys:["digesting", "digest_error"]},
     sound_events: {part:"sounds", keys:["events"]},
     runtimes: {field:"runtimes"},

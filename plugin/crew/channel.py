@@ -93,10 +93,58 @@ def _check_short(body):
             % (len(body), len(lines), LEADER_LIMIT_CHARS, LEADER_LIMIT_LINES))
 
 
-def _reply_hint(message_id):
-    return ('能一两句说清的，直接用 Crew 工具 `channel_post` 回复交流区发言 #%d（`text` 尽量 50 字内，不复述资料来源，`reply_to=%d`）。'
-            '私聊这边只写一句“已在交流区回复”；需要长内容时，交流区回一句结论并设 `detail=true`，完整内容在私聊这边写。'
-            % (message_id, message_id))
+def _reply_hint(scopes, message_id, room, from_user, assistant_lead):
+    lines = []
+    if assistant_lead:
+        if 'war_room.post' in scopes:
+            lines.append('在房里接话用 `war_room.post`（`project=%s`、`room=%d`、`body`、`reply_to=%d`）。'
+                         % (room["project"], room["id"], message_id))
+        if 'war_room.decide' in scopes:
+            lines.append('成员报来要用户定的分歧，当场用 war_room.decide 发拍板卡，不自己定案、不在对话里问用户。')
+    elif 'channel.post' in scopes:
+        if from_user:
+            lines.append('能一两句说清的，直接用 Crew 工具 `channel_post` 回复发言 #%d（`text` 尽量 50 字内，`reply_to=%d`）。'
+                         '私聊只写一句“已在交流区回复”；需要长内容时，回一句结论并设 `detail=true`，完整内容写在私聊。'
+                         % (message_id, message_id))
+        else:
+            lines.append('回复用 Crew 工具 `channel_post`（参数 `text`、`reply_to=%d`）；只是回“收到”就不用回。'
+                         % message_id)
+    elif room is not None and 'war_room.post' in scopes:
+        lines.append('在房里回复用 `war_room_post`（`room=%d`、`body`、`reply_to=%d`）。' % (room["id"], message_id))
+    if room is not None:
+        room_tools = ['`%s`' % name.replace('.', '_') for name in
+                      ('war_room.get', 'war_room.item', 'war_room.contract') if name in scopes]
+        if room_tools:
+            lines.append('作战室编号 %d。用 `crew_search` 找可用的作战室工具 %s。' % (room["id"], ' / '.join(room_tools)))
+    return '\n'.join(lines)
+
+
+def _mention_text(post, reason, scopes, room, assistant_lead):
+    where, kind = ("交流区", "交流区") if room is None else ("作战室 #%d《%s》" % (room["id"], room["title"]), "作战室")
+    what = "点名你" if reason == "mention" else "回复了你的%s发言 #%d" % (kind, post["reply_to"])
+    from_user = post["speaker_session_id"] == board.HUMAN
+    speaker = "用户" if from_user else "「%s」" % post["speaker_name"]
+    text = "%s：%s%s（%s发言 #%d）：\n%s" % (where, speaker, what, kind, post["id"], post["body"])
+    if from_user:
+        text += "\n\n（这是用户本人的话）"
+    hint = _reply_hint(scopes, post["id"], room, from_user, assistant_lead)
+    return text + "\n\n" + hint if hint else text
+
+
+def mention_text_for_delivery(conn, notice, scopes):
+    """Use current permissions for a mention and the stored wording for other leader notices."""
+    post = conn.execute(
+        "SELECT m.*,t.reason,w.title AS room_title,w.lead_session_id FROM channel_mentions t "
+        "JOIN channel_messages m ON m.id=t.message_id LEFT JOIN war_rooms w ON w.id=m.room_id "
+        "WHERE t.notice_id=?", (notice["id"],)).fetchone()
+    if post is None:
+        return notice["text"]
+    room = None if post["room_id"] is None else {
+        "id": post["room_id"], "title": post["room_title"], "project": post["project"]}
+    from . import personal
+    assistant_lead = (post["lead_session_id"] == notice["session_id"]
+                      and personal.can_lead_as_assistant(conn, notice["session_id"]))
+    return _mention_text(post, post["reason"], scopes, room, assistant_lead)
 
 
 def _latest(conn, project_name):
@@ -136,7 +184,7 @@ def _named_in_body(conn, project_name, body, actor):
 
 @board.atomic
 def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_to=None, detail=False, room_id=None,
-         generated=False):
+         generated=False, reply_only=False):
     """``room_id`` puts the post in a war room's timeline; a reply always lands where the answered post is.
 
     ``generated`` marks Crew's own wording (war room notices), which may run past the leader length limit.
@@ -146,11 +194,21 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
         raise board.BoardError("Leader 交流区正文必须是字符串")
     if not isinstance(to, (list, tuple)) or any(not isinstance(name, str) for name in to):
         raise board.BoardError("Leader 交流区点名必须是名字数组")
-    if reply_to is not None and (type(reply_to) is not int or conn.execute(
-            "SELECT 1 FROM channel_messages WHERE project=? AND id=?", (project_name, reply_to)).fetchone() is None):
-        raise board.BoardError("要回复的交流区发言不存在: " + str(reply_to))
+    author = None
+    if reply_only and reply_to is None:
+        raise board.BoardError("Git 管理员回复须填写原发言编号 reply_to")
     if reply_to is not None:
-        answered_room = conn.execute("SELECT room_id FROM channel_messages WHERE id=?", (reply_to,)).fetchone()[0]
+        original = conn.execute("SELECT room_id,speaker_session_id FROM channel_messages WHERE project=? AND id=?",
+                                (project_name, reply_to)).fetchone() if type(reply_to) is int else None
+        if original is None:
+            raise board.BoardError("要回复的交流区发言不存在: " + str(reply_to))
+        answered_room, author = original
+        if reply_only and conn.execute(
+            "SELECT 1 FROM channel_mentions t JOIN leader_notices n ON n.id=t.notice_id "
+            "WHERE t.message_id=? AND t.session_id=? AND n.project=? AND n.session_id=t.session_id "
+            "AND n.sent_at IS NOT NULL", (reply_to, actor, project_name)
+        ).fetchone() is None:
+            raise board.BoardError("Git 管理员只能回复已通知到你的发言")
         if room_id is None:
             room_id = answered_room
         elif answered_room != room_id:
@@ -194,6 +252,8 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
     elif detail:
         raise board.BoardError("用户发言不标私聊详情")
     targets = []
+    if reply_only and '*' in to:
+        raise board.BoardError("Git 管理员回帖只能通知原作者")
     names = [name for name in to if name != '*']
     if '*' in to and room is not None:
         # In a war room "everyone" means its members.
@@ -231,10 +291,11 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
         if target['session_id'] not in identities:
             targets.append(target)
             identities.add(target['session_id'])
+    if reply_only and any(target["session_id"] != author for target in targets):
+        raise board.BoardError("Git 管理员回帖只能通知原作者")
     told = [(target, "mention") for target in targets]
     if reply_to is not None:
         # Answering a leader's post tells that leader even unnamed; answering yourself or the user wakes no leader.
-        author = conn.execute("SELECT speaker_session_id FROM channel_messages WHERE id=?", (reply_to,)).fetchone()[0]
         if author not in (actor, board.HUMAN) and author not in identities:
             leader = lead if lead is not None and author == lead["session_id"] else _leader(conn, project_name, author)
             if leader is not None:
@@ -252,27 +313,20 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
         change_feed.touch(conn, 'channel_message', project_name, reply_to)
     if reply_to is not None and actor != board.HUMAN:
         conn.execute("UPDATE channel_mentions SET await_reply=0 WHERE message_id=? AND session_id=?", (reply_to, actor))
+    from .ops import tokens
+    posted = {"id": message_id, "speaker_session_id": actor, "speaker_name": speaker_name, "body": body, "reply_to": reply_to}
     for target, reason in told:
         notice_id = None
         if target["session_id"] != actor:
             if actor == board.HUMAN:
                 # The user's own mention is the same explicit wake as typing to that leader directly.
                 messaging.clear_stop(conn, target["session_id"])
-            where, kind = ("交流区", "交流区") if room is None else ("作战室 #%d《%s》" % (room_id, room["title"]), "作战室")
-            what = "点名你" if reason == "mention" else "回复了你的%s发言 #%d" % (kind, reply_to)
-            text = ("%s：用户%s（%s发言 #%d）：\n%s\n\n（这是用户本人的话）%s" % (where, what, kind, message_id, body, _reply_hint(message_id))
-                    if actor == board.HUMAN else
-                    '%s：「%s」%s（%s发言 #%d）：\n%s\n\n回复用 Crew 工具 `channel_post`（参数 `text`、`reply_to=%d`）；只是回“收到”就不用回。' %
-                    (where, speaker_name, what, kind, message_id, body, message_id))
-            if room is not None and target["role"] == "leader":
-                text += ("\n看全貌、写状态板和契约用 `war_room_get` / `war_room_item` / `war_room_contract`"
-                         "（作战室编号 %d；不在默认工具里，先用 `crew_search` 搜“作战室”载入）。" % room_id)
+            scopes = tokens.main_scopes(conn, target["session_id"])
+            text = _mention_text(posted, reason, scopes, room, lead is not None and target["session_id"] == lead["session_id"])
             if target["role"] == "leader":
                 notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now)
             else:
                 # The assistant leading this room: the same notice queue, delivered by the same loop.
-                text += ("\n\n（你是作战室牵头：在房里接话用 war_room.post，reply_to=%d；成员报来要用户定的分歧，"
-                         "当场用 war_room.decide 发拍板卡，不自己定案、不在对话里问用户）" % message_id)
                 notice_id = conn.execute(
                     "INSERT INTO leader_notices(project,session_id,source,text,created_at,wake) VALUES(?,?,?,?,?,1)",
                     (project_name, target["session_id"], source, text, board._time(now))).lastrowid
@@ -433,7 +487,12 @@ def preview(conn, session_id):
             lines.append("- %s：%s" % (line(message), first_line))
         if len(rows) > 10:
             lines.append("还有 %d 条" % (len(rows) - 10))
-        lines.append("全文用 Crew 工具 `channel_consume` 查看；要接话用 `channel_post`（参数 `text`，`reply_to` 填发言编号）。")
+        from .ops import tokens
+        scopes = tokens.main_scopes(conn, session_id)
+        if 'channel.consume' in scopes:
+            lines.append("全文用 Crew 工具 `channel_consume` 查看" +
+                         ("；要接话用 `channel_post`（参数 `text`，`reply_to` 填发言编号）。"
+                          if 'channel.post' in scopes else "。"))
         blocks.append("\n".join(lines))
     from . import war_room
     rooms = war_room.blocks(conn, session_id)

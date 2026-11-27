@@ -39,6 +39,20 @@ def default_scopes(role):
     return {name for name, op in registry.operations().items() if role in op.scopes}
 
 
+def main_scopes(conn, session_id):
+    """Operations granted to the main conversation, or issued when it next starts."""
+    from . import launch
+    runtime = runtimes.get(conn, session_id)['runtime']
+    issued = conn.execute('SELECT t.role,t.own_scopes,t.token_hash FROM mcp_tokens t JOIN sessions s '
+                          'ON s.session_id=t.session_id AND t.project IS NULLIF(s.project,\'\') '
+                          'WHERE t.session_id=? AND t.execution_id IS NULL AND t.runtime=? '
+                          'AND t.revoked_at IS NULL ORDER BY t.rowid DESC LIMIT 1',
+                          (session_id, runtime)).fetchone()
+    if issued is not None and launch.live(Caller(issued['role'], token_hash=issued['token_hash'])):
+        return default_scopes(issued['role']).intersection(json.loads(issued['own_scopes']))
+    return default_scopes(role_of(conn, session_id))
+
+
 def issue(conn, *, session_id, runtime, now, execution_id=None, issuer=None):
     role = role_of(conn, session_id, execution_id)
     session = board.session(conn, session_id)

@@ -91,7 +91,9 @@ class PendingMentionTests(DeliveryFixture):
     def test_hook_claim_first_keeps_the_notice_out_of_a_later_batch(self):
         self.post("hook first", to=["beta"])
         [notice] = self.notices("b")
-        self.assertIn("hook first", self.context(self.hook("b")[1]))
+        text = self.context(self.hook("b")[1])
+        self.assertIn("hook first", text)
+        self.assertNotIn("channel_post", text)
         self.assertEqual(chat_delivery.claim_batch(self.conn, [notice["id"]], "leader-notices:y"), [])
         row = self.conn.execute("SELECT batch_id,delivered_via FROM leader_notices").fetchone()
         self.assertEqual((row["batch_id"], row["delivered_via"]), (None, "hook"))
@@ -231,7 +233,6 @@ class DeliveryDetailTests(DeliveryFixture):
         mention = self.latest()["mentions"][0]
         self.assertEqual((mention["delivery"], mention["waiting"], mention["via"], mention["delivered_at"]),
                          ("delivered", None, "input", NOW))
-        self.assertIn("对方在外部窗口运行", chat_delivery.WAITING["external"])
 
     def test_replied_mention_points_at_the_answer(self):
         asked = self.post("ping", to=["beta"])

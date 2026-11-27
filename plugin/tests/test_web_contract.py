@@ -96,7 +96,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
                     "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
                     "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant", "git_branches",
-                    "domains", "usage_scanned_at", "usage_error"}
+                    "domains", "usage_scanned_at", "usage_error", "notice_history"}
         state = self.scanned_state()
         self.assertEqual(set(state), expected)
         self.assertEqual(state["usage_scanned_at"], self.clock.isoformat())
@@ -113,7 +113,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(state['native_approvals'], [])
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
-            "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "channel_queued_id", "member_ids",
+            "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending",
+            "notices_quiet", "notices_waiting", "channel_queued_id", "member_ids",
             "model", "effort", "speed", "applied", "activity", "context", "where", "codex", "codex_older", "dispatches",
             "pinned", "runtime", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
             "member_defaults", "color", "avatar_version"})

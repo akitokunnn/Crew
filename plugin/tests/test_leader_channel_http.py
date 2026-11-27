@@ -1,5 +1,6 @@
 """Leader wake permissions and channel HTTP with isolated storage and fake processes."""
 import uuid
+import datetime as dt
 import tests  # Install the production-service connection guard.
 import json
 from contextlib import closing
@@ -462,6 +463,46 @@ class DeliveryHttpTests(ChannelHttpFixture):
         service.chat.journal(sid).set_status('idle')
         return service, sid
 
+    def test_cards_count_waking_quiet_and_closed_notices_separately(self):
+        board._queue_leader_notice(self.conn, 's3', '带进下一轮', 'crew', NOW, wake=False)
+        board.queue_leader_notice(self.conn, 's3', '现在提醒', 'crew', NOW)
+        for sid, name in [('closed', '已关闭的组'), ('archived', '已归档的组')]:
+            board.join(self.conn, sid, 'demo', name, self.project, None, None, role='leader', now=NOW)
+            board.queue_leader_notice(self.conn, sid, '交接', 'crew', NOW)
+        self.conn.execute("UPDATE sessions SET status='closed' WHERE session_id='closed'")
+        session_ops.archive(self.conn, 'archived', now=NOW)
+        state = self.state()
+        [leader] = state['leaders']
+        self.assertEqual((leader['notices_pending'], leader['notices_quiet'], leader['notices_waiting']), (1, 1, []))
+        self.assertEqual(state['notice_history'], [{'name': '已归档的组', 'count': 1}, {'name': '已关闭的组', 'count': 1}])
+        self.server.service.deliver_notices()
+        self.assertTrue(all(len(board.pending_notices(self.conn, sid)) == 1 for sid in ('closed', 'archived')))
+
+    def test_waiting_state_follows_the_scan_without_touching_quiet_notices(self):
+        service, sid = self.managed_leader()
+        board._queue_leader_notice(self.conn, sid, '留档', 'crew', NOW, wake=False)
+        board.queue_leader_notice(self.conn, sid, '需要执行', 'crew', NOW)
+        chat = service.chat
+        with mock.patch.object(chat, 'send') as send:
+            for kwargs, live, reason in [
+                ({'running': True, 'busy': True}, frozenset(), 'busy'),
+                ({'maintenance_held': True}, frozenset(), 'maintenance'),
+                ({'running': False}, None, 'liveness_unknown'),
+                ({'running': False}, {sid}, 'external'),
+            ]:
+                with self.subTest(reason=reason):
+                    with mock.patch.multiple(chat, **{key: mock.Mock(return_value=value) for key, value in kwargs.items()}):
+                        chat.deliver_leader_notices(self.conn, live, NOW)
+                    self.assertEqual([n['waiting'] for n in board.pending_notices(self.conn, sid)], [None, reason])
+                    self.assertEqual(next(card for card in self.state()['leaders'] if card['session_id'] == sid)
+                                     ['notices_waiting'], [{'reason': reason}])
+            self.conn.execute('INSERT INTO session_stop_gates VALUES(?,?,?)', (sid, NOW, board.HUMAN))
+            chat.deliver_leader_notices(self.conn, {sid}, NOW)
+            self.assertEqual([n['waiting'] for n in board.pending_notices(self.conn, sid)], [None, 'stopped'])
+            self.assertEqual(next(card for card in self.state()['leaders'] if card['session_id'] == sid)
+                             ['notices_waiting'], [{'reason': 'stopped'}])
+            send.assert_not_called()
+
     def test_user_replies_to_a_leader_post_and_its_author_is_told(self):
         question = channel.post(self.conn, 'demo', 's3', '要不要先冻结 develop？', now=NOW)
         code, result = self.request('/api/op/channel.post', {'body': '先别冻结', 'reply_to': question['id']}, project='demo')
@@ -509,14 +550,20 @@ class DeliveryHttpTests(ChannelHttpFixture):
                                                 (sid,)).fetchone()))
             raise OSError('fixture send failed')
 
+        current = service.now()
         with mock.patch.object(service.chat, 'send', side_effect=send):
-            service.deliver_notices()
+            service.chat.deliver_leader_notices(self.conn, frozenset(), current.isoformat())
         [(batch_id, sent_at)] = seen
         self.assertTrue(batch_id.startswith('leader-notices:'))
         self.assertIsNone(sent_at)
         # Retrying reuses the same batch rather than building a second one.
+        later = (current + dt.timedelta(seconds=3)).isoformat()
         with mock.patch.object(service.chat, 'send', side_effect=send):
-            service.deliver_notices()
+            service.chat.deliver_leader_notices(self.conn, frozenset(), later)
         self.assertEqual(seen[1], (batch_id, None))
         batches = [event for event in service.chat.journal(sid).events if event['type'] == 'leader_notice_batch']
         self.assertEqual([event['id'] for event in batches], [batch_id])
+        self.assertEqual(board.pending_notices(self.conn, sid)[0]['waiting'],
+                         'failed|' + later + '|OSError: fixture send failed')
+        self.assertEqual(next(card for card in self.state()['leaders'] if card['session_id'] == sid)['notices_waiting'],
+                         [{'reason': 'failed', 'attempted_at': later, 'error': 'OSError: fixture send failed'}])

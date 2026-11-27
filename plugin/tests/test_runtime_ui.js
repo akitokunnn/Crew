@@ -6,7 +6,7 @@ const vm = require("node:vm");
 const {test} = require("node:test");
 
 const source = fs.readFileSync(path.join(__dirname, "../../frontend/app.js"), "utf8").replace(/\r\n/g, "\n");
-const fixture = () => ({models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude-haiku-4-5-20251001", name:"Haiku"}],
+const fixture = () => ({notice_history:[], models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude-haiku-4-5-20251001", name:"Haiku"}],
   efforts:["low", "medium", "high", "max"], runtimes:[
     {id:"claude", name:"Claude Code", available:true, error:null,
       models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude-haiku-4-5-20251001", name:"Haiku"}], efforts:["low", "medium", "high", "max"]},
@@ -18,7 +18,8 @@ const fixture = () => ({models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude
     ], efforts:["low", "medium", "high", "max"]},
   ]});
 const session = extra => ({session_id:"session-codex", runtime:"codex", model:"gpt-a", effort:"medium",
-  applied:{model:"gpt-a", effort:"medium"}, where:"bg", running:true, ...extra});
+  applied:{model:"gpt-a", effort:"medium"}, where:"bg", running:true, notices_pending:0, notices_quiet:0,
+  notices_waiting:[], channel_queued_id:null, ...extra});
 const form = (runtime="codex", model="", effort="", speed="") => ({dataset:{runtimeExplicit:"true"},elements:{name:{value:" fixture "}, task:{value:" work "},
   runtime:{value:runtime}, model:{value:model}, effort:{value:effort}, speed:{value:speed}},
   submit:{disabled:false}, refresh:{disabled:false, hidden:false},
@@ -623,4 +624,21 @@ test("the leader list says while branch chips are computed and shows why their s
   for (const value of [{base:{name:"develop"},integration:null,branches:[]},null]) {
     state.git_branches=value;ui.renderSidebar();assert.doesNotMatch(panel(),/leader-git-status/);
   }
+});
+
+test("leader cards show waiting reasons, the latest error, and a separate quiet count",()=>{
+  const state=contextState(), {ui}=harness(state), [lead]=state.leaders;
+  Object.assign(lead,{notices_pending:6,notices_quiet:2,channel_queued_id:11,
+    notices_waiting:[...["stopped","maintenance","busy","external","liveness_unknown"].map(reason=>({reason})),
+      {reason:"failed",attempted_at:"2026-11-28T03:00:00Z",error:"原生窗口 <未响应>"}]});
+  const markup=ui.sidebarLeader(lead);
+  assert.match(markup,/data-act="leader-queued"[^>]*data-message="11"/);
+  for (const detail of ["6 条通知排队中","下次对话带入 2 条","已停止","维护中","本轮未结束","等外部窗口","在线状态未知"]) {
+    assert(markup.includes(detail));
+  }
+  assert.match(markup,/投递失败 · \d+\/\d+ \d+:\d+ · 原生窗口 &lt;未响应&gt;/);
+  lead.notices_pending=0;
+  const quiet=ui.sidebarLeader(lead);
+  assert.match(quiet,/下次对话带入 2 条/);
+  assert.doesNotMatch(quiet,/排队中|投递失败/);
 });

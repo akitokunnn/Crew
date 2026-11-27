@@ -129,17 +129,18 @@ def _no_identity_fields(args, *names):
 
 def whoami(ctx, args):
     if ctx.caller.role == W:
-        return {**_actor(ctx), **workspace_assistant.context(ctx.caller.project)}
+        return {**_actor(ctx), **workspace_assistant.context(ctx.caller.project), 'mcp_role': ctx.caller.role}
     if ctx.caller.role == A:
-        return {**_actor(ctx), **personal.assistant_context(ctx.conn, ctx.caller.session_id)}
+        return {**_actor(ctx), **personal.assistant_context(ctx.conn, ctx.caller.session_id), 'mcp_role': ctx.caller.role}
     value = _identity(ctx.conn, board.whoami(ctx.conn, ctx.caller.session_id))
+    value['mcp_role'] = ctx.caller.role
     if ctx.caller.execution_id:
         value['execution_id'], value['goal_id'] = ctx.caller.execution_id, ctx.caller.goal_id
     return value
 
 
 op('session.whoami', '读取自己的 Crew 身份、角色、组与 leader', whoami, access='read', scopes=(A, W, L, E, G),
-   core_for=(W, L, E, G), description='查看自己的 Crew 身份、角色、所在组和 leader；任务执行还会返回执行与任务编号（派工脚本登记发起人时用）。')
+   core_for=(W, L, E, G), description='查看自己的 Crew 身份、会话角色 role、MCP 角色 mcp_role、所在组和 leader；任务执行还会返回执行与任务编号。')
 op('session.who', '查找同一工作区的同事', lambda ctx, args: _identity(ctx.conn, _target(ctx.conn, _project(ctx), args['target'])),
    access='read', scopes=TEAM, params=_object({'target': TARGET}, ('target',)))
 
@@ -432,16 +433,19 @@ op('message.send', '经 Crew 给同一工作区的同事发消息', message_send
 
 def channel_post(ctx, args):
     message = channel.post(ctx.conn, _project(ctx), ctx.caller.session_id, args['text'], args.get('to', []),
-                           reply_to=args.get('reply_to'), detail=args.get('detail', False))
+                           reply_to=args.get('reply_to'), detail=args.get('detail', False),
+                           reply_only=ctx.caller.role == G)
     return {**message, 'receipt': channel.receipt(message)}
 
 
-share('channel.post', channel_post, scopes=(L,), core_for=(L,),
+share('channel.post', channel_post, scopes=(L, G), core_for=(L, G),
       ai_params=_object({'text': _string('简短的发言', 2000),
                          'to': {'type': 'array', 'maxItems': 12, 'items': _string('leader 的 Crew 名字，或 * 表示所有 leader', 512)},
                          'reply_to': {'type': 'integer', 'minimum': 1, 'description': '回复的帖子编号'},
                          'detail': {'type': 'boolean', 'description': '完整回答写在你私聊里时为 true'}}, ('text',)),
-      description='只给 leader：在工作区的 Leader 交流区发言，所有 leader 和用户都看得到。像同事在群里说话：口语、先说结论，'
+      description='在工作区的 Leader 交流区发言，所有 leader 和用户都看得到。'
+                  'Git 管理员只可回复本工作区已通知到自己的发言，必须填写 reply_to；只能通知原作者，不可用 * 或点名其他人。'
+                  '像同事在群里说话：口语、先说结论，'
                   '最好 50 字内（上限 150 字、3 行）；不引用出处、不堆免责声明；不发确认、进度流水或 Git/CI 状态。'
                   '改动影响别的组就在这里发并点名它的 leader（点名会唤醒对方），不要再另发 message_send。回复帖子用 reply_to；'
                   '一两句能说清就在这里答，需要长篇就发一行结论并 detail=true，把全文写在你私聊里。点名：正文写 @名字或放进 to。'

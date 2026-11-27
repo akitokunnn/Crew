@@ -9,6 +9,8 @@ from .workspace_notes_migration import migrate as _migrate_workspace_notes
 
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 BUSY_TIMEOUT_MS = 5000
+NOTICE_WAITING = ("TEXT CHECK (waiting IN ('external', 'busy', 'stopped', 'maintenance', 'liveness_unknown') "
+                  "OR waiting GLOB 'failed|?*|?*')")
 
 
 def default_home():
@@ -35,6 +37,7 @@ def connect(home):
         _migrate_quiet_leader_notices(conn)
         _migrate_git_integration_branch(conn)
         _migrate_channel_replies(conn)
+        _migrate_notice_waiting(conn)
         _migrate_leader_pins(conn)
         _migrate_codex_speed(conn)
         _migrate_domain_members(conn)
@@ -157,7 +160,7 @@ def _migrate_channel_replies(conn):
                'war_rooms': (('budget_tokens', 'INTEGER'), ('budget_base', "TEXT NOT NULL DEFAULT '{}'"),
                              ('paused_at', 'TEXT')),
                'leader_notices': (('delivered_via', "TEXT CHECK (delivered_via IN ('hook'))"), ('batch_id', 'TEXT'),
-                                  ('waiting', "TEXT CHECK (waiting IN ('external', 'busy', 'stopped'))"))}
+                                  ('waiting', NOTICE_WAITING))}
 
     def missing():
         return [(table, name, kind) for table, wanted in columns.items()
@@ -173,6 +176,31 @@ def _migrate_channel_replies(conn):
     except BaseException:
         conn.rollback()
         raise
+
+
+def _migrate_notice_waiting(conn):
+    """Expand the waiting constraint without rebuilding the notice IDs referenced by channel posts."""
+    old = "CHECK (waiting IN ('external', 'busy', 'stopped'))"
+
+    def needs_migration():
+        return old in conn.execute("SELECT sql FROM sqlite_master WHERE name='leader_notices'").fetchone()[0]
+
+    if not needs_migration():
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        if needs_migration():
+            trigger = 'feed_channel_leader_notices_update'
+            conn.execute('DROP TRIGGER IF EXISTS ' + trigger)
+            conn.execute('ALTER TABLE leader_notices RENAME COLUMN waiting TO waiting_previous')
+            conn.execute('ALTER TABLE leader_notices ADD COLUMN waiting ' + NOTICE_WAITING)
+            conn.execute('UPDATE leader_notices SET waiting=waiting_previous WHERE waiting_previous IS NOT NULL')
+            conn.execute('ALTER TABLE leader_notices DROP COLUMN waiting_previous')
+            conn.execute(change_triggers.STATEMENTS[trigger])
+        conn.commit()
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
 
 
 def _migrate_leader_pins(conn):
