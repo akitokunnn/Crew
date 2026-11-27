@@ -68,7 +68,8 @@ def _launch(ctx, args):
 register(Operation(
     name='campaign.preview', summary='预览开局方案：要建的领域、leader（载体与模型）、首批任务、作战室预算与费用估算',
     description='开局先预览：有 errors 就按提示改方案再预览；把 cost（新建几位 leader、各用什么载体和模型、首批任务、'
-                '作战室预算与估算金额）讲给用户，用户同意后带预览给出的 board_version 调 campaign.launch。',
+                '作战室预算与估算金额）讲给用户，用户同意后带预览给出的 board_version 调 campaign.launch。'
+                '预览不提交任何东西：调 campaign.launch 后方案才进「等你确认」，此前不要说已提交。',
     access='read', risk='normal', scopes=HBD | {'workspace_assistant'}, target='own_project', lock='read', project='none', admission='none',
     handler=_preview, params=_schema(), query_get=False))
 register(Operation(

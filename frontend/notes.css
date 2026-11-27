@@ -63,7 +63,7 @@
 .nw-seg{display:inline-flex;border:1px solid var(--line-strong);border-radius:8px;overflow:hidden}
 .nw-seg button{border:0;background:transparent;padding:4px 10px;font-size:12px;cursor:pointer;color:var(--text-2)}
 .nw-seg button+button{border-left:1px solid var(--line-strong)}
-.nw-seg button[aria-checked="true"]{background:var(--text);color:var(--bg)}
+.nw-seg button[aria-checked="true"]{background:var(--accent-soft);color:var(--accent-text);font-weight:500}
 .nw-filters select{border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);color:var(--text);padding:4px 8px;font:inherit;font-size:12px;max-width:180px}
 .nw-filters .btn[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);border-style:solid;color:var(--accent-text)}
 .nw-viewing{display:inline-flex;gap:8px;align-items:center;padding:3px 10px;border-radius:8px;background:var(--hover);color:var(--text-2)}

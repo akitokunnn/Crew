@@ -77,7 +77,7 @@
     );
   }
   // High-risk operations an AI asked for wait here until the user confirms or rejects them.
-  const ROLE_LABELS={assistant:"助手",leader:" leader ",execution:"任务执行",git_admin:" Git 助手"};
+  const ROLE_LABELS={assistant:"系统管理员",workspace_assistant:"助手",leader:" leader ",execution:"任务执行",git_admin:" Git 助手"};
   function argumentLine(args){return Object.entries(args||{}).filter(([key])=>key!=="request_id").map(([key,value])=>`${key}: ${typeof value==="string"?value:JSON.stringify(value)}`).join("，");}
   const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const tokens=n=>n>=1e8?`${+(n/1e8).toFixed(2)} 亿`:n>=1e4?`${+(n/1e4).toFixed(1)} 万`:String(n);

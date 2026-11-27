@@ -70,7 +70,7 @@ test("an opening plan becomes a card read from campaign.preview: cost first, the
   const {board_version, request_id, ...sent} = plan;
   assert.deepEqual(previews[0].body, sent, "the plan with its project, without the launch-only board version");
   const [card] = page.cards(), html = detail(card).innerHTML;
-  assert.match(text(card), /^开局方案\n由助手发起 · 工作区 fitness\n方案说明：健身打卡开局：后端、App 两条线并行/);
+  assert.match(text(card), /^开局方案\n由系统管理员发起 · 工作区 fitness\n方案说明：健身打卡开局：后端、App 两条线并行/);
   assert(!html.includes("ac-problems"));
   const cost = html.slice(html.indexOf('class="ac-cost"'), html.indexOf('class="ac-build"'));
   assert(html.indexOf('class="ac-cost"') < html.indexOf('class="ac-build"'), "what it costs comes before what it builds");
@@ -83,7 +83,7 @@ test("an opening plan becomes a card read from campaign.preview: cost first, the
   assert(html.includes('<span class="ac-tag">负责</span><small>放进 后端</small>') && html.includes("<small>不放进领域</small>"));
   assert(html.includes("&lt;b&gt;先&lt;/b&gt;") && !html.includes("<b>先</b>"), "plan text is escaped");
   assert(html.includes("<b>打卡接口 v1</b><small>后端 负责 · 验收标准 2 条</small>") && html.includes("<li>有单测</li>"));
-  assert(html.includes("<b>开局</b>") && html.includes("两周内跑通打卡") && html.includes("助手牵头，新建的 2 位 leader 都是成员"));
+  assert(html.includes("<b>开局</b>") && html.includes("两周内跑通打卡") && html.includes("系统管理员牵头，新建的 2 位 leader 都是成员"));
   assert(html.includes('<details class="ac-sec" open>'), "sections start open on a wide screen");
   await settle();
   assert.equal(page.calls.filter(call => call.url === "/api/op/campaign.preview").length, 1);
@@ -121,7 +121,7 @@ test("a budget raise shows the room's title, spend and old cap next to the new c
   const get = page.calls.find(call => call.url.startsWith("/api/op/war_room.get?"));
   assert.equal(get.url, "/api/op/war_room.get?id=3&project=fitness&limit=1");
   const [card, plain] = page.cards(), html = detail(card).innerHTML;
-  assert.match(text(card), /^追加作战室预算\n由助手发起 · 工作区 fitness/);
+  assert.match(text(card), /^追加作战室预算\n由系统管理员发起 · 工作区 fitness/);
   assert(html.includes("#3 《签名 v2》") && html.includes("20.4 万 / 20 万 tokens") && html.includes("已暂停") && html.includes("<b>40 万 tokens</b>"));
   assert.equal(plain.children[2].textContent, "name: 后端");
   assert.equal(plain.children[2].className, "assistant-confirmation-args");
@@ -168,4 +168,13 @@ test("each leader's own files from the plan are listed on the opening card, esca
   const plain = assistantPage([launch], {preview: preview({leaders: [{...preview().leaders[0], owns: null}, {...preview().leaders[1], owns: null}]})});
   await settle();
   assert(!detail(plain.cards()[0]).innerHTML.includes("ac-owns"));
+});
+
+test("a card a workspace assistant asked for names it 助手, never the internal role name", async () => {
+  const page = assistantPage([{...launch, role: "workspace_assistant"}], {preview: preview()});
+  await settle();
+  const [card] = page.cards();
+  assert.match(text(card), /^开局方案\n由助手发起 · 工作区 fitness\n/);
+  assert(detail(card).innerHTML.includes("助手牵头，新建的 2 位 leader 都是成员"));
+  assert(!text(card).includes("workspace_assistant"));
 });
