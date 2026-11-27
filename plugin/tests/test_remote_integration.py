@@ -434,8 +434,9 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         first = self.read_event(response)
         response.close()
         connection.close()
+        journal.emit('assistant', id='room-only', content=[{'type': 'text', 'text': '房内回复'}], room_id=1)
         journal.consume({'type': 'assistant', 'message': {'id': 'second', 'content': [{'type': 'text', 'text': '第二段'}]}})
-        expected = journal.after(first['seq'], wait=False)
+        expected = [e for e in journal.after(first['seq'], wait=False) if 'room_id' not in e]
         connection, response = self.event_stream({**query, 'after': 0}, after=first['seq'])
         self.assertEqual([self.read_event(response) for _ in expected], expected)
         start = time.monotonic()
@@ -443,7 +444,7 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(response.read(), b'')
         self.assertLess(time.monotonic() - start, 2)
         self.assertEqual(self.request('/api/chat/events?' + urlencode(query), remote=True)[0], 401)
-        self.assertEqual(self.request('/api/op/chat.history?' + urlencode(query))[1]['events'], journal.events)
+        self.assertEqual(self.request('/api/op/chat.history?' + urlencode(query))[1]['events'], [first, *expected])
 
     def test_remote_stop_keeps_local_listener_manager_and_business_journal_usable(self):
         self.start_remote()

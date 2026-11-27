@@ -335,6 +335,8 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
         conn.execute("INSERT INTO channel_mentions(message_id,session_id,name,notice_id,await_reply,reason) "
                      "VALUES(?,?,?,?,?,?)", (message_id, target["session_id"], target["crew_name"], notice_id,
                                              int(actor == board.HUMAN and notice_id is not None), reason))
+        if room is not None and target['session_id'] == room['lead_session_id'] and reason == 'mention' and notice_id is not None:
+            war_room.claim_main_mentions(conn, notice_id)
     return _message(conn, conn.execute("SELECT * FROM channel_messages WHERE id=?", (message_id,)).fetchone())
 
 
@@ -356,7 +358,7 @@ def awaiting(conn, session_id):
     so it never claims the leader answered in private.
     """
     return board._rows(conn, "SELECT t.message_id,n.batch_id FROM channel_mentions t JOIN leader_notices n "
-                             "ON n.id=t.notice_id WHERE t.session_id=? AND t.await_reply=1 AND n.sent_at IS NOT NULL "
+                             "ON n.id=t.notice_id WHERE t.session_id=? AND n.room_id IS NULL AND t.await_reply=1 AND n.sent_at IS NOT NULL "
                              "AND n.delivered_via IS NULL ORDER BY t.message_id", (session_id,))
 
 

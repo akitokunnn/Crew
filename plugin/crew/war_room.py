@@ -88,6 +88,28 @@ def _source(actor):
     return 'web' if actor == board.HUMAN else 'crew'
 
 
+def claim_main_mentions(conn, notice_id=None):
+    """Route a new mention, or recover unclaimed mentions that predate main-session delivery."""
+    query = """
+        UPDATE leader_notices AS n SET batch_id='room:'||room_id||':notice:'||id
+        WHERE n.sent_at IS NULL AND n.wake=1 AND n.batch_id IS NULL AND n.room_id IS NOT NULL
+          AND EXISTS (SELECT 1 FROM channel_mentions m WHERE m.notice_id=n.id AND m.reason='mention')
+          AND NOT EXISTS (SELECT 1 FROM war_room_delivery d WHERE d.notice_id=n.id)
+          AND EXISTS (
+              SELECT 1 FROM war_rooms r WHERE r.id=n.room_id AND r.lead_session_id=n.session_id
+                AND r.status='open' AND r.paused_at IS NULL AND (r.phase='preparing' OR NOT EXISTS (
+                    SELECT 1 FROM war_room_items i JOIN goals g ON g.id=i.goal_id
+                    JOIN goal_executions e ON e.goal_id=g.id AND e.round=g.current_round AND e.session_id=i.owner_session_id
+                    WHERE i.room_id=r.id AND i.owner_session_id=n.session_id AND i.plan_version=r.approved_version
+                      AND i.status IN ('todo','doing')
+                ))
+          )"""
+    if notice_id is None:
+        conn.execute(query)
+    else:
+        conn.execute(query + ' AND n.id=?', (notice_id,))
+
+
 def _gate(conn, room, actor, lead_only=False):
     """The user (and the global assistant acting for the user) may do anything; a leader must be a member,
     and the lead for lead-only actions."""
@@ -152,6 +174,11 @@ def start(conn, project_name, actor, title, goal, member_names=(), from_message=
     if channel._leader(conn, project_name, lead_id):
         conn.execute('INSERT INTO war_room_members(room_id,session_id,joined_at) VALUES(?,?,?)', (room_id, lead_id, stamp))
     _event(conn, room_id, actor, 'reserved', {'proposed_members': list(member_names), 'request_id': request_id, 'campaign': campaign}, stamp)
+    if actor == board.HUMAN:
+        text = ('用户开了作战室 #%d《%s》。目标：%s\n请先和用户沟通并起草作战计划书（war_room.plan.update）。'
+                '请用 war_room.post 在这个房间和用户说话。' % (room_id, title, goal))
+        conn.execute("INSERT INTO leader_notices(project,session_id,room_id,text,source,created_at,wake,batch_id) "
+                     "VALUES(?,?,?,?,'web',?,1,?)", (project_name, lead_id, room_id, text, stamp, 'room:%d:open' % room_id))
     _touch(conn, room_id, project_name)
     return get(conn, room_id, actor)
 

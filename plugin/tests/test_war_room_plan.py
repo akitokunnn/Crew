@@ -9,7 +9,7 @@ import sys
 import threading
 from unittest import mock
 
-from crew import board, settings, store, war_room, war_room_plan, workspace_assistant
+from crew import board, chat, goals, settings, store, war_room, war_room_plan, war_room_work, workspace_assistant
 from crew.ops.errors import OpError
 from test_channel_digest import FakeProcess
 from test_channel_digest_codex import SERVER
@@ -33,6 +33,92 @@ def approve_assignments(conn, room, names):
 
 
 class PlanTests(DeliveryFixture):
+    def test_user_reservation_wakes_once_in_same_transaction(self):
+        sid = workspace_assistant.ensure(self.conn, self.home, 'demo')['session_id']
+        args = (self.conn, 'demo', board.HUMAN, '测试', '校验一个文件')
+        with mock.patch.object(war_room, '_touch', side_effect=ValueError('inject')), self.assertRaises(ValueError):
+            war_room.start(*args, lead=sid, request_id='open')
+        self.assertFalse(self.notices(sid))
+        room = war_room.start(*args, lead=sid, request_id='open')['id']
+        self.assertTrue(war_room.start(*args, lead=sid, request_id='open')['replayed'])
+        [opening] = self.notices(sid)
+        self.assertEqual((opening['room_id'], opening['wake']), (room, 1))
+        for expected in ('测试', '校验一个文件', 'war_room.plan.update'):
+            self.assertIn(expected, opening['text'])
+        war_room.close(self.conn, room, 'user', '撤销', reason='cancelled')
+        war_room.start(self.conn, 'demo', sid, '助手开房', '自己拟稿')
+        self.assertEqual([(n['id'], n['wake']) for n in self.notices(sid)], [(opening['id'], 0)])
+
+    def test_room_mention_uses_one_main_input_and_the_original_reply_receipt(self):
+        sid = workspace_assistant.ensure(self.conn, self.home, 'demo')['session_id']
+        room = war_room.start(self.conn, 'demo', sid, '筹备', '验证')['id']
+        war_room.say(self.conn, room, 'user', '旁听')
+        self.assertFalse(self.notices(sid))
+        post = war_room.say(self.conn, room, 'user', '确认范围', [sid])
+        [notice] = self.notices(sid)
+        self.assertEqual((notice['wake'], notice['room_id']), (1, room))
+        # An existing preparing room can have this same mention still waiting after an upgrade.
+        self.conn.execute('UPDATE leader_notices SET batch_id=NULL WHERE id=?', (notice['id'],))
+        manager = chat.Manager(self.home, self.base, lambda: [])
+        self.addCleanup(manager.close)
+        def tick():
+            manager.deliver_leader_notices(self.conn, set(), NOW)
+        def mention():
+            return war_room.get(self.conn, room)['messages'][1]['mentions'][0]
+        with mock.patch.object(manager, 'send', side_effect=OSError('inject')) as send:
+            tick()
+            self.assertEqual((mention()['delivery'], mention()['waiting']), ('queued', 'failed'))
+            target, body = send.call_args.args
+            identity = send.call_args.kwargs['identity']
+            self.assertEqual((target['session_id'], send.call_args.kwargs['room_id']), (sid, room))
+            self.assertIn('reply_to=%d' % post['id'], body)
+        with mock.patch.object(manager, 'send', return_value={'accepted': True}) as send:
+            tick()
+            tick()
+            send.assert_called_once()
+            self.assertEqual(send.call_args.kwargs['identity'], identity)
+        self.assertEqual(mention()['delivery'], 'delivered')
+        self.assertEqual(self.conn.execute('SELECT id FROM leader_notices').fetchall()[0][0], notice['id'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0], 1)
+        self.assertFalse(any(e['type'] in ('leader_notice_batch', 'error') for e in manager.history(sid)['events']))
+        reply = war_room.say(self.conn, room, sid, '范围已确认', reply_to=post['id'])
+        self.assertEqual((mention()['delivery'], mention()['reply_id'], reply['room_id']), ('replied', reply['id'], room))
+
+    def test_main_room_turn_hidden_and_next_private_turn_visible(self):
+        manager = chat.Manager(self.home, self.base, lambda: [])
+        self.addCleanup(manager.close)
+        journal = manager.journal('a')
+        journal.emit('input_delivery', message_id='room-input', status='submitted', room_id=7)
+        journal.message('room-input', '房内点名', source='crew')
+        journal.emit('assistant', id='room-output', content=[{'type': 'text', 'text': '房内回复'}])
+        journal.emit('turn_result', success=True)
+        journal.emit('input_delivery', message_id='room-input', status='accepted')
+        journal.emit('input_delivery', message_id='private-input', status='submitted')
+        journal.message('private-input', '私聊问题')
+        journal.emit('assistant', id='private-output', content=[{'type': 'text', 'text': '私聊回复'}])
+        self.assertEqual([e['id'] for e in manager.history('a')['events'] if 'id' in e],
+                         ['private-input', 'private-output'])
+
+    def test_active_lead_mention_uses_main_until_execution_is_bound(self):
+        room = war_room.start(self.conn, 'demo', 'a', '作战', '验证')
+        approve_assignments(self.conn, room, ['alpha'])
+        first = war_room.say(self.conn, room['id'], 'user', '没有执行', ['a'])
+        item = self.conn.execute("SELECT goal_id FROM war_room_items WHERE kind='assignment'").fetchone()
+        exe = goals.create_execution(self.conn, item['goal_id'], 'a', runtime='claude')
+        second = war_room.say(self.conn, room['id'], 'user', '走执行', ['a'])
+        manager = mock.Mock()
+        manager.maintenance_held.return_value = manager.busy.return_value = False
+        manager.goal_controller.approvals.return_value = []
+        manager.goal_controller.current.return_value = exe
+        manager.goal_controller.send.return_value = {'accepted': True, 'execution_id': exe['id']}
+        war_room_work.deliver(manager, self.conn, set(), NOW)
+        rows = self.conn.execute('SELECT t.message_id,n.batch_id,n.sent_at,d.execution_id FROM channel_mentions t '
+                                 'JOIN leader_notices n ON n.id=t.notice_id LEFT JOIN war_room_delivery d ON d.notice_id=n.id '
+                                 'WHERE t.message_id IN (?,?) ORDER BY t.message_id', (first['id'], second['id'])).fetchall()
+        self.assertIsNotNone(rows[0]['batch_id'])
+        self.assertIsNone(rows[0]['sent_at'])
+        self.assertEqual(tuple(rows[1]), (second['id'], None, NOW, exe['id']))
+
     def open(self):
         return war_room.start(self.conn, 'demo', 'a', '测试', '校验一个文件', now=NOW)['id']
 

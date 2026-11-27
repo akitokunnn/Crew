@@ -275,6 +275,17 @@ class WarRoomOperationTests(ChannelHttpFixture):
         with self.assertRaises((OpError, board.BoardError)):
             executor.call(service, stranger, 'war_room.get', {'id': room['id']}, grants=grants)
 
+    def test_user_device_reserves_room_and_queues_lead_wake(self):
+        service = self.server.service
+        for role in ('device_browser', 'device_desktop'):
+            caller = Caller(role, device_id='fixture')
+            room = executor.call(service, caller, 'war_room.open',
+                                 {'project': 'demo', 'title': '联调', 'goal': '核对登录', 'lead': 'lead'},
+                                 request_id=role)
+            notices = self.conn.execute('SELECT session_id,wake FROM leader_notices WHERE room_id=?', (room['id'],))
+            self.assertEqual([tuple(n) for n in notices], [('s3', 1)])
+            war_room.close(self.conn, room['id'], board.HUMAN, '撤销', reason='cancelled')
+
 
 if __name__ == "__main__":
     unittest.main()

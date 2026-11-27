@@ -153,7 +153,7 @@ class StatusMixin:
         journal = self.journal(session_id)
         with journal.condition:
             running = self.running(session_id)
-            return {"session_id": session_id, "events": list(journal.events), "running": running,
+            return {"session_id": session_id, "events": [e for e in journal.events if e.get('room_id') is None], "running": running,
                     "busy": running and journal.status == "working"}
 
     def subagent_tasks(self, session_id):

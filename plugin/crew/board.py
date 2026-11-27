@@ -1112,8 +1112,12 @@ def queue_leader_notice(conn, leader_session_id, text, source, now=None):
     return _queue_leader_notice(conn, leader_session_id, text, source, now)
 
 
-def pending_notices(conn, leader_session_id):
-    return _rows(conn, "SELECT * FROM leader_notices WHERE session_id=? AND sent_at IS NULL ORDER BY id", (leader_session_id,))
+def pending_notices(conn, leader_session_id, *, main_session=False):
+    query = "SELECT * FROM leader_notices WHERE session_id=? AND sent_at IS NULL"
+    if main_session:
+        query += (" AND (room_id IS NULL OR (wake=1 AND batch_id IS NOT NULL AND EXISTS "
+                  "(SELECT 1 FROM war_rooms WHERE id=leader_notices.room_id AND status='open' AND paused_at IS NULL)))")
+    return _rows(conn, query + " ORDER BY id", (leader_session_id,))
 
 
 def quiet_notices(conn, leader_session_id):

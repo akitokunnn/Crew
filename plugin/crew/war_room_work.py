@@ -78,7 +78,8 @@ def watch(manager, conn, live, now):
 
 def deliver(manager, conn, live, now):
     notices = conn.execute("SELECT n.* FROM leader_notices n JOIN war_rooms r ON r.id=n.room_id "
-                         "WHERE n.sent_at IS NULL AND n.wake=1 AND r.status='open' AND r.paused_at IS NULL ORDER BY n.id").fetchall()
+                         "WHERE n.sent_at IS NULL AND n.wake=1 AND n.batch_id IS NULL "
+                         "AND r.status='open' AND r.paused_at IS NULL ORDER BY n.id").fetchall()
     for notice in notices:
         room = war_room._room(conn, notice['room_id'])
         sid = notice['session_id']
@@ -91,7 +92,7 @@ def deliver(manager, conn, live, now):
             continue
         with board.transaction(conn):
             available = conn.execute("SELECT 1 FROM leader_notices n JOIN war_rooms r ON r.id=n.room_id "
-                                     "WHERE n.id=? AND n.wake=1 AND n.sent_at IS NULL AND r.status='open' "
+                                     "WHERE n.id=? AND n.wake=1 AND n.sent_at IS NULL AND n.batch_id IS NULL AND r.status='open' "
                                      "AND r.paused_at IS NULL", (notice['id'],)).fetchone()
             if not available:
                 continue

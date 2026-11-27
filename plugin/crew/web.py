@@ -297,9 +297,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._request_active():
                     break
                 for event in events:
+                    sequence = event["seq"]
+                    if event.get('room_id') is not None:
+                        continue
                     self.wfile.write(("id: %s\ndata: %s\n\n" %
                                       (event["seq"], json.dumps(event, ensure_ascii=False))).encode("utf-8"))
-                    sequence = event["seq"]
                 if not events and (remote_stop is None or time.monotonic() - heartbeat >= 10):
                     self.wfile.write(b": heartbeat\n\n")
                     heartbeat = time.monotonic()
