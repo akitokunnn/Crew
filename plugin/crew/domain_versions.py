@@ -1,8 +1,7 @@
 """Architecture board versions: the structure after each batch that changed it, and structural differences.
 
-A version stores the parts and the leaders placed in them. Layout (positions, folds, drawing direction) is kept in
-the snapshot for re-creating removed parts, but it is not structure: it never makes a version on its own and never
-counts as a difference. See docs/ASSISTANT_CAMPAIGN_DESIGN.md §3.
+A version stores the parts, their leader assignments, and independent leader positions. Part layout is kept for
+re-creating removed parts. See docs/ASSISTANT_CAMPAIGN_DESIGN.md §3.
 """
 import json
 
@@ -29,7 +28,24 @@ def state(conn, project):
                    'SELECT l.session_id,l.domain_id,l.lead,s.crew_name FROM domain_leaders l '
                    'JOIN sessions s ON s.session_id=l.session_id WHERE l.project=? AND l.domain_id IS NOT NULL '
                    'ORDER BY l.session_id', (project,))]
-    return {'direction': row['direction'] if row is not None else 'TB', 'parts': parts, 'leaders': leaders}
+    return {'direction': row['direction'] if row is not None else 'TB', 'parts': parts, 'leaders': leaders,
+            'independent': [item for item in independent_leaders(conn, project)
+                            if item['x'] is not None and item['y'] is not None]}
+
+
+def independent_leaders(conn, project):
+    return [dict(row) for row in conn.execute(
+        'SELECT s.session_id,l.x,l.y,s.crew_name AS name FROM sessions s '
+        'LEFT JOIN domain_leaders l ON l.session_id=s.session_id AND l.project=s.project '
+        'LEFT JOIN session_controls c ON c.session_id=s.session_id '
+        "WHERE s.project=? AND s.role='leader' AND l.domain_id IS NULL AND COALESCE(c.removed,0)=0 "
+        "AND (s.status<>'closed' OR l.x IS NOT NULL) ORDER BY s.session_id", (project,))]
+
+
+def independent_changes(before, after):
+    old, new = ({item['session_id']: item for item in state.get('independent', ())} for state in (before, after))
+    return [new[sid] if sid in new else old[sid] for sid in dict.fromkeys([*old, *new])
+            if sid not in old or sid not in new or (old[sid]['x'], old[sid]['y']) != (new[sid]['x'], new[sid]['y'])]
 
 
 def structural(ops):
@@ -91,8 +107,12 @@ def listing(conn, project, before=None):
                         ' ORDER BY number DESC LIMIT ?', (project, before, PAGE + 1) if before else (project, PAGE + 1)).fetchall()
     latest = conn.execute('SELECT state FROM domain_board_versions WHERE project=? ORDER BY number DESC LIMIT 1',
                           (project,)).fetchone()
+    matches = latest is None
+    if latest is not None:
+        saved, current = json.loads(latest['state']), state(conn, project)
+        matches = diff(saved, current)['count'] == 0 and not independent_changes(saved, current)
     return {'project': project, 'versions': [_meta(row) for row in rows[:PAGE]], 'more': len(rows) > PAGE,
-            'latest_matches': latest is None or diff(json.loads(latest['state']), state(conn, project))['count'] == 0}
+            'latest_matches': matches}
 
 
 def get(conn, project, number):

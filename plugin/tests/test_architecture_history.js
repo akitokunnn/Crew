@@ -3,25 +3,28 @@ const {test} = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "../../frontend/architecture.js"), "utf8");
+const gestures = fs.readFileSync(path.join(__dirname, "../../frontend/canvas-core.js"), "utf8");
 const comparison = fs.readFileSync(path.join(__dirname, "../../frontend/restructure-ui.js"), "utf8");
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 for (const end of ["pointerup", "pointercancel", "save"]) {
   test(`after ${end} the open drawer catches up to the last announced version once`, async () => {
-    const hostEvents = {}, canvasEvents = {}, calls = [];
+    const hostEvents = {}, canvasEvents = {}, windowEvents = {}, calls = [];
     const canvas = {focus() {}, dataset:{}, getBoundingClientRect:() => ({width:800,height:600}),
-      addEventListener:(type, fn) => { canvasEvents[type] = fn; }};
+      hasPointerCapture:() => false, addEventListener:(type, fn) => { canvasEvents[type] = fn; }};
     const drawer = {dataset:{}, querySelector:() => ({scrollTop:0})};
     const elements = {".arch-canvas":canvas, ".arch-history":drawer, ".arch-drop-label":{}, ".arch-ghost":{}};
     const host = {dataset:{}, contains:() => true, querySelectorAll:() => [],
       querySelector:selector => elements[selector], addEventListener:(type, fn) => { hostEvents[type] = fn; }};
     const media = {matches:false, addEventListener() {}};
-    const ctx = vm.createContext({window:{matchMedia:() => media}, document:{activeElement:null, addEventListener() {}},
+    const ctx = vm.createContext({window:{matchMedia:() => media, addEventListener:(type, fn) => { windowEvents[type] = fn; }},
+      document:{activeElement:null, addEventListener() {}},
       requestAnimationFrame:fn => fn(), ResizeObserver:class { observe() {} }, localStorage:{getItem:() => null, setItem() {}}});
     vm.runInContext(comparison, ctx);
+    vm.runInContext(gestures, ctx);
     const arch = vm.runInContext(source + "\nCrewArchitecture", ctx);
     let version = 1, finishSave;
-    const board = () => ({parts:[], leaders:[], version, direction:"TB"});
+    const board = () => ({parts:[], leaders:[], independent:[], version, direction:"TB"});
     const settings = {project:"demo", state:{domains:{version}}, api:async (url, body) => {
       const op = url.split("/").pop().split("?")[0];
       calls.push([op, body?.number]);
@@ -51,7 +54,7 @@ for (const end of ["pointerup", "pointercancel", "save"]) {
     for (version of [2, 3]) arch.update({...settings, state:{domains:{version}}});
     assert.deepEqual(calls, []);
     if (end === "save") finishSave();
-    else canvasEvents[end]({...pointer, type:end});
+    else windowEvents[end]({...pointer, type:end});
     await settle();
     assert.deepEqual(calls, [["domains.get", undefined], ["domains.versions.list", undefined], ["domains.version.get", 1]]);
     assert.match(drawer.innerHTML, /revision 3/);

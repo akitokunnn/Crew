@@ -188,8 +188,8 @@ route('domains.apply', '修改架构图', 'POST', '/api/domains', board_api.post
               'id': _field(['string', 'null'], '节点 ID，create 时可省略并由服务生成，rename、collapse、parent、delete 必填'),
               'name': _field('string', '节点名称，create 或 rename 时必填，合并空白后最多 40 字', minLength=1),
               'parent_id': _field(['string', 'null'], 'create 或 parent 使用的父节点 ID，null 表示顶层'),
-              'x': _field('number', '架构节点的横坐标', minimum=-1000000, maximum=1000000),
-              'y': _field('number', '架构节点的纵坐标', minimum=-1000000, maximum=1000000),
+              'x': _field('number', '新建节点或 assign 独立 leader 的横坐标', minimum=-1000000, maximum=1000000),
+              'y': _field('number', '新建节点或 assign 独立 leader 的纵坐标', minimum=-1000000, maximum=1000000),
               'collapsed': _field('boolean', '是否折叠节点，collapse 时必填'),
               'direction': _field('string', 'direction 的绘图方向，TB 从上到下，LR 从左到右', enum=['TB', 'LR']),
               'items': _field('array', 'move 时要更新的位置列表', items=_object({

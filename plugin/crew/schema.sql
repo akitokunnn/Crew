@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS sound_settings (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS canvas_settings (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    wheel_zoom INTEGER NOT NULL CHECK(wheel_zoom IN (0,1))
+);
+
 -- First-run guide on the desktop home: once finished or skipped it is never shown automatically again.
 CREATE TABLE IF NOT EXISTS onboarding_state (
     singleton  INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -1120,7 +1125,7 @@ CREATE TABLE IF NOT EXISTS domains (
 CREATE INDEX IF NOT EXISTS domains_project ON domains (project, parent_id);
 -- The part a leader works in (at most one; NULL = unassigned). lead=1 marks the one leading that part, owning
 -- the work its sub-parts share (unique per part, see store migration). An archived leader keeps its place.
--- x/y are unused since leaders are listed inside their part.
+-- Unassigned leaders can use x/y to pin their card on the board.
 CREATE TABLE IF NOT EXISTS domain_leaders (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
     project    TEXT NOT NULL REFERENCES projects(name),
@@ -1233,7 +1238,7 @@ CREATE TABLE IF NOT EXISTS personal_action_receipts (request_id TEXT PRIMARY KEY
 
 CREATE INDEX IF NOT EXISTS personal_action_fingerprint ON personal_action_receipts(fingerprint);
 
-CREATE TABLE IF NOT EXISTS personal_mindmap_nodes (id TEXT PRIMARY KEY, parent_id TEXT REFERENCES personal_mindmap_nodes(id), note_id TEXT UNIQUE REFERENCES personal_notes(id), label TEXT, sort_order INTEGER NOT NULL, collapsed INTEGER NOT NULL DEFAULT 0 CHECK(collapsed IN (0,1)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, project TEXT REFERENCES projects(name), CHECK((note_id IS NULL) <> (label IS NULL)));
+CREATE TABLE IF NOT EXISTS personal_mindmap_nodes (id TEXT PRIMARY KEY, parent_id TEXT REFERENCES personal_mindmap_nodes(id), note_id TEXT UNIQUE REFERENCES personal_notes(id), label TEXT, sort_order INTEGER NOT NULL, collapsed INTEGER NOT NULL DEFAULT 0 CHECK(collapsed IN (0,1)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, project TEXT REFERENCES projects(name), x REAL, y REAL, CHECK((note_id IS NULL) <> (label IS NULL)));
 
 CREATE TABLE IF NOT EXISTS personal_mindmap_links (node_id TEXT NOT NULL REFERENCES personal_mindmap_nodes(id), project TEXT NOT NULL REFERENCES projects(name), domain_id TEXT NOT NULL, converted_at TEXT NOT NULL, PRIMARY KEY(node_id, project));
 

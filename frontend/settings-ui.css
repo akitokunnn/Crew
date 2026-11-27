@@ -69,6 +69,7 @@
 .cs-task-list>.cs-card{padding:13px 16px}
 .cs-inherit{display:inline-flex;align-items:center;flex:none;gap:8px;padding:4px 0;font-size:calc(12px * var(--cs-scale));line-height:1.5;cursor:pointer;color:var(--cs-muted)}
 .cs-inherit input{width:15px;height:15px;margin:0;accent-color:var(--cs-accent)}
+.cs-canvas-option{min-height:44px;font-size:calc(14px * var(--cs-scale));color:var(--cs-text)}
 .cs-follow{margin:10px 0 0;font-size:calc(11.5px * var(--cs-scale));color:var(--cs-muted);line-height:1.6}
 .cs-footnote{margin:10px 0 0;font-size:calc(11.5px * var(--cs-scale));line-height:1.6;color:var(--cs-muted);overflow-wrap:anywhere}
 .cs-warning{margin:14px 0 0;color:var(--warn,#a56c26);font-size:calc(12px * var(--cs-scale));line-height:1.8}

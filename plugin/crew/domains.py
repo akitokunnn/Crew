@@ -11,7 +11,7 @@ import math
 import re
 import uuid
 
-from . import board, change_feed, domain_versions
+from . import board, change_feed, domain_versions, settings
 
 ID = re.compile(r'[A-Za-z0-9_-]{6,64}\Z')
 NAME_MAX = 40
@@ -30,7 +30,7 @@ def version(conn, project):
 
 
 def snapshot(conn, project):
-    """The whole board: parts, and every leader placed in one (archived ones flagged, they keep their place)."""
+    """Parts, their assigned leaders, and the independent leaders on the canvas."""
     row = _board_row(conn, project)
     parts = [{'id': part['id'], 'parent_id': part['parent_id'], 'name': part['name'], 'x': part['x'], 'y': part['y'],
               'collapsed': bool(part['collapsed'])}
@@ -43,7 +43,7 @@ def snapshot(conn, project):
                    ' LEFT JOIN session_controls c ON c.session_id=l.session_id'
                    ' WHERE l.project=? AND l.domain_id IS NOT NULL ORDER BY l.session_id', (project,))]
     return {'project': project, 'version': row['version'] if row else 0, 'direction': row['direction'] if row else 'TB',
-            'parts': parts, 'leaders': leaders}
+            'parts': parts, 'leaders': leaders, 'independent': domain_versions.independent_leaders(conn, project)}
 
 
 def leader_paths(conn, project):
@@ -97,7 +97,8 @@ def input_context(conn, session_id, previous):
 
 def summary(conn, project):
     """What the rest of the page needs without loading the board: its version and the leaders' paths."""
-    return {'version': version(conn, project), 'paths': leader_paths(conn, project)}
+    return {'version': version(conn, project), 'paths': leader_paths(conn, project),
+            'canvas_wheel_zoom': settings.canvas_wheel_zoom(conn)}
 
 
 @board.atomic
@@ -166,21 +167,25 @@ def rollback_preview(conn, project, number):
     """What rolling back to a version changes, and which leaders it leaves without a place or cannot restore."""
     meta, target = domain_versions.get(conn, project, number)
     current = domain_versions.state(conn, project)
-    living = living_leaders(conn, project, [item['session_id'] for item in target['leaders']])
-    restorable = dict(target, leaders=[item for item in target['leaders'] if item['session_id'] in living])
+    independent = target.get('independent', [])
+    living = living_leaders(conn, project, [item['session_id'] for item in target['leaders'] + independent])
+    restorable = dict(target, leaders=[item for item in target['leaders'] if item['session_id'] in living],
+                      independent=[item for item in independent if item['session_id'] in living])
     change = domain_versions.diff(current, restorable)
+    positioned = domain_versions.independent_changes(current, restorable)
     targeted = {item['session_id'] for item in restorable['leaders']}
     paths = domain_versions.paths(current)
     return {'version': meta, 'state': target, 'current': current, 'diff': change,
             'board_version': version(conn, project),
-            'rollback': {'nothing': change['count'] == 0,
+            'rollback': {'nothing': change['count'] == 0 and not positioned, 'positioned': positioned,
                          'unplaced': [{'session_id': item['session_id'], 'name': item['name'],
                                        'from': paths.get(item['domain_id'], [])}
                                       for item in current['leaders'] if item['session_id'] not in targeted],
                          'gone': [{'session_id': item['session_id'], 'name': item['name']}
-                                  for item in target['leaders'] if item['session_id'] not in living],
+                                  for item in target['leaders'] + independent if item['session_id'] not in living],
                          'archived': [{'session_id': item['session_id'], 'name': item['name']}
-                                      for item in restorable['leaders'] if board.is_archived(conn, item['session_id'])]}}
+                                      for item in restorable['leaders'] + restorable['independent']
+                                      if board.is_archived(conn, item['session_id'])]}}
 
 
 @board.atomic
@@ -211,7 +216,8 @@ def restore(conn, project, target, now):
     """
     current = {row['id']: row for row in conn.execute('SELECT * FROM domains WHERE project=?', (project,))}
     wanted = {part['id'] for part in target['parts']}
-    conn.execute('UPDATE domain_leaders SET domain_id=NULL,lead=0,updated_at=? WHERE project=? AND domain_id IS NOT NULL',
+    conn.execute('UPDATE domain_leaders SET domain_id=NULL,lead=0,x=NULL,y=NULL,updated_at=? '
+                 'WHERE project=? AND (domain_id IS NOT NULL OR x IS NOT NULL OR y IS NOT NULL)',
                  (now, project))
     conn.execute('UPDATE domains SET parent_id=NULL WHERE project=? AND parent_id IS NOT NULL', (project,))
     for part_id in current:
@@ -231,13 +237,15 @@ def restore(conn, project, target, now):
             conn.execute('UPDATE domains SET parent_id=? WHERE id=?', (part['parent_id'], part['id']))
         if row is not None and row['parent_id'] != part['parent_id']:
             conn.execute('UPDATE domains SET updated_at=? WHERE id=?', (now, part['id']))
-    living = living_leaders(conn, project, [item['session_id'] for item in target['leaders']])
-    for item in target['leaders']:
+    independent = [dict(item, domain_id=None, lead=False) for item in target.get('independent', [])]
+    placements = target['leaders'] + independent
+    living = living_leaders(conn, project, [item['session_id'] for item in placements])
+    for item in placements:
         if item['session_id'] in living:
-            conn.execute('INSERT INTO domain_leaders(session_id,project,domain_id,lead,updated_at) VALUES(?,?,?,?,?) '
+            conn.execute('INSERT INTO domain_leaders(session_id,project,domain_id,lead,x,y,updated_at) VALUES(?,?,?,?,?,?,?) '
                          'ON CONFLICT(session_id) DO UPDATE SET domain_id=excluded.domain_id,lead=excluded.lead,'
-                         'updated_at=excluded.updated_at', (item['session_id'], project, item['domain_id'],
-                                                            int(item['lead']), now))
+                         'x=excluded.x,y=excluded.y,updated_at=excluded.updated_at',
+                         (item['session_id'], project, item['domain_id'], int(item['lead']), item.get('x'), item.get('y'), now))
 
 
 def release_leader(conn, session_id):
@@ -259,7 +267,7 @@ def _name(value):
 
 def _coordinate(op, key):
     value = op.get(key)
-    if type(value) not in (int, float) or not math.isfinite(value) or abs(value) > COORDINATE_LIMIT:
+    if type(value) not in (int, float) or abs(value) > COORDINATE_LIMIT or not math.isfinite(value):
         raise board.BoardError('%s 坐标无效' % key)
     return round(float(value), 1)
 
@@ -353,14 +361,21 @@ class _Edit:
         """Put a leader in a part (or none). Leading is per part, so moving to another part drops it."""
         session_id = self.leader(op.get('session_id'))
         domain_id = op.get('domain_id')
+        x = y = None
+        if 'x' in op or 'y' in op:
+            if domain_id is not None:
+                raise board.BoardError('只有独立 leader 可以指定坐标')
+            x, y = _coordinate(op, 'x'), _coordinate(op, 'y')
         if domain_id is not None:
             domain_id = self.part(domain_id)['id']
         current = self.place(session_id)
-        if current is not None and current['domain_id'] == domain_id:
+        if current is not None and current['domain_id'] == domain_id and (
+                domain_id is not None or (current['x'], current['y']) == (x, y)):
             return None
-        self.conn.execute('INSERT INTO domain_leaders(session_id,project,domain_id,lead,updated_at) VALUES(?,?,?,0,?) '
+        self.conn.execute('INSERT INTO domain_leaders(session_id,project,domain_id,lead,x,y,updated_at) VALUES(?,?,?,0,?,?,?) '
                           'ON CONFLICT(session_id) DO UPDATE SET domain_id=excluded.domain_id,lead=0,'
-                          'updated_at=excluded.updated_at', (session_id, self.project, domain_id, self.now))
+                          'x=excluded.x,y=excluded.y,updated_at=excluded.updated_at',
+                          (session_id, self.project, domain_id, x, y, self.now))
 
     def op_lead(self, op):
         """Make a leader lead the part it works in (or stop leading); a part has one lead at most."""

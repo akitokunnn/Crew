@@ -42,7 +42,7 @@
   // centred on the span of its visible children. sizes(id) -> {w, h}.
   function layout(t, sizes, pad = 24) {
     const pos = new Map();
-    let cursor = pad, width = 0;
+    let cursor = pad;
     function place(id, x) {
       const size = sizes(id), node = t.nodes.get(id), kids = node.collapsed ? [] : node.children;
       if (!kids.length) {
@@ -58,13 +58,49 @@
         // A tall parent beside short children pushes the next sibling down.
         cursor = Math.max(cursor, y + size.h + GAP_Y);
       }
-      width = Math.max(width, x + size.w);
     }
     t.roots.forEach((root, index) => { if (index) cursor += ROOT_GAP - GAP_Y; place(root, pad); });
-    return {pos, width: width + pad, height: Math.max(cursor - GAP_Y + pad, pad * 2)};
+    const pinned = [];
+    for (const [id, p] of pos) {
+      const node = t.nodes.get(id);
+      if (Number.isFinite(node.x) && Number.isFinite(node.y)) {
+        Object.assign(p, {x:node.x, y:node.y});
+        pinned.push(p);
+      }
+    }
+    let bounds = null;
+    for (const p of pos.values()) {
+      if (!pinned.includes(p) && pinned.some(other => overlaps(p, other))) {
+        p.y = openY(p, [...pos.values()].filter(other => other !== p), 1);
+      }
+      const next = {x0:p.x, y0:p.y, x1:p.x + p.w, y1:p.y + p.h};
+      bounds = bounds ? {x0:Math.min(bounds.x0, next.x0), y0:Math.min(bounds.y0, next.y0),
+        x1:Math.max(bounds.x1, next.x1), y1:Math.max(bounds.y1, next.y1)} : next;
+    }
+    return {pos, bounds};
+  }
+  function overlaps(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+  function openY(rect, occupied, direction) {
+    const p = {...rect};
+    let hit;
+    while ((hit = occupied.find(other => overlaps(p, other)))) {
+      p.y = direction > 0 ? hit.y + hit.h + GAP_Y : hit.y - p.h - GAP_Y;
+    }
+    return p.y;
   }
   // Rounded elbow from the parent's right edge to the child's left edge.
   function wire(from, to) {
+    if (to.x + to.w <= from.x) {
+      const x1 = from.x, y1 = from.y + from.h / 2, x2 = to.x + to.w, y2 = to.y + to.h / 2, mid = (x1 + x2) / 2;
+      return `M${x1} ${y1}C${mid} ${y1} ${mid} ${y2} ${x2} ${y2}`;
+    }
+    if (to.x < from.x + from.w) {
+      const x1 = from.x + from.w / 2, x2 = to.x + to.w / 2, below = to.y >= from.y;
+      const y1 = below ? from.y + from.h : from.y, y2 = below ? to.y : to.y + to.h, mid = (y1 + y2) / 2;
+      return `M${x1} ${y1}C${x1} ${mid} ${x2} ${mid} ${x2} ${y2}`;
+    }
     const x1 = from.x + from.w, y1 = from.y + from.h / 2, x2 = to.x, y2 = to.y + to.h / 2, mx = x1 + ELBOW;
     if (Math.abs(y2 - y1) < 1) return `M${x1} ${y1}H${x2}`;
     const r = Math.min(RADIUS, Math.abs(y2 - y1) / 2), s = Math.sign(y2 - y1);
@@ -116,15 +152,16 @@
     }
     return [source.id !== undefined ? {op: "move", id: source.id, parent_id, index} : {op: "create", note_id: source.note_id, parent_id, index}];
   }
-  // A drop on empty canvas: a new root at the end.
-  function rootOps(t, source) {
-    const index = t.roots.filter(item => item !== source.id).length;
-    return [source.id !== undefined ? {op: "move", id: source.id, parent_id: null, index} : {op: "create", note_id: source.note_id, parent_id: null, index}];
+  // A note from the tray becomes a new root. An existing node keeps its branch and sibling order.
+  function rootOps(t, source, position = {}) {
+    return [source.id !== undefined ? {op:"move", id:source.id, ...position}
+      : {op:"create", note_id:source.note_id, parent_id:null, index:t.roots.length, ...position}];
   }
   // Puts a removed node back with the same id and gives it its children again.
   function undoRemove(effect) {
     const create = {op: "create", id: effect.id, parent_id: effect.parent_id, index: effect.index};
     if (effect.note_id !== null) create.note_id = effect.note_id; else create.label = effect.label;
+    if (Number.isFinite(effect.x) && Number.isFinite(effect.y)) Object.assign(create, {x:effect.x, y:effect.y});
     return [create, ...effect.children.map((child, index) => ({op: "move", id: child, parent_id: effect.id, index})),
       ...(effect.collapsed ? [{op: "collapse", id: effect.id, collapsed: true}] : [])];
   }
@@ -148,5 +185,5 @@
   }
 
   window.CrewMindmapModel = {GAP_X, GAP_Y, ROOT_GAP, DRAFT, tree, parentList, indexOf, descendants, depth, ancestors, branch, visible,
-    layout, wire, navigate, reorder, outdent, indent, dropZone, dropOps, rootOps, undoRemove, branches, client};
+    layout, wire, openY, navigate, reorder, outdent, indent, dropZone, dropOps, rootOps, undoRemove, branches, client};
 })();

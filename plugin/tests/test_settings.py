@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from crew import board, runtimes, settings, store
+from crew import board, domains, mindmap_api, runtimes, settings, store
 
 
 class Rollback(Exception):
@@ -44,6 +44,23 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(settings.SettingsError, '安装并登录 Codex CLI 或 Claude Code'):
             settings.resolve(self.home, which=self.installed())
         self.assertFalse(self.home.exists())
+
+    def test_wheel_preference_is_persisted_and_shared_by_both_canvases(self):
+        self.assertFalse(settings.canvas_wheel_zoom(self.home))
+        work = Path(self.temp.name) / 'work'
+        work.mkdir()
+        with closing(store.connect(self.home)) as conn:
+            board.init_project(conn, 'demo', work)
+            with self.assertRaises(settings.SettingsError):
+                settings.save_canvas_wheel_zoom(conn, 1)
+            self.assertFalse(domains.summary(conn, 'demo')['canvas_wheel_zoom'])
+            self.assertFalse(mindmap_api.snapshot(self.home, 'demo')['canvas_wheel_zoom'])
+            for value in (True, True, False):
+                with board.transaction(conn):
+                    settings.save_canvas_wheel_zoom(conn, value)
+                self.assertIs(settings.canvas_wheel_zoom(self.home), value)
+                self.assertIs(domains.summary(conn, 'demo')['canvas_wheel_zoom'], value)
+                self.assertIs(mindmap_api.snapshot(self.home, 'demo')['canvas_wheel_zoom'], value)
 
     def test_saved_home_options_survive_connections_and_task_null_follows_default(self):
         ai = {'default': choice('codex', 'future-provider/custom-model', 'future-effort'),

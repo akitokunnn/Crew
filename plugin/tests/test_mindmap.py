@@ -74,6 +74,45 @@ class MindmapEditTests(MindmapFixture):
     def test_empty_workspace_map_reads_as_version_zero(self):
         self.assertEqual(mindmap.snapshot(self.conn, 'demo'), {'project': 'demo', 'version': 0, 'nodes': [], 'links': []})
 
+    def test_free_move_reparent_and_reset_share_the_map_version(self):
+        self.tree()
+        at = mindmap.version(self.conn, 'demo')
+        moved = self.edit({'op': 'move', 'id': 'voice01', 'x': -90, 'y': 1_000_000})['map']
+        self.assertEqual(moved['version'], at + 1)
+        voice = next(n for n in moved['nodes'] if n['id'] == 'voice01')
+        self.assertEqual((voice['parent_id'], voice['sort_order'], voice['x'], voice['y']), ('mobile1', 0, -90, 1_000_000))
+        self.assertTrue(all(n['x'] is None and n['y'] is None for n in moved['nodes'] if n['id'] != 'voice01'))
+        reparented = self.edit({'op': 'move', 'id': 'voice01', 'parent_id': 'team001', 'index': 0,
+                                'x': 217, 'y': -56})['map']
+        self.assertEqual(reparented['version'], at + 2)
+        voice = next(n for n in reparented['nodes'] if n['id'] == 'voice01')
+        self.assertEqual((voice['parent_id'], voice['sort_order'], voice['x'], voice['y']), ('team001', 0, 217, -56))
+        with self.assertRaisesRegex(board.BoardError, '不能把节点'):
+            self.edit({'op': 'move', 'id': 'team001', 'parent_id': 'voice01', 'x': 3, 'y': 4})
+        with self.assertRaisesRegex(board.BoardError, 'y 坐标无效'):
+            self.edit({'op': 'auto_layout'}, {'op': 'move', 'id': 'voice01', 'x': 3, 'y': 1_000_001})
+        with self.assertRaises(board.Conflict):
+            mindmap.apply(self.conn, [{'op': 'auto_layout'}], at, project='demo')
+        self.assertEqual(mindmap.snapshot(self.conn, 'demo'), reparented)
+        other = mindmap.apply(self.conn, [dict(self.topic('other01', '其他工作区'), x=3, y=4)], 0, project='other')['map']
+        for offset in (1, 2):
+            reset = self.edit({'op': 'auto_layout'})['map']
+            self.assertEqual(reset['version'], reparented['version'] + offset)
+            self.assertTrue(all(n['x'] is None and n['y'] is None for n in reset['nodes']))
+            self.assertEqual(self.shape()['voice01'], ('team001', 0))
+            self.assertEqual(mindmap.snapshot(self.conn, 'other'), other)
+
+    def test_store_adds_coordinates_to_a_previous_map_without_moving_nodes(self):
+        self.tree()
+        original = mindmap.snapshot(self.conn, 'demo')
+        self.conn.execute('DROP TABLE canvas_settings')
+        for column in ('x', 'y'):
+            self.conn.execute('ALTER TABLE personal_mindmap_nodes DROP COLUMN ' + column)
+        for _ in range(2):
+            with closing(store.connect(self.home)) as conn:
+                self.assertEqual(mindmap.snapshot(conn, 'demo'), original)
+                self.assertFalse(mindmap_api.snapshot(self.home, 'demo')['canvas_wheel_zoom'])
+
     def test_nodes_are_ideas_or_topics_and_keep_sibling_order(self):
         idea = self.note('想法墙出导图')
         result = self.edit(self.topic('root01', '  Crew   下一版 '), self.idea('idea001', idea, 'root01'),
@@ -135,7 +174,8 @@ class MindmapEditTests(MindmapFixture):
         before = self.shape()
         effect = self.edit({'op': 'remove', 'id': 'mobile1'})['effects'][0]
         self.assertEqual(effect, {'op': 'remove', 'id': 'mobile1', 'parent_id': 'root01', 'index': 0,
-                                  'children': ['voice01', 'draft01'], 'note_id': None, 'label': '手机端', 'collapsed': True})
+                                  'children': ['voice01', 'draft01'], 'note_id': None, 'label': '手机端', 'collapsed': True,
+                                  'x': None, 'y': None})
         shape = self.shape()
         self.assertEqual([shape['voice01'], shape['draft01'], shape['team001']], [('root01', 0), ('root01', 1), ('root01', 2)])
         removed = self.edit({'op': 'remove', 'id': 'voice01'})['effects'][0]

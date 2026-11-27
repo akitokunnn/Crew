@@ -74,18 +74,19 @@ route('settings.save', '保存全局设置', 'POST', '/api/settings', admin.post
                   'effort': _field(['string', 'null'], '模型支持的推理强度，null 跟随默认设置', minLength=1, maxLength=100),
                   'speed': _field(['string', 'null'], 'Codex 速度档位，null 跟随默认设置', minLength=1, maxLength=100),
               }, ['runtime', 'model', 'effort'], description='系统管理员 · 运维的载体和模型配置，空值表示继承全局默认', kind=['object', 'null'], open_fields=False),
-          }, ['default'], description='完整的 AI 默认配置，ai、execution、sounds 至少提供一项', open_fields=False),
+          }, ['default'], description='完整的 AI 默认配置', open_fields=False),
           'execution': _object({
               'codex': _field('string', 'Codex 执行权限模式', enum=['read-only', 'workspace-write', 'danger-full-access']),
               'claude': _field('string', 'Claude Code 执行权限模式', enum=['default', 'acceptEdits', 'bypassPermissions']),
-          }, ['codex', 'claude'], description='按载体保存的执行权限配置，ai、execution、sounds 至少提供一项', open_fields=False),
+          }, ['codex', 'claude'], description='按载体保存的执行权限配置', open_fields=False),
           'sounds': _object({
               'muted': _field('boolean', '是否全局静音'),
               'volume': _field('number', '音量比例，范围 0 到 1', minimum=0, maximum=1),
               'leader': _field('string', 'leader 事件使用的内置或自定义音效 ID，off 为关闭', minLength=1),
               'assistant': _field('string', '系统管理员事件使用的内置或自定义音效 ID，off 为关闭', minLength=1),
               'delivery': _field('string', '任务交付事件使用的内置或自定义音效 ID，off 为关闭', minLength=1),
-          }, ['muted', 'volume', 'leader', 'assistant', 'delivery'], description='完整的提示音设置，ai、execution、sounds 至少提供一项', open_fields=False),
+          }, ['muted', 'volume', 'leader', 'assistant', 'delivery'], description='完整的提示音设置', open_fields=False),
+          'canvas_wheel_zoom': _field('boolean', '启用后，两张图上的竖向滚轮用于缩放'),
       }))
 route('runtimes.list', '列出可用载体与模型', 'GET', '/api/runtimes', admin.get_runtimes, access='read',
       description='列出可用载体与模型。每个载体的 models_source 说明模型清单从哪来：discovered 是载体自己报告的完整清单（Codex model/list），'

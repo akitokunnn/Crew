@@ -339,6 +339,7 @@ def worker(home, backend_root, identity, *, runners=None):
 def settings_snapshot(home, backend_root):
     from . import event_sounds
     return {'ai': settings.get(home), 'execution': settings.get_execution(home),
+            'canvas_wheel_zoom': settings.canvas_wheel_zoom(home),
             **event_sounds.settings_snapshot(home),
             'runtimes': runtime_catalog.Catalog().refresh(force=True),
             'home': str(Path(home).resolve()), 'backend': str(Path(backend_root).resolve())}
@@ -346,8 +347,8 @@ def settings_snapshot(home, backend_root):
 
 def save_settings(home, backend_root, value):
     from . import event_sounds
-    if not isinstance(value, dict) or not value or not set(value) <= {'ai', 'execution', 'sounds'}:
-        raise OperationsChatError('设置请求只能包含 ai、execution 和 sounds 配置')
+    if not isinstance(value, dict) or not value or not set(value) <= settings.SETTINGS_FIELDS:
+        raise OperationsChatError('设置请求包含无效字段')
     with configuration_write(home), closing(store.connect(home)) as conn, board.transaction(conn):
         if 'ai' in value:
             settings.save(conn, value['ai'])
@@ -355,6 +356,8 @@ def save_settings(home, backend_root, value):
             settings.save_execution(conn, value['execution'])
         if 'sounds' in value:
             event_sounds.save(conn, value['sounds'], home)
+        if 'canvas_wheel_zoom' in value:
+            settings.save_canvas_wheel_zoom(conn, value['canvas_wheel_zoom'])
     return settings_snapshot(home, backend_root)
 
 
