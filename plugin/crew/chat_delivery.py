@@ -6,7 +6,7 @@ import uuid
 
 from . import behavior_prompts, trust_mode
 from . import (
-    board, channel, codex_client, git_admin, guard, messaging, personal, runtime_switch, runtimes, store,
+    board, channel, codex_client, domains, git_admin, guard, messaging, personal, runtime_switch, runtimes, store,
     workspace_execution,
 )
 from .chat_base import MAINTENANCE_HELD, _admitted, IMAGE_TYPES, validate_images
@@ -87,11 +87,13 @@ class DeliveryMixin:
         channel_upto = None
         git_revision = getattr(current, 'git_context_revision', None)
         trust_context = getattr(current, 'trust_context', None)
+        domain_context = getattr(current, 'domain_context', None)
         if text.strip() != '/compact':
             with closing(store.connect(self.home)) as handoff_conn:
                 assistant = personal.is_assistant(handoff_conn, logical)
                 git_revision, git_context = ((None, None) if assistant else
                     git_admin.input_context(handoff_conn, logical, git_revision, self.plugin_root))
+                domain_context, placement = domains.input_context(handoff_conn, logical, domain_context)
                 if current.execution is None:
                     text,handoff_id=runtime_switch.input_text(handoff_conn,session_id,text,identity)
                     if current.runtime == 'claude' and current.replacement_handoff is not None:
@@ -114,6 +116,8 @@ class DeliveryMixin:
                                 '不改变用户原话的授权范围。】\n\n' % identity) + text
             if git_context:
                 text = git_context + '\n\n' + text
+            if placement:
+                text = placement + '\n\n' + text
         files = []
         content = text
         if images:
@@ -138,6 +142,7 @@ class DeliveryMixin:
                     current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_application['manifest'])
                 current.git_context_revision = git_revision
                 current.trust_context = trust_context
+                current.domain_context = domain_context
                 if handoff_id is not None:
                     with closing(store.connect(self.home)) as handoff_conn:
                         runtime_switch.accepted(handoff_conn,session_id,identity,handoff_id)
@@ -169,6 +174,7 @@ class DeliveryMixin:
                     current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_application['manifest'])
                 current.git_context_revision = git_revision
                 current.trust_context = trust_context
+                current.domain_context = domain_context
         except Exception as exc:
             with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
             raise

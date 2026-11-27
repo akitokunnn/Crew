@@ -460,6 +460,7 @@ class CodexRunning:
                     kind = event.pop("type")
                     if kind == 'compact':
                         self.trust_context = None
+                        self.domain_context = None
                     if kind == "context":
                         self.context = event
                         self.journal.remember_context(self.runtime, self.thread_id, self.context)

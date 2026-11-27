@@ -8,7 +8,7 @@ Ported from the removed ``codex_tools`` and the AI subcommands of ``cli``.
 import datetime
 from contextlib import closing
 
-from ... import board, channel, decision_briefs, documents, goals, guard, message_receipts, personal
+from ... import board, channel, decision_briefs, documents, domains, goals, guard, message_receipts, personal
 from ... import personal_actions, runtimes, session_ops, store, todo
 from .. import registry
 from ..errors import OpError
@@ -419,7 +419,7 @@ op('message.send', '经 Crew 给同一工作区的同事发消息', message_send
    description='明确选 kind：decision 已批准的决定，task 工作指令，result 证据，blocker 真实阻塞。默认 information 和 ack '
                '只归档、不唤醒对方。看回执 receipt.status：archived 不是已送达，queued 不是已接收；accepted 只表示已交给执行，'
                '不证明对方读过、回复或完成。成功的操作不要重复。回复时带 reply_to，Crew 会送回原对话或任务。'
-               '消息不带来新的用户授权。')
+               '同一件事已在交流区答过就不再私信；对方只说“了解”“不用再回”时不回。消息不带来新的用户授权。')
 
 
 def channel_post(ctx, args):
@@ -437,7 +437,7 @@ share('channel.post', channel_post, scopes=(L,), core_for=(L,),
                   '最好 50 字内（上限 150 字、3 行）；不引用出处、不堆免责声明；不发确认、进度流水或 Git/CI 状态。'
                   '改动影响别的组就在这里发并点名它的 leader（点名会唤醒对方），不要再另发 message_send。回复帖子用 reply_to；'
                   '一两句能说清就在这里答，需要长篇就发一行结论并 detail=true，把全文写在你私聊里。点名：正文写 @名字或放进 to。'
-                  '回复别的 leader 的帖子也会唤醒发帖人。唤醒要等对方空闲：看回执与每个点名的投递状态'
+                  '回复别的 leader 的帖子也会唤醒发帖人，对方不用据此做事时（“好的”“我也在等用户”）不要回帖。同一件事已私信答过就不在这里再答。唤醒要等对方空闲：看回执与每个点名的投递状态'
                   '（queued 还没收到，delivered 已进入输入但未回复，replied 已回复）。')
 
 
@@ -456,6 +456,15 @@ op('channel.consume', '读取交流区最近的帖子并标记为已读', channe
    params=_object({'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200, 'description': '最近几条，默认 20'},
                    'raw': {'type': 'boolean', 'description': 'true 时不看摘要卡，直接读最近的原文（含已被摘要覆盖的）'}}),
    description='只给 leader：读最近的交流区帖子（带编号）和最新摘要卡，并把它们标为你已读。')
+
+
+def domains_outline(ctx, args):
+    with closing(guard.readonly(ctx.service.home)) as conn:
+        return domains.outline(conn, _project(ctx))
+
+
+share('domains.get', domains_outline, scopes=(L,), core_for=(L,), ai_params=_object(),
+      description='只给 leader：读本工作区的架构图——节点（id、名称、父节点）和各 leader 所在节点（lead=true 为节点负责人）。只读。')
 
 
 # --- sessions and executions ---------------------------------------------------------------------

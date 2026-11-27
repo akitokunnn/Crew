@@ -61,6 +61,40 @@ def leader_paths(conn, project):
         'SELECT session_id,domain_id FROM domain_leaders WHERE project=? AND domain_id IS NOT NULL', (project,))}
 
 
+def outline(conn, project):
+    """The board as a leader reads it: parts and who works where, without the page's layout."""
+    board_snapshot = snapshot(conn, project)
+    return {'project': project, 'version': board_snapshot['version'],
+            'parts': [{'id': part['id'], 'parent_id': part['parent_id'], 'name': part['name']}
+                      for part in board_snapshot['parts']],
+            'leaders': board_snapshot['leaders']}
+
+
+def placement(conn, session_id):
+    """One line telling a leader where it sits on the board, e.g. 你负责：产品 › 客户端 › 语音; None when nowhere."""
+    place = conn.execute('SELECT project,domain_id,lead FROM domain_leaders WHERE session_id=? AND domain_id IS NOT NULL',
+                         (session_id,)).fetchone()
+    if place is None:
+        return None
+    path = ' › '.join(part['name'] for part in leader_paths(conn, place['project'])[session_id])
+    if not place['lead']:
+        return '【Crew 架构图】你负责：%s。' % path
+    children = [row['name'] for row in conn.execute(
+        'SELECT name FROM domains WHERE parent_id=? ORDER BY created_at,id', (place['domain_id'],))]
+    shared = '，也负责其下%s共用的部分' % '、'.join(children) if children else ''
+    return '【Crew 架构图】你负责：%s（节点负责人%s）。' % (path, shared)
+
+
+def input_context(conn, session_id, previous):
+    """Deliver a changed placement on the next ordinary input only; leaving the board is said once."""
+    current = placement(conn, session_id)
+    if current == previous:
+        return current, None
+    if current is None:
+        return None, '【Crew 架构图】你已不在架构图的任何节点里。'
+    return current, current
+
+
 def summary(conn, project):
     """What the rest of the page needs without loading the board: its version and the leaders' paths."""
     return {'version': version(conn, project), 'paths': leader_paths(conn, project)}

@@ -5,9 +5,10 @@ Behaviour: docs/ASSISTANT_CAMPAIGN_DESIGN.md §3–§5. Registration (docs/OPERA
 - Callers: the user's pages (``human``, both remote device kinds, like ``domains.apply``) and, through
   ``assistant_cover``, the global assistant acting as the user. Leaders, executions and the Git assistant
   get none of these: a plan moves other leaders, archives their groups and reassigns or cancels their
-  tasks, which is beyond a leader's own group and goals; leaders are peers and the board itself
-  (``domains.get`` / ``domains.apply``) is not theirs either. A leader that thinks the structure should
-  change says so in the channel or a war room.
+  tasks, which is beyond a leader's own group and goals; leaders are peers and editing the board
+  (``domains.apply``) is not theirs either. A leader may read its own workspace's board (``domains.get``)
+  and is told its own place with its inputs. A leader that thinks the structure should change says so in
+  the channel or a war room.
 - Rollback, restructure, merge and retire are ``high``: an AI call records a confirmation request and
   waits for the user; the user's own pages show the preview or an in-place confirmation first.
 - Every write checks the ``board_version`` (and ``revision``) the preview returned, so a plan the user
