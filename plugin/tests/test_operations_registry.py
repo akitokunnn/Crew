@@ -214,10 +214,10 @@ class OperationCallTests(ShellFixture, unittest.TestCase):
         self.assertEqual(caught.exception.code, 'not_found')
 
     def test_split_actions_rebuild_the_old_body(self):
-        note = self.service.op('note.capture', {'data': {'text': '一个想法'}})
+        note = self.service.op('note.capture', {'project': 'demo', 'data': {'text': '一个想法'}})
         self.assertEqual(note['note']['original_text'], '一个想法')
-        replay = self.service.op('note.capture', {'data': {'text': '一个想法'}}, request_id='n-1')
-        again = self.service.op('note.capture', {'data': {'text': '一个想法'}}, request_id='n-1')
+        replay = self.service.op('note.capture', {'project': 'demo', 'data': {'text': '一个想法'}}, request_id='n-1')
+        again = self.service.op('note.capture', {'project': 'demo', 'data': {'text': '一个想法'}}, request_id='n-1')
         self.assertEqual(again['note']['id'], replay['note']['id'])
 
 

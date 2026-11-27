@@ -16,13 +16,11 @@ def read(conn, action, data):
     if action == 'notes.list':
         return personal.query_notes(conn, data)
     if action == 'notes.get':
-        if set(data) != {'note_id'}:
-            raise board.BoardError('notes.get 只需要 note_id')
-        return {'note': personal.get_note(conn, data['note_id']), 'stale_days': personal.STALE_DAYS}
+        if set(data) != {'note_id', 'project'}:
+            raise board.BoardError('notes.get 需要 project 和 note_id')
+        return {'note': personal.get_note(conn, data['note_id'], project=data['project']), 'stale_days': personal.STALE_DAYS}
     if action == 'tags.list':
-        if data:
-            raise board.BoardError('tags.list 不需要参数')
-        return personal.list_tags(conn)
+        return personal.list_tags(conn, data.get('project'))
     if action == 'session.detail':
         value = personal._target(conn, data.get('session_id'))
         assignments = (goals.list_goals(conn, value['project'], leader_session_id=value['session_id'])

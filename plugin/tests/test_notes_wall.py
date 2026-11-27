@@ -37,20 +37,21 @@ class NotesFixture(unittest.TestCase):
         self.conn = store.connect(self.home)
         self.addCleanup(self.conn.close)
         self.counter = 0
+        self.workspace('demo')
 
     def note(self, action, data, request_id=None, now=T0):
         self.counter += 1
-        return personal.note_action(self.conn, action, data, request_id=request_id or 'note-%d' % self.counter, now=now)
+        return personal.note_action(self.conn, action, data, project=data.get('project', 'demo'), request_id=request_id or 'note-%d' % self.counter, now=now)
 
     def capture(self, text, **fields):
         return self.note('capture', {'text': text, **fields})['note']
 
     def tag(self, action, data, request_id=None, now=T0):
         self.counter += 1
-        return personal.tag_action(self.conn, action, data, request_id=request_id or 'tag-%d' % self.counter, now=now)
+        return personal.tag_action(self.conn, action, data, project='demo', request_id=request_id or 'tag-%d' % self.counter, now=now)
 
     def get(self, note_id, now=T0):
-        return personal.get_note(self.conn, note_id, now=now)
+        return personal.get_note(self.conn, note_id, project='demo', now=now)
 
     def snapshot(self, *note_ids):
         return [tuple(self.conn.execute('SELECT * FROM personal_notes WHERE id=?', (identity,)).fetchone()) for identity in note_ids]
@@ -62,21 +63,16 @@ class NotesFixture(unittest.TestCase):
 
 
 class NoteSchemaTests(NotesFixture):
-    def test_legacy_table_gains_columns_with_new_stage_and_tags_register_on_first_read(self):
-        self.conn.execute('CREATE TABLE personal_notes (id TEXT PRIMARY KEY, project TEXT REFERENCES projects(name), '
-                          'original_text TEXT NOT NULL, text TEXT NOT NULL, tags_json TEXT NOT NULL, '
-                          "state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','archived')), "
-                          'version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)')
-        self.conn.execute('INSERT INTO personal_notes(id,original_text,text,tags_json,created_at,updated_at) VALUES(?,?,?,?,?,?)',
-                          ('legacy', '旧想法', '旧想法', json.dumps(['生活', '健身']), T0, T0))
-        personal.ensure_schema(self.conn)
-        personal.ensure_schema(self.conn)
+    def test_imported_note_defaults_and_missing_tags_register_on_first_read(self):
+        # Imported notes may arrive after startup without a tag registry row.
+        self.conn.execute('INSERT INTO personal_notes(id,project,original_text,text,tags_json,created_at,updated_at) '
+                          'VALUES(?,?,?,?,?,?,?)', ('legacy', 'demo', '旧想法', '旧想法', json.dumps(['生活', '健身']), T0, T0))
         note = self.get('legacy')
         self.assertEqual((note['stage'], note['title'], note['summaries'], note['merged_from'], note['source']),
                          ('new', None, [], [], {}))
         self.assertEqual(note['discussions'], {'count': 0, 'last_at': None, 'session_id': None, 'last_seq': None})
-        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM personal_note_tags').fetchone()[0], 0)
-        listing = personal.list_tags(self.conn, now=T0)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM workspace_note_tags').fetchone()[0], 0)
+        listing = personal.list_tags(self.conn, 'demo', now=T0)
         self.assertEqual(listing['palette'], ['c%d' % i for i in range(10)])
         self.assertEqual([(tag['name'], tag['color'], tag['count'], tag['version']) for tag in listing['tags']],
                          [(name, personal._tag_color(name), 1, 1) for name in ('生活', '健身')])
@@ -89,7 +85,7 @@ class NoteActionTests(NotesFixture):
     def test_capture_with_title_and_partial_update_keep_original_and_check_versions(self):
         note = self.capture('先做每日打卡', title='健身打卡', tags=['健身'])
         self.assertEqual((note['title'], note['stage'], note['version'], note['stale']), ('健身打卡', 'new', 1, False))
-        self.assertEqual([tag['name'] for tag in personal.list_tags(self.conn)['tags']], ['健身'])
+        self.assertEqual([tag['name'] for tag in personal.list_tags(self.conn, 'demo')['tags']], ['健身'])
         changed = self.note('update', {'note_id': note['id'], 'expected_version': 1, 'title': '打卡 App'}, request_id='title')
         self.assertEqual((changed['note']['title'], changed['note']['text'], changed['note']['version']), ('打卡 App', '先做每日打卡', 2))
         replay = self.note('update', {'note_id': note['id'], 'expected_version': 1, 'title': '打卡 App'}, request_id='title')
@@ -175,7 +171,7 @@ class NoteActionTests(NotesFixture):
         with self.assertRaisesRegex(board.BoardError, 'expected_versions'):
             self.note('bulk', {'note_ids': [a['id'], b['id']], 'expected_versions': {a['id']: 1}, 'op': 'archive'})
         self.assertEqual(self.snapshot(a['id'], b['id'], c['id']), before)
-        self.assertNotIn('新标签', [tag['name'] for tag in personal.list_tags(self.conn)['tags']])
+        self.assertNotIn('新标签', [tag['name'] for tag in personal.list_tags(self.conn, 'demo')['tags']])
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM personal_note_requests').fetchone()[0], 4)
 
     def test_bulk_tags_project_and_archive(self):
@@ -187,16 +183,17 @@ class NoteActionTests(NotesFixture):
                     'op': op, **({'value': value[0]} if value else {})}
             return self.note('bulk', data)['notes']
         self.assertEqual([note['tags'] for note in bulk('tag_add', '运动')], [['x', '运动'], ['运动']])
-        self.assertIn('运动', [tag['name'] for tag in personal.list_tags(self.conn)['tags']])
+        self.assertIn('运动', [tag['name'] for tag in personal.list_tags(self.conn, 'demo')['tags']])
         self.assertEqual([note['tags'] for note in bulk('tag_remove', 'x')], [['运动'], ['运动']])
-        self.assertEqual([note['project'] for note in bulk('project', 'fitness')], ['fitness', 'fitness'])
-        self.assertEqual([note['project'] for note in bulk('project', None)], [None, None])
+        with self.assertRaisesRegex(board.BoardError, '批量操作必须是'):
+            bulk('project', 'fitness')
+        self.assertEqual([self.get(note['id'])['project'] for note in (a, b)], ['demo', 'demo'])
         with self.assertRaisesRegex(board.BoardError, '不接受 value'):
             bulk('archive', '多余')
         with self.assertRaisesRegex(board.BoardError, '批量操作必须是'):
             bulk('delete', 'x')
         self.assertEqual([note['state'] for note in bulk('archive')], ['archived', 'archived'])
-        self.assertEqual(personal.list_notes(self.conn), [])
+        self.assertEqual(personal.list_notes(self.conn, project='demo'), [])
 
     def test_annotate_appends_a_human_summary_without_touching_original(self):
         note = self.capture('原话')
@@ -208,8 +205,6 @@ class NoteActionTests(NotesFixture):
 
     def test_start_note_and_recovered_link_promote_and_archive(self):
         root = self.root / 'demo'
-        root.mkdir()
-        board.init_project(self.conn, 'demo', root)
         board.join(self.conn, 'chief', 'demo', 'chief', root, None, None, role='leader')
         promoted = self.capture('转任务')
         result = personal.start_note(self.conn, promoted['id'], 'demo', request_id='start',
@@ -217,25 +212,25 @@ class NoteActionTests(NotesFixture):
         self.assertEqual((result['note']['stage'], result['note']['state']), ('promoted', 'archived'))
         self.assertEqual(result['note']['leader']['session_id'], 'chief')
         self.assertFalse(result['note']['stale'])
-        self.assertNotIn(promoted['id'], [note['id'] for note in personal.list_notes(self.conn)])
+        self.assertNotIn(promoted['id'], [note['id'] for note in personal.list_notes(self.conn, project='demo')])
         unknown = self.capture('结果未知')
-        with self.assertRaises(TimeoutError):
+        with self.assertRaises(OpError):
             personal.start_note(self.conn, unknown['id'], 'demo', request_id='lost',
                                 create_leader=mock.Mock(side_effect=TimeoutError('lost')))
         self.assertEqual((self.get(unknown['id'])['stage'], self.get(unknown['id'])['state']), ('new', 'open'))
-        bound = personal.bind_note_leader(self.conn, unknown['id'], 'chief', request_id='bind', reason='已核实')
+        bound = personal.bind_note_leader(self.conn, unknown['id'], 'chief', project='demo', request_id='bind', reason='已核实')
         self.assertEqual((bound['note']['stage'], bound['note']['state']), ('promoted', 'archived'))
 
 
 class StaleTests(NotesFixture):
     def stale(self, note_id, now):
-        return personal.get_note(self.conn, note_id, now=now)['stale']
+        return personal.get_note(self.conn, note_id, project='demo', now=now)['stale']
 
     def test_fourteen_day_boundary_uses_latest_edit_discussion_or_review(self):
         note = self.capture('放着')
         self.assertFalse(self.stale(note['id'], later(14)))
         self.assertTrue(self.stale(note['id'], later(14, ms=1)))
-        listing = api.notes(self.home)
+        listing = api.notes(self.home, project='demo')
         self.assertEqual(listing['stale_days'], 14)
         self.conn.execute('UPDATE personal_notes SET last_discussed_at=? WHERE id=?', (later(10), note['id']))
         self.assertFalse(self.stale(note['id'], later(24)))
@@ -257,7 +252,7 @@ class StaleTests(NotesFixture):
 
 class TagTests(NotesFixture):
     def tags(self):
-        return {tag['name']: tag for tag in personal.list_tags(self.conn)['tags']}
+        return {tag['name']: tag for tag in personal.list_tags(self.conn, 'demo')['tags']}
 
     def test_create_recolor_pin_reorder_check_versions_and_palette(self):
         self.tag('create', {'name': '甲', 'color': 'c3'})
@@ -275,9 +270,65 @@ class TagTests(NotesFixture):
         self.assertEqual([(tag['name'], tag['pinned']) for tag in listing], [('乙', True), ('甲', False)])
         self.tag('create', {'name': '丙'})
         self.tag('reorder', {'names': ['丙', '甲']})
-        self.assertEqual([tag['name'] for tag in personal.list_tags(self.conn)['tags']], ['乙', '丙', '甲'])
-        with self.assertRaisesRegex(board.BoardError, '标签不存在'):
+        self.assertEqual([tag['name'] for tag in personal.list_tags(self.conn, 'demo')['tags']], ['乙', '丙', '甲'])
+        with self.assertRaisesRegex(OpError, '没有该标签'):
             self.tag('reorder', {'names': ['丁']})
+
+    def test_identical_tag_names_and_idempotency_keys_across_workspaces(self):
+        self.workspace('other')
+        entries = {}
+        for project in ('demo', 'other'):
+            entries[project] = personal.note_action(self.conn, 'capture', {'text': project, 'tags':['旧','合并']},
+                                                    project=project, request_id='capture-' + project)['note']['id']
+        other = personal.list_tags(self.conn, 'other')
+        before = personal.get_note(self.conn, entries['other'], project='other')
+        def change(action, data):
+            return personal.tag_action(self.conn, action, data, project='demo', request_id='local-' + action)
+        change('recolor', dict(name='旧', color='c8', expected_version=1))
+        change('rename', dict(name='旧', new_name='新', expected_version=2))
+        change('merge', {'from':['新'], 'into':'合并'})
+        change('remove', dict(name='合并', expected_version=1))
+        self.assertEqual(personal.list_tags(self.conn, 'other'), other)
+        self.assertEqual(personal.get_note(self.conn, entries['other'], project='other'), before)
+        self.assertEqual(personal.get_note(self.conn, entries['demo'], project='demo')['tags'], [])
+        args = dict(text='同一个请求')
+        saved = personal.note_action(self.conn, 'capture', args, project='demo', request_id='same')
+        replay = personal.note_action(self.conn, 'capture', args, project='demo', request_id='same')
+        self.assertEqual(replay['note'], saved['note'])
+        self.assertTrue(replay['duplicate'])
+        for project, data in [('other', args), ('demo', {'text':'另一个请求'})]:
+            with self.assertRaises(OpError) as denied:
+                personal.note_action(self.conn, 'capture', data, project=project, request_id='same')
+            self.assertEqual(denied.exception.code, 'request_conflict')
+        with self.assertRaises(OpError) as denied:
+            personal.note_action(self.conn, 'update', dict(note_id=entries['demo'], project='other', expected_version=1),
+                                 project='demo', request_id='transfer')
+        self.assertEqual(denied.exception.code, 'not_visible')
+
+    def test_history_keeps_foreign_rows_private_in_wall_and_discussion(self):
+        self.workspace('other')
+        a = self.capture('主卡')
+        b = self.capture('外区私密原文', project='other')
+        merged = a['text'] + '\n\n合并来源：\n- %s（原 id：%s）' % (b['original_text'], b['id'])
+        self.conn.execute('UPDATE personal_notes SET text=? WHERE id=?', (merged, a['id']))
+        self.conn.execute("UPDATE personal_notes SET merged_into=?,state='archived' WHERE id=?", (a['id'], b['id']))
+        other_sid = self.root / 'other'
+        board.join(self.conn, 'other-chief', 'other', '外组', other_sid, None, None, role='leader')
+        self.conn.execute('INSERT INTO personal_note_discussions VALUES(?,?,?,?,?)', (a['id'],'other-chief','old',1,T0))
+        self.conn.execute('INSERT INTO personal_note_leaders VALUES(?,?,?,?,?,?,?,?,?)',
+                          (a['id'],'other','old','{"text":"外区私密原文"}','completed','other-chief',None,T0,T0))
+        note = self.get(a['id'])
+        self.assertEqual((note['leader'], note['merged_from'], note['discussions']['count']), (None, [], 0))
+        self.assertIn('来源在其他工作区', note['text'])
+        self.assertNotIn(b['text'], personal.discussion_context(self.conn, a['id'], project='demo'))
+        for fn in [lambda: personal.start_note(self.conn, a['id'], 'demo', request_id='start', create_leader=None),
+                   lambda: personal.note_recovery(self.conn, a['id'], project='demo'),
+                   lambda: personal.bind_note_leader(self.conn, a['id'], 'other-chief', project='demo',
+                                                     request_id='bind', reason='错误工作区')]:
+            with self.assertRaises(OpError) as denied:
+                fn()
+            self.assertEqual(denied.exception.code, 'not_visible')
+        self.assertEqual(self.conn.execute('SELECT text FROM personal_notes WHERE id=?', (a['id'],)).fetchone()[0], merged)
 
     def test_rename_syncs_every_note_and_existing_name_requires_merge(self):
         first = self.capture('一', tags=['旧', '保留'])
@@ -318,14 +369,15 @@ class AssistantNotesTests(NotesFixture):
                         'text': '帮我整理想法', 'at': T0}]
 
     def dispatch(self, action, data, request_id=None, message_id='user-1'):
-        args = {'data': data} if action in personal.WRITE_ACTIONS else data
+        args = {'project': 'demo', 'data': data} if action in personal.WRITE_ACTIONS else {'project': 'demo', **data}
         with mock.patch.object(self.service.chat, 'history', return_value={'events': self.events}):
             return ai_call(self.service, self.conn, self.sid, action, args,
                            request_id=request_id, message_id=message_id)
 
     def test_reads_filter_notes_get_one_and_register_tags(self):
         self.workspace('fitness')
-        a = self.capture('甲', tags=['x', 'y'], project='fitness')
+        a = self.capture('甲', tags=['x', 'y'])
+        other = self.capture('外区', project='fitness')
         b = self.capture('乙', tags=['x'])
         c = self.capture('丙')
         self.conn.execute("UPDATE personal_notes SET stage='discussed',tags_json=? WHERE id=?", (json.dumps(['legacy']), c['id']))
@@ -337,7 +389,7 @@ class AssistantNotesTests(NotesFixture):
         self.assertEqual(set(ids(tags=['x', 'legacy'], mode='any', include_archived=True)), {a['id'], b['id'], c['id']})
         self.assertEqual(ids(tags=['x', 'legacy'], mode='all'), [])
         self.assertEqual(ids(stage='discussed'), [c['id']])
-        self.assertEqual(ids(project='fitness'), [a['id']])
+        self.assertEqual(ids(project='fitness'), [other['id']])
         self.assertCountEqual(ids(stale_only=True), [a['id'], c['id']])  # captured on T0, long ago
         page = self.dispatch('notes.list', {'include_archived': True, 'limit': 2, 'offset': 1})
         self.assertEqual((page['total'], page['offset'], page['next_offset'], page['stale_days'], len(page['notes'])), (3, 1, None, 14, 2))
@@ -394,7 +446,7 @@ class AssistantNotesTests(NotesFixture):
         self.dispatch('tag.rename', {'name': '别的', 'new_name': '统一', 'expected_version': 1}, request_id='rename')
         self.assertEqual(self.get(a['id'])['tags'], ['统一'])
         self.dispatch('tag.remove', {'name': '新标签', 'expected_version': 2}, request_id='remove')
-        self.assertEqual({tag['name'] for tag in personal.list_tags(self.conn)['tags']}, {'统一'})
+        self.assertEqual({tag['name'] for tag in personal.list_tags(self.conn, 'demo')['tags']}, {'统一'})
         self.dispatch('note.bulk', {'note_ids': [a['id']], 'expected_versions': {a['id']: self.get(a['id'])['version']},
                                     'op': 'tag_add', 'value': '整理过'}, request_id='bulk')
         self.assertEqual(self.get(a['id'])['tags'], ['统一', '整理过'])
@@ -432,7 +484,7 @@ class NotesHttpFixture(ShellFixture):
         self.url = 'http://127.0.0.1:%d' % self.server.server_port
 
     def post(self, operation, data, request_id):
-        return self.request('/api/op/' + operation, {'data': data}, request_id=request_id)
+        return self.request('/api/op/' + operation, {'project': 'demo', 'data': data}, request_id=request_id)
 
     def capture(self, request_id='idea', **data):
         code, value, _ = self.post('note.capture', {'text': '健身打卡 App', 'title': '打卡',
@@ -448,11 +500,11 @@ class NotesHttpFixture(ShellFixture):
 class NotesWallHttpTests(NotesHttpFixture, unittest.TestCase):
     def test_note_and_tag_routes_follow_contract_and_rename_collision_is_409_with_merge_detail(self):
         note = self.capture()
-        code, listing, _ = self.request('/api/op/notes.list?include_archived=1')
+        code, listing, _ = self.request('/api/op/notes.list?project=demo&include_archived=1')
         self.assertEqual((code, listing['stale_days'], listing['notes'][0]['id']), (200, 14, note['id']), listing)
         code, error, _ = self.request('/api/op/note.capture', {'text': '旧格式'})
         self.assertEqual(code, 400, error)
-        code, tags, _ = self.request('/api/op/tags.list')
+        code, tags, _ = self.request('/api/op/tags.list?project=demo')
         self.assertEqual((code, [tag['name'] for tag in tags['tags']], len(tags['palette'])), (200, ['生活'], 10), tags)
         code, created, _ = self.post('tag.create', {'name': '运动', 'color': 'c4'}, 'tag-create')
         self.assertEqual(code, 200, created)
@@ -476,7 +528,7 @@ class NotesWallHttpTests(NotesHttpFixture, unittest.TestCase):
         note = self.capture()
         self.assertEqual(self.processes, [])
         code, error, _ = self.request('/api/op/chat.send', {'session_id': sid, 'text': '聊聊', 'note_id': 'missing'})
-        self.assertEqual(code, 400, error)
+        self.assertEqual((code, error['error_code']), (404, 'not_visible'))
         self.assertEqual(self.processes, [])
         code, sent, _ = self.discuss(sid, note, 'discuss-1')
         self.assertEqual(code, 200, sent)
@@ -531,20 +583,20 @@ class CodexDiscussionTests(NotesHttpFixture, unittest.TestCase):
 
 class NotesPortabilityTests(RuntimeFixture):
     def note(self, action, data, request_id):
-        return personal.note_action(self.conn, action, data, request_id=request_id)
+        return personal.note_action(self.conn, action, data, project='demo', request_id=request_id)
 
     def prepare(self):
         primary = self.note('capture', {'project': 'demo', 'text': '主想法', 'title': '主', 'tags': ['app']}, 'p')['note']
         child = self.note('capture', {'project': 'demo', 'text': '重复', 'tags': ['dup']}, 'c')['note']
-        outside = self.note('capture', {'text': '全局主卡 GLOBAL_PRIVATE_NOTE'}, 'g')['note']
-        orphan = self.note('capture', {'project': 'demo', 'text': '并入全局'}, 'o')['note']
+        self.conn.execute("INSERT INTO personal_notes(id,original_text,text,tags_json,created_at,updated_at) "
+                          "VALUES('global','GLOBAL_PRIVATE_NOTE','GLOBAL_PRIVATE_NOTE','[]',?,?)", (T0, T0))
+        orphan = self.note('capture', {'text': '并入全局'}, 'o')['note']
         self.note('merge', {'primary_id': primary['id'], 'note_ids': [child['id']],
                             'expected_versions': {primary['id']: 1, child['id']: 1}}, 'm1')
-        self.note('merge', {'primary_id': outside['id'], 'note_ids': [orphan['id']],
-                            'expected_versions': {outside['id']: 1, orphan['id']: 1}}, 'm2')
+        self.conn.execute("UPDATE personal_notes SET merged_into='global',state='archived' WHERE id=?", (orphan['id'],))
         self.note('annotate', {'note_id': primary['id'], 'text': '结论'}, 'a')
         self.note('pin', {'note_id': primary['id'], 'expected_version': 3, 'pinned': True}, 'pin')
-        personal.tag_action(self.conn, 'recolor', {'name': 'app', 'color': 'c9', 'expected_version': 1}, request_id='color')
+        personal.tag_action(self.conn, 'recolor', {'name': 'app', 'color': 'c9', 'expected_version': 1}, project='demo', request_id='color')
         sid = personal.ensure_assistant(self.conn, self.home)['session_id']
         personal.record_discussion(self.conn, primary['id'], sid, 'user-message', 3)
         return primary, child, orphan
@@ -569,7 +621,7 @@ class NotesPortabilityTests(RuntimeFixture):
         with mock.patch('subprocess.Popen', side_effect=AssertionError('Activation cannot run a model')):
             activation.activate_workspace(destination, imported['workspace_id'], local, root)
         with closing(store.connect(local)) as conn:
-            notes = {note['original_text']: note for note in personal.list_notes(conn, include_archived=True)}
+            notes = {note['original_text']: note for note in personal.list_notes(conn, project=personal.projects(conn)[0]['name'], include_archived=True)}
             self.assertEqual(set(notes), {'主想法', '重复', '并入全局'})
             restored = notes['主想法']
             self.assertEqual((restored['title'], restored['stage'], [item['text'] for item in restored['summaries']]),
@@ -580,8 +632,8 @@ class NotesPortabilityTests(RuntimeFixture):
             self.assertEqual(restored['merged_from'], [notes['重复']['id']])
             self.assertEqual((notes['并入全局']['merged_into'], notes['并入全局']['state']), (None, 'archived'))
             self.assertEqual(restored['discussions']['count'], 0)
-            self.assertEqual(conn.execute('SELECT COUNT(*) FROM personal_note_tags').fetchone()[0], 0)
-            self.assertEqual({tag['name'] for tag in personal.list_tags(conn)['tags']}, {'app', 'dup'})
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM workspace_note_tags').fetchone()[0], 0)
+            self.assertEqual({tag['name'] for tag in personal.list_tags(conn, restored['project'])['tags']}, {'app', 'dup'})
 
 
 if __name__ == '__main__':

@@ -7,7 +7,7 @@ reactivated by a workspace package. Restored agents remain stopped by activation
 import hashlib
 import json
 
-from .. import behavior_prompts, goal_artifacts, goal_mode, goal_reports, personal
+from .. import behavior_prompts, goal_artifacts, goal_mode, goal_reports
 from .database import StorageConflict
 
 FIELDS = {
@@ -138,7 +138,6 @@ def activate(m):
     if unknown:
         raise StorageConflict('Unsupported workspace feature records: ' + ', '.join(sorted(unknown)))
     behavior_prompts.ensure_schema(m.conn)
-    personal.ensure_schema(m.conn)
     goal_mode.ensure(m.conn)
     goal_artifacts.ensure_schema(m.conn)
     m.conn.execute('CREATE TABLE IF NOT EXISTS imported_feature_audits ('

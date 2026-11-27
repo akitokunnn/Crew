@@ -7,37 +7,28 @@ from contextlib import nullcontext
 import datetime
 import hashlib
 import json
+import re
 from pathlib import Path
 import uuid
 
-from . import behavior_prompts, board, models, settings, store, todo
+from . import behavior_prompts, board, models, settings, store, todo, workspace_assistant
+
+from .ops.errors import OpError
 
 
 ENTRYPOINT = 'crew-assistant'
 NOTE_WRITE_ACTIONS = frozenset(('note.capture', 'note.update', 'note.annotate', 'note.archive', 'note.restore',
-                                'note.pin', 'note.snooze', 'note.merge', 'note.bulk'))
-TAG_WRITE_ACTIONS = frozenset(('tag.create', 'tag.rename', 'tag.merge', 'tag.recolor', 'tag.remove'))
+                                'note.pin', 'note.snooze', 'note.keep', 'note.unmerge', 'note.merge', 'note.bulk'))
+TAG_WRITE_ACTIONS = frozenset(('tag.create', 'tag.rename', 'tag.merge', 'tag.recolor', 'tag.remove', 'tag.pin', 'tag.reorder'))
 WRITE_ACTIONS = frozenset(('leader.create', 'session.message', 'session.stop',
                            'settings.save', 'prompt.save', 'prompt.reset', 'decision.answer', 'todo.resolve')) | NOTE_WRITE_ACTIONS | TAG_WRITE_ACTIONS
 EXTERNAL_ACTIONS = frozenset(('leader.create', 'session.message', 'session.stop'))
 PALETTE = tuple('c%d' % index for index in range(10))
 STALE_DAYS = 14
-# Columns added after the first personal_notes release, applied in this order.
-NOTE_COLUMNS = (
-    ('source_json', "TEXT NOT NULL DEFAULT '{}'"),
-    ('title', 'TEXT'),
-    ('pinned_at', 'TEXT'),
-    ('snoozed_until', 'TEXT'),
-    ('merged_into', 'TEXT'),
-    ('stage', "TEXT NOT NULL DEFAULT 'new' CHECK(stage IN ('new','discussed','promoted'))"),
-    ('last_discussed_at', 'TEXT'),
-    ('reviewed_at', 'TEXT'),
-    ('summary_json', "TEXT NOT NULL DEFAULT '[]'"),
-)
 # Accepted payload keys per note/tag write: (required, optional).
 _NOTE_FIELDS = {
-    'note.capture': ({'text'}, {'title', 'tags', 'project'}),
-    'note.update': ({'note_id', 'expected_version'}, {'text', 'title', 'tags', 'project', 'state'}),
+    'note.capture': ({'text'}, {'title', 'tags'}),
+    'note.update': ({'note_id', 'expected_version'}, {'text', 'title', 'tags', 'state'}),
     'note.pin': ({'note_id', 'expected_version', 'pinned'}, set()),
     'note.snooze': ({'note_id', 'expected_version', 'until'}, set()),
     'note.keep': ({'note_id', 'expected_version'}, set()),
@@ -55,7 +46,7 @@ _NOTE_FIELDS = {
     'tag.merge': ({'from', 'into'}, set()),
     'tag.remove': ({'name', 'expected_version'}, set()),
 }
-BULK_OPS = ('tag_add', 'tag_remove', 'archive', 'project')
+BULK_OPS = ('tag_add', 'tag_remove', 'archive')
 
 
 class TagMergeRequired(board.Conflict):
@@ -64,49 +55,6 @@ class TagMergeRequired(board.Conflict):
     def __init__(self, target, affected):
         super().__init__('标签「%s」已存在；改名会把 %s 条想法并入该标签，请确认后改用合并' % (target, affected))
         self.detail = {'merge_required': True, 'target': target, 'affected': affected}
-
-
-def ensure_schema(conn):
-    """Feature-owned additive storage; safe inside a caller-owned transaction."""
-    conn.execute('CREATE TABLE IF NOT EXISTS personal_assistant ('
-                 'singleton INTEGER PRIMARY KEY CHECK(singleton=1), '
-                 'session_id TEXT NOT NULL UNIQUE REFERENCES sessions(session_id))')
-    conn.execute('CREATE TABLE IF NOT EXISTS personal_notes ('
-                 'id TEXT PRIMARY KEY, project TEXT REFERENCES projects(name), '
-                 'original_text TEXT NOT NULL, text TEXT NOT NULL, tags_json TEXT NOT NULL, '
-                 "state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','archived')), "
-                 'version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)')
-    def missing():
-        present = {row['name'] for row in conn.execute('PRAGMA table_info(personal_notes)')}
-        return [(name, ddl) for name, ddl in NOTE_COLUMNS if name not in present]
-    if missing():
-        with (nullcontext() if conn.in_transaction else board.transaction(conn)):
-            for name, ddl in missing():
-                conn.execute('ALTER TABLE personal_notes ADD COLUMN ' + name + ' ' + ddl)
-    conn.execute('CREATE TABLE IF NOT EXISTS personal_note_tags ('
-                 'name TEXT PRIMARY KEY, '
-                 'color TEXT NOT NULL CHECK(color IN (' + ','.join("'%s'" % key for key in PALETTE) + ')), '
-                 'pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)), sort_order INTEGER NOT NULL, '
-                 'version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)')
-    # One user message discusses at most one note; the journal seq locates it.
-    conn.execute('CREATE TABLE IF NOT EXISTS personal_note_discussions ('
-                 'note_id TEXT NOT NULL REFERENCES personal_notes(id), '
-                 'session_id TEXT NOT NULL REFERENCES sessions(session_id), message_id TEXT NOT NULL, '
-                 'seq INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(session_id, message_id))')
-    conn.execute('CREATE INDEX IF NOT EXISTS personal_note_discussions_note ON personal_note_discussions(note_id, created_at)')
-    conn.execute('CREATE TABLE IF NOT EXISTS personal_note_requests ('
-                 'request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response_json TEXT NOT NULL)')
-    conn.execute('CREATE TABLE IF NOT EXISTS personal_note_leaders ('
-                 'note_id TEXT PRIMARY KEY REFERENCES personal_notes(id), project TEXT NOT NULL REFERENCES projects(name), '
-                 'request_id TEXT NOT NULL UNIQUE, source_json TEXT NOT NULL, '
-                 "status TEXT NOT NULL CHECK(status IN ('pending','completed','unknown')), "
-                 'session_id TEXT REFERENCES sessions(session_id), error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)')
-    conn.execute('CREATE TABLE IF NOT EXISTS personal_action_receipts ('
-                 'request_id TEXT PRIMARY KEY, action TEXT NOT NULL, fingerprint TEXT NOT NULL, '
-                 'instruction_json TEXT NOT NULL, '
-                 "status TEXT NOT NULL CHECK(status IN ('pending','completed','failed','unknown')), "
-                 'response_json TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)')
-    conn.execute('CREATE INDEX IF NOT EXISTS personal_action_fingerprint ON personal_action_receipts(fingerprint)')
 
 
 def _has_table(conn, name):
@@ -129,7 +77,6 @@ def is_admin(conn, session_id):
 
 
 def can_lead_as_assistant(conn, session_id):
-    from . import workspace_assistant
     return is_admin(conn, session_id) or workspace_assistant.project_for(conn, session_id) is not None
 
 
@@ -188,7 +135,6 @@ def ensure_assistant(conn, home, *, context_project=None, selection=None):
     if store.norm_path(database) != store.norm_path(store.db_path(home)):
         raise board.BoardError('助手 HOME 与数据库不一致')
     choice = assistant_choice(conn, selection)
-    ensure_schema(conn)
     with (nullcontext() if conn.in_transaction else board.transaction(conn)):
         row = conn.execute('SELECT session_id FROM personal_assistant WHERE singleton=1').fetchone()
         if row is None:
@@ -250,7 +196,8 @@ def overview(conn, *, project=None, limit=100):
         'SELECT id,project,leader_session_id,title,status,reason,priority,updated_at FROM goals '
         'ORDER BY priority DESC,created_at,id') if row['project'] in names and row['leader_session_id'] in visible_leaders]
     todos = [item for item in todo.list(conn) if item['project'] in names]
-    notes = list_notes(conn, project=project)
+    notes = [note for item in workspaces for note in list_notes(conn, project=item['name'])]
+    notes.sort(key=lambda note: note['updated_at'], reverse=True)
     return {'scope': 'personal', 'projects': workspaces, 'leaders': leaders[:limit], 'goals': goals[:limit],
             'todos': todos[:limit], 'notes': notes[:limit], 'limit': limit,
             'counts': {'projects': len(workspaces), 'leaders': len(leaders), 'goals': len(goals),
@@ -287,13 +234,11 @@ def _stale(value, now):
     return activity < current - datetime.timedelta(days=STALE_DAYS)
 
 
-def list_notes(conn, *, project=None, include_archived=False, now=None):
-    if not _has_table(conn, 'personal_notes'):
-        return []
+def list_notes(conn, *, project, include_archived=False, now=None):
+    workspace_assistant.available(conn, project)
     now = store.now_iso() if now is None else now
-    rows = conn.execute('SELECT * FROM personal_notes ORDER BY updated_at DESC,id')
-    return [_note(row, conn, now) for row in rows if (include_archived or row['state'] == 'open')
-            and (project is None or row['project'] == project)]
+    rows = conn.execute('SELECT * FROM personal_notes WHERE project=? ORDER BY updated_at DESC,id', (project,))
+    return [_note(row, conn, now) for row in rows if include_archived or row['state'] == 'open']
 
 
 def query_notes(conn, data, *, now=None):
@@ -314,8 +259,6 @@ def query_notes(conn, data, *, now=None):
     if stage not in (None, 'new', 'discussed', 'promoted'):
         raise board.BoardError('stage 必须是 new、discussed 或 promoted')
     project = data.get('project')
-    if project is not None:
-        _text(project, '工作区', 300)
     offset, limit = data.get('offset', 0), data.get('limit', 100)
     if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 500:
         raise board.BoardError('offset 必须非负，limit 须为 1–500 的整数')
@@ -341,67 +284,83 @@ def _note(row, conn, now):
     value['source'] = json.loads(value.pop('source_json'))
     value['summaries'] = json.loads(value.pop('summary_json'))
     value['merged_from'] = [item['id'] for item in conn.execute(
-        'SELECT id FROM personal_notes WHERE merged_into=? ORDER BY updated_at,id', (value['id'],))]
-    rows = conn.execute('SELECT session_id,seq,created_at FROM personal_note_discussions WHERE note_id=? '
-                        'ORDER BY created_at DESC,seq DESC', (value['id'],)).fetchall()
+        'SELECT id FROM personal_notes WHERE merged_into=? AND project=? ORDER BY updated_at,id', (value['id'], value['project']))]
+    # Legacy merges embedded the source body in the primary note's editable text.
+    value['text'] = _visible_text(conn, value['text'], value['project'])
+    rows = conn.execute('SELECT d.session_id,d.seq,d.created_at FROM personal_note_discussions d '
+                        'JOIN sessions s ON s.session_id=d.session_id WHERE d.note_id=? '
+                        'AND (s.project=? OR EXISTS (SELECT 1 FROM personal_assistant a WHERE a.session_id=s.session_id)) '
+                        'ORDER BY d.created_at DESC,d.seq DESC', (value['id'], value['project'])).fetchall()
     latest = rows[0] if rows else None
     value['discussions'] = {'count': len(rows), 'last_at': latest['created_at'] if latest else None,
                             'session_id': latest['session_id'] if latest else None,
                             'last_seq': latest['seq'] if latest else None}
     value['stale'] = _stale(value, now)
     value['leader'] = None
-    if _has_table(conn, 'personal_note_leaders'):
-        link = conn.execute('SELECT project,session_id,status,error,source_json FROM personal_note_leaders WHERE note_id=?',
-                            (value['id'],)).fetchone()
-        if link is not None:
-            value['leader'] = dict(link)
-            value['leader']['source'] = json.loads(value['leader'].pop('source_json'))
+    link = conn.execute('SELECT project,session_id,status,error,source_json FROM personal_note_leaders '
+                        'WHERE note_id=? AND project=? AND (session_id IS NULL OR EXISTS '
+                        '(SELECT 1 FROM sessions s WHERE s.session_id=personal_note_leaders.session_id AND s.project=?))',
+                        (value['id'], value['project'], value['project'])).fetchone()
+    if link is not None:
+        value['leader'] = dict(link)
+        source = json.loads(value['leader'].pop('source_json'))
+        if 'text' in source:
+            source['text'] = _visible_text(conn, source['text'], value['project'])
+        value['leader']['source'] = source
     return value
 
 
-def get_note(conn, note_id, *, now=None):
-    _text(note_id, '想法标识', 300)
-    row = conn.execute('SELECT * FROM personal_notes WHERE id=?', (note_id,)).fetchone() if _has_table(conn, 'personal_notes') else None
-    if row is None:
-        raise board.BoardError('个人想法不存在')
-    return _note(row, conn, store.now_iso() if now is None else now)
+def _visible_text(conn, text, project):
+    if '（原 id：' in text:
+        for identity in re.findall(r'（原 id：([^）]+)）', text):
+            source = conn.execute('SELECT original_text FROM personal_notes WHERE id=? AND project IS NOT ?',
+                                  (identity, project)).fetchone()
+            if source:
+                text = text.replace('- %s（原 id：%s）' % (source[0], identity), '- 来源在其他工作区')
+    return text
+
+
+def get_note(conn, note_id, *, project, now=None):
+    workspace_assistant.available(conn, project)
+    return _note(_row(conn, project, note_id), conn, store.now_iso() if now is None else now)
 
 
 def _tag_color(name):
     return PALETTE[int(hashlib.sha256(name.encode('utf-8')).hexdigest(), 16) % len(PALETTE)]
 
 
-def _register_tags(conn, names, now):
+def _register_tags(conn, project, names, now):
     """Every tag used by a note has a registry row (color, pin, order)."""
     for name in names:
-        if conn.execute('SELECT 1 FROM personal_note_tags WHERE name=?', (name,)).fetchone() is None:
-            order = conn.execute('SELECT COALESCE(MAX(sort_order)+1,0) FROM personal_note_tags').fetchone()[0]
-            conn.execute('INSERT INTO personal_note_tags(name,color,pinned,sort_order,version,created_at,updated_at) '
-                         'VALUES(?,?,0,?,1,?,?)', (name, _tag_color(name), order, now, now))
+        if conn.execute('SELECT 1 FROM workspace_note_tags WHERE project=? AND name=?', (project, name,)).fetchone() is None:
+            order = conn.execute('SELECT COALESCE(MAX(sort_order)+1,0) FROM workspace_note_tags WHERE project=?', (project,)).fetchone()[0]
+            conn.execute('INSERT INTO workspace_note_tags(project,name,color,pinned,sort_order,version,created_at,updated_at) '
+                         'VALUES(?,?,?,0,?,1,?,?)', (project, name, _tag_color(name), order, now, now))
 
 
-def _unregistered_tags(conn):
+def _unregistered_tags(conn, project):
     used = {}
-    for row in conn.execute('SELECT tags_json FROM personal_notes ORDER BY created_at,id'):
+    for row in conn.execute('SELECT tags_json FROM personal_notes WHERE project=? ORDER BY created_at,id', (project,)):
         used.update(dict.fromkeys(json.loads(row['tags_json'])))
-    known = {row['name'] for row in conn.execute('SELECT name FROM personal_note_tags')}
+    known = {row['name'] for row in conn.execute('SELECT name FROM workspace_note_tags WHERE project=?', (project,))}
     return [name for name in used if name not in known]
 
 
-def list_tags(conn, *, now=None):
+def list_tags(conn, project, *, now=None):
     """Tags with colors and open-note counts. Tags that predate the registry, or
     arrived by import, are registered on this first read (color from the name)."""
     now = store.now_iso() if now is None else now
-    if _unregistered_tags(conn):
+    workspace_assistant.available(conn, project)
+    if _unregistered_tags(conn, project):
         with (nullcontext() if conn.in_transaction else board.transaction(conn)):
-            _register_tags(conn, _unregistered_tags(conn), now)
+            _register_tags(conn, project, _unregistered_tags(conn, project), now)
     counts = {}
-    for row in conn.execute("SELECT tags_json FROM personal_notes WHERE state='open'"):
+    for row in conn.execute("SELECT tags_json FROM personal_notes WHERE state='open' AND project=?", (project,)):
         for name in json.loads(row['tags_json']):
             counts[name] = counts.get(name, 0) + 1
     return {'tags': [{'name': row['name'], 'color': row['color'], 'pinned': bool(row['pinned']),
                       'sort_order': row['sort_order'], 'count': counts.get(row['name'], 0), 'version': row['version']}
-                     for row in conn.execute('SELECT * FROM personal_note_tags ORDER BY pinned DESC,sort_order,name')],
+                     for row in conn.execute('SELECT * FROM workspace_note_tags WHERE project=? ORDER BY pinned DESC,sort_order,name', (project,))],
             'palette': list(PALETTE)}
 
 
@@ -424,17 +383,17 @@ def _title(value):
     return None if value is None else _text(value, '标题', 80).strip()
 
 
-def _row(conn, note_id):
+def _row(conn, project, note_id):
     _text(note_id, '想法标识', 300)
-    row = conn.execute('SELECT * FROM personal_notes WHERE id=?', (note_id,)).fetchone()
+    row = conn.execute('SELECT * FROM personal_notes WHERE project=? AND id=?', (project, note_id)).fetchone()
     if row is None:
-        raise board.BoardError('个人想法不存在: ' + note_id)
+        raise OpError('not_visible', '本工作区没有该想法')
     return row
 
 
 def _current(row, expected):
     if row['version'] != _version(expected):
-        raise board.Conflict('个人想法已变化，请刷新后重试: ' + row['id'])
+        raise board.VersionConflict('个人想法已变化，请刷新后重试: ' + row['id'])
     return row
 
 
@@ -447,10 +406,10 @@ def _set(conn, row, now, *, touch=True, **fields):
                            ',version=version+1 WHERE id=? AND version=?',
                            (*fields.values(), row['id'], row['version'])).rowcount
     if changed != 1:
-        raise board.Conflict('个人想法已变化，请刷新后重试: ' + row['id'])
+        raise board.VersionConflict('个人想法已变化，请刷新后重试: ' + row['id'])
 
 
-def _batch(conn, note_ids, versions):
+def _batch(conn, project, note_ids, versions):
     """Rows for a multi-note command; any stale version fails the whole command."""
     if not isinstance(note_ids, list) or not 1 <= len(note_ids) <= 500:
         raise board.BoardError('想法列表必须包含 1–500 条想法标识')
@@ -458,16 +417,20 @@ def _batch(conn, note_ids, versions):
         _text(identity, '想法标识', 300)
     if len(set(note_ids)) != len(note_ids):
         raise board.BoardError('想法列表不能重复')
-    if not isinstance(versions, dict) or set(versions) != set(note_ids):
+    rows = {identity: _row(conn, project, identity) for identity in note_ids}
+    if isinstance(versions, dict):
+        for identity in versions.keys() - rows.keys():
+            _row(conn, project, identity)
+    if not isinstance(versions, dict) or set(versions) != rows.keys():
         raise board.BoardError('expected_versions 必须正好包含每条想法的版本')
-    return [_current(_row(conn, identity), versions[identity]) for identity in note_ids]
+    return [_current(row, versions[identity]) for identity, row in rows.items()]
 
 
-def _merge(conn, data, now):
+def _merge(conn, project, data, now):
     primary_id = _text(data['primary_id'], '主卡标识', 300)
     if not isinstance(data['note_ids'], list) or primary_id in data['note_ids']:
         raise board.BoardError('note_ids 必须是数组，且不能包含主卡')
-    rows = _batch(conn, [primary_id] + data['note_ids'], data['expected_versions'])
+    rows = _batch(conn, project, [primary_id] + data['note_ids'], data['expected_versions'])
     for row in rows:
         if row['state'] != 'open' or row['merged_into'] is not None:
             raise board.BoardError('只能合并未归档的想法: ' + row['id'])
@@ -480,24 +443,19 @@ def _merge(conn, data, now):
     _set(conn, primary, now, text=text, tags_json=_json(tags))
     for row in others:
         _set(conn, row, now, state='archived', merged_into=primary_id)
-    _register_tags(conn, tags, now)
-    return {'note': get_note(conn, primary_id, now=now), 'notes': [get_note(conn, row['id'], now=now) for row in rows]}
+    _register_tags(conn, project, tags, now)
+    return {'note': get_note(conn, primary_id, project=project, now=now), 'notes': [get_note(conn, row['id'], project=project, now=now) for row in rows]}
 
 
-def _bulk(conn, data, now):
+def _bulk(conn, project, data, now):
     op, value = data['op'], data.get('value')
     if op not in BULK_OPS:
         raise board.BoardError('批量操作必须是 ' + '、'.join(BULK_OPS))
     if op in ('tag_add', 'tag_remove'):
         value = _tags([value])[0]
-    elif op == 'project':
-        if 'value' not in data:
-            raise board.BoardError('批量改工作区必须提供 value（全局用 null）')
-        if value is not None:
-            board.project(conn, value)
     elif value is not None:
         raise board.BoardError('批量归档不接受 value')
-    rows = _batch(conn, data['note_ids'], data['expected_versions'])
+    rows = _batch(conn, project, data['note_ids'], data['expected_versions'])
     for row in rows:
         tags = json.loads(row['tags_json'])
         if op == 'tag_add' and value not in tags:
@@ -506,14 +464,12 @@ def _bulk(conn, data, now):
             _set(conn, row, now, tags_json=_json([name for name in tags if name != value]))
         elif op == 'archive' and row['state'] == 'open':
             _set(conn, row, now, state='archived')
-        elif op == 'project' and row['project'] != value:
-            _set(conn, row, now, project=value)
     if op == 'tag_add':
-        _register_tags(conn, [value], now)
-    return {'notes': [get_note(conn, row['id'], now=now) for row in rows]}
+        _register_tags(conn, project, [value], now)
+    return {'notes': [get_note(conn, row['id'], project=project, now=now) for row in rows]}
 
 
-def _note_write(conn, action, data, *, source, author, now):
+def _note_write(conn, project, action, data, *, source, author, now):
     """Apply one note command inside the caller's transaction.
 
     ``source`` records where a captured note came from; ``author`` is the
@@ -522,23 +478,21 @@ def _note_write(conn, action, data, *, source, author, now):
     _fields(action, data)
     if action == 'note.capture':
         text, tags, title = _text(data['text'], '想法内容'), _tags(data.get('tags', [])), _title(data.get('title'))
-        if data.get('project') is not None:
-            board.project(conn, data['project'])
         identity = str(uuid.uuid4())
         conn.execute('INSERT INTO personal_notes(id,project,original_text,text,tags_json,state,created_at,updated_at,source_json,title) '
-                     "VALUES(?,?,?,?,?,'open',?,?,?,?)", (identity, data.get('project'), text, text, _json(tags),
+                     "VALUES(?,?,?,?,?,'open',?,?,?,?)", (identity, project, text, text, _json(tags),
                      now, now, _json(source), title))
-        _register_tags(conn, tags, now)
-        return {'note': get_note(conn, identity, now=now)}
+        _register_tags(conn, project, tags, now)
+        return {'note': get_note(conn, identity, project=project, now=now)}
     if action == 'note.merge':
-        return _merge(conn, data, now)
+        return _merge(conn, project, data, now)
     if action == 'note.bulk':
-        return _bulk(conn, data, now)
-    row = _row(conn, data['note_id'])
+        return _bulk(conn, project, data, now)
+    row = _row(conn, project, data['note_id'])
     if action == 'note.annotate':
         entry = {'id': str(uuid.uuid4()), 'text': _text(data['text'], '讨论结论'), 'at': now, 'source': author}
         _set(conn, row, now, summary_json=_json(json.loads(row['summary_json']) + [entry]))
-        return {'note': get_note(conn, row['id'], now=now)}
+        return {'note': get_note(conn, row['id'], project=project, now=now)}
     _current(row, data['expected_version'])
     if action == 'note.update':
         fields = {}
@@ -548,11 +502,7 @@ def _note_write(conn, action, data, *, source, author, now):
             fields['title'] = _title(data['title'])
         if 'tags' in data:
             fields['tags_json'] = _json(_tags(data['tags']))
-            _register_tags(conn, json.loads(fields['tags_json']), now)
-        if 'project' in data:
-            if data['project'] is not None:
-                board.project(conn, data['project'])
-            fields['project'] = data['project']
+            _register_tags(conn, project, json.loads(fields['tags_json']), now)
         if 'state' in data:
             if data['state'] not in ('open', 'archived'):
                 raise board.BoardError('想法状态必须是 open 或 archived')
@@ -560,7 +510,7 @@ def _note_write(conn, action, data, *, source, author, now):
                 raise board.BoardError('这条想法已并入 %s，请用 unmerge 拆分恢复' % row['merged_into'])
             fields['state'] = data['state']
         if not fields:
-            raise board.BoardError('update 至少要修改 text、title、tags、project 或 state 之一')
+            raise board.BoardError('update 至少要修改 text、title、tags 或 state 之一')
     elif action == 'note.pin':
         if type(data['pinned']) is not bool:
             raise board.BoardError('pinned 必须是布尔值')
@@ -584,24 +534,24 @@ def _note_write(conn, action, data, *, source, author, now):
             raise board.BoardError('这条想法没有被合并')
         fields = {'state': 'open', 'merged_into': None}
     _set(conn, row, now, **fields)
-    return {'note': get_note(conn, row['id'], now=now)}
+    return {'note': get_note(conn, row['id'], project=project, now=now)}
 
 
 def _tag_name(value):
     return _tags([value])[0]
 
 
-def _tag_row(conn, name):
-    row = conn.execute('SELECT * FROM personal_note_tags WHERE name=?', (name,)).fetchone()
+def _tag_row(conn, project, name):
+    row = conn.execute('SELECT * FROM workspace_note_tags WHERE project=? AND name=?', (project, name,)).fetchone()
     if row is None:
-        raise board.BoardError('标签不存在: ' + name)
+        raise OpError('not_visible', '本工作区没有该标签')
     return row
 
 
-def _tag_current(conn, name, expected):
-    row = _tag_row(conn, _tag_name(name))
+def _tag_current(conn, project, name, expected):
+    row = _tag_row(conn, project, _tag_name(name))
     if row['version'] != _version(expected):
-        raise board.Conflict('标签已变化，请刷新后重试: ' + row['name'])
+        raise board.VersionConflict('标签已变化，请刷新后重试: ' + row['name'])
     return row
 
 
@@ -611,15 +561,15 @@ def _color(value):
     return value
 
 
-def _tagged(conn, name):
-    return [row for row in conn.execute('SELECT * FROM personal_notes ORDER BY id').fetchall()
+def _tagged(conn, project, name):
+    return [row for row in conn.execute('SELECT * FROM personal_notes WHERE project=? ORDER BY id', (project,)).fetchall()
             if name in json.loads(row['tags_json'])]
 
 
-def _retag(conn, mapping, now):
+def _retag(conn, project, mapping, now):
     """Replace (or drop, for None) tags on every note, keeping first positions."""
     affected = 0
-    for row in conn.execute('SELECT * FROM personal_notes ORDER BY id').fetchall():
+    for row in conn.execute('SELECT * FROM personal_notes WHERE project=? ORDER BY id', (project,)).fetchall():
         tags = json.loads(row['tags_json'])
         if not any(name in mapping for name in tags):
             continue
@@ -629,86 +579,92 @@ def _retag(conn, mapping, now):
     return affected
 
 
-def _tag_write(conn, action, data, now):
+def _tag_write(conn, project, action, data, now):
     _fields(action, data)
     affected = None
     if action == 'tag.create':
         name = _tag_name(data['name'])
-        if conn.execute('SELECT 1 FROM personal_note_tags WHERE name=?', (name,)).fetchone() is not None:
+        if conn.execute('SELECT 1 FROM workspace_note_tags WHERE project=? AND name=?', (project, name,)).fetchone() is not None:
             raise board.Conflict('标签已存在: ' + name)
         color = _color(data['color']) if 'color' in data else _tag_color(name)
-        order = conn.execute('SELECT COALESCE(MAX(sort_order)+1,0) FROM personal_note_tags').fetchone()[0]
-        conn.execute('INSERT INTO personal_note_tags(name,color,pinned,sort_order,version,created_at,updated_at) '
-                     'VALUES(?,?,0,?,1,?,?)', (name, color, order, now, now))
+        order = conn.execute('SELECT COALESCE(MAX(sort_order)+1,0) FROM workspace_note_tags WHERE project=?', (project,)).fetchone()[0]
+        conn.execute('INSERT INTO workspace_note_tags(project,name,color,pinned,sort_order,version,created_at,updated_at) '
+                     'VALUES(?,?,?,0,?,1,?,?)', (project, name, color, order, now, now))
     elif action in ('tag.recolor', 'tag.pin'):
-        row = _tag_current(conn, data['name'], data['expected_version'])
+        row = _tag_current(conn, project, data['name'], data['expected_version'])
         if action == 'tag.recolor':
             column, value = 'color', _color(data['color'])
         else:
             if type(data['pinned']) is not bool:
                 raise board.BoardError('pinned 必须是布尔值')
             column, value = 'pinned', int(data['pinned'])
-        conn.execute('UPDATE personal_note_tags SET ' + column + '=?,version=version+1,updated_at=? WHERE name=?',
-                     (value, now, row['name']))
+        conn.execute('UPDATE workspace_note_tags SET ' + column + '=?,version=version+1,updated_at=? WHERE project=? AND name=?',
+                     (value, now, project, row['name']))
     elif action == 'tag.reorder':
         names = data['names']
         if not isinstance(names, list) or not names:
             raise board.BoardError('names 必须是非空标签数组')
-        names = [_tag_row(conn, _tag_name(name))['name'] for name in names]
+        names = [_tag_row(conn, project, _tag_name(name))['name'] for name in names]
         if len(set(names)) != len(names):
             raise board.BoardError('names 不能重复')
-        rest = [row['name'] for row in conn.execute('SELECT name FROM personal_note_tags ORDER BY sort_order,name')
+        rest = [row['name'] for row in conn.execute('SELECT name FROM workspace_note_tags WHERE project=? ORDER BY sort_order,name', (project,))
                 if row['name'] not in names]
         for order, name in enumerate(names + rest):
-            conn.execute('UPDATE personal_note_tags SET sort_order=?,version=version+1,updated_at=? '
-                         'WHERE name=? AND sort_order<>?', (order, now, name, order))
+            conn.execute('UPDATE workspace_note_tags SET sort_order=?,version=version+1,updated_at=? '
+                         'WHERE project=? AND name=? AND sort_order<>?', (order, now, project, name, order))
     elif action == 'tag.rename':
-        row = _tag_current(conn, data['name'], data['expected_version'])
+        row = _tag_current(conn, project, data['name'], data['expected_version'])
         new_name = _tag_name(data['new_name'])
         if new_name == row['name']:
             raise board.BoardError('新名称与原名称相同')
-        if conn.execute('SELECT 1 FROM personal_note_tags WHERE name=?', (new_name,)).fetchone() is not None:
-            raise TagMergeRequired(new_name, len(_tagged(conn, row['name'])))
-        conn.execute('UPDATE personal_note_tags SET name=?,version=version+1,updated_at=? WHERE name=?',
-                     (new_name, now, row['name']))
-        affected = _retag(conn, {row['name']: new_name}, now)
+        if conn.execute('SELECT 1 FROM workspace_note_tags WHERE project=? AND name=?', (project, new_name,)).fetchone() is not None:
+            raise TagMergeRequired(new_name, len(_tagged(conn, project, row['name'])))
+        conn.execute('UPDATE workspace_note_tags SET name=?,version=version+1,updated_at=? WHERE project=? AND name=?',
+                     (new_name, now, project, row['name']))
+        affected = _retag(conn, project, {row['name']: new_name}, now)
     elif action == 'tag.merge':
-        into = _tag_row(conn, _tag_name(data['into']))['name']
+        into = _tag_row(conn, project, _tag_name(data['into']))['name']
         sources = data['from']
         if not isinstance(sources, list) or not sources:
             raise board.BoardError('from 必须是非空标签数组')
-        sources = [_tag_row(conn, _tag_name(name))['name'] for name in sources]
+        sources = [_tag_row(conn, project, _tag_name(name))['name'] for name in sources]
         if len(set(sources)) != len(sources) or into in sources:
             raise board.BoardError('from 不能重复，也不能包含目标标签')
-        affected = _retag(conn, dict.fromkeys(sources, into), now)
-        conn.executemany('DELETE FROM personal_note_tags WHERE name=?', [(name,) for name in sources])
+        affected = _retag(conn, project, dict.fromkeys(sources, into), now)
+        conn.executemany('DELETE FROM workspace_note_tags WHERE project=? AND name=?', [(project, name) for name in sources])
     else:
-        row = _tag_current(conn, data['name'], data['expected_version'])
-        affected = _retag(conn, {row['name']: None}, now)
-        conn.execute('DELETE FROM personal_note_tags WHERE name=?', (row['name'],))
-    result = {'tags': list_tags(conn, now=now)['tags']}
+        row = _tag_current(conn, project, data['name'], data['expected_version'])
+        affected = _retag(conn, project, {row['name']: None}, now)
+        conn.execute('DELETE FROM workspace_note_tags WHERE project=? AND name=?', (project, row['name'],))
+    result = {'tags': list_tags(conn, project, now=now)['tags']}
     if affected is not None:
         result['affected'] = affected
     return result
 
 
-def _local_write(conn, kind, action, data, request_id, now):
+def scoped_payload(project, data):
+    if 'project' in data and data['project'] != project:
+        raise OpError('not_visible', '操作参数指向其他工作区')
+    return {key: value for key, value in data.items() if key != 'project'}
+
+
+def _local_write(conn, project, kind, action, data, request_id, now):
     """One explicit UI command: a local transaction with zero model work."""
     _text(request_id, '操作标识', 300)
-    ensure_schema(conn)
-    fingerprint = hashlib.sha256(_json({'action': kind + action if kind == 'tag.' else action,
-                                        'data': data}).encode('utf-8')).hexdigest()
+    data = scoped_payload(project, data)
+    fingerprint = hashlib.sha256(_json({'action': kind + action, 'project': project, 'data': data}).encode('utf-8')).hexdigest()
     with board.transaction(conn):
+        workspace_assistant.available(conn, project)
         previous = conn.execute('SELECT * FROM personal_note_requests WHERE request_id=?', (request_id,)).fetchone()
         if previous is not None:
             if previous['fingerprint'] != fingerprint:
-                raise board.Conflict('此操作标识已经用于不同的想法操作')
+                raise OpError('request_conflict', '此操作标识已经用于不同的想法操作')
             return {**json.loads(previous['response_json']), 'duplicate': True}
         now = store.now_iso() if now is None else now
         if kind == 'tag.':
-            value = _tag_write(conn, kind + action, data, now)
+            value = _tag_write(conn, project, kind + action, data, now)
         else:
-            value = _note_write(conn, kind + action, data, source={'type': 'human', 'surface': 'personal-notes'},
+            value = _note_write(conn, project, kind + action, data, source={'type': 'human', 'surface': 'personal-notes'},
                                 author={'type': 'human'}, now=now)
         result = {'ok': True, **value, 'duplicate': False, 'model_calls': 0}
         conn.execute('INSERT INTO personal_note_requests VALUES(?,?,?)', (request_id, fingerprint, _json(result)))
@@ -719,25 +675,30 @@ UI_NOTE_ACTIONS = ('capture', 'update', 'pin', 'snooze', 'keep', 'archive', 'res
 UI_TAG_ACTIONS = ('create', 'recolor', 'pin', 'reorder', 'rename', 'merge', 'remove')
 
 
-def note_action(conn, action, data, *, request_id, now=None):
+def note_action(conn, action, data, *, project, request_id, now=None):
     if action not in UI_NOTE_ACTIONS or not isinstance(data, dict):
         raise board.BoardError('想法操作必须是 ' + '、'.join(UI_NOTE_ACTIONS) + ' 之一，并提供对象参数')
-    return _local_write(conn, 'note.', action, data, request_id, now)
+    return _local_write(conn, project, 'note.', action, data, request_id, now)
 
 
-def tag_action(conn, action, data, *, request_id, now=None):
+def tag_action(conn, action, data, *, project, request_id, now=None):
     if action not in UI_TAG_ACTIONS or not isinstance(data, dict):
         raise board.BoardError('标签操作必须是 ' + '、'.join(UI_TAG_ACTIONS) + ' 之一，并提供对象参数')
-    return _local_write(conn, 'tag.', action, data, request_id, now)
+    return _local_write(conn, project, 'tag.', action, data, request_id, now)
+
+
+def _assigned_project(conn, note_id):
+    row = conn.execute('SELECT project FROM personal_notes WHERE id=? AND project IS NOT NULL', (note_id,)).fetchone()
+    if row is None:
+        raise OpError('not_visible', '该想法尚未归属工作区或不存在')
+    return row[0]
 
 
 def discussion_context(conn, note_id, *, project=None):
     """Context for one explicit "去聊聊" message, read by ID; client text is never trusted."""
-    if project is not None and (not _has_table(conn, 'personal_notes') or not conn.execute(
-            'SELECT 1 FROM personal_notes WHERE id=? AND project=?', (note_id, project)).fetchone()):
-        from .ops.errors import OpError
-        raise OpError('not_visible', '本工作区没有该想法')
-    note = get_note(conn, note_id)
+    if project is None:
+        project = _assigned_project(conn, note_id)
+    note = get_note(conn, note_id, project=project)
     stage = {'new': '未讨论', 'discussed': '讨论过', 'promoted': '已转任务'}[note['stage']]
     lines = ['想法标识：' + note['id'], '标题：' + (note['title'] or '（无）'),
              '工作区：' + (note['project'] or '全局'), '标签：' + ('、'.join(note['tags']) or '（无）'),
@@ -754,25 +715,23 @@ def record_discussion(conn, note_id, session_id, message_id, seq, *, now=None):
     _text(message_id, '用户消息标识', 300)
     if type(seq) is not int or seq <= 0:
         raise board.BoardError('消息序号必须是正整数')
-    ensure_schema(conn)
     with board.transaction(conn):
         session = _require_chat_assistant(conn, session_id)
-        note = _row(conn, note_id)
-        if session['project'] is not None and note['project'] != session['project']:
-            from .ops.errors import OpError
-            raise OpError('not_visible', '本工作区没有该想法')
+        project = session['project'] or _assigned_project(conn, note_id)
+        workspace_assistant.available(conn, project)
+        _row(conn, project, note_id)
         previous = conn.execute('SELECT note_id FROM personal_note_discussions WHERE session_id=? AND message_id=?',
                                 (session_id, message_id)).fetchone()
         if previous is not None:
             if previous['note_id'] != note_id:
                 raise board.Conflict('这条消息已经记为另一条想法的讨论')
-            return get_note(conn, note_id, now=now)
+            return get_note(conn, note_id, project=project, now=now)
         now = store.now_iso() if now is None else now
         conn.execute('INSERT INTO personal_note_discussions(note_id,session_id,message_id,seq,created_at) VALUES(?,?,?,?,?)',
                      (note_id, session_id, message_id, seq, now))
         conn.execute("UPDATE personal_notes SET stage=CASE WHEN stage='new' THEN 'discussed' ELSE stage END,"
                      'last_discussed_at=? WHERE id=?', (now, note_id))
-        return get_note(conn, note_id, now=now)
+        return get_note(conn, note_id, project=project, now=now)
 
 
 def _promote(conn, note_id):
@@ -781,24 +740,29 @@ def _promote(conn, note_id):
                  (store.now_iso(), note_id))
 
 
-def start_note(conn, note_id, project, *, request_id, create_leader):
+def _check_leader_scope(conn, project, note_id):
+    if conn.execute('SELECT 1 FROM personal_note_leaders l LEFT JOIN sessions s ON s.session_id=l.session_id '
+                    'WHERE l.note_id=? AND (l.project<>? OR (l.session_id IS NOT NULL AND s.project IS NOT ?))',
+                    (note_id, project, project)).fetchone():
+        raise OpError('not_visible', '这条想法已有其他工作区的对话关联')
+
+
+def start_note(conn, note_id, project, *, request_id, create_leader, proof=None):
     """The explicit Start discussing button creates one durable leader link."""
     _text(request_id, '操作标识', 300)
     _text(project, '目标工作区', 300)
-    ensure_schema(conn)
     with board.transaction(conn):
-        board.project(conn, project)
-        note = get_note(conn, note_id)
+        workspace_assistant.available(conn, project)
+        note = get_note(conn, note_id, project=project)
+        _check_leader_scope(conn, project, note_id)
         other = conn.execute('SELECT note_id FROM personal_note_leaders WHERE request_id=?', (request_id,)).fetchone()
         if other is not None and other['note_id'] != note_id:
-            raise board.Conflict('此操作标识已经用于另一条想法')
+            raise OpError('request_conflict', '此操作标识已经用于另一条想法')
         previous = conn.execute('SELECT * FROM personal_note_leaders WHERE note_id=?', (note_id,)).fetchone()
         if previous is not None:
-            if previous['project'] != project:
-                raise board.Conflict('这条想法已有其他工作区的对话关联')
             if previous['status'] == 'completed':
                 return {'ok': True, 'note': note, 'session_id': previous['session_id'], 'project': project, 'duplicate': True}
-            raise board.Conflict('这条想法已有创建记录（%s），不会重复新建对话；请先核实结果。%s' %
+            raise OpError('outcome_unknown', '这条想法已有创建记录（%s），不会重复新建对话；请先核实结果。%s' %
                                  (previous['status'], previous['error'] or ''))
         source = {'type': 'personal-note', 'id': note['id'], 'version': note['version'],
                   'original_text': note['original_text'], 'text': note['text'], 'tags': note['tags'],
@@ -809,10 +773,10 @@ def start_note(conn, note_id, project, *, request_id, create_leader):
     message = ('请围绕这条想法开始讨论，识别具体任务；尚未获得实施同意时先讨论，不自动开始执行。\n\n'
                '想法原文：\n' + note['original_text'] + '\n\n当前整理：\n' + note['text'] +
                '\n\n标签：' + '、'.join(note['tags']) + '\n\n来源记录：' + _json(source))
+    instruction = {'instruction': '从这条想法开始聊：' + note['text'], 'context': {'source': 'human-ui'}} if proof is None else proof
+    instruction = {**instruction, 'context': {**instruction['context'], 'action': 'note.start', 'note': source}}
     try:
-        result = create_leader(project, message, name=None, request_id=request_id,
-                               instruction={'instruction': '从这条想法开始聊：' + note['text'],
-                                            'context': {'source': 'human-ui', 'action': 'note.start', 'note': source}})
+        result = create_leader(project, message, name=None, request_id=request_id, instruction=instruction)
         session_id = result['session_id']
         with board.transaction(conn):
             leader = board.session(conn, session_id)
@@ -824,15 +788,18 @@ def start_note(conn, note_id, project, *, request_id, create_leader):
             conn.execute("UPDATE personal_note_leaders SET status='completed',session_id=?,updated_at=? WHERE note_id=?",
                          (session_id, store.now_iso(), note_id))
             _promote(conn, note_id)
-        return {'ok': True, 'note': get_note(conn, note_id), 'session_id': session_id, 'project': project, 'duplicate': False}
+        return {'ok': True, 'note': get_note(conn, note_id, project=project), 'session_id': session_id, 'project': project, 'duplicate': False}
     except Exception as exc:
         conn.execute("UPDATE personal_note_leaders SET status='unknown',error=?,updated_at=? WHERE note_id=? AND status<>'completed'",
-                     (str(exc), store.now_iso(), note_id))
-        raise
+                     (type(exc).__name__ + ': ' + str(exc), store.now_iso(), note_id))
+        raise OpError('outcome_unknown', '创建结果待核实: ' + str(exc)) from exc
 
 
 def _note_leader(conn, project, session_id):
-    leader = board.session(conn, _text(session_id, 'leader 会话标识', 300))
+    _text(session_id, 'leader 会话标识', 300)
+    if not conn.execute('SELECT 1 FROM sessions WHERE project=? AND session_id=?', (project, session_id)).fetchone():
+        raise OpError('not_visible', '本工作区没有该 leader')
+    leader = board.session(conn, session_id)
     if (leader['project'] != project or leader['role'] != 'leader' or leader['status'] == 'closed'
             or board.is_archived(conn, session_id) or not conn.execute(
                 'SELECT 1 FROM groups WHERE project=? AND leader_session_id=? AND closed_at IS NULL',
@@ -847,6 +814,7 @@ def record_note_registration(conn, note_id, request_id, session_id):
         row = conn.execute('SELECT * FROM personal_note_leaders WHERE note_id=?', (note_id,)).fetchone()
         if row is None or row['request_id'] != request_id or row['status'] != 'pending':
             raise board.Conflict('想法创建记录已被处理，不能继续启动新的对话')
+        _row(conn, row['project'], note_id)
         _note_leader(conn, row['project'], session_id)
         if row['session_id'] not in (None, session_id):
             raise board.Conflict('想法已记录另一对话的创建回执')
@@ -856,11 +824,11 @@ def record_note_registration(conn, note_id, request_id, session_id):
                      (session_id, _json(source), store.now_iso(), note_id))
 
 
-def note_recovery(conn, note_id):
-    note = get_note(conn, note_id)
+def note_recovery(conn, note_id, *, project):
+    note = get_note(conn, note_id, project=project)
+    _check_leader_scope(conn, project, note_id)
     if note['leader'] is None:
         raise board.BoardError('这条想法没有需要核实的对话创建记录')
-    project = note['leader']['project']
     leaders = []
     for row in conn.execute("SELECT session_id FROM sessions WHERE project=? AND role='leader'", (project,)):
         try:
@@ -871,22 +839,24 @@ def note_recovery(conn, note_id):
     return {'note': note, 'leaders': leaders, 'model_calls': 0}
 
 
-def bind_note_leader(conn, note_id, session_id, *, request_id, reason, actor=board.HUMAN, evidence=None):
+def bind_note_leader(conn, note_id, session_id, *, project, request_id, reason, actor=board.HUMAN, evidence=None):
     """Link verified existing history; never send input, launch, or clear a receipt."""
     if actor != board.HUMAN and evidence is None:
         raise board.BoardError('人工恢复关联必须由用户明确核实')
     _text(request_id, '恢复操作标识', 300)
     _text(reason, '恢复说明')
-    ensure_schema(conn)
-    fingerprint = hashlib.sha256(_json({'action': 'note.bind', 'note_id': note_id, 'session_id': session_id,
+    fingerprint = hashlib.sha256(_json({'action': 'note.bind', 'project': project, 'note_id': note_id, 'session_id': session_id,
         'reason': reason, 'actor': actor, 'evidence': evidence}).encode('utf-8')).hexdigest()
     with board.transaction(conn):
+        workspace_assistant.available(conn, project)
+        _row(conn, project, note_id)
+        _check_leader_scope(conn, project, note_id)
         prior = conn.execute('SELECT * FROM personal_note_requests WHERE request_id=?', (request_id,)).fetchone()
         if prior is not None:
             if prior['fingerprint'] != fingerprint:
-                raise board.Conflict('恢复操作标识已用于不同内容')
+                raise OpError('request_conflict', '恢复操作标识已用于不同内容')
             return {**json.loads(prior['response_json']), 'duplicate': True}
-        note = get_note(conn, note_id)
+        note = get_note(conn, note_id, project=project)
         if note['leader'] is None:
             raise board.BoardError('这条想法没有创建记录，不能伪造恢复关联')
         link = note['leader']
@@ -902,7 +872,7 @@ def bind_note_leader(conn, note_id, session_id, *, request_id, reason, actor=boa
         conn.execute("UPDATE personal_note_leaders SET session_id=?,status='completed',source_json=?,updated_at=? WHERE note_id=?",
                      (session_id, _json(source), store.now_iso(), note_id))
         _promote(conn, note_id)
-        result = {'ok': True, 'note': get_note(conn, note_id), 'session_id': session_id,
+        result = {'ok': True, 'note': get_note(conn, note_id, project=project), 'session_id': session_id,
                   'project': link['project'], 'duplicate': False, 'recovered': True, 'model_calls': 0}
         conn.execute('INSERT INTO personal_note_requests VALUES(?,?,?)', (request_id, fingerprint, _json(result)))
         board._event(conn, 'personal:note-recovered', link['project'], actor,
@@ -911,7 +881,6 @@ def bind_note_leader(conn, note_id, session_id, *, request_id, reason, actor=boa
 
 
 def _require_chat_assistant(conn, session_id):
-    from . import workspace_assistant
     project = workspace_assistant.project_for(conn, session_id)
     if project is None:
         return _active_assistant(conn, session_id)
@@ -1054,10 +1023,13 @@ def _apply(conn, action, data, *, request_id, proof, create_leader, send_message
 def _personal_write(conn, action, data, *, context, now):
     """Assistant note/tag writes. Summaries carry the authorizing user
     message's assistant session and journal seq."""
+    project = data['project']
+    workspace_assistant.available(conn, project)
+    data = scoped_payload(project, data['data'])
     if action in TAG_WRITE_ACTIONS:
-        return _tag_write(conn, action, data, now)
+        return _tag_write(conn, project, action, data, now)
     author = {'type': 'assistant', 'session_id': context['session_id'], 'seq': context['seq']}
-    return _note_write(conn, action, data, source=context, author=author, now=now)
+    return _note_write(conn, project, action, data, source=context, author=author, now=now)
 
 
 def assistant_action(conn, action, data, *, request_id, instruction, context,
@@ -1077,17 +1049,24 @@ def assistant_action(conn, action, data, *, request_id, instruction, context,
     if (not isinstance(context, dict) or context.get('verified_by') != 'session-journal'
             or context.get('text') != instruction or context.get('source') not in ('human', 'qq', 'lark')):
         raise board.BoardError('助手操作缺少宿主验证的原始用户消息')
-    _active_assistant(conn, context.get('session_id'))
+    if action in NOTE_WRITE_ACTIONS or action in TAG_WRITE_ACTIONS:
+        actor = _require_chat_assistant(conn, context.get('session_id'))
+        if actor['project'] is not None and actor['project'] != data.get('project'):
+            raise OpError('not_visible', '助手只能操作本工作区的想法')
+        workspace_assistant.available(conn, data.get('project'))
+    else:
+        _active_assistant(conn, context.get('session_id'))
     _text(context.get('message_id'), '用户消息标识', 300)
     if conn.in_transaction:
         raise board.Conflict('助手动作必须在调用方事务之外执行')
-    ensure_schema(conn)
     proof = {'instruction': instruction, 'context': context}
     fingerprint = hashlib.sha256(_json({'action': action, 'data': data, 'proof': proof}).encode('utf-8')).hexdigest()
     ports = {'create_leader': create_leader, 'send_message': send_message, 'stop_session': stop_session}
     with board.transaction(conn):
         previous = conn.execute('SELECT * FROM personal_action_receipts WHERE request_id=?', (request_id,)).fetchone()
         if previous is not None and previous['fingerprint'] != fingerprint:
+            if action in NOTE_WRITE_ACTIONS or action in TAG_WRITE_ACTIONS:
+                raise OpError('request_conflict', '此操作标识已经用于不同的助手请求')
             raise board.Conflict('此操作标识已经用于不同的助手请求')
         if previous is None:
             # Models occasionally change their retry key. Identical intent

@@ -14,7 +14,7 @@ NOTE_FIELD_SCHEMAS = {
     'title': {'type': ['string', 'null'], 'maxLength': 80, 'description': '短标题，最多 80 字；null 清除'},
     'tags': {'type': 'array', 'maxItems': 20, 'items': {'type': 'string', 'minLength': 1, 'maxLength': 60},
              'description': '标签名数组'},
-    'project': {'type': ['string', 'null'], 'description': '关联的工作区；null 表示全局'},
+    'project': {'type': ['string', 'null'], 'description': '若出现须与外层 project 相同'},
     'state': {'type': 'string', 'enum': ['open', 'archived'], 'description': 'open 或 archived'},
     'note_id': {'type': 'string', 'minLength': 1, 'description': '想法编号'},
     'expected_version': {'type': 'integer', 'minimum': 0, 'description': '读取时的版本号，用于检测并发修改'},
@@ -23,8 +23,8 @@ NOTE_FIELD_SCHEMAS = {
     'primary_id': {'type': 'string', 'minLength': 1, 'description': '合并后保留的主想法'},
     'note_ids': {'type': 'array', 'minItems': 1, 'items': {'type': 'string', 'minLength': 1}, 'description': '想法编号数组'},
     'expected_versions': {'type': 'object', 'additionalProperties': True, 'description': '{想法编号: 版本号}'},
-    'op': {'type': 'string', 'enum': ['tag_add', 'tag_remove', 'archive', 'project'], 'description': '批量动作'},
-    'value': {'type': ['string', 'null'], 'description': 'tag_add / tag_remove 的标签名，project 的工作区（null 为全局）'},
+    'op': {'type': 'string', 'enum': ['tag_add', 'tag_remove', 'archive'], 'description': '批量动作'},
+    'value': {'type': ['string', 'null'], 'description': 'tag_add / tag_remove 的标签名'},
     'name': {'type': 'string', 'minLength': 1, 'maxLength': 60, 'description': '标签名'},
     'color': {'type': 'string', 'enum': ['c%d' % index for index in range(10)], 'description': '颜色 c0–c9'},
     'names': {'type': 'array', 'minItems': 1, 'items': {'type': 'string', 'minLength': 1}, 'description': '按新顺序排列的标签名'},
@@ -34,14 +34,18 @@ NOTE_FIELD_SCHEMAS = {
 }
 
 
+PROJECT = {'type': 'string', 'minLength': 1, 'description': '工作区名'}
+
+
 def command(action):
     """``{data: {...}}`` with exactly the fields ``personal._note_write`` / ``_tag_write`` accept for ``action``."""
     required, optional = personal_model._NOTE_FIELDS[action]
     data = {'type': 'object', 'additionalProperties': False,
-            'properties': {key: NOTE_FIELD_SCHEMAS[key] for key in sorted(required | optional)}}
+            'properties': {key: NOTE_FIELD_SCHEMAS[key] for key in sorted(required | optional | {'project'})}}
     if required:
         data['required'] = sorted(required)
-    return {'type': 'object', 'additionalProperties': False, 'required': ['data'], 'properties': {'data': data}}
+    return {'type': 'object', 'additionalProperties': False, 'required': ['project', 'data'],
+            'properties': {'project': PROJECT, 'data': data}}
 
 
 def _field(kind, description, **constraints):
@@ -58,17 +62,17 @@ def _object(properties, required=(), *, description=None, kind='object', open_fi
 
 route('notes.list', '列出想法', 'GET', '/api/personal/notes', personal.get_personal_notes, access='read',
       params=_object({
-          'project': _field('string', '工作区名，省略时列出跨工作区的想法', minLength=1),
+          'project': PROJECT,
           'include_archived': _field('boolean', '是否包含归档的想法，默认否'),
-      }))
+      }, ['project']))
 for action, summary in NOTE_SUMMARIES.items():
     route('note.' + action, summary, 'POST', '/api/personal/notes', personal.post_personal_notes, access='write',
           when=act(action), forward_request_id=True, params=command('note.' + action))
 route('note.recovery.get', '查看想法讨论对话的找回情况', 'GET', '/api/personal/notes/recovery',
       personal.get_personal_notes_recovery, access='read',
       params=_object({
-          'note_id': _field('string', '想法 ID', minLength=1),
-      }, ['note_id']))
+          'note_id': _field('string', '想法 ID', minLength=1), 'project': PROJECT,
+      }, ['note_id', 'project']))
 route('note.recover', '找回想法关联的讨论对话', 'POST', '/api/personal/notes/recovery',
       personal.post_personal_notes_recovery, access='write', forward_request_id=True,
       params=_object({
@@ -76,8 +80,9 @@ route('note.recover', '找回想法关联的讨论对话', 'POST', '/api/persona
           'session_id': _field('string', '经核实已有该讨论记录的 leader 会话 ID', minLength=1),
           'request_id': _field('string', '用于幂等去重的请求 ID，旧地址正文必填，统一操作入口从外层请求转入',
                                minLength=1, maxLength=300),
+          'project': PROJECT,
           'reason': _field('string', '确认找回此会话作为想法讨论的理由', minLength=1),
-      }, ['note_id', 'session_id', 'reason']))
+      }, ['project', 'note_id', 'session_id', 'reason']))
 route('note.start', '就一条想法开始讨论', 'POST', '/api/personal/notes/start', personal.post_personal_notes_start,
       access='write', forward_request_id=True,
       params=_object({
@@ -88,15 +93,16 @@ route('note.start', '就一条想法开始讨论', 'POST', '/api/personal/notes/
       }, ['note_id', 'project']))
 # Reading the tag library still registers tags that predate it.
 route('tags.list', '列出标签', 'GET', '/api/personal/tags', personal.get_personal_tags, access='read',
-      params=_object({}, description='无参数'))
+      params=_object({'project': PROJECT}, ['project']))
 for action, summary in TAG_SUMMARIES.items():
     route('tag.' + action, summary, 'POST', '/api/personal/tags', personal.post_personal_tags, access='write',
           when=act(action), forward_request_id=True, params=command('tag.' + action))
 
 route('mindmap.get', '读取想法思维导图', 'GET', '/api/personal/mindmap', personal.get_personal_mindmap, access='read',
-      params=_object({}, description='无参数'))
+      params=_object({'project': PROJECT}, ['project']))
 route('mindmap.edit', '编辑想法思维导图', 'POST', '/api/personal/mindmap', personal.post_personal_mindmap, access='write',
       params=_object({
+          'project': PROJECT,
           'ops': _field('array', '按顺序应用的 1 到 500 步导图编辑', items=_object({
               'op': _field('string', '导图编辑动作', enum=['create', 'label', 'move', 'collapse', 'remove']),
               'id': _field(['string', 'null'], '导图节点 ID，create 时可由服务生成，其余动作必填'),
@@ -107,7 +113,7 @@ route('mindmap.edit', '编辑想法思维导图', 'POST', '/api/personal/mindmap
               'collapsed': _field('boolean', 'collapse 时必填，指定是否折叠节点'),
           }, ['op'], description='按 op 指定的一步导图编辑'), minItems=1, maxItems=500),
           'base_version': _field('integer', '当前导图版本，用于检查预览后是否发生变更', minimum=0),
-      }, ['ops', 'base_version']))
+      }, ['project', 'ops', 'base_version']))
 route('mindmap.preview', '预览思维导图转成的架构图', 'POST', '/api/personal/mindmap/preview',
       personal.post_personal_mindmap_preview, access='write',
       params=_object({
@@ -130,6 +136,17 @@ route('mindmap.convert', '把思维导图转成工作区架构图', 'POST', '/ap
           'map_version': _field('integer', '预览时取得的导图版本', minimum=0),
           'board_version': _field('integer', '预览时取得的工作区架构图版本', minimum=0),
       }, ['project', 'roots', 'parent_id', 'decisions', 'names', 'leaders', 'map_version', 'board_version']))
+
+route('note.get', '读取一条想法', 'GET', '/api/personal/note', personal.get_note, access='read',
+      params=_object({'project': PROJECT, 'note_id': NOTE_FIELD_SCHEMAS['note_id']}, ['project', 'note_id']))
+route('unassigned.list', '读取未归属的想法和导图树', 'GET', '/api/personal/unassigned',
+      personal.get_unassigned, access='read', params=_object({}, open_fields=False))
+route('unassigned.claim', '认领旧想法和导图树', 'POST', '/api/personal/unassigned',
+      personal.claim_unassigned, access='write',
+      params=_object({'project': PROJECT, 'note_ids': _field('array', '单条想法', items={'type': 'string'}),
+                      'root_ids': _field('array', '整棵导图树', items={'type': 'string'}),
+                      'expected_version': _field('integer', '遗留池版本')},
+                     ['project', 'note_ids', 'root_ids', 'expected_version'], open_fields=False))
 
 route('assistant.open', '打开系统管理员或工作区助手', 'POST', '/api/assistant/open', personal.post_assistant_open, access='write',
       params=_object({

@@ -222,7 +222,7 @@ class ReadingContextTests(ShellFixture, unittest.TestCase):
 
     def test_note_and_reading_prefixes_keep_order_and_note_tracking(self):
         _, reading = self.saved_report()
-        note = personal.note_action(self.conn, 'capture', {'text': '附注并存的想法原文'}, request_id='capture-note')['note']
+        note = personal.note_action(self.conn, 'capture', {'text': '附注并存的想法原文'}, project='demo', request_id='capture-note')['note']
         code, opened, _ = self.request('/api/op/assistant.open', {})
         self.assertEqual(code, 200, opened)
         session_id = opened['session_id']

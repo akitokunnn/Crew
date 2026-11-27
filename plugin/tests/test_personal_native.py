@@ -62,10 +62,11 @@ class PersonalNativeTests(unittest.TestCase):
         event = next(event for event in manager.history(assistant['session_id'])['events'] if event['type'] == 'message')
         self.assertEqual(event['text'], '记下我想做一个健身应用')
         with closing(store.connect(self.home)) as conn:
+            board.init_project(conn, 'fitness', self.home.parent)
             ai_call(self.service, conn, assistant['session_id'], 'note.capture',
-                    {'data': {'text': '想做一个健身应用'}}, message_id='user-1', runtime='codex')
-            self.assertEqual(personal.list_notes(conn)[0]['text'], '想做一个健身应用')
-            self.assertEqual(personal.projects(conn), [])
+                    {'project': 'fitness', 'data': {'text': '想做一个健身应用'}}, message_id='user-1', runtime='codex')
+            self.assertEqual(personal.list_notes(conn, project='fitness')[0]['text'], '想做一个健身应用')
+            self.assertIsNone(board.session(conn, assistant['session_id'])['project'])
             with self.assertRaises(OpError):
                 ai_call(self.service, conn, assistant['session_id'], 'execution.spawn',
                         {'name': 'child', 'task': '绕开 leader'}, runtime='codex')
@@ -264,11 +265,12 @@ class PersonalNativeTests(unittest.TestCase):
         self.service.chat.journal(sid).message('u', '请记下想法')
         with closing(store.connect(self.home)) as conn:
             self.assertEqual(ai_call(self.service, conn, sid, 'workspace.state')['projects'], [])
-            args = {'data': {'text': '想法'}}
+            board.init_project(conn, 'fitness', self.home.parent)
+            args = {'project': 'fitness', 'data': {'text': '想法'}}
             with self.assertRaises((OpError, board.BoardError)):
                 ai_call(self.service, conn, sid, 'note.capture', args, message_id='missing')
             ai_call(self.service, conn, sid, 'note.capture', args, message_id='u', request_id='r')
-            self.assertEqual([n['text'] for n in personal.list_notes(conn)], ['想法'])
+            self.assertEqual([n['text'] for n in personal.list_notes(conn, project='fitness')], ['想法'])
 
     def test_api_open_and_state_do_not_resolve_or_launch_native(self):
         with mock.patch('crew.settings.shutil.which', side_effect=AssertionError('opening must not discover CLI')):

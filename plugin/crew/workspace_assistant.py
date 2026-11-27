@@ -169,6 +169,53 @@ def check_operation(conn, caller, name, args):
         _structure_refs(conn, caller.project, [{'type': name, **args}])
 
 
+def check_idea_refs(conn, project, name, args):
+    """Read-only scope checks before user-message verification and receipt reservation."""
+    if name in personal.NOTE_WRITE_ACTIONS:
+        data = personal.scoped_payload(project, args['data'])
+        if name in ('note.merge', 'note.bulk'):
+            ids = data['note_ids'] if name == 'note.bulk' else [data['primary_id'], *data['note_ids']]
+            personal._batch(conn, project, ids, data['expected_versions'])
+        elif name != 'note.capture':
+            row = personal._row(conn, project, data['note_id'])
+            if 'expected_version' in data:
+                personal._current(row, data['expected_version'])
+    elif name in personal.TAG_WRITE_ACTIONS:
+        data = personal.scoped_payload(project, args['data'])
+        if name == 'tag.merge':
+            for tag in [data['into'], *data['from']]:
+                personal._tag_row(conn, project, personal._tag_name(tag))
+        elif name == 'tag.reorder':
+            for tag in data['names']:
+                personal._tag_row(conn, project, personal._tag_name(tag))
+        elif name != 'tag.create':
+            personal._tag_current(conn, project, data['name'], data['expected_version'])
+    elif name in ('note.get', 'note.start', 'note.recovery.get'):
+        personal._row(conn, project, args['note_id'])
+        if name != 'note.get':
+            personal._check_leader_scope(conn, project, args['note_id'])
+    elif name == 'mindmap.edit':
+        created = set()
+        for step in args['ops']:
+            identity = step.get('id')
+            if step['op'] == 'create':
+                _reference(conn, 'personal_mindmap_nodes', identity, project, new=True)
+                _reference(conn, 'personal_notes', step.get('note_id'), project)
+            elif identity not in created:
+                _reference(conn, 'personal_mindmap_nodes', identity, project)
+            parent = step.get('parent_id')
+            if parent not in created:
+                _reference(conn, 'personal_mindmap_nodes', parent, project)
+            if step['op'] == 'create' and identity is not None:
+                created.add(identity)
+    elif name in ('mindmap.preview', 'mindmap.convert'):
+        _reference(conn, 'domains', args['parent_id'], project)
+        for node in (*args['roots'], *args['decisions'], *args['leaders'], *args['names']):
+            _reference(conn, 'personal_mindmap_nodes', node, project)
+        for sid in args['leaders'].values():
+            _reference(conn, 'sessions', sid, project)
+
+
 def check_confirmation(conn, caller, name, args, manager):
     """Only a preview of this project's current leaders/tasks can become an approval card."""
     if 'board_version' in args:

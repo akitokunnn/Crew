@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from . import change_triggers, themes
+from .workspace_notes_migration import migrate as _migrate_workspace_notes
 
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 BUSY_TIMEOUT_MS = 5000
@@ -23,19 +24,26 @@ def connect(home):
     home = Path(home)
     home.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path(home), timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = %d" % BUSY_TIMEOUT_MS)
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
-    _migrate_quiet_leader_notices(conn)
-    _migrate_git_integration_branch(conn)
-    _migrate_channel_replies(conn)
-    _migrate_leader_pins(conn)
-    _migrate_codex_speed(conn)
-    _migrate_domain_members(conn)
-    _migrate_project_themes(conn)
-    change_triggers.install(conn)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = %d" % BUSY_TIMEOUT_MS)
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA foreign_keys = ON")
+        before, section = SCHEMA_FILE.read_text(encoding="utf-8").split("-- BEGIN workspace_notes_v1\n")
+        notes, after = section.split("-- END workspace_notes_v1\n")
+        conn.executescript(before + after)
+        _migrate_quiet_leader_notices(conn)
+        _migrate_git_integration_branch(conn)
+        _migrate_channel_replies(conn)
+        _migrate_leader_pins(conn)
+        _migrate_codex_speed(conn)
+        _migrate_domain_members(conn)
+        _migrate_project_themes(conn)
+        _migrate_workspace_notes(conn, notes)
+        change_triggers.install(conn)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 

@@ -573,16 +573,15 @@ def _assistant_read(action):
 
 op('session.detail', '读取任意工作区某个会话的详情与任务', _assistant_read('session.detail'), access='read',
    scopes=(A,), params=_object({'session_id': _string('会话 ID', 300)}, ('session_id',)))
-op('note.get', '读取一条想法', _assistant_read('notes.get'), access='read', scopes=(A,),
-   params=_object({'note_id': _string('想法编号', 120)}, ('note_id',)))
-share('notes.list', _assistant_read('notes.list'), scopes=(A,), core_for=(A,),
+share('note.get', _assistant_read('notes.get'), scopes=(A, W), ai_params=registry.get('note.get').params)
+share('notes.list', _assistant_read('notes.list'), scopes=(A, W), core_for=(A,),
       ai_params=_object({'tags': {'type': 'array', 'items': _string('标签', 60)},
                          'mode': {'type': 'string', 'enum': ['all', 'any']}, 'untagged': {'type': 'boolean'},
                          'stage': {'type': 'string', 'enum': ['new', 'discussed', 'promoted']},
                          'stale_only': {'type': 'boolean'}, 'include_archived': {'type': 'boolean'},
                          'project': _string('工作区', 300), 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200},
-                         'offset': {'type': 'integer', 'minimum': 0}}))
-share('tags.list', _assistant_read('tags.list'), scopes=(A,), ai_params=_object())
+                         'offset': {'type': 'integer', 'minimum': 0}}, ('project',)))
+share('tags.list', _assistant_read('tags.list'), scopes=(A, W), ai_params=registry.get('tags.list').params)
 for name, action in (('prompt.get', 'prompt.get'), ('prompt.history', 'prompt.history')):
     share(name, _assistant_read(action), scopes=(A,),
           ai_params=_object({'key': _string('提示词键', 120), 'scope': _string('global / workspace / leader 等', 60),
@@ -616,9 +615,14 @@ share('chat.send', lambda ctx, args: _assistant(ctx, 'session.message', args), s
       risk='confirm', ai_params=_object({'session_id': _string('目标会话 ID', 300), 'text': _string('转达内容')},
                                         ('session_id', 'text')),
       description='把用户的话转达给某个 leader 或成员；Crew 会附上用户原话。')
-for name in [n for n in registry.operations() if n.startswith(('note.', 'tag.'))]:
-    action = name
-    if action in personal.NOTE_WRITE_ACTIONS or action in personal.TAG_WRITE_ACTIONS:
-        share(name, lambda ctx, args, action=action: _assistant(ctx, action, args['data']), scopes=(A,),
-              core_for=(A,) if action == 'note.capture' else (), risk='confirm',
-              ai_params=registry.get(name).params)
+for action in sorted(personal.NOTE_WRITE_ACTIONS | personal.TAG_WRITE_ACTIONS):
+    share(action, lambda ctx, args, action=action: _assistant(ctx, action, args), scopes=(A, W),
+          core_for=(A,) if action == 'note.capture' else (), risk='confirm', ai_params=registry.get(action).params)
+
+share('note.start', lambda ctx, args: ctx.service.chat.start_personal_note(
+    args['note_id'], args['project'], request_id=ctx.request_id, proof=ctx.proof),
+    scopes=(A, W), risk='confirm', ai_params=registry.get('note.start').params)
+
+for name in ('note.recovery.get', 'mindmap.get', 'mindmap.edit', 'mindmap.preview', 'mindmap.convert'):
+    current = registry.get(name)
+    registry.amend(name, scopes=current.scopes | {A, W}, risk='confirm' if current.access == 'write' else current.risk)

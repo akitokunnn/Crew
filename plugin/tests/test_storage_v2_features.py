@@ -117,8 +117,9 @@ class PortableFeatureTests(RuntimeFixture):
         prompts.record_applied(self.conn, execution['id'], manifest, status='confirmed', evidence='native receipt')
         self.conn.execute('INSERT INTO native_session_controls VALUES(?,?,?,?,?,?,?,?,?)',
             (execution['id'], 'chief-id', execution['id'], 'NATIVE_PRIVATE_THREAD', 'C:/PRIVATE_NATIVE_HOME', 'external', 'PRIVATE_TOKEN', None, store.now_iso()))
-        note = personal.note_action(self.conn, 'capture', {'project': 'demo', 'text': 'Keep original idea', 'tags': ['app']}, request_id='note-one')['note']
-        personal.note_action(self.conn, 'capture', {'text': 'GLOBAL_PRIVATE_NOTE'}, request_id='global-note')
+        note = personal.note_action(self.conn, 'capture', {'project': 'demo', 'text': 'Keep original idea', 'tags': ['app']}, project='demo', request_id='note-one')['note']
+        self.conn.execute("INSERT INTO personal_notes(id,original_text,text,tags_json,created_at,updated_at) "
+                          "VALUES('legacy','GLOBAL_PRIVATE_NOTE','GLOBAL_PRIVATE_NOTE','[]',?,?)", (note['created_at'], note['created_at']))
         personal.start_note(self.conn, note['id'], 'demo', request_id='note-start', create_leader=lambda *args, **kwargs: {'session_id': 'chief-id'})
         repo = Repository(self.root / 'portable')
         repo.ensure_local_identity()

@@ -180,6 +180,25 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
                                                                  'confirm': True})
             self.assertEqual((code, result['status']), (200, 'configured'))
 
+    def test_paired_browser_and_desktop_can_claim_and_read_assigned_ideas(self):
+        self.start_remote()
+        self.login()
+        _, desktop = self.pair_desktop()
+        for index, auth in enumerate(({}, desktop)):
+            if auth:
+                self.cookie = None
+            key = 'legacy-' + str(index)
+            self.conn.execute('INSERT INTO personal_notes(id,text,original_text,tags_json,created_at,updated_at) '
+                              "VALUES(?,?,?,'[]',?,?)", (key, key, key, NOW, NOW))
+            options = dict(remote=True, headers=auth, origin=not bool(auth))
+            code, listing, _ = self.request('/api/op/unassigned.list', **options)
+            self.assertEqual((code, listing['counts']['notes']), (200, 1))
+            args = dict(project='demo', note_ids=[key], root_ids=[], expected_version=listing['version'])
+            code, result, _ = self.request('/api/op/unassigned.claim', args, **options)
+            self.assertEqual((code, result['remaining']['notes']), (200, 0))
+            code, result, _ = self.request('/api/op/note.get?project=demo&note_id=' + key, **options)
+            self.assertEqual((code, result['note']['id'], result['note']['project']), (200, key, 'demo'))
+
     def test_desktop_forbidden_routes_return_403_before_business_dispatch(self):
         self.start_remote()
         _, bearer = self.pair_desktop()

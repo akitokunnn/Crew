@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 import operations_expected
-from crew import (behavior_prompts, board, domains, personal, rules, session_library, session_ops, store,
+from crew import (behavior_prompts, board, domains, mindmap, personal, rules, session_library, session_ops, store,
                   war_room, web, workspace_assistant, workspace_settings)
 from crew.ops import confirmations, executor, tokens
 from crew.ops.errors import OpError
@@ -120,6 +120,100 @@ class WorkspaceAssistantTests(ShellFixture, unittest.TestCase):
                 ai_call(self.service, self.conn, sid, name, args)
             self.assertEqual(raised.exception.code, 'not_visible')
             self.assertEqual(list(self.conn.iterdump()), before)
+
+    def test_idea_operations_reject_foreign_references_before_receipts(self):
+        sid = self.assistant()
+        self.service.chat.journal(sid).message('user-note', '请整理本区想法和导图')
+        def act(name, args, **kwargs):
+            return ai_call(self.service, self.conn, sid, name, args, message_id='user-note', **kwargs)
+        local = act('note.capture', {'data': {'text': '本区'}})['result']['note']['id']
+        foreign = personal.note_action(self.conn, 'capture', {'text':'外区','tags':['外区独有']},
+                                       project='other', request_id='other-note')['note']['id']
+        self.conn.execute("INSERT INTO personal_notes(id,text,original_text,tags_json,created_at,updated_at) "
+                          "VALUES('legacy','遗留','遗留','[]',?,?)", (NOW,NOW))
+        act('mindmap.edit', dict(base_version=0, ops=[dict(op='create', id='local01', note_id=local, parent_id=None)]))
+        mindmap.apply(self.conn, [dict(op='create', id='other01', note_id=foreign, parent_id=None)], 0, project='other')
+        domains.apply(self.conn, 'other', [dict(op='create', id='partother', name='外区', x=0, y=0)], 0)
+        board.join(self.conn, 'other-chief', 'other', '外组', self.other, None, None, role='leader')
+        preview = dict(roots=['local01'], parent_id=None, names={}, decisions={}, leaders={})
+        cases = [
+            ('note.get', dict(note_id=foreign)),
+            ('note.start', dict(note_id=foreign)),
+            ('note.recovery.get', dict(note_id=foreign)),
+            ('note.update', dict(data=dict(note_id=local, project='other', text='错误', expected_version=1))),
+            ('tag.recolor', dict(data=dict(name='外区独有', color='c2', expected_version=1))),
+            ('mindmap.edit', dict(base_version=1, ops=[dict(op='collapse', id='local01', collapsed=True),
+                                                       dict(op='move', id='local01', parent_id='other01')])),
+            ('mindmap.edit', dict(base_version=1, ops=[dict(op='create', note_id=foreign, parent_id=None)])),
+            ('mindmap.preview', {**preview, 'roots':['other01']}),
+            ('mindmap.preview', {**preview, 'parent_id':'partother'}),
+            ('mindmap.convert', {**preview, 'leaders':{'local01':'other-chief'}, 'map_version':1, 'board_version':0}),
+            ('note.bulk', dict(data=dict(note_ids=[local], expected_versions={local:1,foreign:1}, op='archive'))),
+        ]
+        for bad in (foreign, 'legacy'):
+            cases.extend([
+                ('note.merge', dict(data=dict(primary_id=local, note_ids=[bad], expected_versions={local:1,bad:1}))),
+                ('note.bulk', dict(data=dict(note_ids=[local,bad], expected_versions={local:1,bad:1}, op='archive'))),
+            ])
+        before = list(self.conn.iterdump())
+        for name, args in cases:
+            with self.subTest(operation=name, args=args):
+                with self.assertRaises(OpError) as denied:
+                    act(name, args)
+                self.assertEqual(denied.exception.code, 'not_visible')
+                self.assertEqual(list(self.conn.iterdump()), before)
+        self.assertEqual([n['id'] for n in act('notes.list', {})['notes']], [local])
+        self.assertEqual(act('mindmap.get', {})['project'], 'demo')
+        result = act('note.update', dict(data=dict(note_id=local, text='已编辑', expected_version=1)), request_id='edit-own')
+        self.assertEqual(result['result']['note']['version'], 2)
+        self.assertTrue(act('note.update', dict(data=dict(note_id=local, text='已编辑', expected_version=1)),
+                            request_id='edit-own')['replayed'])
+
+    def test_start_requires_own_verified_message_and_preserves_it_in_leader_instruction(self):
+        sid = self.assistant()
+        identity = personal.note_action(self.conn, 'capture', {'text':'讨论这条'},
+                                        project='demo', request_id='note')['note']['id']
+        def start(message=None):
+            return ai_call(self.service, self.conn, sid, 'note.start', {'note_id':identity}, message_id=message)
+        with self.assertRaises(OpError):
+            start()
+        self.service.chat.journal(sid).message('user-start', '请从这条想法开始讨论')
+        with mock.patch.object(self.service.chat, '_personal_leader', return_value={'session_id':'s3'}) as port:
+            result = start('user-start')
+            self.assertEqual(result['session_id'], 's3')
+            proof = port.call_args.kwargs['instruction']
+            self.assertEqual((proof['instruction'], proof['context']['message_id'], proof['context']['session_id']),
+                             ('请从这条想法开始讨论', 'user-start', sid))
+            self.assertEqual(proof['context']['note']['id'], identity)
+            self.assertTrue(start('user-start')['duplicate'])
+            self.assertEqual(port.call_count, 1)
+
+    def test_admin_project_and_pool_boundaries(self):
+        admin = personal.ensure_assistant(self.conn, self.home)['session_id']
+        sid = self.assistant()
+        self.service.chat.journal(admin).message('admin-note', '请分别记在这两个区')
+        self.conn.execute("INSERT INTO personal_notes(id,text,original_text,tags_json,created_at,updated_at) "
+                          "VALUES('loose','遗留池','遗留池','[]',?,?)", (NOW,NOW))
+        for name, args in [('notes.list', {}), ('tags.list', {}), ('mindmap.get', {}),
+                           ('note.capture', {'data': {'text': '漏写工作区'}})]:
+            with self.assertRaises(OpError) as missing:
+                ai_call(self.service, self.conn, admin, name, args, message_id='admin-note')
+            self.assertEqual(missing.exception.code, 'invalid_arguments')
+        for project in ('demo', 'other'):
+            args = dict(project=project, data=dict(text=project))
+            result = ai_call(self.service, self.conn, admin, 'note.capture', args, message_id='admin-note')
+            self.assertEqual(result['result']['note']['project'], project)
+        overview = ai_call(self.service, self.conn, admin, 'workspace.state')
+        self.assertEqual({n['text'] for n in overview['notes']}, {'demo', 'other'})
+        with self.assertRaises(OpError):
+            personal.discussion_context(self.conn, 'loose')
+        with self.assertRaises(OpError):
+            personal.record_discussion(self.conn, 'loose', admin, 'bad', 3)
+        for caller in (admin, sid):
+            for name in ('unassigned.list', 'unassigned.claim'):
+                with self.assertRaises(OpError) as denied:
+                    ai_call(self.service, self.conn, caller, name)
+                self.assertEqual(denied.exception.code, 'forbidden')
 
     def test_removed_project_invalidates_token_and_approval_restores_original_session(self):
         sid = self.assistant()

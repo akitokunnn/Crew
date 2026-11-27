@@ -41,7 +41,12 @@ def _stamp(service):
 
 
 def _args_hash(name, args):
-    return hashlib.sha256(json.dumps([name, args], sort_keys=True, ensure_ascii=False,
+    payload = [name, args]
+    if name in ('mindmap.preview', 'mindmap.convert', 'note.start', 'note.recover'):
+        # These pre-migration operations accepted the same arguments but their receipts
+        # could include ideas/nodes from other workspaces.
+        payload.append('workspace_notes_v1')
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False,
                                      separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
@@ -53,6 +58,8 @@ def _receipt_begin(service, caller, op, request_id, digest, args):
         row = conn.execute('SELECT * FROM op_requests WHERE caller_key=? AND request_id=?',
                            (caller.key, request_id)).fetchone()
         if row is None:
+            if caller.role == 'workspace_assistant':
+                workspace_assistant.check_idea_refs(conn, caller.project, op.name, args)
             if caller.role == 'workspace_assistant' and op.risk == 'high':
                 workspace_assistant.check_confirmation(conn, caller, op.name, args, service.chat)
             conn.execute("INSERT INTO op_requests(caller_key,request_id,op,args_hash,status,created_at) "
@@ -162,6 +169,14 @@ def call(service, caller, name, args, *, request_id=None, project_name=None, htt
     if caller.role == 'workspace_assistant':
         with closing(guard.readonly(service.home)) as conn:
             workspace_assistant.check_operation(conn, caller, name, args)
+            if name.startswith(('note.', 'tag.', 'mindmap.')):
+                # A successful remove/rename can make its original IDs disappear.
+                # The receipt path checks the digest and returns that exact result.
+                replay = request_id is not None and conn.execute(
+                    'SELECT 1 FROM op_requests WHERE caller_key=? AND request_id=?',
+                    (caller.key, request_id)).fetchone()
+                if not replay:
+                    workspace_assistant.check_idea_refs(conn, caller.project, name, args)
     if name in ('assistant.open', 'assistant.state') and 'project' in args and 'context_project' in args:
         raise OpError('invalid_arguments', 'project 与 context_project 不能同传')
     if name == 'assistant.open' and 'project' in args:
