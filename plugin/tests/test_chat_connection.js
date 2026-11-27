@@ -29,6 +29,26 @@ function harness(){
 }
 const history=()=>({events:[],busy:false,read_seq:0,first_seq:0,has_more:false});
 
+test("private history and live updates skip room-tagged bubbles without skipping the next private event",async()=>{
+  for (const runtime of ["claude","codex"]) {
+    const h=harness(),target=h.mount("private",async()=>({...history(),events:[
+      {seq:1,type:"message",id:"private-1",room_id:null,text:"普通私聊"},
+      {seq:2,type:"message",id:"room-1",room_id:7,text:"房内输入"},
+      {seq:3,type:"text",id:"room-2",room_id:7,text:"房内回复"}
+    ]}),{runtime});
+    await tick();
+    assert.match(rendered(target).join(""),/普通私聊/);
+    assert.doesNotMatch(rendered(target).join(""),/房内输入|房内回复/);
+    assert.match(h.connections[0].url,/after=3/);
+    h.connections[0].emit({seq:4,type:"message",id:"room-3",room_id:7,text:"房内实时输入"});
+    h.connections[0].emit({seq:5,type:"message",id:"private-2",text:"实时私聊"});
+    await tick();h.flushFrames();
+    assert.match(rendered(target).join(""),/实时私聊/);
+    assert.doesNotMatch(rendered(target).join(""),/房内实时输入/);
+    h.chat.unmount();
+  }
+});
+
 test("cached transcripts paint synchronously and catch up only through SSE after their cursor",async()=>{
   for(const runtime of ["claude","codex"]){
     const h=harness(),calls=[],read=async url=>{calls.push(url);return {...history(),events:[{seq:7,type:"message",id:"old",text:"缓存正文"}]};};

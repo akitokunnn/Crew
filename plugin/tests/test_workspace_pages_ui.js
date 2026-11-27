@@ -14,7 +14,7 @@ function rail({page, search = "", recent = null, desktop = false, projects = [{n
     localStorage: {getItem: key => key === "crew.mobile.project" ? recent : null, setItem() {}},
     matchMedia: () => ({matches: false, addEventListener() {}}),
     addEventListener() {},
-    fetch: async () => ({ok: true, json: async () => ({projects})}),
+    fetch: async url => ({ok: true, json: async () => url.startsWith("/api/op/war_room.list") ? {rooms:[]} : {projects}}),
     document: {body: {classList: {contains: name => name === page}}, documentElement: {dataset: {}, style: {setProperty() {}}},
       getElementById: id => id === "sidebar" ? sidebar : null, addEventListener() {}}};
   sandbox.window = sandbox;

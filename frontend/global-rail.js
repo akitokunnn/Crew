@@ -21,6 +21,21 @@
     right: '<path d="m9 5 7 7-7 7"/>'
   };
   const ic = (name, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`;
+  const roomStates = {empty:"没房", preparing:"筹备中", active:"作战中", waiting:"等你定", loading:"读取中", error:"读取失败"};
+  function roomState(rooms) {
+    const open = rooms.filter(room => room.status === "open");
+    if (open.some(room => room.open_decisions > 0 || room.phase === "preparing" && room.draft_version > 0 || room.budget?.paused_at)) return "waiting";
+    if (open.some(room => room.phase === "active")) return "active";
+    return open.some(room => room.phase === "preparing" && room.draft_version === 0) ? "preparing" : "empty";
+  }
+  const roomLabel = rooms => roomStates[roomState(rooms)];
+  function roomMarkup(project, rooms, selected = false, failed = false) {
+    const state = failed ? "error" : rooms === null ? "loading" : roomState(rooms);
+    const label = `作战室 · ${roomStates[state]}`;
+    const mark = {empty:'<path d="M9 15h6" stroke-dasharray="1 2"/>', preparing:'<path d="M9 13h6m-6 3h4"/>',
+      active:'<path d="m9 16 3-4 2 2 2-3"/>', waiting:'<path d="M10 13h4m-4 3h4"/>'}[state] ?? "";
+    return `<a class="rail-button rail-war-room${selected ? " active" : ""}" data-war-room-state="${state}" data-preserve="war-room-entry" href="${esc(projectHref(project, "war-room=0"))}" title="${label}" aria-label="${label}"${selected ? ' aria-current="page"' : ""}><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2.5"/><path d="M4 9h16"/>${mark}</svg>${state === "waiting" ? '<span class="rail-dot" aria-hidden="true"></span>' : ""}</a>`;
+  }
 
   const FALLBACK_COLORS = ["#3E7C74", "#8A5A7E", "#4F6B8F", "#5E7F55", "#A07A3A", "#A8604F"];
   function fallbackAccent(name) {
@@ -155,6 +170,7 @@
     host.innerHTML = [
       `<button type="button" id="workspace-entry" class="rail-brand ${popoverOpen ? "active" : ""}" data-rail-act="workspace-switcher" title="${esc(targetLabel)} · 切换工作区" aria-label="${esc(targetLabel)} · 切换工作区" aria-controls="workspace-popover" aria-expanded="${popoverOpen}">${logoMarkup()}<span class="rail-brand-caret" aria-hidden="true"></span></button>`,
       `<a class="rail-button leader-entry" href="${esc(projectHref(target, leaderHash))}" title="回到 ${esc(targetLabel)} · Leader" aria-label="回到 ${esc(targetLabel)} · Leader">${ic("team")}</a>`,
+      target ? roomMarkup(target, roomProject === target ? standaloneRooms : null, false, roomProject === target && roomFailed) : "",
       '<div class="rail-divider"></div>',
       `<span class="rail-home"><a class="rail-button" href="${esc(projectHref(target, "all"))}" title="回到 ${esc(targetLabel)} · 主页" aria-label="回到 ${esc(targetLabel)} · 主页">${ic("grid")}</a></span>`,
       `<a class="rail-button" href="${esc(projectHref(target, "architecture"))}" title="${esc(targetLabel)} · 架构图" aria-label="${esc(targetLabel)} · 架构图">${ic("board")}</a>`,
@@ -166,6 +182,29 @@
       `<a class="rail-button" data-local-control href="${esc(settingsHref)}" title="设置" aria-label="设置">${ic("settings")}</a>`,
       popoverMarkup({projects, themes: [], currentProject: pageProject, recentProject: recent || target, inProject: false, localControls, open: popoverOpen})
     ].join("");
+    if (target && roomProject !== target) void loadStandaloneRooms(target);
+  }
+
+  let roomProject = null, standaloneRooms = null, roomFailed = false, roomRequest = 0;
+  async function loadStandaloneRooms(target) {
+    if (!target) return;
+    const request = ++roomRequest;
+    if (roomProject !== target) { standaloneRooms = null; roomFailed = false; }
+    roomProject = target;
+    try {
+      if (window.CrewAccess && !await CrewAccess.ready) return;
+      const path = `/api/op/war_room.list?${new URLSearchParams({project:target})}`;
+      const res = await fetch(path, {headers:{"X-Crew":"1"}});
+      const data = await res.json();
+      if (!res.ok) throw Error(data.error);
+      if (request !== roomRequest) return;
+      standaloneRooms = data.rooms;
+      roomFailed = false;
+    } catch (error) {
+      if (request !== roomRequest) return;
+      roomFailed = true;
+    }
+    renderStandalone();
   }
 
   function update(data = {}) {
@@ -203,6 +242,7 @@
       themeMode = readThemeMode();
       renderStandalone();
     });
+    window.addEventListener("focus", () => void loadStandaloneRooms(targetWorkspace()));
     document.addEventListener("pointerdown", event => {
       if (popoverOpen && !event.target.closest("#workspace-popover,#workspace-entry")) setPopoverOpen(false);
     });
@@ -233,5 +273,5 @@
     })();
   }
 
-  window.CrewGlobalRail = {popoverMarkup, update, projectHref, STORE_PROJECT, STORE_ROUTE};
+  window.CrewGlobalRail = {popoverMarkup, update, projectHref, roomMarkup, roomState, roomLabel, STORE_PROJECT, STORE_ROUTE};
 })();

@@ -1015,6 +1015,11 @@ a.btn{color:inherit;text-decoration:none}
 /* A leader's mark is a single dot for unread replies; counts of things to handle live on the workspace home. */
 .leader-unread-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--accent)}
 .rail-dot{position:absolute;right:2px;top:2px;width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px var(--rail-bg,var(--surface));pointer-events:none}
+.rail-war-room[data-war-room-state="empty"]{color:var(--text-3)}
+.rail-war-room[data-war-room-state="active"]{color:var(--accent-text)}
+.rail-war-room[data-war-room-state="waiting"] .rail-dot{background:var(--warn)}
+[data-room-waiting] .m-dot{background:var(--warn)}
+.room-working-tag{color:var(--accent-text);font-size:calc(11.5px * var(--fs));white-space:nowrap}
 .av.has-img{background:none;overflow:hidden}.av>img{width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block}
 .leader-settings{width:min(480px,calc(100vw - 32px))}.ls-preview{display:flex;gap:14px;align-items:center;padding:14px;margin:0 0 20px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}.ls-preview>div{min-width:0}.ls-preview strong{display:block;font-size:calc(14px * var(--fs));font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ls-preview span:not(.av){display:block;margin-top:3px;font-size:calc(12px * var(--fs));color:var(--text-3)}
 .ls-sec+.ls-sec{margin-top:18px}.ls-sec h4{margin:0 0 9px;font-size:calc(12.5px * var(--fs));font-weight:500;color:var(--text-2)}.ls-hint{margin:8px 0 0;font-size:calc(12px * var(--fs));color:var(--text-3);line-height:1.6}

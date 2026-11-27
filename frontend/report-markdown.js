@@ -1,7 +1,5 @@
 "use strict";
 (() => {
-  const article = document.querySelector("article.crew-md-doc");
-  const source = article.querySelector("template").content.textContent;
   const markdown = window.markdownit({html:false});
   markdown.renderer.rules.table_open = () => '<div class="table-wrap"><table>';
   markdown.renderer.rules.table_close = () => '</table></div>\n';
@@ -13,5 +11,13 @@
     }
     return renderer.renderToken(tokens, index, options);
   };
-  article.innerHTML = markdown.render(source);
+  function render(source, annotate) {
+    const env = {};
+    const tokens = markdown.parse(source, env);
+    annotate?.(tokens);
+    return markdown.renderer.render(tokens, markdown.options, env);
+  }
+  window.CrewReportMarkdown = {render};
+  const article = document.querySelector("article.crew-md-doc");
+  if (article) article.innerHTML = render(article.querySelector("template").content.textContent);
 })();
