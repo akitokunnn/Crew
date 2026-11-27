@@ -1,7 +1,7 @@
 """Goals and report preview HTTP routes."""
 from contextlib import closing
 
-from .. import board, goal_api, goals, store
+from .. import board, goal_api, goals, report_documents, store
 
 
 def post_report_worker(service, path, data, project_name):
@@ -37,11 +37,19 @@ def get_goals(handler, service, url, query):
                                                approvals=approvals))
         else:
             goal_id = query.get('goal_id', [''])[0]
-            goals.get(conn, goal_id, project)
+            goal = goals.get(conn, goal_id, project)
             report = goals.get_report(conn, query.get('report_id', [''])[0])
             if report['goal_id'] != goal_id:
                 raise board.BoardError('报告不属于此目标')
             if query.get('format') == ['json']:
                 handler._send(200, {key: value for key, value in report.items() if key != 'html'})
             else:
-                handler.send_file_content(report['html'].encode('utf-8'), 'text/html; charset=utf-8', interactive_report=True)
+                report_format = report['document_format']
+                if report_format == 'markdown':
+                    # Only Crew-generated markup may run in the same-origin Markdown reader.
+                    data = report['data']
+                    content = report_documents.render_markdown(goal['title'], data['document_md'],
+                                                               report_documents.verification(data))
+                else:
+                    content = report['html']
+                handler.send_file_content(content.encode('utf-8'), 'text/html; charset=utf-8', report_format=report_format)

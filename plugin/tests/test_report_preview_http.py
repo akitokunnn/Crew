@@ -84,7 +84,7 @@ class ReportPreviewHttpTests(ShellFixture, unittest.TestCase):
         with self.assertRaises((board.BoardError, OpError, ValueError)):
             self.post_action(payload, actor='s2')
         for extra in ({'path': 'other.html'}, {'url': 'https://example.invalid'}, {'script': 'anything'},
-                      {'report_id': 'another-report'}, {'viewport': 'arbitrary'}):
+                      {'report_id': 'another-report'}, {'document_md': '# Extra'}, {'viewport': 'arbitrary'}):
             with self.assertRaises((board.BoardError, OpError, ValueError)):
                 self.post_action({**payload, **extra})
         other = goals.create(self.conn, 'demo', 's3', 'Other synthetic goal', 'A separate report.', ['Readable'])
@@ -92,6 +92,35 @@ class ReportPreviewHttpTests(ShellFixture, unittest.TestCase):
         with self.assertRaisesRegex((board.BoardError, OpError, ValueError), '自己所在'):
             self.post_action({**payload, 'goal_id': other['id']}, execution=execution['id'])
         self.assertFalse((self.home / 'report-previews').exists())
+        self.assertEqual(self.processes, [])
+
+    def test_markdown_draft_and_saved_report_queue_the_same_rendering(self):
+        with self.assertRaisesRegex(board.BoardError, '只能提供'):
+            self.post_action({'goal_id': self.goal['id']})
+        with self.assertRaisesRegex(board.BoardError, '非空.*document_md'):
+            self.post_action({'goal_id': self.goal['id'], 'document_md': '   '})
+        document = '# 草稿\n\n<script>window.executed=true</script>'
+        saved = goals.save_report(self.conn, self.goal['id'], {
+            'outcome': 'awaiting_acceptance', 'summary': 'Markdown',
+            'document_md': document, 'unresolved': ['Awaiting user review'],
+            'acceptance': [{'criterion_id': 'a1', 'status': 'unverified'}]})
+        code, worker, _ = self.request(report_preview.WORKER_PREFIX + 'register', {})
+        self.assertEqual(code, 200, worker)
+        for args, report_id in (({'document_md': document}, None), ({'report_id': saved['id']}, saved['id'])):
+            with self.subTest(args=args):
+                thread, result = self.capture({'goal_id': self.goal['id'], 'viewport': 'mobile', **args})
+                code, payload, _ = self.request(report_preview.WORKER_PREFIX + 'next', worker)
+                self.assertEqual(code, 200, payload)
+                job = payload['job']
+                self.assertEqual(job['document_format'], 'markdown')
+                self.assertIn('&lt;script&gt;window.executed=true', job['html'])
+                self.assertIn('/report-markdown.js', job['html'])
+                code, payload, _ = self.request(report_preview.WORKER_PREFIX + 'result', {
+                    **worker, 'job_id': job['id'], 'png_base64': base64.b64encode(png(390, 844)).decode('ascii')})
+                self.assertEqual(code, 200, payload)
+                thread.join(3)
+                self.assertEqual(result[0]['preview']['report_id'], report_id)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports').fetchone()[0], 1)
         self.assertEqual(self.processes, [])
 
     def test_saved_report_scope_and_unavailable_worker_are_explicit(self):

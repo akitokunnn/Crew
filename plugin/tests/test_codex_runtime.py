@@ -19,6 +19,7 @@ from crew import board, chat, codex_runtime, goals, runtimes, settings, store, w
 
 class FakeProcess:
     pid = 9001
+    args = ['fixture-app-server', '--listen', 'stdio://', '--session-source', 'mcp']
 
     def __init__(self):
         self.returncode = None
@@ -212,7 +213,7 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertFalse([event for event in running.journal.events if event['type'] == 'error'])
         self.assertEqual([event['reason'] for event in running.journal.events if event['type'] == 'runtime_released'], ['idle'])
 
-    def test_idle_reclaim_keeps_a_person_thread_unarchived(self):
+    def test_idle_reclaim_archives_a_crew_created_person_thread(self):
         running, client = self.make_running()
         running.send('work', 'message-1')
         client.finish()
@@ -221,7 +222,7 @@ class CodexRuntimeTests(unittest.TestCase):
         later = store.parse_iso(store.now_iso()) + chat.datetime.timedelta(minutes=31)
         self.assertEqual(manager.reclaim_idle(now=later), ['worker'])
         self.assertTrue(client.closed)
-        self.assertNotIn('thread/archive', [call[0] for call in client.calls])
+        self.assertIn(('thread/archive', {'threadId': running.thread_id}), client.calls)
 
     def test_explicit_execution_permission_is_used_only_when_a_carrier_starts(self):
         with closing(store.connect(self.home)) as conn:
@@ -247,7 +248,7 @@ class CodexRuntimeTests(unittest.TestCase):
                              {store.norm_path(new_root), store.norm_path(self.root)})
         old_spec = {'agent': None, 'cwd': str(self.root)}
         running, client = self.make_running(resume=True, spec=old_spec)
-        method, params = client.calls[0]
+        method, params = client.calls[1]
         self.assertEqual(method, 'thread/resume')
         self.assertEqual(params['threadId'], 'native-1')
         self.assertEqual(params['cwd'], str(new_root.resolve()))
@@ -259,7 +260,7 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertIn('工作区目录已迁移', params['developerInstructions'])
         self.assertIn(str(new_root.resolve()), params['developerInstructions'])
         self.assertEqual(old_spec['cwd'], str(self.root))
-        self.assertEqual([name for name, _ in client.calls], ['thread/resume', 'thread/name/set'])
+        self.assertEqual([name for name, _ in client.calls], ['thread/list', 'thread/resume', 'thread/name/set'])
 
     def test_removed_project_is_rejected_before_constructing_native_client(self):
         with closing(store.connect(self.home)) as conn:
@@ -299,7 +300,7 @@ class CodexRuntimeTests(unittest.TestCase):
         self.assertTrue(running.reader_done.wait(2))
         _, resumed = self.make_running(resume=True)
         self.assertEqual(resumed.kwargs['cwd'], actual)
-        self.assertEqual(resumed.calls[0][1]['cwd'], actual)
+        self.assertEqual(resumed.calls[1][1]['cwd'], actual)
         with closing(store.connect(self.home)) as conn:
             self.assertEqual(board.session(conn, 'worker')['cwd'], stored)
 
@@ -360,8 +361,8 @@ class CodexRuntimeTests(unittest.TestCase):
         with closing(store.connect(self.home)) as conn:
             conn.execute("DELETE FROM git_management WHERE project='demo'")
         _, resumed = self.make_running(resume=True, spec={'agent': 'crew:git'})
-        self.assertIn('# leader role rules', resumed.calls[0][1]['developerInstructions'])
-        self.assertNotIn('# git role rules', resumed.calls[0][1]['developerInstructions'])
+        self.assertIn('# leader role rules', resumed.calls[1][1]['developerInstructions'])
+        self.assertNotIn('# git role rules', resumed.calls[1][1]['developerInstructions'])
 
     def test_missing_hook_stops_before_starting_native_process(self):
         (self.plugin / "crew_codex_hook.py").unlink()
@@ -437,7 +438,7 @@ class CodexRuntimeTests(unittest.TestCase):
         running.close();self.assertTrue(running.reader_done.wait(2))
         resumed,resume_client=self.make_running(resume=True)
         resumed.send('after resume','m4')
-        self.assertEqual(resume_client.calls[0][0],'thread/resume')
+        self.assertEqual(resume_client.calls[1][0],'thread/resume')
         self.assertEqual(resume_client.calls[-1][1]['input'][0]['text'], 'after resume')
 
     def test_live_context_and_activity_are_not_persisted(self):
@@ -510,7 +511,7 @@ class CodexRuntimeTests(unittest.TestCase):
         plain_running.close()
         self.assertTrue(plain_running.reader_done.wait(2))
         running, client = self.make_running(options={"model": None, "effort": None, "speed": "priority"})
-        self.assertEqual(client.calls[0][1]["serviceTier"], "priority")
+        self.assertEqual(dict(client.calls)['thread/resume']['serviceTier'], "priority")
         self.assertEqual(running.applied["speed"], "priority")
         running.set_options({"model": None, "effort": None, "speed": "default"})
         self.assertEqual(client.calls[-1], ("thread/settings/update", {"threadId": "native-1", "serviceTier": "default"}))
@@ -521,7 +522,7 @@ class CodexRuntimeTests(unittest.TestCase):
         running.close()
         self.assertTrue(running.reader_done.wait(2))
         _, resumed = self.make_running(options={"model": None, "effort": None, "speed": "priority"}, resume=True)
-        self.assertEqual(resumed.calls[0], ("thread/resume", {**resumed.calls[0][1], "serviceTier": "priority"}))
+        self.assertEqual(resumed.calls[1], ("thread/resume", {**resumed.calls[1][1], "serviceTier": "priority"}))
 
     def test_tools_bind_sender_and_deduplicate_call_id(self):
         service = web.Service(self.home, self.plugin, cwd=self.root, agents_provider=lambda: [],
@@ -603,7 +604,7 @@ class CodexRuntimeTests(unittest.TestCase):
         running.close()
         self.assertTrue(running.reader_done.wait(2))
         second, second_client = self.make_running(resume=True)
-        self.assertEqual(second_client.calls[0][0], "thread/resume")
+        self.assertEqual(second_client.calls[1][0], "thread/resume")
 
     def test_abrupt_native_exit_during_turn_records_failure_and_offline(self):
         running, client = self.make_running()
@@ -628,6 +629,8 @@ for line in sys.stdin:
         send({'id':message['id'],'result':{'userAgent':'fixture'}})
     elif method == 'thread/start':
         send({'id':message['id'],'result':{'thread':{'id':'fixture-thread','turns':[]},'model':'fixture-model','reasoningEffort':'medium'}})
+    elif method == 'thread/name/set':
+        send({'id':message['id'],'result':{}})
     elif method == 'turn/start':
         send({'id':message['id'],'result':{'turn':{'id':'fixture-turn','status':'inProgress','items':[]}}})
         send({'method':'turn/started','params':{'threadId':'fixture-thread','turn':{'id':'fixture-turn','status':'inProgress'}}})
@@ -636,7 +639,8 @@ for line in sys.stdin:
 '''
         def process_factory(command, **kwargs):
             return subprocess.Popen([sys.executable, "-u", "-c", server], **kwargs)
-        with mock.patch("crew.codex_runtime._ObservedClient", self.real_client):
+        with mock.patch("crew.codex_runtime._ObservedClient", self.real_client), mock.patch(
+                "crew.codex_app_server.command", return_value=["fixture", "--session-source", "mcp"]):
             journal = chat.Journal(self.home / "chat" / "worker.jsonl", None)
             running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {"agent": None},
                                                  {"model": None, "effort": None}, journal,

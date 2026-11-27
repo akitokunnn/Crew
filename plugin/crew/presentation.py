@@ -33,7 +33,7 @@ def _chat_replies(events):
     """
     messages = {}
     for event in events:
-        if event['type'] not in ('text', 'assistant'):
+        if event.get('room_id') is not None or event['type'] not in ('text', 'assistant'):
             continue
         state = messages.setdefault(event['id'], {'content': '', 'stream': '', 'reply': None})
         if event['type'] == 'text':

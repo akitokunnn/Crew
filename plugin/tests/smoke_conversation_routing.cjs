@@ -172,8 +172,23 @@ if(!process.versions.electron){
       nativeTheme.themeSource='light';window.setSize(1280,900);
       if(!await js('document.querySelector("#leader-panel").dataset.open==="true"')) await click('#leader-entry');
       if(await js('document.querySelector("#task-list").dataset.open==="true"')) await click('[data-act="tasks-toggle"]');
-      await check('the sidebar reports six running task members in the group',
-        'document.querySelector(\'#leader-panel [data-id="coordinator"].leader-row\')?.textContent.includes("6 个执行在干活")');
+      const visibleGroupCount = `(() => {
+        const status = document.querySelector('#leader-panel [data-id="coordinator"] .leader-row-sub .st');
+        if (status?.innerText !== '推进中 · 6 个执行') return false;
+        const rect = status.getBoundingClientRect();
+        const row = status.closest('.leader-row');
+        return rect.width > 0 && status.scrollWidth <= status.clientWidth + 1 && rect.right <= innerWidth &&
+          row.contains(document.elementFromPoint(rect.right - 2, rect.top + rect.height / 2));
+      })()`;
+      for(const width of [1280,760,375]){
+        window.setSize(width,844);
+        for(const theme of ['light','dark']){
+          nativeTheme.themeSource=theme;
+          await check(`the sidebar visibly reports six running task members at ${width} in ${theme}`, visibleGroupCount);
+          await capture(`sidebar-group-count-${width}-${theme}`);
+        }
+      }
+      nativeTheme.themeSource='light';window.setSize(1280,900);
       await click('[data-act="right-open"]');
       await check('the general conversation structure lists the same six members and their task',
         '(()=>{const panel=document.querySelector("#right-panel"),group=panel.querySelector(".rp-executions"),dispatch=panel.querySelector(".rp-dispatch"),history=dispatch.querySelector(".rp-history");return !panel.hidden&&group?.querySelectorAll("button.rp-run").length===6&&group.querySelectorAll("[data-runtime=codex]").length===3&&group.querySelectorAll("[data-runtime=claude]").length===3&&[...group.querySelectorAll("button.rp-run")].every(run=>run.textContent.includes("客户端联调")&&run.querySelector("[data-status=running]"))&&dispatch.querySelector(".rp-dispatch-head").textContent.includes("运行中 0 个")&&history&&!history.open})()');

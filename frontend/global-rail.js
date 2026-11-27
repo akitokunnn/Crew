@@ -11,6 +11,7 @@
     board: '<rect x="9" y="3" width="6" height="5" rx="1.5"/><rect x="3" y="16" width="6" height="5" rx="1.5"/><rect x="15" y="16" width="6" height="5" rx="1.5"/><path d="M12 8v4M6 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2"/>',
     pencil: '<path d="m16 3 5 5L8 21H3v-5L16 3Zm-3 3 5 5"/>',
     msg: '<path d="M21 15a3 3 0 0 1-3 3H9l-6 4V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v9Z"/>',
+    shield: '<path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6l-8-3Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
     branch: '<circle cx="6" cy="4" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="20" r="2"/><path d="M6 6v12m0-5h5a7 7 0 0 0 7-5"/>',
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>',
     moon: '<path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z"/>',
@@ -20,6 +21,21 @@
     right: '<path d="m9 5 7 7-7 7"/>'
   };
   const ic = (name, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`;
+  const roomStates = {empty:"没房", preparing:"筹备中", active:"作战中", waiting:"等你定", loading:"读取中", error:"读取失败"};
+  function roomState(rooms) {
+    const open = rooms.filter(room => room.status === "open");
+    if (open.some(room => room.open_decisions > 0 || room.phase === "preparing" && room.draft_version > 0 || room.budget?.paused_at)) return "waiting";
+    if (open.some(room => room.phase === "active")) return "active";
+    return open.some(room => room.phase === "preparing" && room.draft_version === 0) ? "preparing" : "empty";
+  }
+  const roomLabel = rooms => roomStates[roomState(rooms)];
+  function roomMarkup(project, rooms, selected = false, error = "") {
+    const state = error ? "error" : rooms === null ? "loading" : roomState(rooms);
+    const label = esc(`作战室 · ${roomStates[state]}${error ? ` · ${error}` : ""}`);
+    const mark = {empty:'<path d="M9 15h6" stroke-dasharray="1 2"/>', preparing:'<path d="M9 13h6m-6 3h4"/>',
+      active:'<path d="m9 16 3-4 2 2 2-3"/>', waiting:'<path d="M10 13h4m-4 3h4"/>'}[state] ?? "";
+    return `<a class="rail-button rail-war-room${selected ? " active" : ""}" data-war-room-state="${state}" data-preserve="war-room-entry" href="${esc(projectHref(project, "war-room=0"))}" title="${label}" aria-label="${label}"${selected ? ' aria-current="page"' : ""}><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2.5"/><path d="M4 9h16"/>${mark}</svg>${state === "waiting" ? '<span class="rail-dot" aria-hidden="true"></span>' : ""}</a>`;
+  }
 
   const FALLBACK_COLORS = ["#3E7C74", "#8A5A7E", "#4F6B8F", "#5E7F55", "#A07A3A", "#A8604F"];
   function fallbackAccent(name) {
@@ -75,6 +91,12 @@
 
   const page = document.body.classList.contains("assistant-page") ? "assistant"
     : document.body.classList.contains("notes-page") ? "notes" : "app";
+  // A page with ?project=X belongs to that workspace (its assistant or ideas); without it, the assistant page is 系统管理员.
+  const pageScope = window.CrewBrowser?.pageProject ? window.CrewBrowser.pageProject() : {mode: "home", project: null};
+  const pageProject = pageScope.mode === "workspace" ? pageScope.project : null;
+  const pageHref = (kind, name) => `/${kind}.html?project=${encodeURIComponent(name)}`;
+  // Inside the Crew desktop the 系统管理员 entry is the window's top-right button, not a rail item.
+  const desktop = Boolean(window.crewDesktopShell || window.crewDesktopTheme);
 
   let projects = [];
   let popoverOpen = false;
@@ -119,6 +141,7 @@
   }
 
   function targetWorkspace() {
+    if (pageProject) return pageProject;
     const recent = readRecentProject();
     if (recent && (!projects.length || projects.some(item => item.name === recent))) return recent;
     return projects[0]?.name || recent || null;
@@ -137,21 +160,51 @@
     const themeLabel = {system: "跟随系统", light: "日间", dark: "夜间"}[themeMode] || "跟随系统";
     const localControls = !window.CrewAccess || CrewAccess.local_controls;
     const settingsHref = target ? projectHref(target, "settings") : "/#settings";
+    const adminPage = page === "assistant" && pageProject === null;
+    // Highlighted by the stable project name in the URL, so a workspace page never lights up another workspace's item.
+    const railLink = (kind, name, display, title, icon) => {
+      const active = page === kind && pageProject === name;
+      return `<a class="rail-button ${active ? "active" : ""}" href="${esc(pageHref(kind, name))}" ${active ? 'aria-current="page"' : ""} title="${esc(display)} · ${title}" aria-label="${esc(display)} · ${title}">${ic(icon)}</a>`;
+    };
 
     host.innerHTML = [
       `<button type="button" id="workspace-entry" class="rail-brand ${popoverOpen ? "active" : ""}" data-rail-act="workspace-switcher" title="${esc(targetLabel)} · 切换工作区" aria-label="${esc(targetLabel)} · 切换工作区" aria-controls="workspace-popover" aria-expanded="${popoverOpen}">${logoMarkup()}<span class="rail-brand-caret" aria-hidden="true"></span></button>`,
       `<a class="rail-button leader-entry" href="${esc(projectHref(target, leaderHash))}" title="回到 ${esc(targetLabel)} · Leader" aria-label="回到 ${esc(targetLabel)} · Leader">${ic("team")}</a>`,
+      target ? roomMarkup(target, roomProject === target ? standaloneRooms : null, false, roomProject === target ? roomListError : "") : "",
       '<div class="rail-divider"></div>',
       `<span class="rail-home"><a class="rail-button" href="${esc(projectHref(target, "all"))}" title="回到 ${esc(targetLabel)} · 主页" aria-label="回到 ${esc(targetLabel)} · 主页">${ic("grid")}</a></span>`,
       `<a class="rail-button" href="${esc(projectHref(target, "architecture"))}" title="${esc(targetLabel)} · 架构图" aria-label="${esc(targetLabel)} · 架构图">${ic("board")}</a>`,
-      `<a class="rail-button ${page === "notes" ? "active" : ""}" href="/notes.html" ${page === "notes" ? 'aria-current="page"' : ""} title="想法墙" aria-label="想法墙">${ic("pencil")}</a>`,
-      `<a class="rail-button ${page === "assistant" ? "active" : ""}" href="/assistant.html" ${page === "assistant" ? 'aria-current="page"' : ""} title="全局助手" aria-label="全局助手">${ic("msg")}</a>`,
+      ...(target ? [railLink("assistant", target, targetLabel, "助手", "msg"), railLink("notes", target, targetLabel, "想法", "pencil")] : []),
       `<span class="rail-git"><a class="rail-button" href="${esc(projectHref(target, "git"))}" title="${esc(targetLabel)} · Git" aria-label="${esc(targetLabel)} · Git">${ic("branch")}</a></span>`,
       '<span class="rail-space"></span>',
+      desktop ? "" : `<a class="rail-button rail-admin ${adminPage ? "active" : ""}" href="/assistant.html" ${adminPage ? 'aria-current="page"' : ""} title="系统管理员" aria-label="系统管理员">${ic("shield")}</a>`,
       `<button type="button" class="rail-button" data-rail-act="theme" title="日间 / 夜间 · ${esc(themeLabel)}" aria-label="日间 / 夜间 · ${esc(themeLabel)}">${ic(themeIcon)}</button>`,
       `<a class="rail-button" data-local-control href="${esc(settingsHref)}" title="设置" aria-label="设置">${ic("settings")}</a>`,
-      popoverMarkup({projects, themes: [], currentProject: null, recentProject: recent || target, inProject: false, localControls, open: popoverOpen})
+      popoverMarkup({projects, themes: [], currentProject: pageProject, recentProject: recent || target, inProject: false, localControls, open: popoverOpen})
     ].join("");
+    if (target && roomProject !== target) void loadStandaloneRooms(target);
+  }
+
+  let roomProject = null, standaloneRooms = null, roomListError = "", roomRequest = 0;
+  async function loadStandaloneRooms(target) {
+    if (!target) return;
+    const request = ++roomRequest;
+    if (roomProject !== target) { standaloneRooms = null; roomListError = ""; }
+    roomProject = target;
+    try {
+      if (window.CrewAccess && !await CrewAccess.ready) return;
+      const path = `/api/op/war_room.list?${new URLSearchParams({project:target})}`;
+      const res = await fetch(path, {headers:{"X-Crew":"1"}});
+      const data = await res.json();
+      if (!res.ok) throw Error(data.error);
+      if (request !== roomRequest) return;
+      standaloneRooms = data.rooms;
+      roomListError = "";
+    } catch (error) {
+      if (request !== roomRequest) return;
+      roomListError = error.message;
+    }
+    renderStandalone();
   }
 
   function update(data = {}) {
@@ -189,6 +242,7 @@
       themeMode = readThemeMode();
       renderStandalone();
     });
+    window.addEventListener("focus", () => void loadStandaloneRooms(targetWorkspace()));
     document.addEventListener("pointerdown", event => {
       if (popoverOpen && !event.target.closest("#workspace-popover,#workspace-entry")) setPopoverOpen(false);
     });
@@ -219,5 +273,5 @@
     })();
   }
 
-  window.CrewGlobalRail = {popoverMarkup, update, projectHref, STORE_PROJECT, STORE_ROUTE};
+  window.CrewGlobalRail = {popoverMarkup, update, projectHref, roomMarkup, roomState, roomLabel, STORE_PROJECT, STORE_ROUTE};
 })();

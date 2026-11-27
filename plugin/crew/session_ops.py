@@ -1,5 +1,5 @@
 """Authorized session actions. They change Crew records, never the underlying process."""
-from . import board, domains
+from . import board, domains, workspace_assistant
 
 
 CONTROL_FIELDS = ('archived_status', 'archived_note', 'archived_ended_at', 'removed', 'name_override')
@@ -32,6 +32,7 @@ def _set_control(conn, session_id, **values):
 
 
 def _rename(conn, session, name, now):
+    workspace_assistant.protect(conn, session['session_id'])
     if name is not None:
         board.available_name(conn, session['project'], name, session_id=session['session_id'])
     old = session['crew_name']
@@ -96,6 +97,7 @@ def _archive(conn, session, removed, now, event=None):
 
 def authorize_archive(conn, session_id, caller_session_id):
     from . import spawn
+    workspace_assistant.protect(conn, session_id)
     session = board.session(conn, session_id)
     if caller_session_id in (None, board.HUMAN):
         return
@@ -121,6 +123,7 @@ def archive(conn, session_id, removed=False, now=None, *, caller_session_id=None
 def deletion_scope(conn, session_id):
     """A leader is deleted with its whole open group; anyone else alone."""
     session = board.session(conn, session_id)
+    workspace_assistant.protect(conn, session_id)
     group = None
     if session['role'] == 'leader' and session['group_name']:
         group = conn.execute('SELECT * FROM groups WHERE project=? AND name=? AND leader_session_id=?',
@@ -164,6 +167,7 @@ def restore(conn, session_id, now=None):
 
 
 def _undo(conn, session_id, before, now):
+    workspace_assistant.protect(conn, session_id)
     session, previous = board.session(conn, session_id), snapshot(conn, session_id)
     required = ('crew_name', 'group_name', 'status', 'status_note', 'ended_at', 'control')
     if not isinstance(before, dict) or any(key not in before for key in required):
@@ -180,7 +184,8 @@ def _undo(conn, session_id, before, now):
         _with_member_controls(conn, session, previous)
         _rename(conn, session, before['crew_name'], now)
     if before['status'] not in ('closed', 'offline') and before['crew_name']:
-        duplicate = conn.execute("SELECT 1 FROM sessions WHERE project=? AND crew_name=? AND session_id<>? AND status NOT IN ('offline','closed')",
+        duplicate = conn.execute("SELECT 1 FROM sessions WHERE project=? AND crew_name=? AND session_id<>? "
+                                 "AND session_id NOT IN (SELECT session_id FROM workspace_assistants) AND status NOT IN ('offline','closed')",
                                  (session['project'],before['crew_name'],session_id)).fetchone()
         if duplicate:
             raise board.Conflict('原来的名字已被另一会话使用')

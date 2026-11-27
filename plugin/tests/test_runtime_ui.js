@@ -6,7 +6,7 @@ const vm = require("node:vm");
 const {test} = require("node:test");
 
 const source = fs.readFileSync(path.join(__dirname, "../../frontend/app.js"), "utf8").replace(/\r\n/g, "\n");
-const fixture = () => ({models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude-haiku-4-5-20251001", name:"Haiku"}],
+const fixture = () => ({notice_history:[], attention:[], native_approvals:[], models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude-haiku-4-5-20251001", name:"Haiku"}],
   efforts:["low", "medium", "high", "max"], runtimes:[
     {id:"claude", name:"Claude Code", available:true, error:null,
       models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude-haiku-4-5-20251001", name:"Haiku"}], efforts:["low", "medium", "high", "max"]},
@@ -18,7 +18,8 @@ const fixture = () => ({models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude
     ], efforts:["low", "medium", "high", "max"]},
   ]});
 const session = extra => ({session_id:"session-codex", runtime:"codex", model:"gpt-a", effort:"medium",
-  applied:{model:"gpt-a", effort:"medium"}, where:"bg", running:true, ...extra});
+  applied:{model:"gpt-a", effort:"medium"}, where:"bg", running:true, notices_pending:0, notices_quiet:0,
+  notices_waiting:[], channel_queued_id:null, ...extra});
 const form = (runtime="codex", model="", effort="", speed="") => ({dataset:{runtimeExplicit:"true"},elements:{name:{value:" fixture "}, task:{value:" work "},
   runtime:{value:runtime}, model:{value:model}, effort:{value:effort}, speed:{value:speed}},
   submit:{disabled:false}, refresh:{disabled:false, hidden:false},
@@ -31,7 +32,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
     contains:() => false, querySelectorAll:() => [], setAttribute(name, value) { this[name] = value; }});
   for (const id of ["menu", "backdrop", "main", "leader-panel", "trust-error", "leader-runtime-options", "leader-runtime-status", "leader-model-options", "leader-effort-note", "leader-effort-options", "leader-speed-field", "leader-speed-options"]) nodes.set(id, node());
   const escape = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
-  const sandbox = {window:{matchMedia:() => ({matches:false})}, document:{visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:(type, handler) => listeners.set(type, handler)},
+  const sandbox = {window:{matchMedia:() => ({matches:false})}, document:{body:{classList:{contains:()=>false}},visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:(type, handler) => listeners.set(type, handler)},
     location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console, EventSource:class {},
     CrewTheme:{logo:()=>""}, CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
   vm.createContext(sandbox);
@@ -40,6 +41,8 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   sandbox.CrewContext=sandbox.window.CrewContext;
   sandbox.CrewActivity={markup:()=>""};
   vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/browser-utils.js"),"utf8"),sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/global-rail.js"),"utf8"),sandbox);
+  sandbox.CrewGlobalRail=sandbox.window.CrewGlobalRail;
   // index.html loads the workspace data layer before app.js; app.js sends requests through it.
   vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/app-data.js"),"utf8"),sandbox);
   sandbox.CrewAppData=sandbox.window.CrewAppData;
@@ -305,7 +308,7 @@ test("explicit catalog refresh is deduplicated and old servers are never probed"
 const todo = extra => ({id:17, title:"在手机上确认登录", steps:"打开设置\n允许登录", verification:"告诉它已经授权",
   blocking:true, status:"open", note:"", session_id:"member-1", proposer_name:"连接助手", group:"登录",
   leader_session_id:"leader-1", leader_name:"登录", created_at:"2026-10-24T00:00:00Z", updated_at:"2026-10-24T00:00:00Z", version:2, ...extra});
-const todoState = () => ({...fixture(), project:{name:"fixture"}, leaders:[{session_id:"leader-1", name:"登录"}], members:[],
+const todoState = () => ({...fixture(), project:{name:"fixture"}, leaders:[{session_id:"leader-1", name:"登录", codex:[]}], members:[],
   decisions:[{id:90, leader_session_id:"leader-1", session_id:"leader-1", asker:"登录", presentation_stage:"notice"}], todos:[todo({id:44}), todo({id:17}), todo({id:52, leader_session_id:"leader-2"})]});
 
 test("first open shows the workspace overview while explicit conversation and TODO routes remain stable", () => {
@@ -610,7 +613,18 @@ test("Git rail attention comes from state before any Git snapshot is read",()=>{
   const state=fixture();Object.assign(state,{project:{name:"fixture"},leaders:[],members:[],todos:[],decisions:[],git_assistant:{attention:7,pending:99},channel:{unread:0},notification:{channels:[],error:null,away:false},limits:{claude:{seven_day:null},codex:null}});
   const {ui,nodes}=harness(state);nodes.set("sidebar",{innerHTML:"",dataset:{},contains:()=>false,querySelectorAll:()=>[]});ui.services({});
   ui.renderSidebar();assert.match(nodes.get("sidebar").innerHTML,/class="rail-git"[\s\S]*?class="rail-badge">7<\/span>/);assert.doesNotMatch(nodes.get("sidebar").innerHTML,/>99<\/span>/);
+  assert.match(nodes.get("sidebar").innerHTML,/id="leader-entry"[\s\S]*?<\/button><a class="rail-button rail-war-room/);
   state.git_assistant=null;ui.renderSidebar();assert.doesNotMatch(nodes.get("sidebar").innerHTML,/class="rail-badge"/);
+});
+test("room work is shown on the Leader rail row and member card from the snapshot identity",()=>{
+  const state=contextState(), {ui}=harness(state), [lead]=state.leaders, [member]=state.members;
+  assert.doesNotMatch(ui.sidebarLeader(lead),/作战室中/);
+  assert.doesNotMatch(ui.memberNode(member),/作战室中/);
+  lead.working_room_id=member.working_room_id=7;
+  assert.match(ui.sidebarLeader(lead),/作战室中/);
+  assert.match(ui.memberNode(member),/作战室中/);
+  member.working_room_id=null;
+  assert.doesNotMatch(ui.memberNode(member),/作战室中/);
 });
 test("the leader list says while branch chips are computed and shows why their scan failed",()=>{
   const state=fixture();Object.assign(state,{project:{name:"fixture"},leaders:[],members:[],todos:[],decisions:[],git_assistant:null,git_branches:{pending:true},channel:{unread:0},notification:{channels:[],error:null,away:false},limits:{claude:{seven_day:null},codex:null}});
@@ -623,4 +637,21 @@ test("the leader list says while branch chips are computed and shows why their s
   for (const value of [{base:{name:"develop"},integration:null,branches:[]},null]) {
     state.git_branches=value;ui.renderSidebar();assert.doesNotMatch(panel(),/leader-git-status/);
   }
+});
+
+test("leader cards show waiting reasons, the latest error, and a separate quiet count",()=>{
+  const state=contextState(), {ui}=harness(state), [lead]=state.leaders;
+  Object.assign(lead,{notices_pending:6,notices_quiet:2,channel_queued_id:11,
+    notices_waiting:[...["stopped","maintenance","busy","external","liveness_unknown"].map(reason=>({reason})),
+      {reason:"failed",attempted_at:"2026-11-28T03:00:00Z",error:"原生窗口 <未响应>"}]});
+  const markup=ui.sidebarLeader(lead);
+  assert.match(markup,/data-act="leader-queued"[^>]*data-message="11"/);
+  for (const detail of ["6 条通知排队中","下次对话带入 2 条","已停止","维护中","本轮未结束","等外部窗口","在线状态未知"]) {
+    assert(markup.includes(detail));
+  }
+  assert.match(markup,/投递失败 · \d+\/\d+ \d+:\d+ · 原生窗口 &lt;未响应&gt;/);
+  lead.notices_pending=0;
+  const quiet=ui.sidebarLeader(lead);
+  assert.match(quiet,/下次对话带入 2 条/);
+  assert.doesNotMatch(quiet,/排队中|投递失败/);
 });

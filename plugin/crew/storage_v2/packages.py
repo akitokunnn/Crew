@@ -93,7 +93,7 @@ def _insert(conn, table, row):
                  + ','.join('?' for _ in row) + ')', tuple(row.values()))
 
 
-@lru_cache(maxsize=3)
+@lru_cache(maxsize=4)
 def _schema(version=SCHEMA_VERSION):
     with closing(sqlite3.connect(':memory:', isolation_level=None)) as conn:
         create_domain(conn, version)
@@ -231,7 +231,7 @@ def _manifest(value, limits):
                 'export_id', 'workspace_id', 'created_at', 'consistency', 'source', 'database', 'blobs', 'capabilities', 'omissions'}
     if not isinstance(value, dict) or set(value) != required:
         raise PackageError('Unsupported package manifest')
-    if value['format'] != 'crew-workspace' or _integer(value['format_version'], 'format_version', minimum=1) != 1 or _integer(value['schema_version'], 'schema_version', minimum=1) not in (2, 3, SCHEMA_VERSION):
+    if value['format'] != 'crew-workspace' or _integer(value['format_version'], 'format_version', minimum=1) != 1 or _integer(value['schema_version'], 'schema_version', minimum=1) not in range(2, SCHEMA_VERSION + 1):
         raise PackageError('Unsupported package format/schema version')
     if _integer(value['min_reader_version'], 'min_reader_version', minimum=1) > SCHEMA_VERSION:
         raise PackageError('Package requires a newer reader')

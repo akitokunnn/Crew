@@ -1,6 +1,6 @@
 "use strict";
 // Architecture board: the workspace's domain tree. Parts nest under parts; each part card lists the leaders working
-// in it (any number), at most one of them leading the layer. Leaders not placed yet wait in the 未归属 shelf and are
+// in it (any number), at most one of them leading the layer. Independent leaders sit on the canvas and can be
 // dragged into a part; parts hang under a part when dropped on it or wired from its pin. The tree draws top-down
 // (an architecture tree) or left-to-right (a blueprint); positions, folds and direction are saved with the tree,
 // the camera stays in this browser. Editing needs a window wider than a phone; phones can look, pan, zoom and open
@@ -8,7 +8,7 @@
 // a leader's menu merges or retires it through the restructure preview (docs/ASSISTANT_CAMPAIGN_DESIGN.md §7).
 const CrewArchitecture = (() => {
   const PART_W = 248, HEAD_H = 42, PIN_Y = 21, ROW_H = 48, GAP_TB = 64, GAP_LR = 96, GAP_CROSS = 28;
-  const MIN_ZOOM = .2, MAX_ZOOM = 2, SLOP = 4, HISTORY = 100, NAME_MAX = 40;
+  const MIN_ZOOM = .2, MAX_ZOOM = 2, HISTORY = 100, NAME_MAX = 40;
   const phone = window.matchMedia("(max-width:760px)");
   const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
   const icon = d => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
@@ -30,10 +30,10 @@ const CrewArchitecture = (() => {
   let host = null, options = null, board = null, project = null, errorText = "", loadToken = 0;
   let camera = null, selection = new Set(), undoStack = [], redoStack = [], queue = Promise.resolve(), busy = 0;
   let gesture = null, renaming = null, menu = null, focusRequest = null, spaceDown = false, cached = null, leaderSignature = "";
-  let pendingFit = null, resizer = null, pendingDirection = null, shelfOpen = null;
+  let pendingFit = null, resizer = null, pendingDirection = null, controls = null;
   let history = null, historyToken = 0, detailToken = 0, planner = null;
   let domainsPending = false;
-  const pointers = new Map(), pending = new Map(), sizes = new Map();
+  const pending = new Map(), sizes = new Map();
 
   const editable = () => !phone.matches;
   const clampZoom = z => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
@@ -53,8 +53,23 @@ const CrewArchitecture = (() => {
     for (const part of board.parts) { if (!children.has(part.parent_id)) children.set(part.parent_id, []); children.get(part.parent_id).push(part); }
     for (const place of places.values()) { if (!members.has(place.domain_id)) members.set(place.domain_id, []); members.get(place.domain_id).push(place); }
     for (const list of members.values()) list.sort((a, b) => (b.lead - a.lead) || (order.get(a.session_id) - order.get(b.session_id)));
+    const saved = new Map(board.independent.filter(item => Number.isFinite(item.x) && Number.isFinite(item.y))
+      .map(item => [item.session_id, item]));
+    const fixed = [...saved.values()];
     const loose = leadersList.filter(item => !places.has(item.session_id));
-    cached = {board, leadersList, parts, leaders, places, children, members, loose};
+    let y = 0;
+    const x = board.parts.reduce((left, part) => Math.min(left, part.x - PART_W - GAP_CROSS), 0);
+    const independent = new Map(loose.map(item => {
+      const id = item.session_id;
+      if (saved.has(id)) return [id, saved.get(id)];
+      while (fixed.some(pos => x < pos.x + PART_W && x + PART_W > pos.x && y < pos.y + ROW_H && y + ROW_H > pos.y)) {
+        y += ROW_H + GAP_CROSS;
+      }
+      const pos = {x, y};
+      y += ROW_H + GAP_CROSS;
+      return [id, pos];
+    }));
+    cached = {board, leadersList, parts, leaders, places, children, members, independent};
     return cached;
   }
   function hidden(m, id) {
@@ -91,11 +106,10 @@ const CrewArchitecture = (() => {
       <div class="arch-canvas" tabindex="0" aria-label="架构图画板" aria-describedby="arch-hint">
         <div class="arch-world"><svg class="arch-wires" aria-hidden="true"></svg><div class="arch-nodes"></div></div>
         <div class="arch-marquee" hidden></div><div class="arch-drop-label" hidden></div><div class="arch-ghost" hidden></div>
-        <aside class="arch-shelf" aria-label="未归属的 leader"></aside>
         <div class="arch-empty" hidden></div>
         <p class="arch-hint" id="arch-hint"></p>
         <div class="arch-zoom" role="group" aria-label="缩放"><button type="button" data-arch-act="zoom-out" aria-label="缩小">${icon(ICON.minus)}</button><button type="button" class="arch-zoom-value" data-arch-act="zoom-reset" title="恢复 100%"></button><button type="button" data-arch-act="zoom-in" aria-label="放大">${icon(ICON.plus)}</button><button type="button" data-arch-act="fit" title="显示全部 (Home)" aria-label="显示全部">${icon(ICON.fit)}</button></div>
-        <div class="arch-menu" role="menu" hidden></div>
+        <div class="arch-menu" role="menu" data-canvas-wheel-native hidden></div>
       </div>
       <aside class="arch-history" aria-label="版本历史" hidden></aside>
       </div>
@@ -119,10 +133,11 @@ const CrewArchitecture = (() => {
     const toggle = `<div class="arch-dir" role="radiogroup" aria-label="架构图方向">${["TB", "LR"].map(value => `<button type="button" role="radio" aria-checked="${dir === value}" data-arch-act="direction" data-direction="${value}" title="${value === "TB" ? "架构树：从上到下" : "蓝图：从左到右"}">${icon(ICON[value.toLowerCase()])}<span>${DIRECTION[value]}</span></button>`).join("")}</div>`;
     const tools = edit ? `${toggle}<span class="arch-tool-gap" aria-hidden="true"></span><button type="button" class="btn primary arch-new" data-arch-act="new">${icon(ICON.plus)}新 part</button><button type="button" class="icon-btn" data-arch-act="undo" title="撤销${undoStack.length ? `：${esc(undoStack.at(-1).label)}` : ""} (${window.CrewBrowser.keyboardShortcut("Z")})" aria-label="撤销" ${undoStack.length ? "" : "disabled"}>${icon(ICON.undo)}</button><button type="button" class="icon-btn" data-arch-act="redo" title="重做${redoStack.length ? `：${esc(redoStack.at(-1).label)}` : ""} (${window.CrewBrowser.keyboardShortcut("Z", {shift:true})})" aria-label="重做" ${redoStack.length ? "" : "disabled"}>${icon(ICON.redo)}</button><button type="button" class="btn ghost" data-arch-act="tidy" title="按当前方向自动排列（可撤销）">${icon(ICON.tidy)}<span class="arch-tidy-label">自动排列</span></button>` : "";
     const versions = `<button type="button" class="btn ghost arch-history-open" data-arch-act="history" aria-expanded="${history !== null}" aria-label="版本历史" title="版本历史：每次结构改动的版本、差异与回滚">${icon(ICON.history)}<span class="arch-history-label">版本历史</span></button>`;
-    const markup = `<div class="arch-heading"><div class="title">${icon(ICON.tb)}架构图${busy ? '<span class="arch-saving">保存中…</span>' : ""}</div><div class="sub">${board.parts.length} 个 part · ${m.leaders.size} 位 leader${m.loose.length ? ` · ${m.loose.length} 位未归属` : ""}${picked}${edit ? "" : ' · <span title="在电脑上打开 Crew 可以编辑">只读</span>'}</div></div><div class="right">${backToChat()}${versions}${tools}</div>`;
+    const markup = `<div class="arch-heading"><div class="title">${icon(ICON.tb)}架构图${busy ? '<span class="arch-saving">保存中…</span>' : ""}</div><div class="sub">${board.parts.length} 个 part · ${m.leaders.size} 位 leader${picked}${edit ? "" : ' · <span title="在电脑上打开 Crew 可以编辑">只读</span>'}</div></div><div class="right">${backToChat()}${versions}${tools}</div>`;
     if (head.dataset.render !== markup) { head.innerHTML = markup; head.dataset.render = markup; }
     const hint = $(".arch-hint");
-    const text = edit ? "把 leader 拖进 part 归入 · 拖 part 到 part 上或从圆点拉线改挂 · 右键 leader 设负责人 · 右键 / 空格拖动平移 · 滚轮缩放" : "拖动平移 · 双指缩放 · 点 leader 进入对话 · 在电脑上可以编辑";
+    const wheel = options.state.domains.canvas_wheel_zoom ? "鼠标滚轮缩放" : "按 Ctrl 或 ⌘ 滚动缩放";
+    const text = edit ? `拖动 leader 调整归属 · 拖圆点连线 · 右键查看操作 · ${wheel}` : "拖动平移 · 双指缩放 · 点 leader 进入对话 · 在电脑上可以编辑";
     if (hint.textContent !== text) hint.textContent = text;
   }
   function memberRow(m, item, lead, partName) {
@@ -149,28 +164,24 @@ const CrewArchitecture = (() => {
       + `<div class="arch-members">${body}</div>`
       + `<span class="arch-pin out${kids ? " linked" : ""}" data-pin="out" title="下级 part：拉线连到别的 part，或拉到空白处新建"></span></div>`;
   }
-  function renderShelf(m) {
-    const shelf = $(".arch-shelf"); if (!shelf) return;
-    const open = shelfOpen ?? (!phone.matches);
-    shelf.dataset.open = String(open);
-    const rows = m.loose.map(item => memberRow(m, item, false, "")).join("");
-    shelf.innerHTML = `<button type="button" class="arch-shelf-head" data-arch-act="shelf" aria-expanded="${open}">${icon(ICON.people)}<span>未归属</span><b>${m.loose.length}</b>${icon(open ? ICON.down : ICON.right)}</button>`
-      + `<div class="arch-shelf-body" ${open ? "" : "hidden"}>${rows || `<p class="arch-shelf-note">所有 leader 都在架构里了${editable() ? "；把 leader 拖到这里可移出" : ""}</p>`}${rows && editable() ? '<p class="arch-shelf-note">拖进 part 归入</p>' : ""}</div>`;
+  function independentNode(m, id, pos) {
+    const item = m.leaders.get(id);
+    return `<div class="arch-node arch-independent" data-independent="${esc(id)}" style="transform:translate(${pos.x}px,${pos.y}px)" role="group" aria-label="独立 leader ${esc(item.name)}">${memberRow(m, item, false, "")}</div>`;
   }
   function renderWorld() {
     const nodes = $(".arch-nodes"); if (!nodes) return;
     const m = model();
     $(".arch-canvas").dataset.dir = direction();
-    nodes.innerHTML = board.parts.filter(part => !hidden(m, part.id)).map(part => partNode(m, part)).join("");
+    nodes.innerHTML = board.parts.filter(part => !hidden(m, part.id)).map(part => partNode(m, part)).join("")
+      + [...m.independent].map(([id, pos]) => independentNode(m, id, pos)).join("");
     measure();
-    renderShelf(m);
     renderWires();
     const empty = $(".arch-empty");
-    empty.hidden = board.parts.length > 0;
-    if (!empty.hidden) empty.innerHTML = `<div class="arch-empty-text"><h2>把领域拆成一棵树</h2><p>part 可以层层嵌套，比如 感知 › 视觉 › 相机；一个 part 里可以放多位 leader，其中一位可以设为本层负责人，负责下面各子 part 共用的部分。${editable() ? "新建 part 后，把左侧未归属的 leader 拖进去。" : "在电脑上打开 Crew 可以编辑。"}</p></div>${editable() ? `<button type="button" class="btn primary" data-arch-act="new">${icon(ICON.plus)}新建第一个 part</button>` : ""}`;
+    empty.hidden = board.parts.length > 0 || m.independent.size > 0;
+    if (!empty.hidden) empty.innerHTML = `<div class="arch-empty-text"><h2>把领域拆成一棵树</h2><p>part 可以层层嵌套，比如 感知 › 视觉 › 相机；一个 part 里可以放多位 leader，其中一位可以负责这一层。${editable() ? "" : "在电脑上打开 Crew 可以编辑。"}</p></div>${editable() ? `<button type="button" class="btn primary" data-arch-act="new">${icon(ICON.plus)}新建第一个 part</button>` : ""}`;
     if (renaming !== null) {
       const input = $(".arch-rename");
-      if (input && document.activeElement !== input) { reveal(renaming); input.focus({preventScroll:true}); input.select(); }
+      if (input && document.activeElement !== input) { reveal(partEl(renaming)); input.focus({preventScroll:true}); input.select(); }
     }
   }
   // Wires: a blueprint curve left-to-right, a tree elbow top-down. Each returns its path and the box it covers.
@@ -214,7 +225,7 @@ const CrewArchitecture = (() => {
   }
   function applyCamera() {
     const world = $(".arch-world"), canvas = $(".arch-canvas"); if (!world || camera === null) return;
-    world.style.transform = `translate(${camera.x}px,${camera.y}px) scale(${camera.z})`;
+    world.style.transform = CrewCanvas.transform(camera);
     canvas.style.setProperty("--grid", `${24 * camera.z}px`);
     canvas.style.setProperty("--grid-x", `${camera.x}px`); canvas.style.setProperty("--grid-y", `${camera.y}px`);
     canvas.dataset.fine = String(camera.z >= .7);
@@ -230,54 +241,51 @@ const CrewArchitecture = (() => {
     } catch { /* fall through to fitting the board */ }
     return null;
   }
-  function setShelf(open) {
-    shelfOpen = open;
-    try { localStorage.setItem("crew.architecture.shelf", String(open)); } catch { /* per-viewer convenience */ }
-    renderShelf(model());
-  }
-
   // ---- camera ---------------------------------------------------------------------------------------------------
-  function canvasRect() { return $(".arch-canvas").getBoundingClientRect(); }
-  function toWorld(clientX, clientY) { const r = canvasRect(); return {x:(clientX - r.left - camera.x) / camera.z, y:(clientY - r.top - camera.y) / camera.z}; }
-  function zoomAt(z, clientX, clientY) {
-    const r = canvasRect(), sx = clientX - r.left, sy = clientY - r.top, next = clampZoom(z);
-    camera = {x:sx - (sx - camera.x) * next / camera.z, y:sy - (sy - camera.y) * next / camera.z, z:next};
-    applyCamera(); saveCamera();
-  }
+  const canvasRect = () => controls.rect();
+  const toWorld = (x, y) => controls.toWorld(x, y);
+  function setCamera(value, save) { camera = value; applyCamera(); if (save) saveCamera(); }
   // Pan just enough to bring a part fully into view.
-  function reveal(id) {
-    const node = partEl(id); if (!node) return;
+  function reveal(node) {
+    if (!node) return;
     const r = canvasRect(), b = node.getBoundingClientRect(), margin = 32;
     const dx = b.left < r.left + margin ? r.left + margin - b.left : b.right > r.right - margin ? r.right - margin - b.right : 0;
     const dy = b.top < r.top + margin ? r.top + margin - b.top : b.bottom > r.bottom - 64 ? r.bottom - 64 - b.bottom : 0;
-    if (dx || dy) { camera = {...camera, x:camera.x + dx, y:camera.y + dy}; applyCamera(); saveCamera(); }
+    if (dx || dy) setCamera({...camera, x:camera.x + dx, y:camera.y + dy}, true);
   }
-  function zoomCenter(factor) { const r = canvasRect(); zoomAt(camera.z * factor, r.left + r.width / 2, r.top + r.height / 2); }
-  function bounds(ids) {
+  function bounds(ids, firstOnly) {
     const m = model(); let box = null;
-    for (const id of ids) {
-      if (!m.parts.has(id)) continue;
-      const p = posOf(m, id), size = sizeOf(m, id);
+    const cards = (ids ?? shownIds()).map(id => [posOf(m, id), sizeOf(m, id)]);
+    if (ids === null) {
+      for (const el of host.querySelectorAll(".arch-independent")) {
+        cards.push([m.independent.get(el.dataset.independent), {w:el.offsetWidth, h:el.offsetHeight}]);
+      }
+    }
+    for (const [p, size] of firstOnly ? cards.slice(0, 1) : cards) {
       box = box === null ? {x0:p.x, y0:p.y, x1:p.x + size.w, y1:p.y + size.h}
         : {x0:Math.min(box.x0, p.x), y0:Math.min(box.y0, p.y), x1:Math.max(box.x1, p.x + size.w), y1:Math.max(box.y1, p.y + size.h)};
     }
     return box;
   }
   const shownIds = () => [...host.querySelectorAll(".arch-part")].map(node => node.dataset.part);
-  function fit(ids = shownIds(), maxZoom = 1) {
-    const r = canvasRect(), box = bounds(ids), pad = r.width < 500 ? 24 : 56;
+  function fit(ids = null, maxZoom = 1, reading = false) {
+    const r = canvasRect(), box = bounds(ids, reading), pad = r.width < 500 ? 24 : 56;
     // Not laid out yet (the page is still appearing): fit once the canvas has a size.
-    if (r.width === 0 || r.height === 0) { pendingFit = [ids, maxZoom]; return; }
+    if (r.width === 0 || r.height === 0) { pendingFit = [ids, maxZoom, reading]; return; }
     pendingFit = null;
     if (box === null) { camera = {x:r.width / 2 - PART_W / 2, y:Math.max(80, r.height / 3), z:1}; applyCamera(); return; }
-    // Keep clear of the shelf and the first-use banner, and of the hint and zoom bar at the bottom.
-    const shelf = $(".arch-shelf"), banner = $(".arch-empty");
-    const left = shelf && !phone.matches && shelf.dataset.open === "true" ? shelf.offsetLeft + shelf.offsetWidth + 24 : pad;
+    // Keep clear of the first-use banner, hint and zoom bar.
+    const banner = $(".arch-empty");
     const top = banner && !banner.hidden ? banner.offsetTop + banner.offsetHeight + 16 : pad, bottom = pad + 24;
-    const z = clampZoom(Math.min(maxZoom, (r.width - left - pad) / Math.max(1, box.x1 - box.x0), (r.height - top - bottom) / Math.max(1, box.y1 - box.y0)));
-    camera = {z, x:left + (r.width - left - pad - (box.x1 - box.x0) * z) / 2 - box.x0 * z, y:top + (r.height - top - bottom - (box.y1 - box.y0) * z) / 2 - box.y0 * z};
-    applyCamera(); saveCamera();
+    const fitted = CrewCanvas.fit(r, box, {left:pad, top, right:pad, bottom},
+      reading ? z => Math.max(.6, clampZoom(z)) : clampZoom, maxZoom);
+    if (reading) {
+      fitted.x = Math.max(fitted.x, pad - box.x0 * fitted.z);
+      fitted.y = Math.max(fitted.y, top - box.y0 * fitted.z);
+    }
+    setCamera(fitted, true);
   }
+  const fitInitial = () => fit(null, 1, phone.matches);
   function flash(node) { if (!node) return; node.classList.remove("flash"); void node.offsetWidth; node.classList.add("flash"); }
   // From the chat path or the right panel: show the leader's part (or the nearest shown one above it) and flash both.
   function applyFocus() {
@@ -285,7 +293,10 @@ const CrewArchitecture = (() => {
     const m = model(), request = focusRequest; focusRequest = null;
     const domain = request.part && m.parts.has(request.part) ? request.part : m.places.get(request.leader)?.domain_id;
     if (!domain) {
-      if (request.leader && m.leaders.has(request.leader)) { setShelf(true); flash(host.querySelector(`.arch-shelf [data-leader="${CSS.escape(request.leader)}"]`)); }
+      if (m.independent.has(request.leader)) {
+        const card = $(`.arch-independent[data-independent="${CSS.escape(request.leader)}"]`);
+        reveal(card); flash(card.querySelector(".arch-member"));
+      }
       return;
     }
     const target = [domain, ...ancestors(m, domain)].find(id => !hidden(m, id));
@@ -312,7 +323,7 @@ const CrewArchitecture = (() => {
     if (host === null) return;
     const first = camera === null;
     render();
-    if (first && board !== null) { camera = loadCamera(); if (camera === null) { camera = {x:0, y:0, z:1}; fit(); } applyCamera(); }
+    if (first && board !== null) { camera = loadCamera(); if (camera === null) { camera = {x:0, y:0, z:1}; fitInitial(); } applyCamera(); }
     applyFocus();
     if (history !== null) void loadHistory();
   }
@@ -349,7 +360,9 @@ const CrewArchitecture = (() => {
       else if (op.op === "move") steps = [{op:"move", items:op.items.map(item => ({id:item.id, x:parts.get(item.id).x, y:parts.get(item.id).y}))}];
       else if (op.op === "assign") {
         const old = places.get(op.session_id);
-        steps = [{op:"assign", session_id:op.session_id, domain_id:old?.domain_id ?? null}, ...(old?.lead ? [{op:"lead", session_id:op.session_id, lead:true}] : [])];
+        const pos = before.independent.find(item => item.session_id === op.session_id && Number.isFinite(item.x) && Number.isFinite(item.y));
+        steps = [{op:"assign", session_id:op.session_id, domain_id:old?.domain_id ?? null,
+          ...(pos ? {x:pos.x, y:pos.y} : {})}, ...(old?.lead ? [{op:"lead", session_id:op.session_id, lead:true}] : [])];
       } else if (op.op === "lead") {
         const was = places.get(op.session_id)?.lead === true;
         steps = op.lead ? (effect.previous && effect.previous !== op.session_id ? [{op:"lead", session_id:effect.previous, lead:true}] : was ? [] : [{op:"lead", session_id:op.session_id, lead:false}])
@@ -474,13 +487,15 @@ const CrewArchitecture = (() => {
     }
     return moved;
   }
-  function placeLeader(sessionId, partId) {
+  function placeLeader(sessionId, partId, pos = null) {
     const m = model(), item = m.leaders.get(sessionId), from = m.places.get(sessionId)?.domain_id ?? null;
-    if (!item || from === partId) return;
-    const lead = m.places.get(sessionId)?.lead, room = partId ? makeRoom(m, partId) : new Map();
-    commit(partId ? `${item.name} 归入「${m.parts.get(partId).name}」` : `${item.name} 移出到未归属`,
-      [{op:"assign", session_id:sessionId, domain_id:partId}, ...(room.size ? [moveOp(room)] : [])],
-      {positions:room.size ? room : null, after:(result, before, step) => { if (lead) options.toast(`${item.name} 不再是「${m.parts.get(from)?.name}」的负责人`, undoStep(step)); }});
+    if (from === partId && pos === null) return;
+    const room = partId ? makeRoom(m, partId) : new Map();
+    const ops = [{op:"assign", session_id:sessionId, domain_id:partId, ...(pos && {x:pos.x, y:pos.y})}];
+    if (partId) ops.push({op:"lead", session_id:sessionId, lead:true});
+    if (room.size) ops.push(moveOp(room));
+    commit(partId ? `${item.name} 负责「${m.parts.get(partId).name}」` : from === null ? `移动 ${item.name}` : `${item.name} 移出成独立节点`,
+      ops, {positions:room.size ? room : null});
   }
   function setLead(sessionId, lead) {
     const m = model(), place = m.places.get(sessionId); if (!place) return;
@@ -540,93 +555,66 @@ const CrewArchitecture = (() => {
 
   // ---- pointer gestures -----------------------------------------------------------------------------------------
   function under(clientX, clientY) { return document.elementFromPoint(clientX, clientY); }
-  function capture(event) { try { $(".arch-canvas").setPointerCapture(event.pointerId); } catch { /* pointer already gone */ } }
-  function pointerDown(event) {
-    if (event.target.closest(".arch-menu, .arch-zoom, .arch-rename, .arch-empty button, .arch-shelf-head")) return;
+  function hit(event) {
+    if (event.target.closest(".arch-menu, .arch-zoom, .arch-rename, .arch-empty button, [data-arch-act]")) return null;
+    const node = event.target.closest(".arch-part"), pin = event.target.closest(".arch-pin"), row = event.target.closest(".arch-member");
+    if (row) return {type:"leader", leader:row.dataset.leader};
+    if (node) return pin ? {type:"wire", from:node.dataset.part, pin:pin.dataset.pin, part:node.dataset.part}
+      : {type:"part", part:node.dataset.part};
+    return {type:event.pointerType === "mouse" ? "marquee" : null};
+  }
+  function startGesture(done, event) {
     closeMenu();
     if (renaming !== null) finishRename(true);
     $(".arch-canvas").focus({preventScroll:true});
-    pointers.set(event.pointerId, {x:event.clientX, y:event.clientY});
-    if (pointers.size === 2 && (gesture === null || gesture.type === "pan" || !gesture.moved)) { cancelGesture(); startPinch(); return; }
-    if (pointers.size > 1 || event.target.closest("[data-arch-act]")) return;
-    const node = event.target.closest(".arch-part"), pin = event.target.closest(".arch-pin"), row = event.target.closest(".arch-member"), edit = editable();
-    const start = {id:event.pointerId, x:event.clientX, y:event.clientY, moved:false};
-    if (event.button === 1 || event.button === 2 || (event.button === 0 && spaceDown)) {
-      event.preventDefault();
-      gesture = {...start, type:"pan", camera:{...camera}, button:event.button, part:node?.dataset.part ?? null, leader:row?.dataset.leader ?? null}; return;
+    gesture = done;
+    if (done.pan) return;
+    const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+    if (done.type === "wire") {
+      if (event.altKey && done.pin === "in") { done.type = "handled"; detachPart(done.from); return; }
+      Object.assign(done, {end:toWorld(event.clientX, event.clientY), over:null});
+    } else if (done.type === "part") {
+      if (additive) {
+        if (selection.has(done.part)) selection.delete(done.part); else selection.add(done.part);
+        done.type = "handled"; renderSelection();
+      } else if (!selection.has(done.part)) { selection = new Set([done.part]); renderSelection(); }
+    } else if (done.type === "marquee") {
+      Object.assign(done, {additive, base:new Set(selection)});
+    } else if (done.type === "leader") {
+      const row = event.target.closest(".arch-member"), card = row.closest(".arch-independent");
+      const origin = (card || row).getBoundingClientRect();
+      done.grab = {x:event.clientX - origin.left, y:event.clientY - origin.top};
     }
-    if (event.button !== 0) return;
-    if (row) { gesture = edit ? {...start, type:"leader", leader:row.dataset.leader} : {...start, type:"pan", camera:{...camera}, tap:row.dataset.leader}; return; }
-    if (event.target.closest(".arch-shelf")) return;
-    if (edit && pin && node) {
-      if (event.altKey && pin.dataset.pin === "in") { detachPart(node.dataset.part); return; }
-      gesture = {...start, type:"wire", from:node.dataset.part, pin:pin.dataset.pin, end:toWorld(event.clientX, event.clientY), over:null}; return;
-    }
-    if (node) {
-      const id = node.dataset.part;
-      if (edit && (event.shiftKey || event.ctrlKey || event.metaKey)) { if (selection.has(id)) selection.delete(id); else selection.add(id); renderSelection(); return; }
-      if (edit) { if (!selection.has(id)) { selection = new Set([id]); renderSelection(); } gesture = {...start, type:"part", part:id}; }
-      else gesture = {...start, type:"pan", camera:{...camera}};
-      return;
-    }
-    gesture = edit && event.pointerType === "mouse"
-      ? {...start, type:"marquee", additive:event.shiftKey || event.ctrlKey || event.metaKey, base:new Set(selection)}
-      : {...start, type:"pan", camera:{...camera}, clear:true};
   }
-  function pointerMove(event) {
-    if (pointers.has(event.pointerId)) pointers.set(event.pointerId, {x:event.clientX, y:event.clientY});
-    if (gesture?.type === "pinch") { movePinch(); return; }
-    if (gesture === null || gesture.id !== event.pointerId) return;
-    const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
-    if (!gesture.moved) {
-      if (Math.hypot(dx, dy) < SLOP) return;
-      gesture.moved = true; capture(event);
-      if (gesture.type === "part") beginDrag();
-      if (gesture.type === "leader") beginLeaderDrag();
-    }
-    if (gesture.type === "pan") { camera = {...camera, x:gesture.camera.x + dx, y:gesture.camera.y + dy}; applyCamera(); }
-    else if (gesture.type === "part") moveDrag(dx, dy, event);
-    else if (gesture.type === "leader") moveLeaderDrag(event);
-    else if (gesture.type === "wire") moveWire(event);
-    else if (gesture.type === "marquee") moveMarquee(event);
+  function previewGesture(done, event, dx, dy, first) {
+    if (done.type === "part") { if (first) beginDrag(); moveDrag(dx, dy, event); }
+    else if (done.type === "leader") { if (first) beginLeaderDrag(); moveLeaderDrag(event); }
+    else if (done.type === "wire") moveWire(event);
+    else if (done.type === "marquee") moveMarquee(event);
   }
-  function pointerUp(event) {
-    pointers.delete(event.pointerId);
-    if (gesture?.type === "pinch") { if (pointers.size < 2) { gesture = null; saveCamera(); refreshDomains(); } return; }
-    if (gesture === null || gesture.id !== event.pointerId) return;
-    if (event.type === "pointercancel") { cancelGesture(); refreshDomains(); return; }
-    const done = gesture; gesture = null;
-    if (done.type === "pan") {
-      if (done.moved) saveCamera();
-      else if (done.button === 2) openMenu(done, event.clientX, event.clientY);
-      else if (done.tap) options.openLeader(done.tap);
-      else if (done.clear && selection.size) { selection.clear(); renderSelection(); }
+  function finishGesture(done) {
+    gesture = null;
+    if (done.type === "leader") { if (done.moved) finishLeaderDrag(done); else options.openLeader(done.leader); }
+    else if (done.pan) {
+      if (!done.type && selection.size) { selection.clear(); renderSelection(); }
     } else if (done.type === "part") {
       if (done.moved) finishDrag(done);
-      // A plain click inside a multi-selection picks just that part (the selection stayed for a possible drag).
       else if (selection.size > 1) { selection = new Set([done.part]); renderSelection(); }
-    } else if (done.type === "leader") { if (done.moved) finishLeaderDrag(done); else options.openLeader(done.leader); }
-    else if (done.type === "wire") finishWire(done);
-    else if (done.type === "marquee") { $(".arch-marquee").hidden = true; if (!done.moved && !done.additive && selection.size) { selection.clear(); renderSelection(); } }
-    refreshDomains();
+    } else if (done.type === "wire") finishWire(done);
+    else if (done.type === "marquee") {
+      $(".arch-marquee").hidden = true;
+      if (!done.moved && !done.additive && selection.size) { selection.clear(); renderSelection(); }
+    }
   }
-  function cancelGesture() {
-    const done = gesture; gesture = null;
-    if (done === null) return;
+  function rollbackGesture(done) {
+    gesture = null;
     $(".arch-drop-label").hidden = true; $(".arch-ghost").hidden = true; clearOver();
-    if ((done.type === "part" || done.type === "leader") && done.moved) renderWorld();
+    if (!done.pan && (done.type === "part" || done.type === "leader") && done.moved) renderWorld();
     if (done.type === "wire") renderWires();
-    if (done.type === "marquee") $(".arch-marquee").hidden = true;
-  }
-  function startPinch() {
-    const [a, b] = [...pointers.values()];
-    gesture = {type:"pinch", distance:Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)), middle:{x:(a.x + b.x) / 2, y:(a.y + b.y) / 2}, camera:{...camera}};
-  }
-  function movePinch() {
-    const [a, b] = [...pointers.values()]; if (!b) return;
-    const r = canvasRect(), start = gesture.camera, z = clampZoom(start.z * Math.hypot(a.x - b.x, a.y - b.y) / gesture.distance);
-    const wx = (gesture.middle.x - r.left - start.x) / start.z, wy = (gesture.middle.y - r.top - start.y) / start.z;
-    camera = {z, x:(a.x + b.x) / 2 - r.left - wx * z, y:(a.y + b.y) / 2 - r.top - wy * z}; applyCamera();
+    if (done.type === "marquee" && !done.pan) {
+      $(".arch-marquee").hidden = true;
+      selection = done.base; renderSelection();
+    }
   }
   function label(text, event) {
     const box = $(".arch-drop-label"), r = canvasRect();
@@ -676,7 +664,7 @@ const CrewArchitecture = (() => {
     ops.push(moveOp(positions));
     commit(text, ops, {positions, after:() => { if (done.drop) requestAnimationFrame(() => done.drop.ids.forEach(reveal)); }});
   }
-  // Leaders are carried as a chip; dropping on a part puts them there, on the shelf takes them out.
+  // Leaders are carried as a chip until dropped into a part or at a canvas position.
   function beginLeaderDrag() {
     const m = model(), item = m.leaders.get(gesture.leader), ghost = $(".arch-ghost");
     ghost.innerHTML = `${options.avatar(item.name, 22)}<span>${esc(item.name)}</span>`; ghost.style.setProperty("--tint", options.tint(item.name)); ghost.hidden = false;
@@ -686,17 +674,23 @@ const CrewArchitecture = (() => {
   function moveLeaderDrag(event) {
     const r = canvasRect(), ghost = $(".arch-ghost");
     ghost.style.transform = `translate(${event.clientX - r.left + 10}px,${event.clientY - r.top + 10}px)`;
-    const m = model(), hit = under(event.clientX, event.clientY), part = hit?.closest?.(".arch-part"), shelf = hit?.closest?.(".arch-shelf");
+    const m = model(), hit = under(event.clientX, event.clientY), part = hit?.closest(".arch-part");
     clearOver();
     gesture.target = undefined;
-    if (part && part.dataset.part !== gesture.from) { gesture.target = part.dataset.part; part.classList.add("drop-target"); label(`松开归入「${m.parts.get(part.dataset.part).name}」`, event); }
-    else if (shelf && gesture.from !== null) { gesture.target = null; shelf.classList.add("drop-target"); label("松开移出到未归属", event); }
+    if (part && part.dataset.part !== gesture.from) {
+      gesture.target = part.dataset.part; part.classList.add("drop-target");
+      label(`松开后负责「${m.parts.get(part.dataset.part).name}」`, event);
+    } else if (!part && hit?.closest(".arch-canvas") && !hit.closest(".arch-zoom, .arch-menu, .arch-independent")) {
+      gesture.target = null;
+      gesture.position = toWorld(event.clientX - gesture.grab.x, event.clientY - gesture.grab.y);
+      label(gesture.from === null ? "松开放在这里" : "松开成为独立节点", event);
+    }
     else label(null);
   }
   function finishLeaderDrag(done) {
     label(null); clearOver(); $(".arch-ghost").hidden = true;
     for (const row of host.querySelectorAll(".arch-member.dragging")) row.classList.remove("dragging");
-    if (done.target !== undefined) placeLeader(done.leader, done.target);
+    if (done.target !== undefined) placeLeader(done.leader, done.target, done.target === null ? done.position : null);
   }
   function wireTarget(done, clientX, clientY) {
     const m = model(), node = under(clientX, clientY)?.closest?.(".arch-part"); if (!node) return null;
@@ -735,14 +729,6 @@ const CrewArchitecture = (() => {
     }
     selection = picked; renderSelection();
   }
-  function wheel(event) {
-    if (event.target.closest(".arch-menu, .arch-shelf-body")) return;
-    event.preventDefault();
-    if (!event.ctrlKey && Math.abs(event.deltaX) > 0) { camera = {...camera, x:camera.x - event.deltaX, y:camera.y - event.deltaY}; applyCamera(); saveCamera(); return; }
-    const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
-    zoomAt(camera.z * Math.exp(-delta * (event.ctrlKey ? .01 : .0015)), event.clientX, event.clientY);
-  }
-
   // ---- menu, keyboard, buttons ----------------------------------------------------------------------------------
   function openMenu(target, clientX, clientY) {
     const m = model(), edit = editable(), items = [];
@@ -751,7 +737,7 @@ const CrewArchitecture = (() => {
       items.push(["open", "进入对话"]);
       if (edit && part) {
         items.push(place.lead ? ["unlead", `不再负责「${part.name}」`] : ["lead", `设为「${part.name}」负责人`]);
-        items.push(["leave", "移出到未归属"]);
+        items.push(["leave", "移出成独立节点"]);
       }
       if (edit && m.leaders.get(target.leader)?.status !== "closed") {
         if (activeLeaders().some(item => item.session_id !== target.leader)) items.push(["merge", "合并到另一位 leader…"]);
@@ -782,7 +768,10 @@ const CrewArchitecture = (() => {
     if (cmd === "open") options.openLeader(leader);
     else if (cmd === "lead") setLead(leader, true);
     else if (cmd === "unlead") setLead(leader, false);
-    else if (cmd === "leave") placeLeader(leader, null);
+    else if (cmd === "leave") {
+      const part = m.parts.get(m.places.get(leader).domain_id);
+      placeLeader(leader, null, {x:part.x + PART_W + GAP_CROSS, y:part.y});
+    }
     else if (cmd === "merge") openPlan(leader, "merge");
     else if (cmd === "retire") openPlan(leader, "retire");
     else if (cmd === "rename") startRename(id);
@@ -803,11 +792,10 @@ const CrewArchitecture = (() => {
     else if (act === "redo") redo();
     else if (act === "tidy") tidy();
     else if (act === "direction") switchDirection(button.dataset.direction);
-    else if (act === "shelf") setShelf(!(shelfOpen ?? !phone.matches));
     else if (act === "fit") fit();
-    else if (act === "zoom-in") zoomCenter(1.2);
-    else if (act === "zoom-out") zoomCenter(1 / 1.2);
-    else if (act === "zoom-reset") zoomCenter(1 / camera.z);
+    else if (act === "zoom-in") controls.zoomCenter(1.2);
+    else if (act === "zoom-out") controls.zoomCenter(1 / 1.2);
+    else if (act === "zoom-reset") controls.zoomCenter(1 / camera.z);
     else if (act === "fold") { const part = model().parts.get(button.dataset.id); if (part) setCollapsed(part.id, !part.collapsed); }
     else if (act === "menu") menuCommand(button.dataset.cmd);
     else if (act === "reload") { errorText = ""; render(); load(); }
@@ -825,8 +813,6 @@ const CrewArchitecture = (() => {
     const node = event.target.closest(".arch-part");
     if (node && event.target.closest(".arch-part-head") && !event.target.closest("[data-arch-act], .arch-pin")) startRename(node.dataset.part);
   }
-  // The menu opens on a right click without movement (pointerup); a right drag pans instead.
-  function contextMenu(event) { event.preventDefault(); }
   function keyDown(event) {
     if (event.target.classList?.contains("arch-rename")) {
       if (event.key === "Enter") { event.preventDefault(); finishRename(true); }
@@ -844,17 +830,18 @@ const CrewArchitecture = (() => {
     else if (mod && k === "a" && editable()) { event.preventDefault(); selection = new Set(shownIds()); renderSelection(); }
     else if ((event.key === "Delete" || event.key === "Backspace") && editable()) { if (selection.size) { event.preventDefault(); deleteParts([...selection]); } }
     else if (event.key === "F2" && editable()) { if (selection.size === 1) { event.preventDefault(); startRename([...selection][0]); } }
-    else if (event.key === "Home" || (k === "f" && !mod)) { event.preventDefault(); fit(k === "f" && selection.size ? [...selection] : shownIds(), k === "f" && selection.size ? 1.2 : 1); }
-    else if (event.key === "Escape") { if (gesture) { cancelGesture(); refreshDomains(); } else if (menu) closeMenu(); else if (selection.size) { selection.clear(); renderSelection(); } }
+    else if (event.key === "Home" || (k === "f" && !mod)) { event.preventDefault(); fit(k === "f" && selection.size ? [...selection] : null, k === "f" && selection.size ? 1.2 : 1); }
+    else if (event.key === "Escape" && !controls.cancel()) { if (menu) closeMenu(); else if (selection.size) { selection.clear(); renderSelection(); } }
   }
   function keyUp(event) { if (event.key === " ") { spaceDown = false; $(".arch-canvas")?.classList.remove("panning"); } }
   function focusOut(event) { if (event.target.classList?.contains("arch-rename") && renaming !== null) finishRename(true); }
   function viewportChange() {
     if (host === null || board === null) return;
+    controls.cancel();
     if (!editable()) { selection.clear(); renaming = null; }
     render();
     const saved = loadCamera();
-    if (saved) { camera = saved; applyCamera(); } else fit();
+    if (saved) { camera = saved; applyCamera(); } else fitInitial();
   }
 
   // ---- version history ------------------------------------------------------------------------------------------
@@ -925,8 +912,11 @@ const CrewArchitecture = (() => {
     if (detail === null) return `<p class="arch-history-empty" role="status">正在读取版本 ${history.selected}…</p>`;
     const meta = detail.version, impact = detail.rollback, gone = new Set(impact.gone.map(item => item.session_id));
     const target = {...detail.state, leaders:detail.state.leaders.filter(item => !gone.has(item.session_id))};
+    const changeSummary = impact.positioned?.length && detail.diff.count === 0
+      ? "恢复独立节点的位置" : CrewRestructure.diffSummary(detail.diff);
     const lists = [];
     if (impact.unplaced.length) lists.push(`<div class="arch-history-warn"><b>回滚后这些 leader 不在任何 part</b>：${impact.unplaced.map(item => `${esc(item.name)}${item.from.length ? `（现在在「${esc(item.from.join(" › "))}」）` : ""}`).join("、")}</div>`);
+    if (impact.positioned?.length) lists.push(`<p class="arch-history-note">恢复独立节点的位置：${impact.positioned.map(item => esc(item.name)).join("、")}</p>`);
     if (impact.gone.length) lists.push(`<p class="arch-history-note">已永久删除，位置无法恢复：${impact.gone.map(item => esc(item.name)).join("、")}</p>`);
     if (impact.archived.length) lists.push(`<p class="arch-history-note">恢复位置，但仍是归档状态：${impact.archived.map(item => esc(item.name)).join("、")}</p>`);
     let actions = "";
@@ -938,7 +928,7 @@ const CrewArchitecture = (() => {
       + `<div class="arch-version-title"><b>版本 ${meta.number}</b><span class="arch-source ${SOURCE_TONE[meta.source]}">${esc(meta.source_label)}</span><span class="arch-version-time">${esc(when(meta.created_at))}</span></div>`
       + `<p class="arch-version-note">${esc(meta.note)}</p>${versionDetailNotes(meta)}`
       + (impact.nothing ? '<p class="arch-history-same">现在的架构和这个版本相同。</p>'
-        : `<p class="arch-history-sum">回滚会：${esc(CrewRestructure.diffSummary(detail.diff))}</p>${CrewRestructure.compare(detail.current, target, {beforeTitle:"现在", afterTitle:"回滚后"})}${lists.join("")}`)
+        : `<p class="arch-history-sum">回滚会：${esc(changeSummary)}</p>${CrewRestructure.compare(detail.current, target, {beforeTitle:"现在", afterTitle:"回滚后"})}${lists.join("")}`)
       + actions;
   }
   function renderHistory() {
@@ -975,7 +965,6 @@ const CrewArchitecture = (() => {
 
   // ---- lifecycle ------------------------------------------------------------------------------------------------
   const listeners = [["click", click], ["dblclick", doubleClick], ["keydown", keyDown], ["keyup", keyUp], ["focusout", focusOut]];
-  const canvasListeners = [["pointerdown", pointerDown], ["pointermove", pointerMove], ["pointerup", pointerUp], ["pointercancel", pointerUp], ["contextmenu", contextMenu]];
   function mount(element, settings) {
     if (settings.focus) focusRequest = settings.focus;
     if (host === element && project === settings.project) { update(settings); applyFocus(); return; }
@@ -985,12 +974,14 @@ const CrewArchitecture = (() => {
       project = settings.project; board = null; cached = null; errorText = ""; camera = null; selection = new Set();
       undoStack = []; redoStack = []; pending.clear(); renaming = null; pendingDirection = null; history = null;
     }
-    if (shelfOpen === null) { try { const saved = localStorage.getItem("crew.architecture.shelf"); if (saved !== null) shelfOpen = saved === "true"; } catch { /* default by width */ } }
     host = element; host.innerHTML = scaffold(); delete host.dataset.render;
     for (const [type, handler] of listeners) host.addEventListener(type, handler);
     const canvas = $(".arch-canvas");
-    for (const [type, handler] of canvasListeners) canvas.addEventListener(type, handler);
-    canvas.addEventListener("wheel", wheel, {passive:false});
+    controls = CrewCanvas.attach({surface:canvas, camera:() => camera, setCamera, clamp:clampZoom,
+      wheelZoom:() => options.state.domains.canvas_wheel_zoom, hit, editable, forcePan:() => spaceDown,
+      start:startGesture, preview:previewGesture, commit:finishGesture, cancel:rollbackGesture,
+      menu:(done, event) => openMenu(done, event.clientX, event.clientY),
+      settled:() => { gesture = null; refreshDomains(); }});
     // overflow:hidden still scrolls to a focused child; the camera is the only way this canvas moves.
     canvas.addEventListener("scroll", () => { canvas.scrollLeft = 0; canvas.scrollTop = 0; });
     resizer = new ResizeObserver(() => { if (pendingFit !== null && host !== null && board !== null) { fit(...pendingFit); applyFocus(); } });
@@ -998,12 +989,12 @@ const CrewArchitecture = (() => {
     phone.addEventListener("change", viewportChange);
     leaderSignature = signature(settings.state);
     if (board === null) { render(); void load(); return; }
-    render(); if (camera === null) fit(); applyCamera(); applyFocus();
+    render(); if (camera === null) fitInitial(); applyCamera(); applyFocus();
     if ((settings.state.domains?.version ?? 0) > board.version) void load(true);
   }
   const signature = state => JSON.stringify((state.leaders || []).map(item => [item.session_id, item.name, item.goal, item.status, item.color, item.avatar_version]));
   function refreshDomains() {
-    if (!domainsPending || busy || gesture !== null) return;
+    if (!domainsPending || busy || controls.busy()) return;
     domainsPending = false;
     // A save may already have applied the announced version. Keep that edit's undo entry.
     void load(options.state.domains.version > board.version);
@@ -1014,17 +1005,19 @@ const CrewArchitecture = (() => {
     const remote = settings.state.domains?.version ?? 0;
     if (remote > board.version) { domainsPending = true; refreshDomains(); }
     const next = signature(settings.state);
-    if (next !== leaderSignature && gesture === null && renaming === null) { leaderSignature = next; cached = null; renderWorld(); }
+    if (next !== leaderSignature && !controls.busy() && renaming === null) { leaderSignature = next; cached = null; renderWorld(); }
     renderHead();
   }
   function unmount() {
     if (host !== null) {
+      domainsPending = false;
+      controls.destroy(); controls = null;
       for (const [type, handler] of listeners) host.removeEventListener(type, handler);
       phone.removeEventListener("change", viewportChange);
       resizer?.disconnect(); resizer = null;
       if (camera !== null && pendingFit === null) saveCamera();
     }
-    domainsPending = false; gesture = null; pointers.clear(); menu = null; spaceDown = false; renaming = null; host = null; history = null; historyToken++;
+    domainsPending = false; gesture = null; menu = null; spaceDown = false; renaming = null; host = null; history = null; historyToken++;
   }
   return {mount, update, unmount};
 })();

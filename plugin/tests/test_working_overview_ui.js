@@ -20,8 +20,9 @@ function harness(snapshot){
 }
 const person=(id,extra={})=>({session_id:id,name:id,status:"offline",runtime:"codex",where:"offline",busy:false,
   running:false,active_goal_id:null,context:null,applied:null,model:null,effort:null,codex:[],pinned:false,
-  task:null,goal:"leader 的任务",pending:0,comments_count:0,...extra});
-const state=(leaders,members=[])=>({project:{name:"fixture"},leaders,members,decisions:[],todos:[],goals:[{id:"g1"},{id:"g2"},{id:"g3"}],
+  task:null,goal:"leader 的任务",pending:0,comments_count:0,notices_pending:0,notices_quiet:0,
+  notices_waiting:[],channel_queued_id:null,...extra});
+const state=(leaders,members=[])=>({project:{name:"fixture"},leaders,members,decisions:[],todos:[],attention:[],native_approvals:[],goals:[{id:"g1"},{id:"g2"},{id:"g3"}],
   runtimes:[{id:"codex",name:"Codex",models:[],efforts:[]},{id:"claude",name:"Claude Code",models:[],efforts:[]}]});
 const count=html=>Number(html.match(/data-tab="working"[^>]*>[\s\S]*?<b>(\d+)<\/b>/)[1]);
 const rows=html=>[...html.matchAll(/<(?:button|div) class="li click(?: session-surface)?"[^>]*data-act="([^"]+)"[^>]*data-id="([^"]+)"/g)].map(match=>({action:match[1],id:match[2]}));
@@ -125,7 +126,8 @@ test("an idle or waiting owner's running native sub-agent shows as group work; a
       started_at:"2026-10-26T00:00:00Z",detail:null};
     const snapshot=state([person("leader",{runtime,status,codex:[job]})]);
     const h=harness(snapshot),node=h.node(),sidebar=h.sidebar();
-    assert(sidebar.includes('class="group-work-avatar"'));assert(sidebar.includes("子代理 1"));
+    assert(sidebar.includes('class="group-work-avatar" title="1 个子代理在运行"'));
+    assert(sidebar.includes(status === "waiting" ? "等你处理" : "推进中"));
     assert(node.includes("1 个子代理在运行"));assert(node.includes(`class="st ${status}"`),"the owner's own state stays honest");
     const working=h.render("working");assert.equal(count(working),1);
     assert(working.includes("子代理 · 由 leader 发起"));assert(!working.includes("PID"));assert.deepEqual(rows(working),[{action:"leader",id:"leader"}]);
@@ -141,7 +143,8 @@ test("the sidebar leader row summarises group work, keeps its group during membe
       [person("worker",{status:"working",leader_session_id:"leader"})]);
     snapshot.goals=[{id:"g1",leader_session_id:"leader",status:"running",title:"登录页",pending_decision:null,work_summary:{done:0,total:0}}];
     const h=harness(snapshot),own=h.sidebar();
-    assert(own.includes('<i aria-hidden="true"></i>本人和 1 个执行在干活 · 派工 1</span>'));assert(!own.includes('class="st '));
+    assert(own.includes('class="st working" title="本人和 1 个执行在干活 · 1 个派工在运行"'));
+    assert(own.includes("推进中"));
     assert(own.includes('class="trust-mark" data-act="trust-open" data-id="leader" title="自主推进中：完成登录页改版"'));
     assert(own.includes('class="leader-row session-surface active"'));assert(own.includes('aria-current="page"'));assert(own.includes('class="leader-task"'));
     const inMember=h.sidebar(snapshot,"worker");

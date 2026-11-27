@@ -21,7 +21,7 @@ DEVICE_BROWSER = frozenset((
     'goal.resume', 'goal.start', 'goal.transfer', 'goal.version.capture', 'goal.version.restore',
     'goal.versions.list', 'goal.versions.preview', 'leader.create', 'leaders.order.set', 'member_defaults.set',
     'mindmap.convert', 'mindmap.edit', 'mindmap.get', 'mindmap.preview', 'note.annotate', 'note.archive',
-    'note.bulk', 'note.capture', 'note.keep', 'note.merge', 'note.pin', 'note.recover', 'note.recovery.get',
+    'note.bulk', 'note.capture', 'note.keep', 'note.merge', 'note.pin', 'note.get', 'unassigned.list', 'unassigned.claim', 'note.recover', 'note.recovery.get',
     'note.restore', 'note.snooze', 'note.start', 'note.unmerge', 'note.update', 'notes.list',
     'notifications.away.set', 'roster.move', 'roster.remove', 'runtimes.list', 'session.appearance.set',
     'session.archive', 'session.avatar.get', 'session.compact', 'session.delete', 'session.options.set',
@@ -32,6 +32,7 @@ DEVICE_BROWSER = frozenset((
     # War rooms (docs/WAR_ROOM_DESIGN.md §6).
     'war_room.close', 'war_room.contract', 'war_room.decide', 'war_room.get', 'war_room.item', 'war_room.list',
     'war_room.mark_read', 'war_room.members', 'war_room.open', 'war_room.post', 'war_room.budget',
+    'war_room.plan.approve', 'war_room.stop', 'war_room.cancel', 'war_room.end_budget',
     'campaign.preview', 'campaign.launch',
     # Board versions, rollback, restructure and leader merge / retire (docs/ASSISTANT_CAMPAIGN_DESIGN.md §5).
     'domains.restructure.apply', 'domains.restructure.preview', 'domains.rollback', 'domains.version.get',
@@ -56,7 +57,7 @@ DEVICE_DESKTOP = frozenset((
     'maintenance.cleanup.run', 'maintenance.department.compact', 'maintenance.department.preview',
     'maintenance.jobs', 'member_defaults.set', 'mindmap.convert', 'mindmap.edit', 'mindmap.get', 'mindmap.preview',
     'note.annotate', 'note.archive', 'note.bulk', 'note.capture', 'note.keep', 'note.merge', 'note.pin',
-    'note.recover', 'note.recovery.get', 'note.restore', 'note.snooze', 'note.start', 'note.unmerge',
+    'note.get', 'unassigned.list', 'unassigned.claim', 'note.recover', 'note.recovery.get', 'note.restore', 'note.snooze', 'note.start', 'note.unmerge',
     'note.update', 'notes.list', 'notifications.away.set', 'onboarding.get', 'onboarding.set', 'prompt.applied', 'prompt.get', 'prompt.history',
     'prompt.list', 'prompt.reset', 'prompt.save', 'roster.adopt', 'roster.move', 'roster.remove', 'runtimes.list',
     'runtimes.readiness', 'session.appearance.set', 'session.archive', 'session.avatar.get', 'session.compact', 'session.delete',
@@ -74,6 +75,7 @@ DEVICE_DESKTOP = frozenset((
     # War rooms (docs/WAR_ROOM_DESIGN.md §6).
     'war_room.close', 'war_room.contract', 'war_room.decide', 'war_room.get', 'war_room.item', 'war_room.list',
     'war_room.mark_read', 'war_room.members', 'war_room.open', 'war_room.post', 'war_room.budget',
+    'war_room.plan.approve', 'war_room.stop', 'war_room.cancel', 'war_room.end_budget',
     'campaign.preview', 'campaign.launch',
     # Board versions, rollback, restructure and leader merge / retire (docs/ASSISTANT_CAMPAIGN_DESIGN.md §5).
     'domains.restructure.apply', 'domains.restructure.preview', 'domains.rollback', 'domains.version.get',
@@ -88,3 +90,16 @@ LOCAL_WORKER_ACTIONS = {
     'reset-deployment': '重置本机后台部署',
     'prepare-home': '为新 HOME 准备启动文件',
 }
+
+
+WORKSPACE_ASSISTANT = frozenset((
+    'notes.list', 'note.get', 'note.capture', 'note.update', 'note.pin', 'note.snooze', 'note.archive',
+    'note.restore', 'note.annotate', 'note.keep', 'note.unmerge', 'note.merge', 'note.bulk', 'note.start',
+    'note.recovery.get', 'tags.list', 'tag.create', 'tag.recolor', 'tag.rename', 'tag.merge', 'tag.remove',
+    'tag.pin', 'tag.reorder', 'mindmap.get', 'mindmap.edit', 'mindmap.preview', 'mindmap.convert',
+    'session.whoami', 'workspace.state', 'domains.get', 'campaign.preview', 'campaign.launch',
+    'domains.restructure.preview', 'domains.restructure.apply', 'leader.merge', 'leader.retire', 'leader.create',
+    'war_room.list', 'war_room.get', 'war_room.open', 'war_room.members', 'war_room.post', 'war_room.item',
+    'war_room.contract', 'war_room.decide', 'war_room.close', 'war_room.mark_read', 'war_room.budget',
+    'war_room.plan.update', 'war_room.abandon', 'war_room.cancel', 'war_room.consult',
+))

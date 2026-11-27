@@ -19,10 +19,12 @@ import sqlite3
 import tempfile
 import uuid
 
-TRANSFORM_VERSION = 'crew-v1-to-v2/2'
+TRANSFORM_VERSION = 'crew-v1-to-v2/4'
 NAMESPACE = uuid.UUID('11182da6-0b1e-5817-a488-4715fd5d599e')
 PRIVATE_TABLES = {'ai_settings', 'ai_task_settings', 'execution_settings', 'sound_settings', 'usage_files', 'trust_schema_migrations',
-                  'notification_inbound', 'lark_notification_inbound'}
+                  'notification_inbound', 'lark_notification_inbound', 'personal_assistant',
+                  'mcp_tokens', 'mcp_loaded_tools', 'interaction_requests', 'personal_action_receipts',
+                  'personal_note_requests'}
 RELATIONS = {'handoff_deliveries': [('handoff_id', 'handoffs', 'id')],
              'channel_reads': [('message_id', 'channel_messages', 'id')],
              'codex_rate_limits': [('rollout_id', 'codex_sessions', 'rollout_id')]}
@@ -158,14 +160,43 @@ def _backup(source, destination):
 def _read(path):
     with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as conn:
         conn.row_factory = sqlite3.Row
-        result = {}
-        for row in conn.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
-            name = row['name']
-            result[name] = {'sql': row['sql'],
-                'columns': [dict(c) for c in conn.execute('PRAGMA table_info(' + _quote(name) + ')')],
-                'foreign': [dict(f) for f in conn.execute('PRAGMA foreign_key_list(' + _quote(name) + ')')],
-                'rows': [dict(r) for r in conn.execute('SELECT * FROM ' + _quote(name))]}
-        return result
+        return _tables(conn)
+
+
+def _tables(conn):
+    result = {}
+    for row in conn.execute("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"):
+        name = row['name']
+        result[name] = {'sql': row['sql'],
+            'columns': [dict(c) for c in conn.execute('PRAGMA table_info(' + _quote(name) + ')')],
+            'foreign': [dict(f) for f in conn.execute('PRAGMA foreign_key_list(' + _quote(name) + ')')],
+            'rows': [dict(r) for r in conn.execute('SELECT * FROM ' + _quote(name))]}
+    return result
+
+
+def _projection_schema(snapshot, project):
+    schema = _read(snapshot)
+    if ('personal_notes' not in schema and 'personal_mindmap' not in schema or
+            any(r['name'] == 'workspace_notes_v1' for r in schema.get('schema_migrations', {}).get('rows', ()))):
+        return schema
+    # Older offline sources have never had a first open under the scoped schema.
+    # Apply the same migration to a disposable copy. Its as-of time comes from
+    # the snapshot, so projecting the same source twice has the same fingerprint.
+    from .. import store, workspace_notes_migration
+    _, markers, notes = store.schema_sections()
+    workspace = next((r for r in schema['projects']['rows'] if r['name'] == project), None)
+    if workspace is None:
+        raise MigrationError('Legacy project not found: ' + project)
+    stamp = max([workspace['created_at']] +
+                [r['updated_at'] for r in schema.get('personal_notes', {}).get('rows', ()) if r['project'] == project] +
+                [r['updated_at'] for r in schema.get('personal_mindmap', {}).get('rows', ())])
+    with closing(sqlite3.connect(':memory:', isolation_level=None)) as staged:
+        with closing(sqlite3.connect(snapshot.as_uri() + '?mode=ro', uri=True)) as source:
+            source.backup(staged)
+        staged.row_factory = sqlite3.Row
+        staged.execute('PRAGMA foreign_keys=ON')
+        workspace_notes_migration.migrate_at(staged, markers + notes, stamp)
+        return _tables(staged)
 
 
 def _key(table, row):
@@ -182,11 +213,32 @@ def _select(schema, project):
     if not any(r['name'] == project for r in schema.get('projects', {}).get('rows', [])):
         raise MigrationError('Legacy project not found: ' + project)
     selected = {name: set() for name in schema}
+    private = PRIVATE_TABLES | {name for name in schema if name.startswith('unassigned_')}
     for name, table in schema.items():
-        if name not in PRIVATE_TABLES:
+        if name not in private:
             selected[name].update(i for i, r in enumerate(table['rows'])
                 if r.get('project') == project or name == 'projects' and r.get('name') == project)
     sessions = {schema['sessions']['rows'][i]['session_id'] for i in selected.get('sessions', ())}
+    def selected_ids(table):
+        return {schema[table]['rows'][i]['id'] for i in selected.get(table, ())}
+
+    notes = selected_ids('personal_notes')
+    nodes = selected_ids('personal_mindmap_nodes')
+    domains = selected_ids('domains')
+    for table in ('personal_note_discussions', 'imported_note_discussion_history'):
+        if table in schema:
+            selected[table] = {i for i, row in enumerate(schema[table]['rows']) if row['note_id'] in notes}
+    if 'personal_mindmap_links' in schema:
+        links = schema['personal_mindmap_links']['rows']
+        selected['personal_mindmap_links'] = {i for i in selected['personal_mindmap_links']
+            if links[i]['node_id'] in nodes and links[i]['domain_id'] in domains}
+    if 'personal_note_leaders' in schema:
+        links = schema['personal_note_leaders']['rows']
+        selected['personal_note_leaders'] = {i for i in selected['personal_note_leaders'] if links[i]['note_id'] in notes}
+    # These rows have explicit ownership. Following another FK back into a
+    # NULL-project note/session would bring its private descendants along too.
+    scoped = {'projects','sessions','personal_notes','personal_mindmap_nodes','personal_mindmap_links',
+              'personal_note_discussions','personal_note_leaders','imported_note_discussion_history'}
     native = set(sessions)
     changed = True
     while changed:
@@ -202,7 +254,7 @@ def _select(schema, project):
                 value = schema[name]['rows'][i].get('native_id')
                 if value: native.add(value)
         for name, table in schema.items():
-            if name in PRIVATE_TABLES or name == 'projects':
+            if name in private or name in scoped:
                 continue
             grouped = {}
             for fk in table['foreign']:
@@ -385,9 +437,8 @@ def _cached_documents(repo,workspace,home,project,schema,rows,files,missing):
 
 
 def _fingerprint(rows, files):
-    payload = {'tables': {name: sorted((_pack(r) for r in rr), key=_json) for name, rr in rows.items()},
-               'files': {name: {k: f[k] for k in ('role', 'owner', 'sha256', 'size_bytes')} for name, f in files.items()},
-               'transform_version': TRANSFORM_VERSION}
+    payload = {'tables': {name: sorted((_pack(r) for r in rr), key=_json) for name, rr in rows.items() if rr},
+               'files': {name: {k: f[k] for k in ('role', 'owner', 'sha256', 'size_bytes')} for name, f in files.items()}}
     return _hash(_json(payload).encode())
 
 
@@ -397,6 +448,7 @@ class _Projector:
         self.schema, self.rows = schema, rows
         self.source_home = Path(source_home) if source_home is not None else None
         self.identity_project = identity_project
+        self.discussion_messages = {}
         self.mappings = {}
         self.columns = {r[0]: {c['name'] for c in conn.execute('PRAGMA table_info(' + _quote(r[0]) + ')')}
                         for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -415,6 +467,15 @@ class _Projector:
         alias=self.aliases.get((source,canonical,target)) if isinstance(canonical,str) else self.aliases.get((source,_json(canonical),target))
         if not alias: alias=self.aliases.get((source,_json(key),target))
         if alias:
+            from .features import NOTE_TABLES
+            if target in NOTE_TABLES or target == 'workspace_feature_records' and source in ('personal_notes','personal_note_leaders'):
+                # Removed graph rows are pruned on refresh. Their local source
+                # mapping still identifies them if a later edit restores them.
+                owner = self.conn.execute('SELECT workspace_id FROM '+_quote(target)+' WHERE id=?',
+                                          (alias['entity_id'],)).fetchone()
+                if owner is not None and owner[0] != self.ws:
+                    raise MigrationError('Workspace note mapping crosses workspace')
+                return alias['entity_id']
             current=next((r for r in self.rows.get(source,[]) if _key(self.schema[source],r)==canonical),None)
             matches=current is not None and alias.get('source_row_sha256')==_hash(_json(_pack(current)).encode())
             # Activation also registers file/journal synthetic keys with an
@@ -846,6 +907,8 @@ class _Projector:
             logical_key=_json(logical)
             group=groups.setdefault(logical_key,{'role':role,'position':position,'at':event.get('at'),
                 'chunks':[],'snapshot':None,'calls':{},'tool_use_id':event.get('tool_use_id'),'is_error':False})
+            if owner == sid and role == 'user' and isinstance(event.get('id'), str):
+                group['discussion_message_id'] = event['id']
             content=event.get('content',event.get('text',''))
             if isinstance(content,str): text=content
             elif isinstance(content,list): text='\n'.join(v if isinstance(v,str) else v.get('text','')
@@ -914,6 +977,8 @@ class _Projector:
                 raw={'legacy_journal_key':logical_hash,'source_incomplete':partial,'source_timestamp_missing':group['at'] is None},
                 created_at=at,supersedes=previous)
             self.journal_latest[(cid,logical_hash)]=mid
+            if 'discussion_message_id' in group:
+                self.discussion_messages[(sid, group['discussion_message_id'])] = mid
             for call_index,(native_call,call) in enumerate(group['calls'].items()):
                 call_key=[key,_hash(native_call.encode()),_hash(_json(call).encode())]
                 call_id=self.id('tool_calls','journal-call',call_key)
@@ -1002,7 +1067,7 @@ def migrate_workspace(repo, source_home, project, *, origin_id=None, workspace_i
     vault.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='crew-legacy-stage-', dir=vault) as temp:
         snapshot = Path(temp) / 'source.db'; _backup(source, snapshot)
-        schema = _read(snapshot); rows = _select(schema, project)
+        schema = _projection_schema(snapshot, project); rows = _select(schema, project)
         files, missing = _files(home, rows, project)
         files,missing,cached=_cached_documents(repo,ws,home,project,schema,rows,files,missing)
         fingerprint = _fingerprint(rows, files)
@@ -1010,21 +1075,29 @@ def migrate_workspace(repo, source_home, project, *, origin_id=None, workspace_i
         batch = str(uuid.uuid5(NAMESPACE, _json([origin, ws, identity_project, fingerprint, TRANSFORM_VERSION])))
         stamp = _now()
         with closing(repo.connect()) as conn:
-            if conn.execute('SELECT 1 FROM import_batches WHERE id=?', (batch,)).fetchone():
-                _bind_legacy(conn,ws,home,project,fingerprint,stamp)
-                return {'workspace_id': ws, 'import_batch_id': batch, 'project': project, 'source_home': str(home),
-                        'source_fingerprint': fingerprint, 'status': 'unchanged', 'missing_files': missing, 'origin_id': origin,
-                        'cached_files':cached,'source_unavailable_using_snapshot':bool(cached)}
-            # One rolling backup of the in-use database, replaced only when this
-            # history actually changed; no per-change full copies accumulate.
-            backup = home / 'backups' / 'crew.db'
-            backup.parent.mkdir(exist_ok=True)
-            staged = backup.with_name('crew.db.' + uuid.uuid4().hex + '.tmp')
-            try:
-                shutil.copyfile(snapshot, staged); os.replace(staged, backup)
-            finally:
-                staged.unlink(missing_ok=True)
             with repo.transaction(conn):
+                latest = conn.execute(
+                    'SELECT b.id,b.transform_version,l.source_fingerprint FROM import_batches b JOIN local_legacy_projects l '
+                    "ON l.workspace_id=b.workspace_id WHERE b.workspace_id=? AND b.legacy_origin_id=? AND b.source_format='crew-v1' "
+                    'AND l.source_home=? AND l.legacy_project=? ORDER BY b.rowid DESC LIMIT 1',
+                    (ws,origin,str(home),project)).fetchone()
+                if latest and latest['transform_version'] == TRANSFORM_VERSION and latest['source_fingerprint'] == fingerprint:
+                    return {'workspace_id': ws, 'import_batch_id': latest['id'], 'project': project, 'source_home': str(home),
+                            'source_fingerprint': fingerprint, 'status': 'unchanged', 'missing_files': missing, 'origin_id': origin,
+                            'cached_files':cached,'source_unavailable_using_snapshot':bool(cached)}
+                if latest and conn.execute('SELECT 1 FROM import_batches WHERE id=?', (batch,)).fetchone():
+                    # Returning to an older snapshot is a new transition from the
+                    # current state. Reapply its rows, including removed graph edges.
+                    batch = str(uuid.uuid5(uuid.UUID(batch), latest['id']))
+                # One rolling backup of the in-use database, replaced only when this
+                # history actually changed; no per-change full copies accumulate.
+                backup = home / 'backups' / 'crew.db'
+                backup.parent.mkdir(exist_ok=True)
+                staged = backup.with_name('crew.db.' + uuid.uuid4().hex + '.tmp')
+                try:
+                    shutil.copyfile(snapshot, staged); os.replace(staged, backup)
+                finally:
+                    staged.unlink(missing_ok=True)
                 p = _Projector(repo, conn, origin, ws, None, stamp, schema, rows, identity_project,home,project)
                 settings = next(iter(rows.get('project_settings', [])), {})
                 p.put('workspaces', ws, account_id=account, name=settings.get('display_name') or project,
@@ -1062,18 +1135,21 @@ def migrate_workspace(repo, source_home, project, *, origin_id=None, workspace_i
                         row = next(r for r in rows['documents'] if r['id'] == item['owner'])
                         p.mark('documents', row, 'artifacts', aid)
                         document_versions[row['id']]=vid
+                from . import features
+                features.project_workspace_notes(p)
                 for link in rows.get('goal_documents',[]):
                     version=document_versions.get(link['document_id']);goal=p.goals.get(link['goal_id'])
                     if version and goal:
                         link_id=p.id('artifact_links','goal_documents',[goal,version])
                         p.put('artifact_links',link_id,artifact_version_id=version,relation='deliverable',goal_id=goal)
                         p.mark('goal_documents',link,'artifact_links',link_id)
+                archived_rows = {n: rr for n, rr in rows.items() if n not in PRIVATE_TABLES and not n.startswith('unassigned_')}
                 archive = {'format': 'crew-legacy-workspace', 'version': 1, 'origin_id': origin, 'project': project,
                     'source_fingerprint': fingerprint, 'transform_version': TRANSFORM_VERSION,
                     'tables': {name: [{'key_sha256': _hash(_key(schema[name], r).encode()),
                         'source_row_sha256':_hash(_json(_pack(r)).encode()),
-                        'row': {k: _typed(v) for k, v in r.items() if k in PORTABLE_FIELDS.get(name, ())}} for r in rr] for name, rr in rows.items()},
-                    'source_table_counts': {name: len(rr) for name, rr in rows.items()},
+                        'row': {k: _typed(v) for k, v in r.items() if k in PORTABLE_FIELDS.get(name, ())}} for r in rr] for name, rr in archived_rows.items()},
+                    'source_table_counts': {name: len(rr) for name, rr in archived_rows.items()},
                     'files': file_index,'cached_files':cached, 'missing_files': [{'source_locator_sha256':_hash(v.encode()),
                         'reason':'Source file missing or unsafe; details remain in the private migration vault.'} for v in missing]}
                 _, archive_version, archive_blob = p.artifact('legacy-archive:' + batch, _json(archive).encode(),
@@ -1082,7 +1158,7 @@ def migrate_workspace(repo, source_home, project, *, origin_id=None, workspace_i
                     archive_artifact_version_id=archive_version, transform_version=TRANSFORM_VERSION,
                     status='committed', verified_at=stamp,
                     verification_summary=_json({'missing_files':archive['missing_files'],'cached_files':cached,
-                                                'tables': {k: len(v) for k, v in rows.items()}}))
+                                                'tables': archive['source_table_counts']}))
                 dispositions = {'mapped': 0, 'archive_only': 0}
                 for name, rr in rows.items():
                     duplicates = {}
@@ -1101,7 +1177,7 @@ def migrate_workspace(repo, source_home, project, *, origin_id=None, workspace_i
                 # The caller must also hold the V1 compatibility writer gate
                 # through actual cutover; a final check cannot lock old CLIs.
                 check = Path(temp) / 'check.db'; _backup(source, check)
-                check_schema = _read(check); check_rows = _select(check_schema, project)
+                check_schema = _projection_schema(check, project); check_rows = _select(check_schema, project)
                 check_files, check_missing = _files(home, check_rows, project)
                 check_files,check_missing,_=_cached_documents(repo,ws,home,project,check_schema,check_rows,check_files,check_missing)
                 source_changed = _fingerprint(check_rows, check_files) != fingerprint or check_missing != missing

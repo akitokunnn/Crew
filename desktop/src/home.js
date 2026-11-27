@@ -107,7 +107,7 @@ async function refresh() {
     // Never leave the list on "reading": the reason is shown above it and on the system administrator page.
     const empty = document.createElement('p'); empty.className = 'empty';
     const heading = document.createElement('strong'); heading.textContent = '后台未连接，暂时读不到工作区';
-    empty.append(heading, document.createTextNode('原因见上方提示；处理后点击「刷新」，或到「系统管理员」查看后台状态。'));
+    empty.append(heading, document.createTextNode('原因见上方提示；处理后点击「刷新」，或到「系统管理员 · 运维」查看后台状态。'));
     $('projects').replaceChildren(empty);
     throw error;
   } finally { $('projects').setAttribute('aria-busy', 'false'); }
@@ -162,13 +162,16 @@ async function chooseExisting() {
   const directory = await hostFolder('打开主机上的文件夹', '打开此文件夹');
   return directory ? window.crewDesktop.openExistingDirectory(directory) : null;
 }
-function openExisting() { return action(async () => {
+async function selectExisting() {
   const project = await chooseExisting();
-  if (!project) return;
-  if (!project.relocation) { await openWorkspace(project.name); return; }
+  if (!project?.relocation) return project;
   const choice = await relocationChoice(project.relocation);
   if (choice.kind === 'relink') await openWorkspaceSettings(choice.project, {root:project.relocation.directory});
-  if (choice.kind === 'new') { const created = await window.crewDesktop.registerExisting(project.relocation.directory); await openWorkspace(created.name); }
+  return choice.kind === 'new' ? window.crewDesktop.registerExisting(project.relocation.directory) : null;
+}
+function openExisting() { return action(async () => {
+  const project = await selectExisting();
+  if (project) await openWorkspace(project.name);
 }); }
 // Importing a package reads a file on the host's own disk, so it stays on the host.
 $('import-workspace').hidden = remote;
@@ -177,6 +180,8 @@ function openCreate() { $('error').hidden = true; $('create-panel').hidden = fal
 function resetCreate() {
   $('create-form').reset(); remoteParent = null; $('location').textContent = '尚未选择文件夹'; $('location').removeAttribute('title');
 }
+// Why the operations page was opened (offline: the administrator AI could not open).
+let adminReason = null;
 async function flushHomeActions() {
   if (!homeReady || busy || dispatching) return;
   dispatching = true;
@@ -185,7 +190,7 @@ async function flushHomeActions() {
       const next = homeActions.shift();
       if (next === 'settings') { void window.CrewHomeSettings?.show(); continue; }
       window.CrewHomeSettings?.hide();
-      if (next === 'admin') { window.CrewHomeHealth?.show(); continue; }
+      if (next === 'admin') { window.CrewHomeHealth?.show({reason:adminReason}); adminReason = null; continue; }
       window.CrewHomeHealth?.hide();
       if (next === 'tools') { window.CrewHomeTools?.show(); continue; }
       window.CrewHomeTools?.hide();
@@ -200,7 +205,7 @@ if (typeof window.crewDesktop.onAction === 'function') window.crewDesktop.onActi
   if (!['new', 'open', 'home', 'tools', 'admin', 'settings'].includes(message?.action)) return;
   if (message.action === 'settings') { void window.CrewHomeSettings?.show(); return; }
   window.CrewHomeSettings?.hide();
-  if (message.action === 'admin') { window.CrewHomeHealth?.show(); return; }
+  if (message.action === 'admin') { window.CrewHomeHealth?.show({reason:message.reason || null}); return; }
   homeActions.push(message.action); void flushHomeActions();
 });
 // The system administrator must remain reachable even while the workspace bootstrap is pending.
@@ -218,25 +223,48 @@ $('create-form').addEventListener('submit', event => { event.preventDefault(); a
   await openWorkspace(project.name, true);
 }); });
 $('refresh').addEventListener('click', () => action(refresh));
-// Shortcut into “设置 → 后台与运维 → 连接与目录”: add a LAN host here, or preview switching back from one.
+// Shortcut into “设置 → 后台与连接 → 连接与目录”: add a LAN host here, or preview switching back from one.
 $('connection-switch').addEventListener('click', () => { void window.CrewHomeSettings.show('backend', {launch:remote ? 'local' : 'pair'}); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('create-panel').hidden && !busy) closeCreate(); });
-// First-run guide: its last step hands over to the same open / create flows as the menu and tray.
-function openOnboarding() {
-  return window.CrewOnboarding.open({onWorkspace:next => { homeActions.push(next); void flushHomeActions(); },
-    onClose:() => { if (!busy && $('create-panel').hidden) $('existing').focus({preventScroll:true}); }});
+async function chooseOnboardingFolder(kind) {
+  if (kind === 'existing') {
+    const project = await selectExisting();
+    return project && {kind, project, directory:project.root};
+  }
+  const directory = remote ? await hostFolder('选择新工作区的保存位置', '保存到这里') : await window.crewDesktop.chooseParent();
+  return directory && {kind, directory};
+}
+async function openOnboardingWorkspace(folder, name, kickoff) {
+  if (!folder.project) {
+    folder.project = remote ? await window.crewDesktop.createWorkspace(name, folder.directory) : await window.crewDesktop.createWorkspace(name);
+  }
+  const {ok} = await window.crewDesktop.openProject(folder.project.name, kickoff);
+  return ok;
+}
+let onboardingAssets;
+async function openOnboarding() {
+  try {
+    onboardingAssets ??= window.crewDesktop.onboardingUI();
+    await onboardingAssets;
+    return window.CrewOnboarding.open({onChoose:chooseOnboardingFolder, onWorkspace:openOnboardingWorkspace,
+      onClose:() => { if (!busy && $('create-panel').hidden) $('existing').focus({preventScroll:true}); }});
+  } catch (error) {
+    onboardingAssets = null;
+    failure(error);
+  }
 }
 window.CrewHomeOnboarding = {open:openOnboarding};
 async function maybeOnboard(state) {
   // Only this computer's own first start, before any workspace exists, asks the backend at all.
   if (remote || state.pendingAction || state.projects.length) return;
   const {status} = await window.crewDesktop.onboardingGet();
-  if (window.CrewOnboarding.shouldOpen({remote, projects:state.projects.length, pendingAction:state.pendingAction || null, status})) openOnboarding();
+  if (window.CrewOnboarding.shouldOpen({remote, projects:state.projects.length, pendingAction:state.pendingAction || null, status})) await openOnboarding();
 }
 async function finishStartup(state) {
   await window.crewDesktop.ready({ projects: state.projects.length, nodeAvailable: typeof require !== 'undefined',
     bridgeMethods: Object.keys(window.crewDesktop), title: document.title });
   if (['new', 'open', 'tools', 'admin', 'settings'].includes(state.pendingAction)) homeActions.unshift(state.pendingAction);
+  if (state.pendingAction === 'admin') adminReason = state.pendingReason || null;
   homeReady = true;
   if (state.pendingAction === 'workspace-settings') await openWorkspaceSettings(state.pendingWorkspace);
   await flushHomeActions();

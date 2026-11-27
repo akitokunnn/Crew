@@ -115,8 +115,8 @@ Claude 协作会话建议统一权限模式，在 Claude Code 自己的权限设
 | 找人、叫醒离线下属 | 页面上给它发消息即可续跑原会话；leader 用 `message_send`（kind=task），对方空闲时送达；跨组改计划先找对方 leader |
 | 下属跑歪了 | 任务输入区“中断本轮”保留会话；菜单“停止此人”确认托管进程退出，排队消息不能复活。外部 VS Code 会话去原工具停止 |
 | 收尾 | 目标每轮生成最终报告；成员与历史保留，后续可复用。明确不再需要时手动归档（可撤销），VS Code 的归档仍同步 |
-| 提交自定义报告 | 按验收标准填 JSON，需要时用 Crew 工具 `goal_report_template` 查看字段，再用 `goal_finish` 提交（报告正文放在 report.document_html）。HTML 最大 512 KiB，CSS/JS 内联，图片嵌入；报告和证据一起保存，打开不调用模型 |
-| 预览报告排版 | Crew 工具 `goal_report_preview`（document_html 或 report_id，viewport=desktop|mobile），返回截图位置；需要已连接的 Crew 桌面，不启动模型 |
+| 提交自定义报告 | 用 `goal_report_template` 查字段，再用 `goal_finish` 提交。纯文字优先填 `report.document_md`，需要独立排版或交互图表时填 `report.document_html`，二选一，最多 512 KiB。HTML 的 CSS/JS 和图片嵌入正文。报告和证据一起保存，打开不调用模型 |
+| 预览报告排版 | Crew 工具 `goal_report_preview`（`document_md`、`document_html` 或 `report_id` 三选一，视口选桌面或手机），返回截图位置。需要已连接的 Crew 桌面，不启动模型 |
 | 看谁在干什么、留评论 | “全部”页每组一列，横向滚动查看；组内有人在干活时，侧栏及架构图的 leader 头像显示工作光圈，文字区分本人和组员。组或成员可加评论并通知所属 leader；命令行 `crew workspace state` |
 | 找 AI 交付的文档 | 打开对应任务的“交付与文档”，查看原始文件、重要汇总和报告；文件只按真实任务绑定收录，不按 leader 猜归属 |
 | 验收任务 | 待验收时可“验收通过”或填写原因“需要修改”；保留 AI 原报告与用户验收记录，退回后可明确再开一轮 |

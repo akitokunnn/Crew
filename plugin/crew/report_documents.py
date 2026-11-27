@@ -1,12 +1,49 @@
 """Keep an authored offline document separate from Crew's acceptance evidence."""
 import html
 
+from . import board
 
-MAX_HTML = 512 * 1024
+
+MAX_DOCUMENT = 512 * 1024
+BODY_FIELDS = ('document_md', 'document_html')
 CONTENT_POLICY = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
                   "img-src data: blob:; font-src data:; media-src data:; "
                   "base-uri 'none'; form-action 'none'")
 VIEWER_POLICY = CONTENT_POLICY + "; frame-src about:"
+MARKDOWN_POLICY = ("default-src 'none'; script-src 'self' 'unsafe-inline'; "
+                   "style-src 'self' 'unsafe-inline'; font-src 'self'; img-src data: blob:; "
+                   "base-uri 'none'; form-action 'none'")
+
+
+def body_field(data, *, required=False):
+    fields = [key for key in BODY_FIELDS if key in data]
+    if len(fields) > 1:
+        raise board.BoardError('报告正文只能选一种格式，不能同时提交 document_md 和 document_html')
+    if fields:
+        return fields[0]
+    if required:
+        raise board.BoardError('请用 goal.finish 的 report.document_md 或 report.document_html 提交报告正文')
+    return None
+
+
+def document_format(data):
+    # Historical reports are already-rendered HTML, including those without an authored body.
+    return ('markdown' if data.get('document_format') == 'markdown'
+            and 'document_md' in data and 'document_html' not in data else 'html')
+
+
+def render_markdown(title, document, evidence):
+    appendix = ('<details class="crew-evidence"><summary>验证详情</summary>'
+                '<div class="crew-md-doc crew-evidence-body">' + evidence + '</div></details>') if evidence else ''
+    return f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="{html.escape(MARKDOWN_POLICY, quote=True)}">
+<meta name="referrer" content="no-referrer"><title>{html.escape(title)}</title>
+<link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/report-markdown.css">
+<script src="/vendor/markdown-it.min.js" defer></script><script src="/report-markdown.js" defer></script>
+</head><body class="crew-md-report">
+<main class="crew-md-body"><article class="crew-md-doc" aria-label="报告正文"><template>{html.escape(document, quote=False)}</template></article></main>
+{appendix}</body></html>'''
 
 
 def user_test(data):

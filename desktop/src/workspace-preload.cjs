@@ -2,7 +2,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 // Workspace pages (this computer's backend or a LAN host) only read and change the
-// desktop-wide display mode and font size through this bridge; nothing else crosses it.
+// desktop-wide display mode and font size, and can show the native 系统管理员 · 运维 page;
+// nothing else crosses this bridge.
 // Pages show the reason itself, not Electron's "Error invoking remote method '<channel>': Error: " prefix.
 const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args).catch(error => {
   throw new Error(String(error?.message || error).replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, ''));
@@ -17,4 +18,7 @@ contextBridge.exposeInMainWorld('crewDesktopTheme', Object.freeze({
     ipcRenderer.on('desktop:theme', listener);
     return () => ipcRenderer.removeListener('desktop:theme', listener);
   }
+}));
+contextBridge.exposeInMainWorld('crewDesktopShell', Object.freeze({
+  openOperations: () => invoke('desktop:open-operations')
 }));

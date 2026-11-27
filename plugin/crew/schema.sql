@@ -2,6 +2,10 @@
 -- Times are UTC ISO-8601 strings with millisecond precision and a trailing Z.
 -- Owned by the main controller; tasks extend it only through docs/DESIGN.md.
 
+-- BEGIN schema_migrations
+CREATE TABLE IF NOT EXISTS schema_migrations(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+-- END schema_migrations
+
 -- ---------------------------------------------------------------- board
 
 CREATE TABLE IF NOT EXISTS ai_settings (
@@ -37,6 +41,11 @@ CREATE TABLE IF NOT EXISTS sound_settings (
     preferences_json TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS canvas_settings (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    wheel_zoom INTEGER NOT NULL CHECK(wheel_zoom IN (0,1))
 );
 
 -- First-run guide on the desktop home: once finished or skipped it is never shown automatically again.
@@ -93,6 +102,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_message    TEXT,                  -- first 300 chars of the last assistant message
     ended_at        TEXT
 );
+CREATE TABLE IF NOT EXISTS workspace_assistants (
+ project TEXT PRIMARY KEY REFERENCES projects(name),
+ session_id TEXT NOT NULL UNIQUE REFERENCES sessions(session_id),
+ created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS sessions_project ON sessions (project, crew_name);
 
 -- Crew identity stays stable while each execution tool has its own native id.
@@ -394,6 +409,7 @@ CREATE TABLE IF NOT EXISTS read_cursors (
 -- Things Crew itself must tell a leader (an answer saved on the web or QQ, a member adopted into its group).
 -- The web service writes them into the leader's input once it is idle; the leader relays to members with SendMessage.
 CREATE TABLE IF NOT EXISTS leader_notices (
+    room_id INTEGER REFERENCES war_rooms(id),
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project    TEXT NOT NULL,
     session_id TEXT NOT NULL,              -- the leader
@@ -404,7 +420,8 @@ CREATE TABLE IF NOT EXISTS leader_notices (
     wake       INTEGER NOT NULL DEFAULT 1,  -- 0: wait for the leader's next conversation instead of starting a turn
     delivered_via TEXT CHECK (delivered_via IN ('hook')),  -- NULL: written into the leader's input; hook: carried by an external session's prompt hook
     batch_id   TEXT,                       -- the web service's input batch that owns delivering it; the hook never takes these
-    waiting    TEXT CHECK (waiting IN ('external', 'busy', 'stopped'))  -- why it is still queued, as last seen by the web service
+    waiting    TEXT CHECK (waiting IN ('external', 'busy', 'stopped', 'maintenance', 'liveness_unknown')
+                           OR waiting GLOB 'failed|?*|?*')  -- failure also carries the attempt time and error
 );
 CREATE INDEX IF NOT EXISTS leader_notices_pending ON leader_notices (session_id, sent_at);
 
@@ -436,6 +453,12 @@ CREATE TABLE IF NOT EXISTS war_rooms (
     contract_updated_at TEXT,
     contract_updated_by TEXT,
     status              TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+    phase               TEXT NOT NULL DEFAULT 'active' CHECK(phase IN ('preparing','active')),
+    draft_version       INTEGER NOT NULL DEFAULT 0,
+    approved_version    INTEGER,
+    legacy              INTEGER NOT NULL DEFAULT 1,
+    close_reason        TEXT,
+    open_request_id     TEXT,
     summary             TEXT,
     created_at          TEXT NOT NULL,
     closed_at           TEXT,
@@ -454,12 +477,44 @@ CREATE TABLE IF NOT EXISTS war_room_members (
 CREATE TABLE IF NOT EXISTS war_room_items (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     room_id          INTEGER NOT NULL REFERENCES war_rooms(id),
+    entry_id         TEXT,
+    kind             TEXT,
+    plan_version     INTEGER,
+    answer           TEXT,
+    goal_id          TEXT REFERENCES goals(id),
     title            TEXT NOT NULL,
     owner_session_id TEXT,
     status           TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'blocked', 'done')),
     note             TEXT,
     updated_at       TEXT NOT NULL,
     updated_by       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS war_room_plans (
+    room_id INTEGER NOT NULL REFERENCES war_rooms(id), version INTEGER NOT NULL,
+    body TEXT NOT NULL, summary TEXT NOT NULL, author TEXT NOT NULL, created_at TEXT NOT NULL,
+    budget_tokens INTEGER, entries_json TEXT NOT NULL, approval TEXT, PRIMARY KEY(room_id,version)
+);
+CREATE TABLE IF NOT EXISTS war_room_idle (
+    room_id INTEGER NOT NULL REFERENCES war_rooms(id), item_id INTEGER NOT NULL REFERENCES war_room_items(id),
+    owner TEXT NOT NULL, since TEXT NOT NULL, notice_id INTEGER REFERENCES leader_notices(id),
+    activity_key TEXT, ended_at TEXT, PRIMARY KEY(room_id,item_id,owner,since)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS war_room_current_idle ON war_room_idle(room_id,item_id,owner) WHERE ended_at IS NULL;
+CREATE TABLE IF NOT EXISTS war_room_execution_reads (
+    room_id INTEGER NOT NULL REFERENCES war_rooms(id), reader TEXT NOT NULL,
+    execution_id TEXT NOT NULL REFERENCES goal_executions(id), seq INTEGER NOT NULL,
+    PRIMARY KEY(room_id,reader,execution_id)
+);
+CREATE TABLE IF NOT EXISTS war_room_delivery (
+    notice_id INTEGER PRIMARY KEY REFERENCES leader_notices(id), room_id INTEGER NOT NULL REFERENCES war_rooms(id),
+    goal_id TEXT NOT NULL REFERENCES goals(id), context TEXT NOT NULL, upto INTEGER NOT NULL,
+    execution_id TEXT REFERENCES goal_executions(id)
+);
+CREATE TABLE IF NOT EXISTS war_room_consults (
+    room_id INTEGER NOT NULL REFERENCES war_rooms(id), question_id TEXT NOT NULL, plan_version INTEGER NOT NULL,
+    purpose TEXT NOT NULL, question TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT, effort TEXT,
+    requested_model TEXT, requested_effort TEXT, native_model TEXT, error TEXT, response TEXT, tokens INTEGER,
+    created_at TEXT NOT NULL, PRIMARY KEY(room_id,question_id)
 );
 -- Board and membership changes, shown as handoff points on the room timeline.
 CREATE TABLE IF NOT EXISTS war_room_events (
@@ -471,6 +526,7 @@ CREATE TABLE IF NOT EXISTS war_room_events (
     detail     TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS war_room_decisions (
+    answer_notice_id INTEGER REFERENCES leader_notices(id),
     decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
     room_id     INTEGER NOT NULL REFERENCES war_rooms(id)
 );
@@ -871,6 +927,14 @@ CREATE TABLE IF NOT EXISTS goal_execution_bindings (
  model TEXT, effort TEXT, updated_at TEXT NOT NULL, speed TEXT,
  PRIMARY KEY(execution_id,runtime), UNIQUE(runtime,native_id)
 );
+-- The identity belongs to the native history, including after a carrier switch.
+CREATE TABLE IF NOT EXISTS native_binding_origins (
+ runtime TEXT NOT NULL CHECK(runtime IN ('claude','codex')),
+ native_id TEXT NOT NULL,
+ origin TEXT NOT NULL CHECK(origin IN ('crew_created','user_adopted')),
+ archive_confirmed INTEGER NOT NULL DEFAULT 0 CHECK(archive_confirmed IN (0,1)),
+ PRIMARY KEY(runtime,native_id)
+);
 CREATE TABLE IF NOT EXISTS goal_reports (
  id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, round INTEGER NOT NULL,
  requirement_version INTEGER NOT NULL, version INTEGER NOT NULL,
@@ -1113,7 +1177,7 @@ CREATE TABLE IF NOT EXISTS domains (
 CREATE INDEX IF NOT EXISTS domains_project ON domains (project, parent_id);
 -- The part a leader works in (at most one; NULL = unassigned). lead=1 marks the one leading that part, owning
 -- the work its sub-parts share (unique per part, see store migration). An archived leader keeps its place.
--- x/y are unused since leaders are listed inside their part.
+-- Unassigned leaders can use x/y to pin their card on the board.
 CREATE TABLE IF NOT EXISTS domain_leaders (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
     project    TEXT NOT NULL REFERENCES projects(name),
@@ -1205,4 +1269,90 @@ CREATE TABLE IF NOT EXISTS interaction_requests (
  created_at TEXT NOT NULL,
  decided_at TEXT,
  UNIQUE (caller_key, request_id)
+);
+
+-- BEGIN workspace_notes_v1
+CREATE TABLE IF NOT EXISTS personal_assistant (singleton INTEGER PRIMARY KEY CHECK(singleton=1), session_id TEXT NOT NULL UNIQUE REFERENCES sessions(session_id));
+
+CREATE TABLE IF NOT EXISTS personal_notes (id TEXT PRIMARY KEY, project TEXT REFERENCES projects(name), original_text TEXT NOT NULL, text TEXT NOT NULL, tags_json TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','archived')), version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, source_json TEXT NOT NULL DEFAULT '{}', title TEXT, pinned_at TEXT, snoozed_until TEXT, merged_into TEXT, stage TEXT NOT NULL DEFAULT 'new' CHECK(stage IN ('new','discussed','promoted')), last_discussed_at TEXT, reviewed_at TEXT, summary_json TEXT NOT NULL DEFAULT '[]');
+
+CREATE TABLE IF NOT EXISTS personal_note_discussions (note_id TEXT NOT NULL REFERENCES personal_notes(id), session_id TEXT NOT NULL REFERENCES sessions(session_id), message_id TEXT NOT NULL, seq INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(session_id, message_id));
+
+CREATE INDEX IF NOT EXISTS personal_note_discussions_note ON personal_note_discussions(note_id, created_at);
+
+CREATE TABLE IF NOT EXISTS personal_note_requests (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response_json TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS personal_note_leaders (note_id TEXT PRIMARY KEY REFERENCES personal_notes(id), project TEXT NOT NULL REFERENCES projects(name), request_id TEXT NOT NULL UNIQUE, source_json TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','completed','unknown')), session_id TEXT REFERENCES sessions(session_id), error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS personal_action_receipts (request_id TEXT PRIMARY KEY, action TEXT NOT NULL, fingerprint TEXT NOT NULL, instruction_json TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','completed','failed','unknown')), response_json TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+
+CREATE INDEX IF NOT EXISTS personal_action_fingerprint ON personal_action_receipts(fingerprint);
+
+CREATE TABLE IF NOT EXISTS personal_mindmap_nodes (id TEXT PRIMARY KEY, parent_id TEXT REFERENCES personal_mindmap_nodes(id), note_id TEXT UNIQUE REFERENCES personal_notes(id), label TEXT, sort_order INTEGER NOT NULL, collapsed INTEGER NOT NULL DEFAULT 0 CHECK(collapsed IN (0,1)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, project TEXT REFERENCES projects(name), x REAL, y REAL, CHECK((note_id IS NULL) <> (label IS NULL)));
+
+CREATE TABLE IF NOT EXISTS personal_mindmap_links (node_id TEXT NOT NULL REFERENCES personal_mindmap_nodes(id), project TEXT NOT NULL REFERENCES projects(name), domain_id TEXT NOT NULL, converted_at TEXT NOT NULL, PRIMARY KEY(node_id, project));
+
+CREATE TABLE IF NOT EXISTS workspace_note_tags (
+    project TEXT NOT NULL REFERENCES projects(name),
+    name TEXT NOT NULL,
+    color TEXT NOT NULL CHECK(color IN ('c0','c1','c2','c3','c4','c5','c6','c7','c8','c9')),
+    pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
+    sort_order INTEGER NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(project,name)
+);
+
+CREATE TABLE IF NOT EXISTS unassigned_note_tags (
+    name TEXT PRIMARY KEY,
+    color TEXT NOT NULL CHECK(color IN ('c0','c1','c2','c3','c4','c5','c6','c7','c8','c9')),
+    pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
+    sort_order INTEGER NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspace_mindmaps (
+    project TEXT PRIMARY KEY NOT NULL REFERENCES projects(name),
+    version INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS unassigned_pool (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    version INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS workspace_mindmap_parent ON personal_mindmap_nodes(project,parent_id,sort_order);
+
+CREATE TRIGGER IF NOT EXISTS mindmap_scope_insert BEFORE INSERT ON personal_mindmap_nodes
+WHEN (NEW.parent_id IS NOT NULL AND NEW.project IS NOT
+         (SELECT project FROM personal_mindmap_nodes WHERE id=NEW.parent_id))
+  OR (NEW.note_id IS NOT NULL AND NEW.project IS NOT
+         (SELECT project FROM personal_notes WHERE id=NEW.note_id))
+  OR EXISTS (SELECT 1 FROM personal_mindmap_nodes WHERE parent_id=NEW.id AND project IS NOT NEW.project)
+BEGIN SELECT RAISE(ABORT, 'mindmap project mismatch'); END;
+
+CREATE TRIGGER IF NOT EXISTS mindmap_scope_update BEFORE UPDATE OF project,parent_id,note_id ON personal_mindmap_nodes
+WHEN (NEW.parent_id IS NOT NULL AND NEW.project IS NOT
+         (SELECT project FROM personal_mindmap_nodes WHERE id=NEW.parent_id))
+  OR (NEW.note_id IS NOT NULL AND NEW.project IS NOT
+         (SELECT project FROM personal_notes WHERE id=NEW.note_id))
+  OR EXISTS (SELECT 1 FROM personal_mindmap_nodes WHERE parent_id=NEW.id AND project IS NOT NEW.project)
+BEGIN SELECT RAISE(ABORT, 'mindmap project mismatch'); END;
+
+CREATE TRIGGER IF NOT EXISTS mindmap_note_scope BEFORE UPDATE OF project ON personal_notes
+WHEN EXISTS (SELECT 1 FROM personal_mindmap_nodes WHERE note_id=NEW.id AND project IS NOT NEW.project)
+BEGIN SELECT RAISE(ABORT, 'mindmap note project mismatch'); END;
+-- END workspace_notes_v1
+
+-- Imported discussions whose original chat/message did not travel. No local jump or grant.
+CREATE TABLE IF NOT EXISTS imported_note_discussion_history (
+    id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL REFERENCES personal_notes(id),
+    source_kind TEXT NOT NULL CHECK(source_kind IN ('workspace','administrator','external')),
+    created_at TEXT NOT NULL
 );

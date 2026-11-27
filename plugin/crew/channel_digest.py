@@ -34,7 +34,7 @@ def prompt(previous, messages, instructions=''):
          for message in messages], ensure_ascii=False)
 
 
-def _claude(home, text, process_factory, selected):
+def _claude(home, text, process_factory, selected, *, receipt=None):
     command = [chat.claude_executable(), "-p", "--output-format", "json", "--no-session-persistence",
                "--settings", '{"disableAllHooks":true}', "--strict-mcp-config", "--tools", "",
                "--disable-slash-commands"]
@@ -53,6 +53,10 @@ def _claude(home, text, process_factory, selected):
         output, errors = process.communicate()
         raise TimeoutError("300 秒超时；stderr: %s；stdout: %s" % (errors[:180], output[:180])) from exc
     if process.returncode != 0:
+        if receipt is not None and output.lstrip().startswith('{'):
+            failure = json.loads(output)
+            if isinstance(failure.get('result'), str):
+                raise RuntimeError('Claude 顾问退出码 %s：%s' % (process.returncode, failure['result'][:600]))
         raise RuntimeError("退出码 %s；stderr: %s；stdout: %s" % (process.returncode, errors[:180], output[:180]))
     try:
         result = json.loads(output)
@@ -67,17 +71,24 @@ def _claude(home, text, process_factory, selected):
             or type(result.get("total_cost_usd")) not in (int, float)
             or not math.isfinite(result["total_cost_usd"]) or result["total_cost_usd"] < 0):
         raise ValueError("输出不是预期 JSON；stderr: %s；stdout: %s" % (errors[:120], output[:180]))
-    missing = [heading for heading in HEADINGS if heading not in result["result"]]
+    if receipt is not None:
+        usage = result.get('usage') or {}
+        keys = ('input_tokens', 'cache_creation_input_tokens', 'output_tokens')
+        if all(type(usage.get(key)) is int for key in keys):
+            receipt['tokens'] = sum(usage[key] for key in keys)
+    missing = [heading for heading in HEADINGS if heading not in result["result"]] if receipt is None else []
     if missing:
         raise ValueError("输出缺少固定小标题 %s；result: %s" % ("、".join(missing), result["result"][:180]))
     model = result.get('model')
     if not isinstance(model, str) or not model.strip():
         usage = result.get('modelUsage')
-        model = ', '.join(usage) if isinstance(usage, dict) and usage else '原生默认（未回报型号）'
+        model = ', '.join(usage) if isinstance(usage, dict) and usage else None
+        if model is None and receipt is None:
+            model = '原生默认（未回报型号）'
     return result["result"], result["total_cost_usd"], model
 
 
-def _codex(text, process_factory, selected, cancelled=None):
+def _codex(text, process_factory, selected, cancelled=None, *, receipt=None):
     deadline = time.monotonic() + DIGEST_TIMEOUT
     env = {key: value for key, value in os.environ.items()
            if not key.startswith('CREW_') and key not in ('CLAUDE_CODE_SESSION_ID', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT')}
@@ -102,6 +113,9 @@ def _codex(text, process_factory, selected, cancelled=None):
     def notification(method, params):
         if client is None or params.get('threadId') != client.thread_id:
             return
+        if method == 'thread/tokenUsage/updated' and receipt is not None:
+            total = params['tokenUsage']['total']
+            receipt['tokens'] = total['inputTokens'] - total['cachedInputTokens'] + total['outputTokens']
         if method in ('item/started', 'item/completed'):
             item = params['item']
             if method == 'item/completed' or item.get('type') not in ('agentMessage', 'userMessage', 'reasoning'):
@@ -140,7 +154,8 @@ def _codex(text, process_factory, selected, cancelled=None):
                 client.timeout = remaining()
                 started = client.start_thread(cwd=cwd, ephemeral=True, sandbox='read-only', approvalPolicy='never',
                                                environments=[], config=config, **options,
-                                               developerInstructions='仅把输入数据整理成指定格式的中文 Markdown 卡片。不要调用工具、执行命令、读取文件或发起协作。')
+                                               developerInstructions=('仅就给出的问题提供一轮顾问意见。不要调用工具。' if receipt is not None else
+                                                   '仅把输入数据整理成指定格式的中文 Markdown 卡片。不要调用工具、执行命令、读取文件或发起协作。'))
                 model = started.get('model')
                 if not isinstance(model, str) or not model.strip():
                     raise ValueError('Codex thread/start 未返回实际模型')

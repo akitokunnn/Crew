@@ -6,10 +6,12 @@ from .. import appearance, member_defaults
 from .. import session_presence
 from .. import event_sounds
 from .. import snapshot_values
+from ..chat_delivery import waiting_state
 
 
 # The snapshot fields of the managed `conversations` kind: the cards and what is derived from them.
-CONVERSATION_FIELDS = ('leaders', 'members', 'attention', 'native_approvals', 'git_assistant', 'git_branches', 'candidates')
+CONVERSATION_FIELDS = ('leaders', 'members', 'notice_history', 'attention', 'native_approvals', 'git_assistant',
+                       'git_branches', 'candidates')
 
 
 class SnapshotMixin:
@@ -61,7 +63,8 @@ class SnapshotMixin:
                       'runtimes': self.runtime_catalog.snapshot(),
                       'ai': snapshot_values.ai(conn, None, 'ai'),
                       'now': self.now().isoformat(), 'agents_error': error, 'notification': self.connections.notification_status(conn),
-                      'leaders': [], 'members': [], 'decisions': [], 'attention': [], 'git_assistant': None, 'git_branches': None, 'domains': None,
+                      'leaders': [], 'members': [], 'notice_history': [], 'decisions': [], 'attention': [],
+                      'git_assistant': None, 'git_branches': None, 'domains': None,
                       'todos': [], 'todo_count': 0, 'goals': [], 'native_approvals': [],
                       'candidates': {'running': [], 'others': []},
                       'channel': {'unread': 0, 'latest_id': 0, 'digesting': False, 'digest_error': None, 'digest_id': None},
@@ -138,18 +141,28 @@ class SnapshotMixin:
         """The `conversations` fields (CONVERSATION_FIELDS) of an open workspace, and the journals read for them."""
         general_present = board.live_sessions(agents)
         result = {'leaders': [], 'members': [], 'git_assistant': None}
+        result['notice_history'] = board._rows(conn,
+            "SELECT s.crew_name AS name, COUNT(*) AS count FROM leader_notices n "
+            "JOIN sessions s ON s.session_id=n.session_id "
+            "LEFT JOIN session_controls c ON c.session_id=s.session_id "
+            "WHERE n.project=? AND n.sent_at IS NULL AND s.role='leader' "
+            "AND (s.status='closed' OR c.archived_status IS NOT NULL OR c.removed=1) "
+            "GROUP BY s.session_id ORDER BY MAX(n.id) DESC", (name,))
         coordinating = [goal for goal in visible_goals if goal['status'] in ('running', 'pausing', 'paused', 'waiting_user')]
         status, present, agents = session_presence.project_status(self, conn, name, agents, error)
         git_config = board.git_config(conn, name)
         open_groups = {group['name'] for group in status['groups'] if group['closed_at'] is None}
-        removed = {r[0] for r in conn.execute('SELECT session_id FROM session_controls WHERE removed=1')}
+        archived = {r[0] for r in conn.execute(
+            'SELECT session_id FROM session_controls WHERE removed=1 OR archived_status IS NOT NULL')}
         sessions = [s for s in [*status['ungrouped'], *(s for group in status['groups'] for s in group['members'])]
-                    if s['session_id'] not in removed and s['status'] != 'closed']
+                    if s['session_id'] not in archived and s['status'] != 'closed']
         member_choices = member_defaults.for_project(conn, name)
         looks = appearance.all_looks(conn)
         with self.scan_lock:
             titles = usage.session_titles(self.claude_root, [s['session_id'] for s in sessions], self.title_cache)
         result['native_approvals'] = self.native_approvals(name)
+        from .. import war_room_work
+        working_rooms = war_room_work.working_rooms(self.chat, conn, name)
         histories, active_scopes, active_goals, active_goal_ids = {}, {}, {}, {}
         for session in sessions:
             sid = session['session_id']
@@ -208,6 +221,17 @@ class SnapshotMixin:
                                for t in recent_tasks],
                          codex_older=len(own_tasks) - len(recent_tasks), dispatches=dispatches)
             if session['role'] == 'leader':
+                notices = [notice for notice in board.pending_notices(conn, sid) if notice['room_id'] is None]
+                waking = [notice for notice in notices if notice['wake'] == 1]
+                reasons = {}
+                for notice in waking:
+                    if notice['waiting'] is not None:
+                        waiting = waiting_state(notice['waiting'])
+                        reason = waiting['reason']
+                        if reason != 'failed' or reason not in reasons or (
+                            store.parse_iso(waiting['attempted_at']) > store.parse_iso(reasons[reason]['attempted_at'])
+                        ):
+                            reasons[reason] = waiting
                 events = histories[sid]['events'] if sid in histories else []
                 journal = self.chat.journal(sid)
                 with journal.condition:
@@ -216,7 +240,7 @@ class SnapshotMixin:
                 read_seq = board.read_seq(conn, sid)
                 result['leaders'].append(dict(
                     session_id=sid, name=session['crew_name'], goal=session['task'], status=session['status'],
-                    member_defaults=member_choices.get(sid), **looks.get(sid, {'color': None, 'avatar_version': None}),
+                    working_room_id=working_rooms.get(sid), member_defaults=member_choices.get(sid), **looks.get(sid, {'color': None, 'avatar_version': None}),
                     active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
                     active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
                     runtime=binding['runtime'],
@@ -231,11 +255,13 @@ class SnapshotMixin:
                     last_reply_id=replies[-1]['id'] if replies else None,
                     unread=sum(reply['seq'] > read_seq for reply in replies),
                     pending=pending_leaders.count(sid),
-                    notices_pending=len(board.pending_notices(conn, sid)),
+                    notices_pending=len(waking),
+                    notices_quiet=sum(notice['wake'] == 0 for notice in notices),
+                    notices_waiting=list(reasons.values()),
                     # The earliest channel post whose mention of this leader is still queued: the sidebar jumps there.
                     channel_queued_id=conn.execute(
                         'SELECT MIN(t.message_id) FROM channel_mentions t JOIN leader_notices n ON n.id=t.notice_id '
-                        'WHERE t.session_id=? AND n.sent_at IS NULL', (sid,)).fetchone()[0],
+                        'WHERE t.session_id=? AND n.room_id IS NULL AND n.sent_at IS NULL AND n.wake=1', (sid,)).fetchone()[0],
                     member_ids=[s['session_id'] for s in sessions if s['role'] != 'leader' and s['crew_name']
                                 and member_leaders[s['session_id']] is not None
                                 and member_leaders[s['session_id']]['session_id'] == sid]))
@@ -245,6 +271,7 @@ class SnapshotMixin:
                 result['members'].append(dict(
                     session_id=sid, name=session['crew_name'], title=titles.get(sid),
                     active_goal_id=active_goals[sid], active_goal_ids=active_goal_ids[sid],
+                    working_room_id=working_rooms.get(sid),
                     active_execution_id=active_scopes[sid][0]['id'] if active_scopes[sid] else None,
                     execution_records=self.member_execution_records(conn, sid, active_scopes[sid]),
                     general_has_output=sid in histories and chat.has_native_output(histories[sid]['events']),

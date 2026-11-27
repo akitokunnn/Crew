@@ -24,7 +24,7 @@ class Capture:
     def _send(self, code, content, content_type='application/json; charset=utf-8', attachment=None, cache_control=None):
         self.value = content if isinstance(content, (dict, list)) else Content(content, content_type, attachment)
 
-    def send_file_content(self, content, media_type, *, interactive_report=False):
+    def send_file_content(self, content, media_type, *, report_format=None):
         self.value = Content(content, media_type)
 
     def _stream_storage_file(self, path, media_type, *, attachment=None, sandbox=False):

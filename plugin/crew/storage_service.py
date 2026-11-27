@@ -325,7 +325,6 @@ class StorageService:
             return self.refresh(candidate['project'], write_marker=True)
 
     def export(self, data):
-        from .storage_v2 import packages
         project = data.get('project')
         cached_files=[]
         with self.lock:
@@ -346,8 +345,7 @@ class StorageService:
                 directory.mkdir(exist_ok=True)
                 destination = directory / (download_id + '.crewpack')
             destination = Path(destination).expanduser().resolve()
-            with closing(self.repository.connect()) as conn:
-                manifest = packages.export_workspace(conn, self.repository.objects, workspace_id, destination)
+            manifest = self.repository.export_workspace(workspace_id, destination)
             if download_id:
                 self.downloads[download_id] = destination
             return {'ok': True, 'path': str(destination), 'manifest': manifest, 'download_id': download_id,

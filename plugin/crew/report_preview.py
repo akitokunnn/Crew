@@ -41,10 +41,10 @@ def image_directory(home, actor_session_id, create=False):
     return directory
 
 
-def _document(value):
+def _document(value, field):
     if not isinstance(value, str) or not value.strip():
-        raise board.BoardError('预览必须提供非空 document_html 自包含报告正文')
-    if len(value.encode('utf-8')) > report_documents.MAX_HTML:
+        raise board.BoardError('预览必须提供非空的报告正文（%s）' % field)
+    if len(value.encode('utf-8')) > report_documents.MAX_DOCUMENT:
         raise board.BoardError('预览报告正文超过 512 KiB')
     return value
 
@@ -147,7 +147,7 @@ class Manager:
                         if job and job['state'] == 'queued':
                             worker['job'] = identity
                             job['state'] = 'running'
-                            return {'job': {key: job[key] for key in ('id', 'html', 'width', 'height')}}
+                            return {'job': {key: job[key] for key in ('id', 'html', 'document_format', 'width', 'height')}}
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return {'job': None}
@@ -202,8 +202,9 @@ class Manager:
             raise board.BoardError('报告预览 worker 请求无效')
         return handlers[action](data)
 
-    def capture(self, document_html, *, viewport='desktop', title, goal_id, report_id=None, actor_session_id='user'):
-        document_html = _document(document_html)
+    def capture(self, document, *, field, viewport='desktop', title, goal_id, report_id=None,
+                actor_session_id='user'):
+        document = _document(document, field)
         image_directory(self.home, actor_session_id)
         if not isinstance(viewport, str) or viewport not in VIEWPORTS:
             raise board.BoardError('报告预览 viewport 必须为 desktop 或 mobile')
@@ -217,7 +218,10 @@ class Manager:
             if len(self.jobs) >= 16:
                 return {'ok': False, 'error': '报告预览队列已满，请等待当前截图完成后重新请求。'}
             identity = uuid.uuid4().hex
-            job = {'id': identity, 'html': report_documents.render(title, document_html, ''),
+            markdown = field == 'document_md'
+            render = report_documents.render_markdown if markdown else report_documents.render
+            job = {'id': identity, 'html': render(title, document, ''),
+                   'document_format': 'markdown' if markdown else 'html',
                    'width': width, 'height': height, 'goal_id': goal_id, 'report_id': report_id,
                    'actor_session_id': actor_session_id,
                    'state': 'queued'}

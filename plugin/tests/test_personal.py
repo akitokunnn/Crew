@@ -40,6 +40,8 @@ class PersonalTests(unittest.TestCase):
         return personal.instruction_for_user_action(self.conn, sid, identity, read_events=lambda _: events)
 
     def action(self, action, data, request_id='request', **ports):
+        if action in personal.NOTE_WRITE_ACTIONS:
+            data = {'project': 'fitness', 'data': data}
         return personal.assistant_action(self.conn, action, data, request_id=request_id, **self.proof(), **ports)
 
     def test_singleton_exists_before_any_workspace_without_discovering_cli(self):
@@ -228,6 +230,7 @@ class PersonalTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
 
     def test_notes_preserve_original_and_require_version_for_edit(self):
+        self.project('fitness')
         value = self.action('note.capture', {'text': '原始想法', 'tags': ['健身']})['result']['note']
         changed = self.action('note.update', {'note_id': value['id'], 'text': '整理后', 'tags': ['应用'],
                                              'expected_version': value['version']}, request_id='edit')['result']['note']

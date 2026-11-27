@@ -7,7 +7,7 @@ const esc = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&
 const helpers = {esc, ic: name => `<svg data-icon="${name}"></svg>`, display: item => item.display_name || item.name};
 const palette = {"--accent":"#111", "--accent-text":"#222"};
 const themes = [{id:"celadon", name:"青瓷", light:palette, dark:palette}];
-const zero = {working:0, decisions:0, todos:0, approvals:0, waiting:0, acceptance:0, unread:0, errors:0};
+const zero = {working:0, decisions:0, todos:0, approvals:0, waiting:0, acceptance:0, chat_unread:0, channel_unread:0, errors:0};
 const state = (...names) => ({projects:names.map(name => ({name, display_name:null, theme:"celadon"})), themes, notification:{}});
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -64,7 +64,7 @@ test("a hidden page keeps a throttled invalidation until visible", async () => {
   assert.equal(entry.calls.length, 2);
 });
 
-test("links keep the desktop tab-guard contract: project cards carry no hash, assistant and notes carry no query", async () => {
+test("links keep the desktop tab-guard contract: project cards carry no hash, the overview reaches only the 系统管理员", async () => {
   const entry = load();
   entry.render(state("自动驾驶 & 感知", "tools"));
   await entry.answer({projects:[{project:"自动驾驶 & 感知", counts:{...zero, decisions:1}, items:[{kind:"decision", title:"选方案", name:"感知", detail:""}], unknown:false, updated_at:"x"},
@@ -72,9 +72,9 @@ test("links keep the desktop tab-guard contract: project cards carry no hash, as
   const html = entry.render(state("自动驾驶 & 感知", "tools"));
   const cards = [...html.matchAll(/class="entry-card"[^>]*href="([^"]*)"/g)].map(match => match[1]);
   assert.deepEqual(cards, [`/?project=${esc(encodeURIComponent("自动驾驶 & 感知"))}`, "/?project=tools"]);
-  assert.match(html, /href="\/assistant\.html"/);
-  assert.match(html, /href="\/notes\.html"/);
-  assert.doesNotMatch(html, /href="\/(assistant|notes)\.html\?/);
+  // The overview has no workspace yet: 系统管理员 is reached directly; ideas need a workspace first.
+  assert.match(html, /href="\/assistant\.html" title="系统管理员/);
+  assert.doesNotMatch(html, /notes\.html|全局助手|想法墙/);
   assert.match(html, /<button type="button" data-local-control class="[^"]*" data-act="settings"/);
   assert.match(html, /class="entry-task"[^>]*href="\/\?project=%E8%87%AA[^"#]*#all"/);
 });
@@ -123,7 +123,7 @@ test("zero counts are not shown and quiet workspaces say so", async () => {
   assert.match(html, /<b>2<\/b>等你拍板/);
   assert.doesNotMatch(html, /<b>0<\/b>/);
   assert.match(html, /安静 · 没有待处理/);
-  assert.doesNotMatch(html, /在干活/);
+  assert.doesNotMatch(html, /在推进/);
 });
 
 test("unknown runtime status is labelled unconfirmed instead of zero working", async () => {
@@ -131,9 +131,9 @@ test("unknown runtime status is labelled unconfirmed instead of zero working", a
   entry.render(state("a"));
   await entry.answer({projects:[{project:"a", counts:zero, items:[], unknown:true, updated_at:"x"}]});
   const html = entry.render(state("a"));
-  assert.match(html, /data-kind="unknown">在干活 · 状态未确认/);
+  assert.match(html, /data-kind="unknown">运行状态未确认/);
   assert.match(html, /1 个运行状态未确认/);
-  assert.doesNotMatch(html, /0 在干活|个在干活/);
+  assert.doesNotMatch(html, /0 在推进|个在推进/);
 });
 
 test("a project error and a failed request are shown with their real reason", async () => {

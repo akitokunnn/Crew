@@ -37,7 +37,7 @@ def _locked(home):
     deadline = time.monotonic() + 10
     while not lock.acquire():
         if time.monotonic() >= deadline:
-            raise OperationsChatError('运维对话正在保存，请稍后重试')
+            raise OperationsChatError('系统管理员 · 运维正在保存，请稍后重试')
         time.sleep(.03)
     try:
         yield
@@ -263,7 +263,7 @@ def _claude(selected, prompt, cwd, emit, register, *, read_roots=()):
         process.wait(timeout=10)
         reader.join(timeout=2)
         if process.returncode or result is None or result.get('is_error'):
-            raise OperationsChatError('Claude 运维对话失败：' +
+            raise OperationsChatError('Claude 系统管理员 · 运维失败：' +
                                       str((result or {}).get('result') or ''.join(errors) or process.returncode))
         return result.get('result') or text
 
@@ -339,6 +339,7 @@ def worker(home, backend_root, identity, *, runners=None):
 def settings_snapshot(home, backend_root):
     from . import event_sounds
     return {'ai': settings.get(home), 'execution': settings.get_execution(home),
+            'canvas_wheel_zoom': settings.canvas_wheel_zoom(home),
             **event_sounds.settings_snapshot(home),
             'runtimes': runtime_catalog.Catalog().refresh(force=True),
             'home': str(Path(home).resolve()), 'backend': str(Path(backend_root).resolve())}
@@ -346,8 +347,8 @@ def settings_snapshot(home, backend_root):
 
 def save_settings(home, backend_root, value):
     from . import event_sounds
-    if not isinstance(value, dict) or not value or not set(value) <= {'ai', 'execution', 'sounds'}:
-        raise OperationsChatError('设置请求只能包含 ai、execution 和 sounds 配置')
+    if not isinstance(value, dict) or not value or not set(value) <= settings.SETTINGS_FIELDS:
+        raise OperationsChatError('设置请求包含无效字段')
     with configuration_write(home), closing(store.connect(home)) as conn, board.transaction(conn):
         if 'ai' in value:
             settings.save(conn, value['ai'])
@@ -355,6 +356,8 @@ def save_settings(home, backend_root, value):
             settings.save_execution(conn, value['execution'])
         if 'sounds' in value:
             event_sounds.save(conn, value['sounds'], home)
+        if 'canvas_wheel_zoom' in value:
+            settings.save_canvas_wheel_zoom(conn, value['canvas_wheel_zoom'])
     return settings_snapshot(home, backend_root)
 
 

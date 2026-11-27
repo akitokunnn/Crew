@@ -17,6 +17,23 @@
     // Match report_documents.VIEWER_POLICY. Inline charts run without origin, forms or top navigation.
     return '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data: blob:; font-src data:; media-src data:; base-uri \'none\'; form-action \'none\'; frame-src about:;"><meta name="referrer" content="no-referrer">' + prelude + html;
   }
+  function syncReportAppearance(frame) {
+    const root = document.documentElement;
+    const sync = () => {
+      const target = frame.contentDocument.documentElement;
+      if (root.dataset.theme === undefined) delete target.dataset.theme;
+      else target.dataset.theme = root.dataset.theme;
+      // The workspace sets its theme and font scale as inline CSS variables on the root.
+      target.style.cssText = root.style.cssText;
+    };
+    const observer = new MutationObserver(sync);
+    const load = () => {
+      sync();
+      observer.observe(root, {attributes:true, attributeFilter:["style", "data-theme"]});
+    };
+    frame.addEventListener("load", load, {once:true});
+    return () => { frame.removeEventListener("load", load); observer.disconnect(); };
+  }
   function cards(goals, leaders = [], selected = null) {
     return goals.length ? `<div class="goal-rows">${goals.map(goal => {
       const owner = leaders.find(item => item.session_id === goal.leader_session_id), work = goal.work_summary;
@@ -220,17 +237,30 @@
         : reading.error ? `<div class="goal-reader-status"><p class="error-line" role="alert">${esc(reading.error)}</p><button class="btn" data-goal-act="retry-report">重新读取报告</button></div>` : "";
       if (body.dataset.markup !== status) { body.innerHTML = status; body.dataset.markup = status; body.hidden = !status; }
       const frame = reader.querySelector(".goal-reader-frame");
-      if (reading.html != null && frame.hidden) { frame.innerHTML = '<iframe title="目标完整交付报告" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; frame.querySelector("iframe").srcdoc = reportDocument(reading.html, window.CrewReader.selectionScript); frame.hidden = false; }
+      if (reading.html != null && frame.hidden) {
+        if (reading.report.document_format === "markdown") {
+          // Crew owns this shell and disables authored HTML in the parser. The origin is needed for the app fonts.
+          frame.innerHTML = '<iframe title="目标完整交付报告" sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>';
+          const iframe = frame.querySelector("iframe");
+          reading.stopAppearance = syncReportAppearance(iframe);
+          iframe.srcdoc = reading.html.replace("</head>", () => window.CrewReader.selectionScript + "</head>");
+        } else {
+          frame.innerHTML = '<iframe title="目标完整交付报告" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>';
+          frame.querySelector("iframe").srcdoc = reportDocument(reading.html, window.CrewReader.selectionScript);
+        }
+        frame.hidden = false;
+      }
       if (focused && !reader.contains(document.activeElement)) head.querySelector('[data-goal-act="close-report"]').focus();
     }
     // The report opens beside the task conversation; the composer offers to tell the leader which draft is open.
     function openReader(next) {
       options.onOverlay?.();
       const pane = document.createElement("section"); pane.className = "goal-report-reader";
+      if (next.report.document_format === "markdown") pane.dataset.documentFormat = "markdown";
       pane.innerHTML = '<div class="head goal-reader-head"></div><div class="goal-reader-body" hidden></div><div class="goal-reader-frame" hidden></div>';
       reading = next; reader = pane;
       window.CrewReader.open(pane, {label:"目标交付报告", reading:{label:`${goal().title} · 交付报告第 ${next.report.version} 稿`, data:{kind:"report", goal_id:next.goalId, report_id:next.report.id}},
-        onClose:() => { if (reader === pane) { reader = null; reading = null; reportGeneration++; deliveryNotice = null; } }});
+        onClose:() => { next.stopAppearance?.(); if (reader === pane) { reader = null; reading = null; reportGeneration++; deliveryNotice = null; } }});
       renderReader(); pane.querySelector('[data-goal-act="close-report"]').focus({preventScroll:true});
     }
     // app.js rebuilds the chat scaffold when the chat identity changes (read-only, execution, round). An open pane
@@ -246,6 +276,9 @@
       try {
         const response = await fetch(reportPath(options.project, target.goalId, target.report.id), {headers:{Accept:"text/html"}});
         if (!response.ok) throw Error("报告暂时无法读取，请重试。");
+        if (target.report.document_format === "markdown" && !response.headers.get("Content-Security-Policy")?.includes("font-src 'self'")) {
+          throw Error("报告格式与保存记录不一致，请重新打开。");
+        }
         const html = await response.text(); if (generation !== reportGeneration) return; target.html = html;
       } catch (error) { if (generation === reportGeneration) target.error = error.message; }
       finally { if (generation === reportGeneration) { target.loading = false; renderReader(); } }

@@ -187,7 +187,7 @@ class Manager(StatusMixin, NativeMixin, DeliveryMixin, MaintenanceMixin,
             native_id=runtimes.get(conn,session_id)['native_id']
             pending=runtime_switch.pending(conn,session_id)
             permission_mode = settings.get_execution(conn)['claude']
-            assistant = personal.is_assistant(conn, session_id)
+            assistant = personal.is_admin(conn, session_id)
             lost = self.missing_native(conn, session)
             handoff = None if lost is None else runtime_switch.handoff(
                 conn, session, self.journal(session_id), intro='lost_native_handoff')['text']
@@ -215,7 +215,7 @@ class Manager(StatusMixin, NativeMixin, DeliveryMixin, MaintenanceMixin,
                                    resume=native_resume, maintenance=maintenance)
             self.processes[session_id] = current
             self.changes.session(session_id)
-            return spawn.command(session_id, session["crew_name"], session["role"], runtime="codex", **options)
+            return current.process.args
         exe = claude_executable()
         if native_id not in (None,session_id):
             raise board.BoardError('Claude 原生身份与 Crew 身份不一致，不能恢复错误会话')

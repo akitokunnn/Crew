@@ -7,7 +7,7 @@ from contextlib import closing
 import re
 import subprocess
 
-from ... import board, git_overview, git_view, guard, personal_actions
+from ... import board, git_overview, git_view, guard, personal_actions, report_documents
 from ..errors import OpError
 from ..registry import Operation, register
 from .agents import A, E, G, L, TEAM, _object, _project, _string, _target, op, share
@@ -54,11 +54,11 @@ def goal_get(ctx, args):
 
 
 share('goal.get', goal_get, scopes=(A, L, E), core_for=(A, L, E), ai_params=goal_params(),
-      description='读取任务的状态、要求、验收标准、工作项与最近报告。任务执行内不填 goal_id 即当前任务；全局助手须填 goal_id。')
+      description='读取任务的状态、要求、验收标准、工作项与最近报告。任务执行内不填 goal_id 即当前任务；系统管理员须填 goal_id。')
 share('goal.create', _goal('create'), scopes=(A, L), risk='confirm',
       ai_params=goal_params(('title', 'request', 'acceptance'),
                             title=_string('任务标题', 300), request=_string('用户原话'),
-                            leader_session_id=_string('主责 leader 的会话 ID；全局助手必填，leader 不填即为自己', 300),
+                            leader_session_id=_string('主责 leader 的会话 ID；系统管理员必填，leader 不填即为自己', 300),
                             acceptance={'type': 'array', 'minItems': 1, 'items': {
                                 'type': ['string', 'object'], 'additionalProperties': True,
                                 'description': '一条验收标准：文字，或带自定义编号的对象（如 {id, title}）'}},
@@ -90,11 +90,17 @@ for action, old in (('put', 'add'), ('correct', 'correct'), ('expire', 'expire')
           ai_params=goal_params())
 goal_op('goal.amend', 'amend', '修订任务要求', access='write', scopes=(L, E))
 goal_op('goal.assign', 'assign', '指派任务负责人', access='write', scopes=(L,))
+REPORT_BODIES = {
+    'document_md': _string('Markdown 报告全文，纯文字报告优先使用。与 document_html 二选一',
+                           report_documents.MAX_DOCUMENT, min_length=0),
+    'document_html': _string('自包含 HTML 报告全文。与 document_md 二选一',
+                             report_documents.MAX_DOCUMENT, min_length=0),
+}
 REPORT = {**_object({
     'outcome': {'type': 'string', 'enum': ['awaiting_acceptance', 'failed', 'cancelled', 'progress', 'completed'],
                 'description': 'awaiting_acceptance 交给用户验收；failed 或 cancelled 如实结束'},
     'summary': _string('一两句结论'),
-    'document_html': _string('自包含 HTML 报告全文', 512 * 1024),
+    **REPORT_BODIES,
     'acceptance': {'type': 'array', 'description': '逐条对应全部验收标准', 'items': _object({
         'criterion_id': _string('验收标准编号，如 a1', 160),
         'status': {'type': 'string', 'enum': ['passed', 'failed', 'unverified', 'simulated']},
@@ -108,7 +114,7 @@ REPORT = {**_object({
     'description': '报告对象本身（不是 JSON 字符串）；其余字段见 goal_report_template'}
 goal_op('goal.finish', 'finish', '交付任务', access='write', scopes=(L, E), core_for=(L, E),
         params=goal_params(('report',), report=REPORT),
-        description='用 report 交付：outcome=awaiting_acceptance、简短 summary、自包含的 document_html，以及逐条验收标准的结果。'
+        description='用 report 交付：outcome=awaiting_acceptance、简短 summary、document_md 或 document_html（二选一），以及逐条验收标准的结果。纯文字报告优先用 Markdown。'
                     '字段见 goal_report_template，写法与预览见注入的 [Crew final_report]。')
 goal_op('goal.work.list', 'work.list', '列出任务内的 AI 工作项', access='read', scopes=(L, E))
 WORK_KEY = _string('稳定的工作项 key，如 W1', 160)
@@ -128,7 +134,9 @@ goal_op('goal.work.update', 'work.update', '更新任务内的 AI 工作项', ac
 goal_op('goal.report.template', 'report-template', '读取交付报告模板', access='read', scopes=(L, E))
 goal_op('goal.report.get', 'report.get', '读取任务报告内容', access='read', scopes=(L, E))
 goal_op('goal.report.preview', 'report.preview', '截图预览任务报告', access='read', scopes=(L, E), admission='none',
-        description='document_html（草稿）或 report_id（已存）加 viewport=desktop|mobile；Crew 桌面截图后返回元数据和图片。')
+        params=goal_params(**REPORT_BODIES, report_id=_string('已保存的报告编号', 160),
+                           viewport={'type': 'string', 'enum': ['desktop', 'mobile']}),
+        description='document_md 或 document_html（草稿）或 report_id（已存），三选一。可选 viewport=desktop|mobile；Crew 桌面截图后返回元数据和图片。')
 for action in ('versions.list', 'versions.preview'):
     share('goal.' + action, _goal(action), scopes=(L, E), ai_params=goal_params())
 goal_op('goal.versions.file', 'versions.file', '读取任务文件的某个版本', access='read', scopes=(L, E))

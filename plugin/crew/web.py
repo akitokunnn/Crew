@@ -160,11 +160,13 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
 
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/app-data.js": ("app-data.js", "text/javascript; charset=utf-8"),
+          "/workspace-start.js": ("workspace-start.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
           "/sound-settings-ui.js": ("sound-settings-ui.js", "text/javascript; charset=utf-8"),
           "/channel.js": ("channel.js", "text/javascript; charset=utf-8"),
           "/war-room.js": ("war-room.js", "text/javascript; charset=utf-8"),
+          "/war-room-plan.js": ("war-room-plan.js", "text/javascript; charset=utf-8"),
           "/war-room.css": ("war-room.css", "text/css; charset=utf-8"),
           "/git.js": ("git.js", "text/javascript; charset=utf-8"),
           "/git.css": ("git.css", "text/css; charset=utf-8"),
@@ -182,7 +184,9 @@ STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),
                '/fonts/HarmonyOS_Sans_SC_Medium.woff2': ('fonts/HarmonyOS_Sans_SC_Medium.woff2', 'font/woff2')})
 STATIC_CACHED = {'/logo.svg', '/fonts/HarmonyOS_Sans_SC_Regular.woff2', '/fonts/HarmonyOS_Sans_SC_Medium.woff2'}
 STATIC.update({'/goal-ui.js': ('goal-ui.js', 'text/javascript; charset=utf-8'),
-               '/goal-ui.css': ('goal-ui.css', 'text/css; charset=utf-8')})
+               '/goal-ui.css': ('goal-ui.css', 'text/css; charset=utf-8'),
+               '/report-markdown.js': ('report-markdown.js', 'text/javascript; charset=utf-8'),
+               '/report-markdown.css': ('report-markdown.css', 'text/css; charset=utf-8')})
 STATIC.update({f'/{name}.{ext}': (f'{name}.{ext}', 'text/javascript; charset=utf-8' if ext == 'js' else 'text/css; charset=utf-8') for name in ('personal-notes-ui', 'behavior-prompts-ui') for ext in ('js', 'css')})
 STATIC['/goal-versions-ui.js'] = ('goal-versions-ui.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/skill-picker.js': ('skill-picker.js', 'text/javascript; charset=utf-8'),
@@ -227,7 +231,8 @@ STATIC['/global-rail.js'] = ('global-rail.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/voice.html': ('voice.html', 'text/html; charset=utf-8'),
                '/voice.js': ('voice.js', 'text/javascript; charset=utf-8'),
                '/voice.css': ('voice.css', 'text/css; charset=utf-8')})
-STATIC.update({'/mindmap.js': ('mindmap.js', 'text/javascript; charset=utf-8'),
+STATIC.update({'/canvas-core.js': ('canvas-core.js', 'text/javascript; charset=utf-8'),
+               '/mindmap.js': ('mindmap.js', 'text/javascript; charset=utf-8'),
                '/mindmap-model.js': ('mindmap-model.js', 'text/javascript; charset=utf-8'),
                '/mindmap.css': ('mindmap.css', 'text/css; charset=utf-8')})
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
@@ -294,9 +299,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._request_active():
                     break
                 for event in events:
+                    sequence = event["seq"]
+                    if event.get('room_id') is not None:
+                        continue
                     self.wfile.write(("id: %s\ndata: %s\n\n" %
                                       (event["seq"], json.dumps(event, ensure_ascii=False))).encode("utf-8"))
-                    sequence = event["seq"]
                 if not events and (remote_stop is None or time.monotonic() - heartbeat >= 10):
                     self.wfile.write(b": heartbeat\n\n")
                     heartbeat = time.monotonic()
@@ -321,7 +328,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
-    def send_file_content(self, content, media_type, *, interactive_report=False):
+    def send_file_content(self, content, media_type, *, report_format=None):
         # SVG must remain an image even when the resource URL is opened directly.
         if isinstance(content, dict):
             content = json.dumps(content, ensure_ascii=False).encode("utf-8")
@@ -329,7 +336,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", media_type)
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", "no-store")
-        if interactive_report:
+        if report_format == 'markdown':
+            from .report_documents import MARKDOWN_POLICY
+            policy = 'sandbox allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox; ' + MARKDOWN_POLICY
+        elif report_format == 'html':
             from .report_documents import VIEWER_POLICY
             policy = 'sandbox allow-scripts; ' + VIEWER_POLICY
         else:
@@ -357,6 +367,15 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             while chunk := source.read(1024 * 1024):
                 self.wfile.write(chunk)
+
+    @staticmethod
+    def _project_keys(pairs):
+        values = {}
+        for key, value in pairs:
+            if key == 'project' and key in values:
+                raise ValueError('project 只能指定一次')
+            values[key] = value
+        return values
 
     def _dispatch(self, method):
         url = urlsplit(self.path)
@@ -399,7 +418,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if length <= 0:
                 raise ValueError("\u8bf7\u63d0\u4f9b JSON \u8bf7\u6c42\u4f53")
-            data = json.loads(payload.decode("utf-8"))
+            assistant_page = url.path in ('/api/op/assistant.open', '/api/op/assistant.state')
+            body = payload.decode("utf-8")
+            data = json.loads(body, object_pairs_hook=self._project_keys if assistant_page else None)
+            if url.path == '/api/op' and isinstance(data, dict) and data.get('op') in ('assistant.open', 'assistant.state'):
+                data = json.loads(body, object_pairs_hook=self._project_keys)
+            if assistant_page:
+                projects = parse_qs(url.query, keep_blank_values=True).get('project', [])
+                if projects:
+                    if not isinstance(data, dict):
+                        raise ValueError('JSON 请求必须是对象')
+                    if len(projects) != 1 or not projects[0].strip() or 'project' in data:
+                        raise ValueError('project 必须为单个非空工作区名')
+                    data = {**data, 'project': projects[0]}
             routes.send(self, service.post(url.path, data, query.get("project", [None])[0], self._caller(),
                                            self.headers.get('X-Crew-Request-Id')))
         elif local_settings_path and not self._owner_access():
@@ -437,9 +468,11 @@ class Handler(BaseHTTPRequestHandler):
             # A closed browser connection cannot receive an error response.
             self.close_connection = True
         except OpError as exc:
-            self._send(HTTP_STATUS[exc.code], {'error': str(exc), 'code': exc.code, 'detail': exc.detail})
+            self._send(HTTP_STATUS[exc.code], {'error': str(exc), 'code': exc.code, 'detail': exc.detail, **exc.public_code()})
         except personal.TagMergeRequired as exc:
             self._send(409, {'error': str(exc), **exc.detail})
+        except board.VersionConflict as exc:
+            self._send(409, {'error': str(exc), 'code': 'version_conflict', 'detail': {}, 'error_code': 'version_conflict'})
         except board.Conflict as exc:
             self._send(409, {"error": str(exc)})
         except (board.BoardError, ValueError) as exc:

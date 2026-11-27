@@ -293,7 +293,7 @@ class Controller:
                                    execution=execution, maintenance=maintenance)
             self.manager.processes[key] = current
             self.manager.changes.session(key)
-            return spawn.command(key, session['crew_name'], session['role'], runtime='codex', **options)
+            return current.process.args
         native_id = binding['native_id'] if binding else str(uuid.uuid4())
         if binding is None:
             with closing(store.connect(self.home)) as conn:

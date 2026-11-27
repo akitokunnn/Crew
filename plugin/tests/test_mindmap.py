@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from crew import board, domain_versions, domains, mindmap, mindmap_api, personal, store
+from crew.ops.errors import OpError
 from test_shell import NOW
 
 
@@ -18,7 +19,6 @@ class MindmapFixture(unittest.TestCase):
         self.home = self.base / 'home'
         self.conn = store.connect(self.home)
         self.addCleanup(self.conn.close)
-        mindmap.ensure_schema(self.conn)
         for name in ('demo', 'other'):
             (self.base / name).mkdir()
             board.init_project(self.conn, name, self.base / name, now=NOW)
@@ -28,10 +28,10 @@ class MindmapFixture(unittest.TestCase):
 
     def note(self, text, **fields):
         self.serial += 1
-        return personal.note_action(self.conn, 'capture', {'text': text, **fields}, request_id='n-%d' % self.serial, now=NOW)['note']['id']
+        return personal.note_action(self.conn, 'capture', {'text': text, **fields}, project='demo', request_id='n-%d' % self.serial, now=NOW)['note']['id']
 
     def edit(self, *ops):
-        return mindmap.apply(self.conn, list(ops), mindmap.version(self.conn), now=NOW)
+        return mindmap.apply(self.conn, list(ops), mindmap.version(self.conn, 'demo'), project='demo', now=NOW)
 
     def topic(self, node_id, label, parent=None, index=None):
         op = {'op': 'create', 'id': node_id, 'label': label, 'parent_id': parent}
@@ -50,7 +50,7 @@ class MindmapFixture(unittest.TestCase):
                   self.topic('team001', '协作', 'root01'), self.topic('room001', '作战室', 'team001'))
 
     def shape(self):
-        nodes = mindmap.snapshot(self.conn)['nodes']
+        nodes = mindmap.snapshot(self.conn, 'demo')['nodes']
         return {node['id']: (node['parent_id'], node['sort_order']) for node in nodes}
 
     def request(self, roots, parent_id=None, decisions=None, names=None, leaders=None, project='demo'):
@@ -59,7 +59,7 @@ class MindmapFixture(unittest.TestCase):
 
     def convert(self, roots, **kwargs):
         data = self.request(roots, **kwargs)
-        data['map_version'] = mindmap.version(self.conn)
+        data['map_version'] = mindmap.version(self.conn, 'demo')
         data['board_version'] = domains.version(self.conn, data['project'])
         return mindmap.convert(self.conn, data, now=NOW)
 
@@ -71,9 +71,47 @@ class MindmapFixture(unittest.TestCase):
 
 
 class MindmapEditTests(MindmapFixture):
-    def test_schema_is_additive_and_an_empty_map_reads_as_version_zero(self):
-        mindmap.ensure_schema(self.conn)
-        self.assertEqual(mindmap.snapshot(self.conn), {'version': 0, 'nodes': [], 'links': []})
+    def test_empty_workspace_map_reads_as_version_zero(self):
+        self.assertEqual(mindmap.snapshot(self.conn, 'demo'), {'project': 'demo', 'version': 0, 'nodes': [], 'links': []})
+
+    def test_free_move_reparent_and_reset_share_the_map_version(self):
+        self.tree()
+        at = mindmap.version(self.conn, 'demo')
+        moved = self.edit({'op': 'move', 'id': 'voice01', 'x': -90, 'y': 1_000_000})['map']
+        self.assertEqual(moved['version'], at + 1)
+        voice = next(n for n in moved['nodes'] if n['id'] == 'voice01')
+        self.assertEqual((voice['parent_id'], voice['sort_order'], voice['x'], voice['y']), ('mobile1', 0, -90, 1_000_000))
+        self.assertTrue(all(n['x'] is None and n['y'] is None for n in moved['nodes'] if n['id'] != 'voice01'))
+        reparented = self.edit({'op': 'move', 'id': 'voice01', 'parent_id': 'team001', 'index': 0,
+                                'x': 217, 'y': -56})['map']
+        self.assertEqual(reparented['version'], at + 2)
+        voice = next(n for n in reparented['nodes'] if n['id'] == 'voice01')
+        self.assertEqual((voice['parent_id'], voice['sort_order'], voice['x'], voice['y']), ('team001', 0, 217, -56))
+        with self.assertRaisesRegex(board.BoardError, '不能把节点'):
+            self.edit({'op': 'move', 'id': 'team001', 'parent_id': 'voice01', 'x': 3, 'y': 4})
+        with self.assertRaisesRegex(board.BoardError, 'y 坐标无效'):
+            self.edit({'op': 'auto_layout'}, {'op': 'move', 'id': 'voice01', 'x': 3, 'y': 1_000_001})
+        with self.assertRaises(board.Conflict):
+            mindmap.apply(self.conn, [{'op': 'auto_layout'}], at, project='demo')
+        self.assertEqual(mindmap.snapshot(self.conn, 'demo'), reparented)
+        other = mindmap.apply(self.conn, [dict(self.topic('other01', '其他工作区'), x=3, y=4)], 0, project='other')['map']
+        for offset in (1, 2):
+            reset = self.edit({'op': 'auto_layout'})['map']
+            self.assertEqual(reset['version'], reparented['version'] + offset)
+            self.assertTrue(all(n['x'] is None and n['y'] is None for n in reset['nodes']))
+            self.assertEqual(self.shape()['voice01'], ('team001', 0))
+            self.assertEqual(mindmap.snapshot(self.conn, 'other'), other)
+
+    def test_store_adds_coordinates_to_a_previous_map_without_moving_nodes(self):
+        self.tree()
+        original = mindmap.snapshot(self.conn, 'demo')
+        self.conn.execute('DROP TABLE canvas_settings')
+        for column in ('x', 'y'):
+            self.conn.execute('ALTER TABLE personal_mindmap_nodes DROP COLUMN ' + column)
+        for _ in range(2):
+            with closing(store.connect(self.home)) as conn:
+                self.assertEqual(mindmap.snapshot(conn, 'demo'), original)
+                self.assertFalse(mindmap_api.snapshot(self.home, 'demo')['canvas_wheel_zoom'])
 
     def test_nodes_are_ideas_or_topics_and_keep_sibling_order(self):
         idea = self.note('想法墙出导图')
@@ -92,14 +130,23 @@ class MindmapEditTests(MindmapFixture):
                              (self.topic('long001', '长' * 41), '最多 40'),
                              (self.topic('root01', '重复'), '已存在'),
                              ({'op': 'create', 'label': '缺父'}, 'parent_id'),
-                             (self.idea('ghost01', 'no-such-note'), '不存在'),
+                             (self.idea('ghost01', 'no-such-note'), '没有该想法'),
                              ({'op': 'label', 'id': 'idea001', 'label': '改'}, '跟着想法走'),
                              ({'op': 'explode'}, '不认识')):
-            with self.assertRaisesRegex(board.BoardError, message):
+            with self.assertRaisesRegex((board.BoardError, OpError), message):
                 self.edit(ops)
-        self.assertEqual(mindmap.version(self.conn), 1, 'a rejected batch changes nothing')
+        self.assertEqual(mindmap.version(self.conn, 'demo'), 1, 'a rejected batch changes nothing')
         with self.assertRaises(board.Conflict):
-            mindmap.apply(self.conn, [self.topic('late001', '过期')], 0, now=NOW)
+            mindmap.apply(self.conn, [self.topic('late001', '过期')], 0, project='demo', now=NOW)
+
+    def test_edits_preserve_other_workspace_version_and_root_order(self):
+        first = self.edit(self.topic('root-a1', '本区'))
+        other = mindmap.apply(self.conn, [self.topic('root-b1', '另一区')], 0, project='other')
+        self.edit(self.topic('root-a2', '第二个', index=0))
+        result = mindmap.apply(self.conn, [self.topic('root-b2', '另一区第二个')], other['map']['version'], project='other')
+        self.assertEqual(first['map']['version'], 1)
+        self.assertEqual([n['id'] for n in result['map']['nodes']], ['root-b1','root-b2'])
+        self.assertEqual(self.shape(), {'root-a2':(None,0), 'root-a1':(None,1)})
 
     def test_move_reparents_reorders_and_refuses_cycles(self):
         self.tree()
@@ -117,7 +164,7 @@ class MindmapEditTests(MindmapFixture):
             self.edit({'op': 'move', 'id': 'draft01', 'parent_id': 'root01', 'index': 9})
         self.edit({'op': 'collapse', 'id': 'mobile1', 'collapsed': True}, self.topic('room002', '复盘', 'team001'),
                   {'op': 'label', 'id': 'room002', 'label': '复盘会'})
-        nodes = {node['id']: node for node in mindmap.snapshot(self.conn)['nodes']}
+        nodes = {node['id']: node for node in mindmap.snapshot(self.conn, 'demo')['nodes']}
         self.assertTrue(nodes['mobile1']['collapsed'])
         self.assertEqual(nodes['room002']['label'], '复盘会')
 
@@ -127,11 +174,12 @@ class MindmapEditTests(MindmapFixture):
         before = self.shape()
         effect = self.edit({'op': 'remove', 'id': 'mobile1'})['effects'][0]
         self.assertEqual(effect, {'op': 'remove', 'id': 'mobile1', 'parent_id': 'root01', 'index': 0,
-                                  'children': ['voice01', 'draft01'], 'note_id': None, 'label': '手机端', 'collapsed': True})
+                                  'children': ['voice01', 'draft01'], 'note_id': None, 'label': '手机端', 'collapsed': True,
+                                  'x': None, 'y': None})
         shape = self.shape()
         self.assertEqual([shape['voice01'], shape['draft01'], shape['team001']], [('root01', 0), ('root01', 1), ('root01', 2)])
         removed = self.edit({'op': 'remove', 'id': 'voice01'})['effects'][0]
-        self.assertEqual(personal.get_note(self.conn, self.voice)['state'], 'open', 'taking an idea off the map keeps it')
+        self.assertEqual(personal.get_note(self.conn, self.voice, project='demo')['state'], 'open', 'taking an idea off the map keeps it')
         # The page undoes a removal with the effect: re-create under the same id, then move the children back.
         self.edit({'op': 'create', 'id': removed['id'], 'note_id': removed['note_id'], 'parent_id': removed['parent_id'], 'index': removed['index']})
         self.edit({'op': 'create', 'id': 'mobile1', 'label': effect['label'], 'parent_id': effect['parent_id'], 'index': effect['index']},
@@ -145,9 +193,9 @@ class MindmapConvertTests(MindmapFixture):
         self.tree()
         self.conn.execute('INSERT INTO personal_note_leaders(note_id,project,request_id,source_json,status,session_id,error,created_at,updated_at) '
                           "VALUES(?,?,?,?,'completed',?,NULL,?,?)", (self.voice, 'demo', 'start-1', '{}', 'lead-voice', NOW, NOW))
-        versions = (mindmap.version(self.conn), domains.version(self.conn, 'demo'))
+        versions = (mindmap.version(self.conn, 'demo'), domains.version(self.conn, 'demo'))
         plan = mindmap.preview(self.conn, self.request(['mobile1', 'root01']))
-        self.assertEqual((mindmap.version(self.conn), domains.version(self.conn, 'demo')), versions, 'preview writes nothing')
+        self.assertEqual((mindmap.version(self.conn, 'demo'), domains.version(self.conn, 'demo')), versions, 'preview writes nothing')
         self.assertEqual(domains.snapshot(self.conn, 'demo')['parts'], [])
         rows = {row['node_id']: row for row in plan['rows']}
         self.assertEqual([row['node_id'] for row in plan['rows']], ['root01', 'mobile1', 'voice01', 'draft01', 'team001', 'room001'],
@@ -203,9 +251,10 @@ class MindmapConvertTests(MindmapFixture):
             self.convert(['team001'])
         with self.assertRaisesRegex(board.BoardError, '已经转过'):
             mindmap.preview(self.conn, self.request(['team001'], names={'team001': '改名'}))
-        # The same branch can go to another workspace; links are per workspace.
-        self.convert(['team001'], project='other')
-        self.assertEqual(self.board_tree('other')[0], {'协作': None, '作战室': '协作', '复盘': '协作'})
+        with self.assertRaises(OpError) as denied:
+            mindmap.convert(self.conn, {**self.request(['team001'], project='other'), 'map_version': 0, 'board_version': 0})
+        self.assertEqual(denied.exception.code, 'not_visible')
+        self.assertEqual(self.board_tree('other')[0], {})
 
     def test_conflicts_merge_by_default_can_create_or_skip_and_deleted_parts_unlink(self):
         self.tree()
@@ -226,46 +275,46 @@ class MindmapConvertTests(MindmapFixture):
         for request, message in ((self.request(['room001'], decisions={'room001': 'merge'}), '没有可并入'),
                                  (self.request(['mobile1'], leaders={'voice01': 'lead-ui', 'draft01': 'lead-ui'}), '只能放进一个'),
                                  (self.request(['mobile1'], decisions={'voice01': 'skip'}, leaders={'voice01': 'lead-ui'}), '不能放 leader'),
-                                 (self.request(['mobile1'], leaders={'voice01': 'nobody'}), '在用的 leader'),
+                                 (self.request(['mobile1'], leaders={'voice01': 'nobody'}), '在用 leader'),
                                  (self.request(['mobile1'], names={'room001': 'x'}), '范围内'),
                                  (self.request(['mobile1'], parent_id='missing'), '不在这个工作区'),
                                  ({**self.request(['mobile1']), 'extra': 1}, '正好包含'),
                                  (self.request(['mobile1'], decisions={'mobile1': 'maybe'}), '处理方式')):
-            with self.assertRaisesRegex(board.BoardError, message):
+            with self.assertRaisesRegex((board.BoardError, OpError), message):
                 mindmap.preview(self.conn, request)
         self.convert(['mobile1'])
         parents, places = self.board_tree()
         self.assertEqual(parents, {'手机端': None, '语音派活': '手机端', '离线草稿': '手机端'})
         self.assertEqual(places, {'lead-net': '手机端'})
-        links = {link['node_id']: link['domain_id'] for link in mindmap.snapshot(self.conn)['links']}
+        links = {link['node_id']: link['domain_id'] for link in mindmap.snapshot(self.conn, 'demo')['links']}
         self.assertEqual(links['mobile1'], 'mobold1')
         domains.apply(self.conn, 'demo', [{'op': 'delete', 'id': links['voice01']}], now=NOW)
-        self.assertNotIn('voice01', {link['node_id'] for link in mindmap.snapshot(self.conn)['links']})
+        self.assertNotIn('voice01', {link['node_id'] for link in mindmap.snapshot(self.conn, 'demo')['links']})
         again = mindmap.preview(self.conn, self.request(['voice01']))
         self.assertEqual((again['rows'][0]['action'], again['rows'][0]['parent']['name']), ('create', '手机端'))
 
     def test_convert_refuses_versions_older_than_the_preview(self):
         self.tree()
-        data = {**self.request(['room001']), 'map_version': mindmap.version(self.conn), 'board_version': 0}
+        data = {**self.request(['room001']), 'map_version': mindmap.version(self.conn, 'demo'), 'board_version': 0}
         self.edit({'op': 'collapse', 'id': 'team001', 'collapsed': True})
         with self.assertRaisesRegex(board.Conflict, '重新预览'):
             mindmap.convert(self.conn, data, now=NOW)
-        data['map_version'] = mindmap.version(self.conn)
+        data['map_version'] = mindmap.version(self.conn, 'demo')
         domains.apply(self.conn, 'demo', [{'op': 'create', 'name': '别处', 'parent_id': None, 'x': 0, 'y': 0}], now=NOW)
         with self.assertRaisesRegex(board.Conflict, '重新预览'):
             mindmap.convert(self.conn, data, now=NOW)
-        self.assertEqual(mindmap.snapshot(self.conn)['links'], [])
+        self.assertEqual(mindmap.snapshot(self.conn, 'demo')['links'], [])
 
 
 class MindmapHandlerTests(MindmapFixture):
     def test_handlers_round_trip_through_json_like_the_http_layer(self):
         self.tree()
         self.conn.close()
-        snap = json.loads(json.dumps(mindmap_api.snapshot(self.home)))
+        snap = json.loads(json.dumps(mindmap_api.snapshot(self.home, 'demo')))
         self.assertEqual(len(snap['nodes']), 6)
         with self.assertRaisesRegex(board.BoardError, 'ops、base_version'):
             mindmap_api.edit(self.home, {'ops': []})
-        edited = mindmap_api.edit(self.home, {'ops': [self.topic('new0001', '新主题', 'root01')], 'base_version': snap['version']})
+        edited = mindmap_api.edit(self.home, {'project': 'demo', 'ops': [self.topic('new0001', '新主题', 'root01')], 'base_version': snap['version']})
         plan = mindmap_api.preview(self.home, self.request(['new0001']))
         result = mindmap_api.convert(self.home, {**self.request(['new0001']), 'map_version': plan['map_version'],
                                                  'board_version': plan['board_version']})

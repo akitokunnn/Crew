@@ -9,7 +9,7 @@ import hashlib
 import json
 import uuid
 
-from .. import board, guard, store
+from .. import board, guard, store, workspace_assistant
 from . import registry, scopes
 from .caller import HUMAN
 from .errors import OpError
@@ -41,18 +41,36 @@ def _stamp(service):
 
 
 def _args_hash(name, args):
-    return hashlib.sha256(json.dumps([name, args], sort_keys=True, ensure_ascii=False,
+    payload = [name, args]
+    if name in ('mindmap.preview', 'mindmap.convert', 'note.start', 'note.recover'):
+        # These pre-migration operations accepted the same arguments but their receipts
+        # could include ideas/nodes from other workspaces.
+        payload.append('workspace_notes_v1')
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False,
                                      separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
-def _receipt_begin(service, caller, op, request_id, digest):
+def _receipt_begin(service, caller, op, request_id, digest, args):
     """Reserve (caller, request_id) or return the earlier outcome (design §5.5)."""
     with closing(store.connect(service.home)) as conn, board.transaction(conn):
+        if caller.role == 'workspace_assistant':
+            workspace_assistant.check_operation(conn, caller, op.name, args)
         row = conn.execute('SELECT * FROM op_requests WHERE caller_key=? AND request_id=?',
                            (caller.key, request_id)).fetchone()
         if row is None:
+            if caller.role == 'workspace_assistant':
+                workspace_assistant.check_idea_refs(conn, caller.project, op.name, args)
+            if caller.role == 'workspace_assistant' and op.risk == 'high':
+                workspace_assistant.check_confirmation(conn, caller, op.name, args, service.chat)
             conn.execute("INSERT INTO op_requests(caller_key,request_id,op,args_hash,status,created_at) "
                          "VALUES(?,?,?,?, 'running', ?)", (caller.key, request_id, op.name, digest, _stamp(service)))
+            return None
+        # Room reservation, draft and publication each have a durable domain receipt and no
+        # native side effects before commit. Re-entering the transaction recovers even a lost reply.
+        resumable = op.name in ('war_room.open', 'war_room.plan.update', 'war_room.plan.approve')
+        if (resumable and row['op'] == op.name and row['args_hash'] == digest and row['status'] != 'done'):
+            conn.execute("UPDATE op_requests SET status='running',result=NULL,finished_at=NULL "
+                         "WHERE caller_key=? AND request_id=?", (caller.key, request_id))
             return None
     if row['op'] != op.name or row['args_hash'] != digest:
         raise OpError('request_id_reused', '同一个 request_id 已用于另一项操作或不同参数',
@@ -92,12 +110,20 @@ def _gate(ctx):
 
 
 def _run(service, op, ctx, args):
+    def execute(conn):
+        if ctx.caller.role == 'workspace_assistant':
+            workspace_assistant.check_operation(conn, ctx.caller, op.name, args)
+        return op.handler(ctx, args)
+
     if op.lock == 'none':
+        if ctx.caller.role == 'workspace_assistant':
+            with closing(guard.readonly(service.home)) as conn:
+                return execute(conn)
         return op.handler(ctx, args)
     if op.lock == 'read':
         with closing(guard.readonly(service.home)) as conn:
             ctx.conn = conn
-            return op.handler(ctx, args)
+            return execute(conn)
     with service.write_lock, closing(store.connect(service.home)) as conn:
         ctx.conn, ctx.now = conn, _stamp(service)
         if op.lock == 'project' and ctx.caller.is_ai and not ctx.as_user:
@@ -118,7 +144,7 @@ def _run(service, op, ctx, args):
         elif ctx.caller.is_ai and not ctx.as_user:
             ctx.project = ctx.caller.project
         _gate(ctx)
-        return op.handler(ctx, args)
+        return execute(conn)
 
 
 def call(service, caller, name, args, *, request_id=None, project_name=None, http=None, query=None,
@@ -129,11 +155,44 @@ def call(service, caller, name, args, *, request_id=None, project_name=None, htt
     if not isinstance(args, dict):
         raise ValueError('JSON 请求必须是对象')
     scopes.authorize(op, caller, grants)
+    if query is None and project_name is not None and name in (
+            'assistant.open', 'assistant.state', 'interaction.list', 'interaction.resolve'):
+        if 'project' in args and args['project'] != project_name:
+            raise OpError('invalid_arguments', '请求正文和地址中的工作区不一致')
+        args = {**args, 'project': project_name}
+    if caller.role == 'workspace_assistant':
+        nested = args.get('data')
+        if (any('project' in source and source['project'] != caller.project
+                for source in (args, nested) if isinstance(source, dict))
+                or project_name is not None and project_name != caller.project):
+            raise OpError('not_visible', '只能访问本工作区')
+        project_name = caller.project
+        args = {**args, 'project': caller.project}
     if op.as_user(caller):
         project_name = args.get('project')
     ctx = Context(service, caller, op, request_id=request_id, project_name=project_name, http=http, query=query)
     if query is None:
         validate(args, op.schema_for(caller))
+    if caller.role == 'workspace_assistant':
+        with closing(guard.readonly(service.home)) as conn:
+            workspace_assistant.check_operation(conn, caller, name, args)
+            if name.startswith(('note.', 'tag.', 'mindmap.')):
+                # A successful remove/rename can make its original IDs disappear.
+                # The receipt path checks the digest and returns that exact result.
+                replay = request_id is not None and conn.execute(
+                    'SELECT 1 FROM op_requests WHERE caller_key=? AND request_id=?',
+                    (caller.key, request_id)).fetchone()
+                if not replay:
+                    workspace_assistant.check_idea_refs(conn, caller.project, name, args)
+    if name in ('assistant.open', 'assistant.state') and 'project' in args and 'context_project' in args:
+        raise OpError('invalid_arguments', 'project 与 context_project 不能同传')
+    if name == 'assistant.open' and 'project' in args:
+        with closing(guard.readonly(service.home)) as conn:
+            workspace_assistant.available(conn, args['project'])
+    if name == 'interaction.resolve' and 'project' in args:
+        from . import confirmations
+        with closing(guard.readonly(service.home)) as conn:
+            confirmations.scoped_request(conn, args['id'], args['project'])
     if caller.is_ai:
         ctx.proof = scopes.confirm(service, op, caller, message_id)
     else:
@@ -147,7 +206,7 @@ def call(service, caller, name, args, *, request_id=None, project_name=None, htt
     if receipt:
         if request_id is None:
             raise OpError('invalid_arguments', '写操作必须带 request_id（同一操作重试时保持不变）')
-        earlier = _receipt_begin(service, caller, op, request_id, _args_hash(name, args))
+        earlier = _receipt_begin(service, caller, op, request_id, _args_hash(name, args), args)
         if earlier is not None:
             return earlier
     try:
@@ -156,6 +215,7 @@ def call(service, caller, name, args, *, request_id=None, project_name=None, htt
     except (OpError, board.BoardError, ValueError) as exc:
         if receipt:
             code = exc.code if isinstance(exc, OpError) else (
+                'version_conflict' if isinstance(exc, board.VersionConflict) else
                 'conflict' if isinstance(exc, board.Conflict) else 'invalid_arguments')
             _receipt_end(service, caller, request_id, 'failed', {'code': code, 'message': str(exc)})
         raise

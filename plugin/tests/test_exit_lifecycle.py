@@ -87,6 +87,7 @@ class ExitLifecycleTests(unittest.TestCase):
                 stop_reason=None, _closing=False, _approvals=mock.Mock(), _turn_ready=threading.Condition(lock),
                 _settings=threading.Condition(lock), pending_compact=False, client=client,
                 execution={'id': identity, 'session_id': role} if scoped else None,
+                home=self.home, _archive_lock=threading.Lock(), _crew_created=True,
                 _native_archived=False, _archive_on_close=True, thread_id='native-' + identity, reader_done=threading.Event(),
                 _lease=SimpleNamespace(release=mock.Mock()), _status=journal.set_status)
             current.close = MethodType(codex_runtime.CodexRunning.close, current)
@@ -315,7 +316,8 @@ class DigestExitLifecycleTests(unittest.TestCase):
         web.Service.close(service)
         self.assertTrue(service.stop.is_set())
         self.assertEqual(actions, ['digest-stop', 'remote', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
-        preview = previews.capture('<p>Isolated shutdown fixture</p>', title='Shutdown', goal_id='fixture')
+        preview = previews.capture('<p>Isolated shutdown fixture</p>', field='document_html',
+                                   title='Shutdown', goal_id='fixture')
         self.assertFalse(preview['ok'])
         self.assertIn('宿主已关闭', preview['error'])
 
@@ -375,7 +377,8 @@ class DigestExitLifecycleTests(unittest.TestCase):
         self.assertIs(raised.exception, failure)
         self.assertEqual(actions, ['digest-stop', 'remote', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
         logged.assert_called_once()
-        preview = previews.capture('<p>Isolated shutdown fixture</p>', title='Shutdown', goal_id='fixture')
+        preview = previews.capture('<p>Isolated shutdown fixture</p>', field='document_html',
+                                   title='Shutdown', goal_id='fixture')
         self.assertFalse(preview['ok'])
         self.assertIn('宿主已关闭', preview['error'])
 

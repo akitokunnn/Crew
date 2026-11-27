@@ -234,3 +234,19 @@ class EventSoundsTests(unittest.TestCase):
 
     def test_codex_assistant_completion_is_shared_with_project_state(self):
         self.assistant_completion('codex')
+
+    def test_workspace_reply_is_audible_only_in_its_workspace_and_global_feed(self):
+        from crew import board, workspace_assistant
+        case = self.case
+        board.init_project(case.conn, 'other', case.root / 'other')
+        workspace_assistant.ensure(case.conn, case.home, 'other')
+        sid = workspace_assistant.ensure(case.conn, case.home, 'demo')['session_id']
+        code, receipt, _ = case.request('/api/op/chat.send?project=demo', {'session_id': sid, 'text': '进度'})
+        self.assertEqual(code, 200, receipt)
+        proc = case.server.service.chat.processes[sid].process
+        proc.emit({'type': 'assistant', 'message': {'id': 'done', 'content': [{'type': 'text', 'text': '已完成'}]}})
+        case.finish_turn(sid, proc)
+        for query, expected in (('?project=demo', ['reply:' + sid]), ('?project=other', []), ('', ['reply:' + sid])):
+            code, state, _ = case.request('/api/op/assistant.state' + query)
+            self.assertEqual(code, 200, state)
+            self.assertEqual([e['scope'] for e in state['sounds']['events']], expected)

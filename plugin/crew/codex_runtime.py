@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from . import behavior_prompts
+from . import behavior_prompts, native_origins
 import shlex
 import subprocess
 import sys
@@ -234,6 +234,7 @@ class CodexRunning:
         self.unexpected_exit = False
         self._native_archived = False
         self._archive_on_close = True
+        self._archive_lock = threading.Lock()
         self._native_title = None
         self._lease = None
         self._events, self.client, self.process = None, None, None
@@ -252,23 +253,11 @@ class CodexRunning:
         if options.get("effort") is not None:
             config["model_reasoning_effort"] = options["effort"]
         with closing(store.connect(self.home)) as conn:
-            if execution:
-                binding = next((item for item in execution['bindings'] if item['runtime'] == 'codex'), None)
-                mapping = {'runtime': execution['runtime'], 'native_id': binding['native_id'] if binding else None}
-            else:
-                mapping = runtimes.get(conn, self.session_id)
-            if mapping["runtime"] != "codex":
-                raise board.BoardError("Crew 会话尚未绑定 Codex 运行时")
-            native_id = mapping.get("native_id")
-            self.native_home = codex_binding.home_for(conn, self.session_id, execution['id'] if execution else None)
             role = rules.skill_role(conn, session)
-            assistant = role == 'assistant'
             # A newly created administrator starts before enable() binds its ID.
             if not resume and spec.get('agent') == 'crew:git':
                 role = 'git'
             sandbox_mode = settings.get_execution(conn)['codex']
-        if resume and not native_id:
-            raise board.BoardError("Codex 原生会话 ID 丢失，不能恢复原会话")
         with closing(store.connect(self.home)) as conn:
             self._behavior_manifest = behavior_prompts.resolve(conn, session_id=self.session_id,
                 keys=behavior_prompts.bundle(role), plugin_root=self.plugin_root)
@@ -283,18 +272,12 @@ class CodexRunning:
         if directory_notice:
             instructions += '\n\n' + directory_notice
         env = dict(os.environ)
-        env['CODEX_HOME'] = str(self.native_home)
         for key in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT"):
             env.pop(key, None)
         # Crew identity is the MCP token in the thread config, never an inherited variable.
         for key in [name for name in env if name.upper().startswith('CREW_')]:
             env.pop(key)
         env['CREW_HOME'] = str(self.home)
-        granted = launch.issue(self.home, session_id=self.session_id, runtime='codex', now=store.now_iso(),
-                               execution_id=execution['id'] if execution else None)
-        if granted is not None:
-            config['mcp_servers'] = launch.codex_config(granted)
-            instructions += '\n\n' + guide.render(granted.role, 'codex', granted.exposure)
         env['PATH'] = str(self.home / 'bin') + os.pathsep + env.get('PATH', '')
         # Board keys are case-folded on Windows. Native sandbox roots must use
         # the filesystem's spelling: mixed cwd/root casing can split one root
@@ -306,12 +289,11 @@ class CodexRunning:
             params["model"] = options["model"]
         if options.get("speed") is not None:
             params["serviceTier"] = options["speed"]
-        new_leader = not native_id and not execution and session['role'] == 'leader' and not assistant
         self._lease = RuntimeLease(self.home, execution['id'] if execution else self.session_id).acquire()
         def own_process(command, **kwargs):
-            if new_leader:
-                command = codex_app_server.command(self.home)
             try:
+                if not native_id:
+                    command = codex_app_server.command(self.home)
                 process = process_factory(command, **kwargs)
             except BaseException:
                 launch.abandon(self.home, granted, store.now_iso())
@@ -331,6 +313,27 @@ class CodexRunning:
                 raise
             return process
         try:
+            execution_id = execution['id'] if execution else None
+            with closing(store.connect(self.home)) as conn:
+                if execution:
+                    mapping = conn.execute(
+                        'SELECT e.runtime,b.native_id FROM goal_executions e LEFT JOIN goal_execution_bindings b '
+                        'ON b.execution_id=e.id AND b.runtime=e.runtime WHERE e.id=?', (execution_id,)).fetchone()
+                else:
+                    mapping = runtimes.get(conn, self.session_id)
+                if mapping['runtime'] != 'codex':
+                    raise board.BoardError("Crew 会话尚未绑定 Codex 运行时")
+                native_id = mapping['native_id']
+                if resume and not native_id:
+                    raise board.BoardError("Codex 原生会话 ID 丢失，不能恢复原会话")
+                self.native_home = codex_binding.home_for(conn, self.session_id, execution_id)
+                env['CODEX_HOME'] = str(self.native_home)
+                self._crew_created = native_id is None or native_origins.crew_created(conn, native_id)
+            granted = launch.issue(self.home, session_id=self.session_id, runtime='codex', now=store.now_iso(),
+                                   execution_id=execution_id)
+            if granted is not None:
+                config['mcp_servers'] = launch.codex_config(granted)
+                params['developerInstructions'] += '\n\n' + guide.render(granted.role, 'codex', granted.exposure)
             self.client = _ObservedClient(cwd=cwd, env=env,
                                           on_notification=self._notification,
                                           approval_handler=self._approval,
@@ -338,7 +341,9 @@ class CodexRunning:
             self.process = self.client.process
             self._approval_process = self.process
             if native_id:
-                if execution:
+                if self._crew_created:
+                    with closing(store.connect(self.home)) as conn:
+                        native_origins.archive_confirmed(conn, native_id, False)
                     codex_visibility.restore_internal(self.client, native_id)
                 try:
                     result = self.client.resume_thread(native_id, **params)
@@ -352,6 +357,16 @@ class CodexRunning:
             self.thread_id = result["thread"]["id"]
             if native_id and self.thread_id != native_id:
                 raise board.BoardError("Codex 返回了不同的恢复会话，已停止")
+            with closing(store.connect(self.home)) as conn, board.transaction(conn):
+                if execution:
+                    goals.bind_native(conn, execution_id, 'codex', self.thread_id,
+                                      model=result['model'], effort=result.get('reasoningEffort'),
+                                      speed=result.get('serviceTier'))
+                else:
+                    runtimes.set.__wrapped__(conn, self.session_id, 'codex', self.thread_id)
+                codex_binding.remember(conn, self.session_id, self.thread_id, self.native_home, execution_id)
+                if not native_id:
+                    native_origins.record(conn, 'codex', self.thread_id, 'crew_created')
             with closing(store.connect(self.home)) as conn:
                 manifest = {**self._behavior_manifest, 'native_instruction_sources': result.get('instructionSources')}
                 behavior_prompts.record_applied(conn, execution['id'] if execution else self.session_id, manifest,
@@ -370,15 +385,6 @@ class CodexRunning:
                 self.applied = {"model": result["model"], "effort": result.get("reasoningEffort"),
                                 "speed": result.get("serviceTier")}
                 self.journal.changed()
-            with closing(store.connect(self.home)) as conn:
-                if execution:
-                    goals.bind_native(conn, execution['id'], 'codex', self.thread_id,
-                                      model=self.applied['model'], effort=self.applied['effort'],
-                                      speed=self.applied['speed'])
-                else:
-                    runtimes.set(conn, self.session_id, "codex", native_id=self.thread_id)
-                codex_binding.remember(conn, self.session_id, self.thread_id, self.native_home,
-                                       execution['id'] if execution else None)
             self.journal.reset_runtime()
             self._status("idle")
             with self.input_lock:
@@ -714,6 +720,9 @@ class CodexRunning:
                                           'user_interrupt' if self.interrupt_requested else 'process_exit'))
                 if self.stop_reason is None:
                     self.journal.emit("error", text="Codex 会话连接已结束" + ("，本轮未完成" if active else ""))
+                    if self.execution and self._crew_created:
+                        self.journal.emit('native_archive', native_id=self.thread_id, result='unconfirmed',
+                                          reason='transport_closed')
                 if self.pending_compact:
                     self.pending_compact = False
                     self.journal.emit("compact_cancelled", reason="会话进程已退出，取消排队压缩")
@@ -725,7 +734,8 @@ class CodexRunning:
                 self.client.close()
             finally:
                 try:
-                    self._lease.release()
+                    with self._archive_lock:
+                        self._lease.release()
                 except OSError as exc:
                     self.journal.emit("error", text="Codex 进程租约清理失败：" + str(exc))
                 finally:
@@ -747,11 +757,16 @@ class CodexRunning:
                     self._settings.notify_all()
         finally:
             if self.client is not None:
-                try:
-                    if self.execution and self._archive_on_close and not self._native_archived and not self.client.closed:
-                        self.client.request('thread/archive', {'threadId': self.thread_id}, timeout=5)
-                        self._native_archived = True
-                except (codex_client.CodexError, OSError, ValueError) as exc:
-                    self.journal.emit('error', text='Codex 内部执行归档失败：' + str(exc))
-                finally:
-                    self.client.close()
+                with self._archive_lock:
+                    try:
+                        if (self._crew_created and (self.execution or self.stop_reason == 'idle_reclaim')
+                                and self._archive_on_close and not self._native_archived and not self.client.closed):
+                            self.client.request('thread/archive', {'threadId': self.thread_id}, timeout=5)
+                            self._native_archived = True
+                            with closing(store.connect(self.home)) as conn:
+                                native_origins.archive_confirmed(conn, self.thread_id, True)
+                            self.journal.emit('native_archive', native_id=self.thread_id, result='archived')
+                    except (codex_client.CodexError, OSError, ValueError) as exc:
+                        self.journal.emit('error', native_id=self.thread_id, text='Codex 线程归档未确认：' + str(exc))
+                    finally:
+                        self.client.close()

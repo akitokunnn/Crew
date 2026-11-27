@@ -444,6 +444,7 @@ class CodexToolsTests(unittest.TestCase):
         self.assertEqual(report['type'], 'object')
         self.assertEqual(report['required'], ['outcome', 'summary', 'acceptance'])
         self.assertEqual(report['properties']['document_html']['maxLength'], 512 * 1024)
+        self.assertEqual(report['properties']['document_md']['maxLength'], 512 * 1024)
         self.assertEqual(report['properties']['acceptance']['items']['required'], ['criterion_id', 'status'])
         self.assertIn('不是 JSON 字符串', report['description'])
         # Codex once wrote the words 工作区根目录 as the folder; the field says what a path looks like.
@@ -456,7 +457,7 @@ class CodexToolsTests(unittest.TestCase):
     def test_goal_create_declares_the_leader_field(self):
         # A real Haiku global assistant first omitted the leader and had to guess the field name.
         leader = registry.operations()['goal.create'].ai_params['properties']['leader_session_id']
-        self.assertIn('全局助手必填', leader['description'])
+        self.assertIn('系统管理员必填', leader['description'])
 
     def test_work_items_declare_their_fields(self):
         # A real Haiku run sent version "1" (text) four times and could never mark its work done.

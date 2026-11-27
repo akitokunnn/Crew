@@ -14,8 +14,9 @@ import uuid
 from .objects import ObjectInfo, ObjectStore, canonical_uuid
 
 
-SCHEMA_VERSION = 4
-SCHEMA_UPGRADES = ((3, 'features.sql'), (4, 'report_versions.sql'))
+SCHEMA_VERSION = 6
+SCHEMA_UPGRADES = ((3, 'features.sql'), (4, 'report_versions.sql'), (5, 'workspace_notes.sql'),
+                   (6, 'canvas_positions.sql'))
 APPLICATION_ID = 0x43525732  # CRW2
 BUSY_TIMEOUT_MS = 5000
 
@@ -327,6 +328,23 @@ class Repository:
             rows = connection.execute('SELECT id FROM workspaces' +
                                       ('' if include_deleted else ' WHERE deleted_at IS NULL') + ' ORDER BY created_at,id')
             return [self.workspace(row['id'], conn=connection) for row in rows]
+
+    def export_workspace(self, workspace_id, destination):
+        """Refresh a pre-v5 projection from its registered source before packaging by ID."""
+        from . import legacy, packages
+        with closing(self.connect()) as conn:
+            binding = conn.execute(
+                'SELECT l.source_home,l.legacy_project,b.transform_version FROM local_legacy_projects l '
+                "JOIN import_batches b ON b.workspace_id=l.workspace_id AND b.source_format='crew-v1' "
+                'WHERE l.workspace_id=? ORDER BY b.created_at DESC,b.rowid DESC LIMIT 1', (workspace_id,)).fetchone()
+            if binding and binding['transform_version'] != legacy.TRANSFORM_VERSION:
+                home = Path(binding['source_home'])
+                if (home / 'crew.db').is_file():
+                    result = legacy.migrate_workspace(self, home, binding['legacy_project'], workspace_id=workspace_id,
+                                                      strict_source_check=True)
+                    if result['missing_files']:
+                        raise StorageConflict('有产出文件缺失：' + str(result['missing_files']))
+            return packages.export_workspace(conn, self.objects, workspace_id, destination)
 
     def workspace_for_path(self, root, *, exact=False, conn=None):
         _, key = _path_key(root)

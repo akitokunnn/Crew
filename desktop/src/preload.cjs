@@ -39,15 +39,30 @@ function tabsState(state){
   const item=document.createElement('div');item.className='crew-tab';item.dataset.active=String(state.activeId===tab.id);
   const select=document.createElement('button');select.type='button';select.dataset.tabId=tab.id;if(tab.project)select.dataset.project=tab.project;
   select.setAttribute('role','tab');select.setAttribute('aria-selected',String(state.activeId===tab.id));select.tabIndex=state.activeId===tab.id?0:-1;
-  select.setAttribute('aria-label',tab.name+(tab.activity?'，'+tab.activity.label+(tab.activity.unread?'，有未读动态':''):''));
+  select.setAttribute('aria-label',[tab.name,tab.activity?.label].filter(Boolean).join('，'));
   const mark=document.createElement('span');mark.className='crew-tab-mark';mark.textContent=tab.project?Array.from(tab.name)[0]?.toUpperCase():'▦';
   const name=document.createElement('span');name.className='crew-tab-name';name.textContent=tab.name;select.append(mark,name);
   if(tab.project){
-   const signal=document.createElement('span');signal.className='crew-tab-signal';signal.setAttribute('aria-hidden','true');
-   signal.dataset.tone=tab.loading?'loading':tab.error?'error':tab.activity?.stale?'stale':tab.activity?.counts?.working?'working':tab.activity?.tone||'unknown';select.append(signal);
-   if(tab.activity?.badge){const badge=document.createElement('span');badge.className='crew-tab-badge';badge.dataset.tone=tab.activity.tone;badge.textContent=tab.activity.badge>99?'99+':String(tab.activity.badge);badge.setAttribute('aria-hidden','true');select.append(badge);}
-   if(tab.activity?.unread){const unread=document.createElement('span');unread.className='crew-tab-unread';unread.setAttribute('aria-hidden','true');mark.append(unread);}
-   const preview=()=>{clearTimeout(tabPreviewTimer);tabPreviewTimer=setTimeout(()=>{if(!select.isConnected)return;const rect=select.getBoundingClientRect();void invoke('tab-preview',{id:tab.id,anchor:{x:rect.x,y:rect.y,width:rect.width,height:rect.height}});},280);};
+   if(tab.activity?.working) mark.classList.add('crew-tab-working');
+   const tone=tab.activity?.marker ?? (!tab.activity || tab.loading || tab.error ? 'unknown' : null);
+   if(tone){
+    const signal=document.createElement('span');signal.className='crew-tab-signal';signal.dataset.tone=tone;signal.setAttribute('aria-hidden','true');
+    if(tone==='attention'||tone==='error'){
+     const count=tab.activity.markerCount;
+     signal.textContent=(tone==='error'?'! ':'')+(count>99?'99+':String(count));
+    }
+    if(tone==='unread') name.classList.add('crew-tab-name-unread');
+    select.append(signal);
+   }
+   const preview=()=>{
+    clearTimeout(tabPreviewTimer);
+    tabPreviewTimer=setTimeout(()=>{
+     const current=tabsBar.querySelector('[data-tab-id="'+CSS.escape(tab.id)+'"]');
+     if(!current)return;
+     const {x,y,width,height}=current.getBoundingClientRect();
+     void invoke('tab-preview',{id:tab.id,anchor:{x,y,width,height}});
+    },280);
+   };
    select.addEventListener('mouseenter',preview);select.addEventListener('focus',preview);
    select.addEventListener('mouseleave',()=>{clearTimeout(tabPreviewTimer);void invoke('tab-preview-hide');});
    select.addEventListener('blur',()=>{clearTimeout(tabPreviewTimer);void invoke('tab-preview-hide');});
@@ -72,9 +87,9 @@ async function mountChrome(){
  const content=document.createElement('div');content.id='crew-desktop-content';homePane=document.createElement('div');homePane.id='crew-desktop-home';while(document.body.firstChild)homePane.append(document.body.firstChild);
  const bar=document.createElement('header');bar.id='crew-desktop-titlebar';bar.setAttribute('aria-label','Crew 桌面窗口');const safe=document.createElement('div');safe.className='crew-chrome-safe';
  const brand=button('工作区首页 · '+homeShortcut,['M14.8 5.2a6.3 6.3 0 1 0 0 9.6','M14.4 13.6h.1'],'home','crew-chrome-brand');const name=document.createElement('span');name.textContent=settings.instanceName;brand.append(name);safe.append(brand);
- backButton=button('返回上一页 · '+backShortcut,['m11.7 4.6-5.4 5.4 5.4 5.4','M6.7 10h9'],'back');backButton.disabled=true;safe.append(backButton);
+ backButton=button('返回上一页 · '+backShortcut,['m11.7 4.6-5.4 5.4 5.4 5.4','M6.7 10h9'],'back','crew-chrome-back');backButton.disabled=true;safe.append(backButton);
  const divider=document.createElement('span');divider.className='crew-chrome-divider';divider.setAttribute('aria-hidden','true');safe.append(divider);titleNode=document.createElement('span');titleNode.className='crew-chrome-title';titleNode.textContent=isHome?'工作区':'连接未完成';safe.append(titleNode);
- const spacer=document.createElement('span');spacer.className='crew-chrome-space';safe.append(spacer);safe.append(button('全局助手',['M4 4h12v9H9l-5 4V4','M7 8h6'],'assistant','crew-chrome-assistant'));safe.append(button('设置',['M4 5h12','M4 10h12','M4 15h12','M7 3v4','M13 8v4','M8 13v4'],'settings','crew-chrome-settings'));const admin=button('系统管理员',['M10 2.5 4 5v5c0 3 3 5.5 6 7 3-1.5 6-4 6-7V5l-6-2.5Z','m7 10 2 2 4-4'],'admin','crew-chrome-admin');const adminLabel=document.createElement('span');adminLabel.textContent='系统管理员';admin.append(adminLabel);safe.append(admin);const menu=button('应用菜单',['M4 10h.01','M10 10h.01','M16 10h.01'],'menu','crew-chrome-menu');menu.setAttribute('aria-haspopup','menu');menu.setAttribute('aria-expanded','false');safe.append(menu);bar.append(safe);
+ const spacer=document.createElement('span');spacer.className='crew-chrome-space';safe.append(spacer);safe.append(button('设置',['M4 5h12','M4 10h12','M4 15h12','M7 3v4','M13 8v4','M8 13v4'],'settings','crew-chrome-settings'));const admin=button('系统管理员',['M10 2.5 4 5v5c0 3 3 5.5 6 7 3-1.5 6-4 6-7V5l-6-2.5Z','m7 10 2 2 4-4'],'admin','crew-chrome-admin');const adminLabel=document.createElement('span');adminLabel.textContent='系统管理员';admin.append(adminLabel);safe.append(admin);const menu=button('应用菜单',['M4 10h.01','M10 10h.01','M16 10h.01'],'menu','crew-chrome-menu');menu.setAttribute('aria-haspopup','menu');menu.setAttribute('aria-expanded','false');safe.append(menu);bar.append(safe);
  tabsBar=document.createElement('nav');tabsBar.id='crew-desktop-tabs';tabsBar.setAttribute('aria-label','工作区标签');tabsBar.setAttribute('role','tablist');viewArea=document.createElement('div');viewArea.id='crew-workspace-view-area';
  recovery=document.createElement('section');recovery.id='crew-tab-recovery';recovery.hidden=true;recovery.setAttribute('role','alert');const heading=document.createElement('h2');heading.textContent='暂时无法打开工作区';const detail=document.createElement('p');const actions=document.createElement('div');
  const retry=document.createElement('button');retry.type='button';retry.textContent='重试';retry.addEventListener('click',()=>{void invoke('retry');});const home=document.createElement('button');home.type='button';home.textContent='返回工作区首页';home.addEventListener('click',()=>{void invoke('home');});actions.append(retry,home);recovery.append(heading,detail,actions);
@@ -94,19 +109,19 @@ if(isHome&&process.isMainFrame)contextBridge.exposeInMainWorld('crewDesktop',Obj
  theme:()=>bridgeInvoke('desktop:theme'),setTheme:mode=>bridgeInvoke('desktop:theme-set',mode),setFontScale:value=>bridgeInvoke('desktop:font-scale-set',value),
  onTheme:callback=>{if(typeof callback!=='function')throw new TypeError('需要显示模式回调');const listener=(_event,state)=>callback(state);ipcRenderer.on('desktop:theme',listener);return()=>ipcRenderer.removeListener('desktop:theme',listener);},
  onConnection:callback=>{if(typeof callback!=='function')throw new TypeError('需要连接状态回调');const listener=(_event,state)=>callback(state);ipcRenderer.on('desktop:connection',listener);return()=>ipcRenderer.removeListener('desktop:connection',listener);},
- homeReady:()=>bridgeInvoke('desktop:home-ready'),bootstrap:()=>bridgeInvoke('desktop:bootstrap'),registerExisting:directory=>bridgeInvoke('desktop:existing-new',directory),openProject:name=>bridgeInvoke('desktop:open',name),
+ homeReady:()=>bridgeInvoke('desktop:home-ready'),bootstrap:()=>bridgeInvoke('desktop:bootstrap'),registerExisting:directory=>bridgeInvoke('desktop:existing-new',directory),openProject:(name,kickoff)=>bridgeInvoke('desktop:open',name,kickoff),openAdministrator:()=>bridgeInvoke('desktop:open-administrator'),
  ...local({chooseExisting:()=>bridgeInvoke('desktop:existing'),chooseParent:()=>bridgeInvoke('desktop:parent'),createWorkspace:name=>bridgeInvoke('desktop:create',name),storageActivate:workspaceId=>bridgeInvoke('desktop:storage-activate',workspaceId),storageImport:()=>bridgeInvoke('desktop:storage-import')}),
  ...lan({hostFolders:directory=>bridgeInvoke('desktop:host-folders',directory),openExistingDirectory:directory=>bridgeInvoke('desktop:existing-directory',directory),createWorkspace:(name,parent)=>bridgeInvoke('desktop:create',name,parent),storageActivate:(workspaceId,root)=>bridgeInvoke('desktop:storage-activate',workspaceId,root)}),
  storageExport:name=>bridgeInvoke('desktop:storage-export',name),
  onStorageProgress:callback=>{if(typeof callback!=='function')throw new TypeError('需要进度回调');const listener=(_event,message)=>{if(typeof message==='string')callback(message);};ipcRenderer.on('desktop:storage-progress',listener);return()=>ipcRenderer.removeListener('desktop:storage-progress',listener);},
- onAction:callback=>{if(typeof callback!=='function')throw new TypeError('需要工作区操作回调');const listener=(_event,message)=>{if(message&&['home','new','open','tools','admin','settings','workspace-settings'].includes(message.action))callback({action:message.action,...(typeof message.project==='string'?{project:message.project}:{})});};ipcRenderer.on('desktop:home-action',listener);return()=>ipcRenderer.removeListener('desktop:home-action',listener);},
+ onAction:callback=>{if(typeof callback!=='function')throw new TypeError('需要工作区操作回调');const listener=(_event,message)=>{if(message&&['home','new','open','tools','admin','settings','workspace-settings'].includes(message.action))callback({action:message.action,...(typeof message.project==='string'?{project:message.project}:{}),...(message.reason==='offline'?{reason:'offline'}:{})});};ipcRenderer.on('desktop:home-action',listener);return()=>ipcRenderer.removeListener('desktop:home-action',listener);},
  adminStatus:()=>bridgeInvoke('desktop:admin-status'),
  ...local({adminCheck:()=>bridgeInvoke('desktop:admin-check'),adminRestart:()=>bridgeInvoke('desktop:admin-restart'),
   adminChatSnapshot:()=>bridgeInvoke('desktop:admin-chat-snapshot'),adminChatSend:body=>bridgeInvoke('desktop:admin-chat-send',body),adminChatInterrupt:()=>bridgeInvoke('desktop:admin-chat-interrupt'),adminConfigGet:()=>bridgeInvoke('desktop:admin-config-get'),adminConfigSave:body=>bridgeInvoke('desktop:admin-config-save',body),
   toolsSnapshot:()=>bridgeInvoke('desktop:tools-snapshot'),toolsCheck:()=>bridgeInvoke('desktop:tools-check'),toolsUpdate:id=>bridgeInvoke('desktop:tools-update',id),toolsCancel:id=>bridgeInvoke('desktop:tools-cancel',id),toolsSettings:settings=>bridgeInvoke('desktop:tools-settings',settings),
   remoteAccessRead:()=>bridgeInvoke('desktop:remote-access-read'),remoteAccessAction:body=>bridgeInvoke('desktop:remote-access-action',body)}),
  promptsGet:query=>bridgeInvoke('desktop:prompts-get',query),promptsSave:body=>bridgeInvoke('desktop:prompts-save',body),
- onboardingGet:()=>bridgeInvoke('desktop:onboarding-get'),onboardingSave:status=>bridgeInvoke('desktop:onboarding-save',status),runtimeReadiness:()=>bridgeInvoke('desktop:runtime-readiness'),
+ onboardingUI:()=>bridgeInvoke('desktop:onboarding-ui'),onboardingGet:()=>bridgeInvoke('desktop:onboarding-get'),onboardingSave:status=>bridgeInvoke('desktop:onboarding-save',status),runtimeReadiness:()=>bridgeInvoke('desktop:runtime-readiness'),copyLoginCommand:runtime=>bridgeInvoke('desktop:copy-login-command',runtime),
  settingsUI:()=>bridgeInvoke('desktop:settings-ui'),settingsGet:()=>bridgeInvoke('desktop:settings-get'),settingsSave:body=>bridgeInvoke('desktop:settings-save',body),settingsConnection:()=>bridgeInvoke('desktop:settings-connection'),settingsConnectionSave:body=>bridgeInvoke('desktop:settings-connection-save',body),settingsConnectionAction:body=>bridgeInvoke('desktop:settings-connection-action',body),settingsConnectionPreferences:body=>bridgeInvoke('desktop:settings-connection-preferences',body),settingsAway:away=>bridgeInvoke('desktop:settings-away',away),
  launchSettingsGet:()=>bridgeInvoke('desktop:launch-settings-get'),launchSettingsValidate:body=>bridgeInvoke('desktop:launch-settings-validate',body),launchSettingsApply:body=>bridgeInvoke('desktop:launch-settings-apply',body),launchSettingsPick:body=>bridgeInvoke('desktop:launch-settings-pick',body),remoteBackendPair:body=>bridgeInvoke('desktop:remote-backend-pair',body),
  storageRead:()=>bridgeInvoke('desktop:storage-read'),storagePreview:body=>bridgeInvoke('desktop:storage-preview',body),storageClean:body=>bridgeInvoke('desktop:storage-clean',body),storageRestore:body=>bridgeInvoke('desktop:storage-restore',body),storageEmptyTrash:body=>bridgeInvoke('desktop:storage-empty-trash',body),storagePolicy:body=>bridgeInvoke('desktop:storage-policy',body),

@@ -7,7 +7,7 @@ import uuid
 from . import behavior_prompts, trust_mode
 from . import (
     board, channel, codex_client, domains, git_admin, guard, messaging, personal, runtime_switch, runtimes, store,
-    workspace_execution,
+    war_room, workspace_execution,
 )
 from .chat_base import MAINTENANCE_HELD, _admitted, IMAGE_TYPES, validate_images
 
@@ -15,8 +15,11 @@ from .chat_base import MAINTENANCE_HELD, _admitted, IMAGE_TYPES, validate_images
 # A leader notice moves one way: queued -> claimed (by the web service's input batch, or by an external
 # session's prompt hook) -> sent. Whoever's guarded update claims it first delivers it; the other leaves it.
 # Every state below is read from stored facts only; "replied" comes from the leader's answering post.
-WAITING = {'external': '对方在外部窗口运行，下次提示时送达', 'busy': '对方正在忙，这一轮结束后送达',
-           'stopped': '用户已停止对方，用户再次发话前不会送达'}
+def waiting_state(value):
+    if value is not None and value.startswith('failed|'):
+        reason, attempted_at, error = value.split('|', 2)
+        return {'reason': reason, 'attempted_at': attempted_at, 'error': error}
+    return {'reason': value}
 
 
 def notice_state(row):
@@ -28,7 +31,7 @@ def notice_state(row):
     return {'delivery': 'replied' if row['reply_id'] is not None else 'delivered' if sent else 'queued',
             'queued_at': row['queued_at'], 'delivered_at': row['sent_at'],
             'via': (row['delivered_via'] or 'input') if sent else None,
-            'waiting': None if sent else row['waiting'], 'reply_id': row['reply_id']}
+            'waiting': None if sent else waiting_state(row['waiting'])['reason'], 'reply_id': row['reply_id']}
 
 
 def claim_batch(conn, notice_ids, batch_id):
@@ -40,18 +43,27 @@ def claim_batch(conn, notice_ids, batch_id):
 
 def claim_for_hook(conn, session_id, now=None):
     """An external session's prompt hook takes this leader's queued channel notices no batch owns."""
-    pending = board._rows(conn, 'SELECT n.id,n.text FROM channel_mentions t JOIN leader_notices n ON n.id=t.notice_id '
-                                'WHERE t.session_id=? AND n.sent_at IS NULL AND n.batch_id IS NULL ORDER BY n.id',
+    pending = board._rows(conn, 'SELECT n.id,n.text,n.session_id FROM channel_mentions t JOIN leader_notices n ON n.id=t.notice_id '
+                                'WHERE t.session_id=? AND n.room_id IS NULL AND n.sent_at IS NULL AND n.batch_id IS NULL ORDER BY n.id',
                           (session_id,))
-    return [notice['text'] for notice in pending if conn.execute(
+    return [channel.mention_text_for_delivery(conn, notice, frozenset()) for notice in pending if conn.execute(
         "UPDATE leader_notices SET sent_at=?,delivered_via='hook' WHERE id=? AND sent_at IS NULL AND batch_id IS NULL",
         (board._time(now), notice['id'])).rowcount]
 
 
-def note_waiting(conn, session_id, reason):
-    """Why this leader's queued notices still wait; written only when the reason changes."""
-    conn.execute('UPDATE leader_notices SET waiting=? WHERE session_id=? AND sent_at IS NULL AND waiting IS NOT ?',
-                 (reason, session_id, reason))
+def note_waiting(conn, session_id, reason, notice_ids=None):
+    """Record why wake notices still wait. Leave quiet notices and accepted inputs alone."""
+    sql = ('UPDATE leader_notices SET waiting=? WHERE session_id=? AND sent_at IS NULL '
+           'AND wake=1 AND waiting IS NOT ?')
+    args = [reason, session_id, reason]
+    if notice_ids is None:
+        sql += ' AND room_id IS NULL'
+    if reason is None:
+        sql += " AND waiting NOT GLOB 'failed|*'"
+    if notice_ids is not None:
+        sql += ' AND id IN (%s)' % ','.join('?' for _ in notice_ids)
+        args.extend(notice_ids)
+    conn.execute(sql, args)
 
 
 def _first_turn_succeeded(journal, identity):
@@ -90,8 +102,8 @@ class DeliveryMixin:
         domain_context = getattr(current, 'domain_context', None)
         if text.strip() != '/compact':
             with closing(store.connect(self.home)) as handoff_conn:
-                assistant = personal.is_assistant(handoff_conn, logical)
-                git_revision, git_context = ((None, None) if assistant else
+                admin = personal.is_admin(handoff_conn, logical)
+                git_revision, git_context = ((None, None) if admin else
                     git_admin.input_context(handoff_conn, logical, git_revision, self.plugin_root))
                 domain_context, placement = domains.input_context(handoff_conn, logical, domain_context)
                 if current.execution is None:
@@ -105,13 +117,13 @@ class DeliveryMixin:
                     summary = self.goal_controller.general_context(handoff_conn, session_id)
                     if summary:
                         text = summary + '\n\n' + text
-                    if getattr(current, 'runtime', 'claude') == 'codex' and not assistant:
+                    if getattr(current, 'runtime', 'claude') == 'codex' and not admin:
                         # Claude leaders get this through the prompt hook; Codex has no hook. The cursor
                         # moves only once this input is accepted, so a rejected turn sees the posts again.
                         posts, channel_upto = channel.preview(handoff_conn, logical)
                         if posts:
                             text = posts + '\n\n' + text
-                    if assistant and source in ('human', 'qq', 'lark'):
+                    if source in ('human', 'qq', 'lark') and personal.can_lead_as_assistant(handoff_conn, logical):
                         text = ('【Crew 本轮原始用户消息标识：%s。写入动作必须绑定此 message_id；'
                                 '不改变用户原话的授权范围。】\n\n' % identity) + text
             if git_context:
@@ -259,33 +271,45 @@ class DeliveryMixin:
         while that list is unknown; such a leader is never resumed here, its prompt hook delivers instead.
         """
         self._pause_over_budget(conn, now)
+        war_room.claim_main_notices(conn)
         # The global assistant gets notices too when it leads a campaign war room.
         assistant = (" OR s.session_id IN (SELECT session_id FROM personal_assistant)" if conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='personal_assistant'").fetchone() else "")
         leaders = [dict(row) for row in conn.execute(
             "SELECT DISTINCT s.* FROM sessions s JOIN leader_notices n ON n.session_id=s.session_id "
-            "WHERE n.sent_at IS NULL AND n.wake=1 AND s.status!='closed' AND (s.role='leader'" + assistant + ")")]
+            "WHERE n.sent_at IS NULL AND n.wake=1 AND (n.room_id IS NULL OR n.batch_id IS NOT NULL) "
+            "AND s.status!='closed' AND (s.role='leader'" + assistant +
+            " OR s.session_id IN (SELECT a.session_id FROM workspace_assistants a LEFT JOIN project_settings p "
+            "ON p.project=a.project WHERE p.removed_at IS NULL))")]
         for leader in leaders:
             sid = leader['session_id']
             batch = journal = None
+            pending = board.pending_notices(conn, sid, main_session=True)
+            waking = [notice['id'] for notice in pending if notice['wake']]
+            if not waking:
+                continue
             try:
                 with self.lock:
+                    if board.is_archived(conn, sid):
+                        continue
                     git_admin.wake_for_new_requests(conn, sid, now=now)
                     if messaging.stopped(conn, sid):
-                        note_waiting(conn, sid, 'stopped')
+                        note_waiting(conn, sid, 'stopped', waking)
                         continue
                     if self.maintenance_held(sid):
+                        note_waiting(conn, sid, 'maintenance', waking)
                         continue
                     if self.running(sid):
                         if self.busy(sid):
-                            note_waiting(conn, sid, 'busy')
+                            note_waiting(conn, sid, 'busy', waking)
                             continue
                     else:
                         claude = runtimes.get(conn, sid)['runtime'] == 'claude'
                         if claude and live is None:
+                            note_waiting(conn, sid, 'liveness_unknown', waking)
                             continue
                         if claude and sid in live:
-                            note_waiting(conn, sid, 'external')
+                            note_waiting(conn, sid, 'external', waking)
                             if conn.execute("SELECT 1 FROM events WHERE session_id=? AND kind='leader:notice_blocked'",
                                             (sid,)).fetchone() is None:
                                 board.record_event(conn, 'leader:notice_blocked', leader['project'], sid,
@@ -293,25 +317,40 @@ class DeliveryMixin:
                             continue
                         if not self.path(sid).exists():
                             self.journal(sid).set_status('idle')
-                    note_waiting(conn, sid, None)
+                    note_waiting(conn, sid, None, waking)
                     journal = self.journal(sid)
-                    batch = self._notice_batch(conn, journal, board.pending_notices(conn, sid))
+                    batch = self._notice_batch(conn, journal, pending)
                     if batch is None:
                         continue
                     receipt = self.send(leader, batch['text'], source='crew', identity=batch['id'],
-                                        display_text=batch.get('display'), sender=batch.get('sender'))
+                                        display_text=batch.get('display'), sender=batch.get('sender'),
+                                        room_id=batch.get('room_id'))
                     if not isinstance(receipt, dict) or receipt.get('accepted') is not True:
                         raise board.Conflict('NativeReceiptUnknown: 通知输入尚无确认的接收回执')
-                    for notice_id in batch['notice_ids']:
-                        board.mark_notice_sent(conn, notice_id, now=now)
+                    with board.transaction(conn):
+                        for notice_id in batch['notice_ids']:
+                            board.mark_notice_sent.__wrapped__(conn, notice_id, now=now)
+                        if 'room_id' in batch:
+                            war_room.mark_decision_answer_delivered(conn, batch['notice_ids'][0], now)
+                            mention = conn.execute('SELECT message_id FROM channel_mentions WHERE notice_id=?',
+                                                   (batch['notice_ids'][0],)).fetchone()
+                            if mention:
+                                war_room.mark_seen(conn, batch['room_id'], sid, mention[0], now)
+                            war_room._touch(conn, batch['room_id'], leader['project'])
             except (board.BoardError, codex_client.CodexError, OSError) as exc:
                 detail = '%s: %s' % (type(exc).__name__, exc)
+                summary = ' '.join(detail.split())
+                if len(summary) > 180:
+                    summary = summary[:179] + '…'
+                note_waiting(conn, sid, 'failed|%s|%s' % (now, summary),
+                             batch['notice_ids'] if batch is not None else waking)
                 if batch is not None:
                     text = '协作通知投递未确认，已保留原消息，不重复执行。' + detail
                     if any(event['type'] == 'error' and event.get('notice_batch') == batch['id']
                            and event.get('text') == text for event in journal.events):
                         continue
-                    journal.emit('error', notice_batch=batch['id'], text=text)
+                    journal.emit('error', notice_batch=batch['id'], text=text,
+                                 **({'room_id': batch['room_id']} if 'room_id' in batch else {}))
                 board.record_event(conn, 'leader:notice_error', leader['project'], sid, {'error': detail}, now=now)
 
     def _pause_over_budget(self, conn, now):
@@ -322,13 +361,7 @@ class DeliveryMixin:
         if moment - getattr(self, '_budget_checked', 0) < 30:
             return
         self._budget_checked = moment
-        for room_id, member_ids in war_room.over_budget(conn, now):
-            for sid in member_ids:
-                try:
-                    self.stop_identity(sid)
-                except (board.BoardError, codex_client.CodexError, OSError) as exc:
-                    board.record_event(conn, 'war_room:budget_stop_error', None, sid,
-                                       {'room': room_id, 'error': '%s: %s' % (type(exc).__name__, exc)}, now=now)
+        war_room.over_budget(conn, now)
 
     def _notice_batch(self, conn, journal, pending):
         """The batch to write now: the one already claimed, or a new claim recorded before the journal entry."""
@@ -358,14 +391,21 @@ class DeliveryMixin:
         from_user = channel.user_mentions(conn, [notice['id'] for notice in pending])
         shown = ({'sender': board.HUMAN, 'display': '\n\n'.join(from_user[notice['id']]['body'] for notice in pending)}
                  if from_user else {})
-        text = '[Crew]\n' + '\n'.join('%s. %s' % (index, notice['text']) for index, notice in enumerate(pending, 1))
+        from .ops import tokens
+        scopes = tokens.main_scopes(conn, pending[0]['session_id'])
+        if pending[0]['room_id'] is not None:
+            # A main-session room turn replies there with war_room.post and the original message id.
+            scopes = scopes - {'channel.post'}
+            shown['room_id'] = pending[0]['room_id']
+        bodies = [channel.mention_text_for_delivery(conn, notice, scopes) for notice in pending]
+        text = '[Crew]\n' + '\n'.join('%s. %s' % (index, body) for index, body in enumerate(bodies, 1))
         return journal.emit('leader_notice_batch', id=owned, **shown, text=text,
                             notice_ids=[notice['id'] for notice in pending])
 
     def settle_channel_mentions(self, conn, now):
         """A user mention the leader answered only in private gets a channel pointer once that turn ended well."""
         for row in conn.execute("SELECT DISTINCT t.session_id FROM channel_mentions t JOIN leader_notices n "
-                                "ON n.id=t.notice_id WHERE t.await_reply=1 AND n.sent_at IS NOT NULL "
+                                "ON n.id=t.notice_id WHERE n.room_id IS NULL AND t.await_reply=1 AND n.sent_at IS NOT NULL "
                                 "AND n.delivered_via IS NULL").fetchall():
             sid = row['session_id']
             with self.lock:
@@ -384,7 +424,7 @@ class DeliveryMixin:
 
     @_admitted
     def send(self, session, text, source='human', identity=None, images=None, display_text=None, sender=None,
-             *, resume_existing=False, steer=False):
+             *, resume_existing=False, steer=False, room_id=None):
         """``steer`` lets a non-human input join a turn already in progress, as the user's input does."""
         images = validate_images(images)
         session_id = session.get('_storage_id', session["session_id"])
@@ -450,7 +490,8 @@ class DeliveryMixin:
                     text = ('[Crew 留档通知：用户在你上次回复后处理了以下事项，供参考，按需继续安排]\n'
                             + '\n'.join('%s. %s' % (index, notice['text']) for index, notice in enumerate(quiet, 1))
                             + '\n\n[用户消息]\n' + text)
-            journal.emit('input_delivery', message_id=identity, digest=digest, status='submitted', delivery=delivery)
+            journal.emit('input_delivery', message_id=identity, digest=digest, status='submitted', delivery=delivery,
+                         **({'room_id': room_id} if room_id is not None else {}))
             try:
                 identity = self._send(session_id, text, display_text=display_text,
                                       source=source, identity=identity, images=images, sender=sender, steer=steer)

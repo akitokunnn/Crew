@@ -1,4 +1,4 @@
-"""HOME-wide AI choices. Loading/resolving settings never starts a native CLI."""
+"""HOME-wide preferences. Loading or resolving settings never starts a native CLI."""
 from contextlib import closing, nullcontext
 import copy
 import json
@@ -8,11 +8,13 @@ import sqlite3
 from . import board, change_feed, guard, store
 
 
-PURPOSES = ('default', 'leader', 'member', 'assistant', 'digest', 'git', 'operations')
-TASK_OVERRIDES = ('leader', 'member', 'assistant')
+PURPOSES = ('default', 'leader', 'member', 'assistant', 'digest', 'git', 'operations', 'creative', 'routine', 'difficult', 'war_room')
+TASK_OVERRIDES = ('leader', 'member', 'assistant', 'creative', 'routine', 'difficult', 'war_room')
 FIELDS = ('runtime', 'model', 'effort', 'speed')
 DEFAULT = {'default': {'runtime': None, 'model': None, 'effort': None, 'speed': None},
-           'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': None, 'operations': None}
+           'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': None, 'operations': None,
+           'creative': None, 'routine': None, 'difficult': None,
+           'war_room': {'runtime': 'claude', 'model': None, 'effort': None, 'speed': None}}
 EXECUTION_DEFAULT = {'codex': 'workspace-write', 'claude': 'default'}
 EXECUTION_CHOICES = {'codex': ('read-only', 'workspace-write', 'danger-full-access'),
                      'claude': ('default', 'acceptEdits', 'bypassPermissions')}
@@ -42,13 +44,13 @@ def _selection(value, name):
 
 
 def validate(ai):
-    """A null task follows default; an explicit task replaces all three fields."""
+    """Use built-in choices for unset purposes; other null tasks follow the global choice."""
     if not isinstance(ai, dict) or 'default' not in ai or any(key not in PURPOSES for key in ai):
         raise SettingsError('AI 设置必须包含 default，且只能包含 ' + '、'.join(PURPOSES))
     result = {'default': _selection(ai['default'], 'default')}
     for purpose in PURPOSES[1:]:
         value = ai.get(purpose)
-        result[purpose] = None if value is None else _selection(value, purpose)
+        result[purpose] = copy.deepcopy(DEFAULT[purpose]) if value is None else _selection(value, purpose)
     return result
 
 
@@ -103,6 +105,32 @@ def get_execution(source=None):
         return dict(EXECUTION_DEFAULT)
     with closing(guard.readonly(source)) as conn:
         return _load_execution(conn)
+
+
+def canvas_wheel_zoom(source):
+    if not isinstance(source, sqlite3.Connection):
+        if not store.db_path(source).exists():
+            return False
+        with closing(guard.readonly(source)) as conn:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='canvas_settings'").fetchone():
+                return False
+            return canvas_wheel_zoom(conn)
+    row = source.execute('SELECT wheel_zoom FROM canvas_settings WHERE singleton=1').fetchone()
+    return row is not None and bool(row['wheel_zoom'])
+
+
+def save_canvas_wheel_zoom(conn, value):
+    if type(value) is not bool:
+        raise SettingsError('鼠标滚轮缩放必须为 true 或 false')
+    changed = conn.execute('INSERT INTO canvas_settings(singleton,wheel_zoom) VALUES(1,?) '
+                           'ON CONFLICT(singleton) DO UPDATE SET wheel_zoom=excluded.wheel_zoom '
+                           'WHERE canvas_settings.wheel_zoom<>excluded.wheel_zoom', (int(value),)).rowcount
+    if changed:
+        for row in conn.execute('SELECT name FROM projects'):
+            change_feed.touch(conn, 'domains', row['name'], row['name'])
+
+
+SETTINGS_FIELDS = frozenset(('ai', 'execution', 'sounds', 'canvas_wheel_zoom'))
 
 
 def save_execution(source, value):

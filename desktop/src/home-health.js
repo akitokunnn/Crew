@@ -5,7 +5,10 @@
   const remote=bridge?.remote===true;
   const supported=typeof bridge?.adminStatus==='function'&&(remote||typeof bridge?.adminCheck==='function'&&typeof bridge?.adminRestart==='function');
   const labels={starting:'正在启动',healthy:'运行正常',degraded:'服务响应异常',recovering:'正在自动恢复',failed:'无法连接',stopped:'后台已停止',unmanaged:'外部服务',unknown:'状态未知',paused:'维护中 / 已暂停',circuit_open:'自动恢复已暂停',stopping:'正在停止'};
+  // Operations chat and repair need this computer's own operations worker; a LAN client only reads the host's health.
+  const chatSupported=!remote&&typeof bridge?.adminChatSnapshot==='function';
   let snapshot=null,pending=null,error='',controlError='',receipt=null,note='',timer=null,visible=false,incidentsKey='',operationsKey='';
+  let tab='status',offline=false,ops=null,opsCleanup=null,opsLoading=null;
   const date=value=>{const parsed=new Date(value);return value&&!Number.isNaN(parsed.valueOf())?parsed.toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}):'尚未记录';};
   function renderRemote(){
     const state=error?'failed':snapshot?.state||'unknown';
@@ -17,7 +20,15 @@
     $('admin-note').textContent=pending==='status'?'正在读取主机后台状态…':snapshot?.warnings?.length?'主机上未运行的服务：'+snapshot.warnings.join('、'):'';$('admin-note').hidden=!$('admin-note').textContent;
     for(const [id,key]of [['admin-supervisor-pid','name'],['admin-service-pid','service_pid'],['admin-service-url','url'],['admin-instance','home']])$(id).textContent=snapshot?.[key]??'—';
   }
+  function renderOffline(){
+    const startup=snapshot?.startup_error&&!['healthy','degraded'].includes(snapshot.state);
+    const down=offline||Boolean(startup)||remote&&Boolean(error);
+    $('admin-offline').hidden=!down;
+    $('admin-offline').textContent=!down?'':remote?'所连主机暂时连不上，系统管理员对话打不开。下面是主机的后台状态；连上后点右上角「系统管理员」进入。'
+      :'后台没有运行，系统管理员对话暂时打不开。原因见下面的后台状态；可以先在「运维对话」里问问，恢复后点右上角「系统管理员」进入。';
+  }
   function render(){
+    renderOffline();
     if(remote){renderRemote();return;}
     const startup=!error&&snapshot?.startup_error&&!['healthy','degraded'].includes(snapshot.state)?snapshot.startup_error:'';
     const state=error||startup?'failed':snapshot?.state||'unknown';
@@ -81,30 +92,71 @@
     finally{pending=null;render();schedule();}
   }
   function syncVisibility(){const next=isVisible();if(next===visible)return;visible=next;if(next)void request('status');else clear();}
-  function hide(){panel.hidden=true;nav.classList.remove('active');nav.removeAttribute('aria-current');visible=false;clear();}
-  function show(){
+  // 后台状态 / 运维对话 / 自动修复: the conversation and repair panels come from the shared operations UI, loaded on first use.
+  async function operations(){
+    if(ops)return ops;
+    if(!opsLoading)opsLoading=(async()=>{
+      await window.CrewHomeSettings.loadUI();
+      ops=window.CrewOperations.create({api:{snapshot:()=>bridge.adminChatSnapshot(),send:body=>bridge.adminChatSend(body),interrupt:()=>bridge.adminChatInterrupt(),configGet:()=>bridge.adminConfigGet(),configSave:body=>bridge.adminConfigSave(body)},
+        sections:['chat','config'],toolbar:false,onBrain(){void window.CrewHomeSettings.show('ai');}});
+      return ops;
+    })().finally(()=>{opsLoading=null;});
+    return opsLoading;
+  }
+  function releaseOps(){if(opsCleanup){opsCleanup();opsCleanup=null;}}
+  async function select(next){
+    if(!['status','chat','config'].includes(next)||next!=='status'&&!chatSupported)next='status';
+    tab=next;
+    for(const id of ['status','chat','config']){const button=$('admin-tab-'+id),on=id===tab;button.setAttribute('aria-selected',String(on));button.tabIndex=on?0:-1;}
+    $('admin-status-panel').hidden=tab!=='status';$('admin-ops-panel').hidden=tab==='status';
+    if(tab==='status'){releaseOps();syncVisibility();return;}
+    $('admin-ops-panel').setAttribute('aria-labelledby','admin-tab-'+tab);
+    try{
+      const ui=await operations();
+      if(tab==='status'||panel.hidden)return;
+      if(!opsCleanup)opsCleanup=ui.mount($('admin-ops-panel'),null);
+      ui.select(tab);
+    }catch(caught){$('admin-ops-panel').textContent='运维界面加载失败：'+(caught?.message||String(caught));}
+  }
+  function hide(){panel.hidden=true;nav.classList.remove('active');nav.removeAttribute('aria-current');visible=false;clear();releaseOps();}
+  function show(options={}){
     window.CrewHomeSettings?.hide();
     if(!supported)return;window.CrewHomeTools?.hide();$('workspaces-page').hidden=true;$('tools-page').hidden=true;panel.hidden=false;
+    offline=options?.reason==='offline';
     for(const id of ['nav-workspaces','nav-tools']){$(id).classList.remove('active');$(id).removeAttribute('aria-current');}
-    nav.classList.add('active');nav.setAttribute('aria-current','page');$('admin-title').focus();syncVisibility();
+    // The operations page belongs to 系统管理员, so its entry stays marked while it is shown.
+    nav.classList.add('active');nav.setAttribute('aria-current','page');$('admin-title').focus();
+    render();void select(tab);syncVisibility();
   }
-  nav.hidden=!supported;
+  // 系统管理员 is the AI conversation; the desktop sends it to this page instead while the backend is down.
+  async function openAdministrator(){
+    if(typeof bridge?.openAdministrator!=='function'){show();return;}
+    try{await bridge.openAdministrator();}
+    catch(caught){show();controlError=(caught?.message||String(caught));render();}
+  }
+  nav.hidden=false;
+  $('admin-tabs').hidden=!chatSupported;$('admin-brain').hidden=!chatSupported;
   if(remote){
-    panel.querySelector('.admin-header p').textContent='只读显示所连主机的后台状态。重启、恢复和运维对话请在主机上的 Crew 中进行。';
-    $('admin-conversation').hidden=true;panel.querySelector('.admin-actions').hidden=true;
+    $('admin-subtitle').textContent='只读显示所连主机的后台状态。重启、恢复和运维对话请在主机上的 Crew 中进行。';
+    panel.querySelector('.admin-actions').hidden=true;
     for(const section of panel.querySelectorAll('.admin-incidents-section'))section.hidden=true;
     const stats=panel.querySelectorAll('.admin-stat');
     stats[0].querySelector('p').textContent='只读查看，不会重启或修复主机。';stats[1].querySelector('h2').textContent='主机版本';
     const labels=panel.querySelectorAll('.admin-details dt');for(const [index,label]of ['主机','后台进程','服务地址','主机数据目录'].entries())labels[index].textContent=label;
     panel.querySelector('.admin-details').open=true;
   }
-  nav.addEventListener('click',show);$('nav-workspaces').addEventListener('click',hide);$('nav-tools').addEventListener('click',hide);
+  nav.addEventListener('click',()=>{void openAdministrator();});$('admin-open-ai').addEventListener('click',()=>{void openAdministrator();});
+  $('nav-workspaces').addEventListener('click',hide);$('nav-tools').addEventListener('click',hide);
+  for(const id of ['status','chat','config'])$('admin-tab-'+id).addEventListener('click',()=>{void select(id);});
+  $('admin-tabs').addEventListener('keydown',event=>{
+    if(!['ArrowLeft','ArrowRight'].includes(event.key))return;event.preventDefault();
+    const order=['status','chat','config'],next=order[(order.indexOf(tab)+(event.key==='ArrowRight'?1:2))%3];void select(next).then(()=>$('admin-tab-'+next).focus());
+  });
+  $('admin-brain').addEventListener('click',()=>{void window.CrewHomeSettings.show('ai');});
   $('admin-check').addEventListener('click',()=>{void request('check');});
-  $('admin-conversation').addEventListener('click',()=>{void window.CrewHomeSettings.show('backend');});
   $('admin-restart').addEventListener('click',()=>{if(snapshot?.restart?.allowed===true&&!$('admin-restart').disabled)void request('restart');});
   document.addEventListener('visibilitychange',syncVisibility);
   new MutationObserver(syncVisibility).observe(document.body,{subtree:true,attributes:true,attributeFilter:['hidden']});
   window.addEventListener('pagehide',clear);
-  function mount(host){const parent=panel.parentNode;host.append(panel);$('admin-conversation').hidden=true;panel.hidden=false;syncVisibility();return()=>{hide();$('admin-conversation').hidden=remote;parent.append(panel);};}
-  render();window.CrewHomeHealth={show,hide,mount};
+  render();window.CrewHomeHealth={show,hide,select,openAdministrator};
 })();

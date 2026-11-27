@@ -7,11 +7,16 @@
   const page = body.classList.contains("assistant-page") ? "assistant" : body.classList.contains("notes-page") ? "notes" : "app";
   const STORE = "crew.mobile.project", OPEN_LEADERS = "crew.mobile.openLeaders";
   const query = new URLSearchParams(location.search).get("project");
-  let project = page === "app" ? query : null;
+  // 助手、想法页带 ?project= 时属于该工作区；不带的助手页是系统管理员，底栏仍指向最近的工作区。
+  const scope = window.CrewBrowser?.pageProject ? window.CrewBrowser.pageProject() : {mode: query ? "workspace" : "home", project: query};
+  const pageProject = page !== "app" && scope.mode === "workspace" ? scope.project : null;
+  let project = page === "app" ? query : pageProject;
   try {
     if (project) localStorage.setItem(STORE, project);
     else if (page !== "app") project = localStorage.getItem(STORE);
   } catch { /* 无痕模式下不记最近工作区，链接回到工作区入口 */ }
+  const adminPage = page === "assistant" && pageProject === null;
+  const pageUrl = kind => project ? `/${kind}.html?project=${encodeURIComponent(project)}` : "/";
   const inProject = page === "app" && query !== null;
   const projectUrl = hash => project ? `/?project=${encodeURIComponent(project)}${hash ? "#" + hash : ""}` : "/";
 
@@ -23,13 +28,16 @@
     assistant: '<path d="M5 5h14a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1h-7l-4.5 3.5v-3.5H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M8.5 10.5h.01M12 10.5h.01M15.5 10.5h.01"/>',
     more: '<circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/>',
     channel: '<path d="M4 6h16v10H9l-5 4z"/>',
+    room: '<rect x="4" y="5" width="16" height="14" rx="2.5"/><path d="M4 9h16m-11 4h6m-6 3h4"/>',
     architecture: '<rect x="9" y="3" width="6" height="5" rx="1.5"/><rect x="3" y="16" width="6" height="5" rx="1.5"/><rect x="15" y="16" width="6" height="5" rx="1.5"/><path d="M12 8v4M6 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2"/>',
     git: '<circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="8" r="2"/><path d="M6.5 7.5v9M17.5 10c0 4-5 3.5-9.5 7"/>',
     usage: '<path d="M5 19V11M10 19V5M15 19v-6M20 19V9"/>',
+    library: '<path d="M4 4h6v16H4zM10 4h5v16h-5zM15 6l4-1 4 14-4 1z"/>',
     todos: '<path d="m5 12 3.5 3.5L19 6"/><path d="M5 19h14"/>',
     switch: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
     theme: '<path d="M12 3.5a8.5 8.5 0 1 0 8.5 8.5A6.5 6.5 0 0 1 12 3.5z"/>',
     presence: '<circle cx="12" cy="7" r="3"/><path d="M6 20c.7-4 3-6 6-6s5.3 2 6 6"/>',
+    admin: '<path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6l-8-3Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/>',
   };
 
@@ -45,8 +53,9 @@
     bar.innerHTML = [
       tab("home", "工作台", navAttrs("all"), tag()),
       tab("leaders", "Leader", leadersAttrs, inProject ? "button" : "a"),
-      tab("notes", "想法", 'href="/notes.html"'),
-      tab("assistant", "助手", 'href="/assistant.html"'),
+      // 想法和助手都属于工作区；还没有工作区时先回到工作区入口。
+      tab("notes", "想法", `href="${pageUrl("notes")}"`),
+      tab("assistant", "助手", `href="${pageUrl("assistant")}"`),
       tab("more", "更多", 'type="button" data-m-act="more" aria-haspopup="dialog" aria-controls="m-sheet"', "button"),
     ].join("");
     return bar;
@@ -61,18 +70,22 @@
     sheet.dataset.open = "false"; sheet.inert = true;
     const go = [
       sheetItem("channel", "Leader 交流区", navAttrs("channel"), tag(), '<em class="m-count" data-m-count="channel" hidden></em>'),
+      sheetItem("room", "作战室", inProject ? 'type="button" data-act="room-list"' : `href="${projectUrl("war-room=0")}"`, tag(), '<small data-m-room-state></small>'),
       sheetItem("todos", "待办", navAttrs("todos"), tag()),
       sheetItem("architecture", "架构图", navAttrs("architecture"), tag()),
       sheetItem("git", "Git 助手", navAttrs("git"), tag(), '<em class="m-count" data-m-count="git" hidden></em>'),
       sheetItem("usage", "用量与额度", navAttrs("usage"), tag()),
-      sheetItem("switch", "切换工作区", 'href="/"', "a"),
+      sheetItem("library", "会话库", navAttrs("adopt"), tag()),
+      sheetItem("switch", "切换工作区", 'href="/" data-m-always', "a"),
+      ...(window.crewDesktopShell || window.crewDesktopTheme ? [] : [sheetItem("admin", "系统管理员", 'href="/assistant.html" data-m-always', "a")]),
     ];
     const prefs = inProject ? [
       sheetItem("theme", "日间 / 夜间", 'type="button" data-act="theme"', "button", '<small data-m-theme></small>'),
       sheetItem("presence", "在场与消息提醒", 'type="button" data-act="presence-toggle"', "button"),
       sheetItem("settings", "设置", 'type="button" data-act="settings" data-local-control', "button"),
     ] : [];
-    sheet.innerHTML = `<p class="m-sheet-title">${project ? "当前工作区" : "工作区"}</p><div class="m-sheet-group">${project ? go.join("") : go.slice(-1).join("")}</div>${prefs.length ? `<p class="m-sheet-title">偏好</p><div class="m-sheet-group">${prefs.join("")}</div>` : ""}`;
+    const always = go.filter(item => /data-m-always/.test(item));
+    sheet.innerHTML = `<p class="m-sheet-title">${project ? "当前工作区" : "工作区"}</p><div class="m-sheet-group">${project ? go.join("") : always.join("")}</div>${prefs.length ? `<p class="m-sheet-title">偏好</p><div class="m-sheet-group">${prefs.join("")}</div>` : ""}`;
     const backdrop = document.createElement("div");
     backdrop.id = "m-sheet-backdrop"; backdrop.dataset.open = "false";
     return [backdrop, sheet];
@@ -98,7 +111,7 @@
     const view = currentView();
     body.classList.toggle("m-chat", view === "chat");
     body.classList.toggle("m-leaders", leadersOpen);
-    const active = leadersOpen ? "leaders" : page === "app" ? (["all", "todos"].includes(view) || !inProject ? "home" : view === "chat" ? "leaders" : "more") : page;
+    const active = leadersOpen ? "leaders" : page === "app" ? (["all", "todos"].includes(view) || !inProject ? "home" : view === "chat" ? "leaders" : "more") : adminPage ? "more" : page;
     for (const item of tabbar.querySelectorAll(".m-tab")) {
       if (item.dataset.mTab === active) item.setAttribute("aria-current", "page"); else item.removeAttribute("aria-current");
     }
@@ -106,11 +119,22 @@
     const rail = document.getElementById("sidebar");
     const homeCount = rail?.querySelector(".rail-home .rail-badge")?.textContent.trim() || "";
     const gitCount = rail?.querySelector(".rail-git .rail-badge")?.textContent.trim() || "";
-    const unread = Boolean(rail?.querySelector(".rail-dot"));
+    const unread = Boolean(rail?.querySelector(".leader-entry .rail-dot"));
+    const room = rail?.querySelector(".rail-war-room");
+    const waitingForRoom = room?.dataset.warRoomState === "waiting";
     const channelUnread = leaders?.querySelector(".leader-panel-channel .b-unread")?.textContent.trim() || "";
     badge(tabbar.querySelector('[data-m-tab="home"]'), homeCount);
     dot(tabbar.querySelector('[data-m-tab="leaders"]'), unread);
-    dot(tabbar.querySelector('[data-m-tab="more"]'), Boolean(gitCount || channelUnread));
+    const more = tabbar.querySelector('[data-m-tab="more"]');
+    dot(more, Boolean(gitCount || channelUnread || waitingForRoom));
+    if (waitingForRoom !== more.hasAttribute("data-room-waiting")) more.toggleAttribute("data-room-waiting", waitingForRoom);
+    const roomState = sheet.querySelector("[data-m-room-state]");
+    const roomLabel = room?.getAttribute("aria-label").split(" · ")[1] ?? "";
+    if (roomState) {
+      const state = room?.dataset.warRoomState ?? "";
+      if (roomState.dataset.state !== state) roomState.dataset.state = state;
+      if (roomState.textContent !== roomLabel) roomState.textContent = roomLabel;
+    }
     count("git", gitCount); count("channel", channelUnread);
     const theme = rail?.querySelector('[data-act="theme"]')?.getAttribute("title")?.split("·")[1]?.trim();
     const themeLabel = sheet.querySelector("[data-m-theme]"); if (themeLabel && theme && themeLabel.textContent !== theme) themeLabel.textContent = theme;
@@ -150,7 +174,7 @@
       const item = event.target.closest(".m-sheet-item"); if (!item) return;
       setSheet(false);
       // 从 Leader 列表上打开的面板：跳转前先收起列表
-      if ((item.dataset.view || item.tagName === "A") && document.getElementById("leader-panel")?.dataset.open === "true") document.getElementById("leader-entry")?.click();
+      if ((item.dataset.view || item.dataset.act === "room-list" || item.tagName === "A") && document.getElementById("leader-panel")?.dataset.open === "true") document.getElementById("leader-entry")?.click();
     });
     backdrop.addEventListener("click", () => setSheet(false));
     document.addEventListener("keydown", event => { if (event.key === "Escape" && sheet.dataset.open === "true") setSheet(false); });

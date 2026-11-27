@@ -26,7 +26,7 @@
     workspace_activity: {page:"workspace-entry"},
     sound_settings: {part:"sounds", keys:["preferences", "revision", "catalog", "missing"]},
     limits: {part:null, keys:["limits", "usage_scanned_at", "usage_error"]},
-    conversations: {part:null, keys:["leaders", "members", "attention", "native_approvals", "git_assistant", "git_branches", "candidates"]},
+    conversations: {part:null, keys:["leaders", "members", "notice_history", "attention", "native_approvals", "git_assistant", "git_branches", "candidates"]},
     channel_digest: {part:"channel", keys:["digesting", "digest_error"]},
     sound_events: {part:"sounds", keys:["events"]},
     runtimes: {field:"runtimes"},
@@ -68,10 +68,10 @@
     let seq = null, stream = null, retryTimer = null, attempts = 0, pending = [], catchingUp = false;
     let busy = false, settled = Promise.resolve(), status = "idle";
 
-    function queryPath(path) { const url = new URL(path, ctx.origin); if (ctx.project !== null && !["/api/op/settings.get", "/api/op/settings.save"].includes(url.pathname)) url.searchParams.set("project", ctx.project); return url.pathname + url.search; }
+    function queryPath(path, project = ctx.project) { const url = new URL(path, ctx.origin); if (project !== null && !["/api/op/settings.get", "/api/op/settings.save"].includes(url.pathname)) url.searchParams.set("project", project); return url.pathname + url.search; }
     // One request per call. Nothing here repeats a request, so a write is never sent twice by a reconnect.
-    async function request(path, data) {
-      const response = await ctx.fetch(queryPath(path), data === undefined ? {} : window.CrewBrowser.postOptions(data));
+    async function request(path, data, project) {
+      const response = await ctx.fetch(queryPath(path, project), data === undefined ? {} : window.CrewBrowser.postOptions(data));
       const result = await response.json();
       if (!response.ok) { const error = new Error(result.error || "请求失败，请重试。"); error.status = response.status; error.details = result; throw error; }
       return result;

@@ -9,7 +9,7 @@ import hashlib
 import json
 import secrets
 
-from .. import board, goals, personal, runtimes
+from .. import board, goals, personal, runtimes, workspace_assistant
 from . import registry
 from .caller import Caller
 from .errors import OpError
@@ -21,8 +21,10 @@ def digest(token):
 
 def role_of(conn, session_id, execution_id=None):
     """The registry role a managed session acts in."""
-    if personal.is_assistant(conn, session_id):
+    if personal.is_admin(conn, session_id):
         return 'assistant'
+    if workspace_assistant.project_for(conn, session_id) is not None:
+        return 'workspace_assistant'
     session = board.session(conn, session_id)
     if execution_id is not None:
         return 'leader' if session['role'] == 'leader' else 'execution'
@@ -37,12 +39,28 @@ def default_scopes(role):
     return {name for name, op in registry.operations().items() if role in op.scopes}
 
 
+def main_scopes(conn, session_id):
+    """Operations granted to the main conversation, or issued when it next starts."""
+    from . import launch
+    runtime = runtimes.get(conn, session_id)['runtime']
+    issued = conn.execute('SELECT t.role,t.own_scopes,t.token_hash FROM mcp_tokens t JOIN sessions s '
+                          'ON s.session_id=t.session_id AND t.project IS NULLIF(s.project,\'\') '
+                          'WHERE t.session_id=? AND t.execution_id IS NULL AND t.runtime=? '
+                          'AND t.revoked_at IS NULL ORDER BY t.rowid DESC LIMIT 1',
+                          (session_id, runtime)).fetchone()
+    if issued is not None and launch.live(Caller(issued['role'], token_hash=issued['token_hash'])):
+        return default_scopes(issued['role']).intersection(json.loads(issued['own_scopes']))
+    return default_scopes(role_of(conn, session_id))
+
+
 def issue(conn, *, session_id, runtime, now, execution_id=None, issuer=None):
     role = role_of(conn, session_id, execution_id)
     session = board.session(conn, session_id)
     goal_id = goals.get_execution(conn, execution_id)['goal_id'] if execution_id else None
     own = default_scopes(role)
-    delegable = set(own) | (default_scopes('leader') if role == 'assistant' else set())
+    delegable = set() if role == 'workspace_assistant' else set(own)
+    if role == 'assistant':
+        delegable |= default_scopes('leader')
     if role == 'leader':
         delegable |= default_scopes('execution')
     if issuer is not None:
@@ -98,6 +116,8 @@ def caller(conn, token):
         raise OpError('forbidden', '会话已停止或归档，不能再调用 Crew')
     if (session['project'] or None) != row['project']:
         raise OpError('forbidden', '会话所在工作区已变化，需要由 Crew 重新启动')
+    if row['role'] == 'workspace_assistant':
+        workspace_assistant.require_identity(conn, row['session_id'], row['project'])
     runtime = (goals.get_execution(conn, row['execution_id'])['runtime'] if row['execution_id']
                else runtimes.get(conn, row['session_id'])['runtime'])
     if runtime != row['runtime']:

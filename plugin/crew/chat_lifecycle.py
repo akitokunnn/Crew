@@ -53,10 +53,7 @@ class LifecycleMixin:
                             continue
                 try:
                     if getattr(current, 'runtime', 'claude') == 'codex':
-                        # A task execution's thread leaves the Codex sidebar while idle;
-                        # resuming restores it (codex_visibility.restore_internal). Person
-                        # threads stay unarchived: only Crew goal bindings are ever restored.
-                        current.close(archive=bool(getattr(current, 'execution', None)))
+                        current.close()
                     else:
                         try:
                             current.process.wait(timeout=10)

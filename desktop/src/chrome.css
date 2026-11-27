@@ -1,3 +1,8 @@
+:root {--cd-working:#3B8057;--cd-warn:#B07A26;--cd-danger:#B4584B;}
+@media (prefers-color-scheme: dark) {
+  :root {--cd-working:#86B995;--cd-warn:#D6A55A;--cd-danger:#D98472;}
+}
+
 /* Desktop frame (Spatial Studio). The title bar and tab strip form one solid band in the panel
    colour, so the Windows caption-button overlay (a plain colour, see chrome.cjs) blends in.
    Below the band every page paints its own Studio canvas: workspaces do it themselves, the
@@ -8,7 +13,7 @@ html.crew-desktop-shell {
   --cd-line:rgba(46,42,30,.08); --cd-line-strong:rgba(46,42,30,.15); --cd-hover:rgba(46,42,30,.06);
   --cd-text:#2C2B27; --cd-text-2:#5F5D56; --cd-text-3:#97948A;
   --cd-accent:#3E7C74; --cd-accent-text:#2E6760; --cd-on-accent:#F7FBFA; --cd-accent-soft:rgba(62,124,116,.12);
-  --cd-working:#3B8057; --cd-warn:#B07A26; --cd-warn-soft:rgba(176,122,38,.13); --cd-danger:#B4584B; --cd-info:#3579B7;
+  --cd-warn-soft:rgba(176,122,38,.13); --cd-info:#3579B7;
   --cd-border:color-mix(in srgb,var(--cd-line-strong) 78%,transparent);
   --cd-shadow-sm:0 1px 2px rgba(24,22,18,.05),0 2px 8px rgba(24,22,18,.04);
   --cd-shadow-sheet:0 6px 24px rgba(20,20,18,.07),0 1px 3px rgba(20,20,18,.04);
@@ -26,7 +31,7 @@ html.crew-desktop-shell {
     --cd-line:rgba(255,248,230,.07); --cd-line-strong:rgba(255,248,230,.13); --cd-hover:rgba(255,248,230,.06);
     --cd-text:#E7E4DB; --cd-text-2:#ADA99E; --cd-text-3:#78756C;
     --cd-accent:#7DB3AA; --cd-accent-text:#7DB3AA; --cd-on-accent:#15201E; --cd-accent-soft:rgba(125,179,170,.15);
-    --cd-working:#86B995; --cd-warn:#D6A55A; --cd-warn-soft:rgba(214,165,90,.15); --cd-danger:#D98472; --cd-info:#80B4E5;
+    --cd-warn-soft:rgba(214,165,90,.15); --cd-info:#80B4E5;
     --cd-shadow-sm:0 2px 6px rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.04);
     --cd-shadow-sheet:0 10px 30px rgba(0,0,0,.42),inset 0 1px 0 rgba(255,255,255,.04);
     --cd-frame:radial-gradient(880px 460px at 0% 0%,color-mix(in srgb,var(--cd-accent) 13%,transparent),transparent 62%),var(--cd-panel);
@@ -72,6 +77,9 @@ html.crew-desktop-shell body {
 .crew-desktop-inactive #crew-desktop-titlebar {color:var(--cd-text-3);}
 .crew-desktop-inactive #crew-desktop-titlebar .crew-chrome-brand {color:var(--cd-text-2);}
 .crew-desktop-inactive #crew-desktop-titlebar .crew-chrome-brand svg {color:inherit;}
+@media (prefers-color-scheme: dark) and (max-width:760px) {
+  #crew-desktop-titlebar .crew-chrome-back:disabled {opacity:1;color:inherit;}
+}
 
 /* Tab strip: one band with the title bar; the active tab is a small floating sheet. */
 #crew-desktop-content {
@@ -95,17 +103,18 @@ html.crew-desktop-shell body {
 .crew-tab[data-active="true"]>button[role="tab"] {font-weight:500;}
 .crew-tab-mark {position:relative;display:grid;place-items:center;flex:none;width:18px;height:18px;background:var(--cd-accent-soft);border-radius:6px;color:var(--cd-accent-text);font-size:10px;font-weight:500;}
 .crew-tab-name {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;}
-.crew-tab-signal {flex:none;width:6px;height:6px;border-radius:50%;background:var(--cd-text-3);margin-left:2px;}
-.crew-tab-signal[data-tone="working"] {background:var(--cd-working);box-shadow:0 0 0 3px color-mix(in srgb,var(--cd-working) 16%,transparent);animation:crew-tab-breathe 2.4s ease-in-out infinite;}
-.crew-tab-signal[data-tone="attention"] {background:var(--cd-warn);}
-.crew-tab-signal[data-tone="delivery"],.crew-tab-signal[data-tone="unread"] {background:var(--cd-info);}
-.crew-tab-signal[data-tone="error"] {background:var(--cd-danger);}
-.crew-tab-signal[data-tone="unknown"],.crew-tab-signal[data-tone="stale"],.crew-tab-signal[data-tone="loading"] {background:transparent;box-shadow:inset 0 0 0 1px var(--cd-text-3);}
-.crew-tab-badge {display:grid;place-items:center;flex:none;min-width:17px;height:16px;padding:0 5px;box-sizing:border-box;background:var(--cd-warn-soft);color:var(--cd-warn);border-radius:999px;font-size:10px;font-weight:500;font-variant-numeric:tabular-nums;}
-.crew-tab-badge[data-tone="error"] {background:color-mix(in srgb,var(--cd-danger) 14%,transparent);color:var(--cd-danger);}
-.crew-tab-unread {position:absolute;right:-2px;top:-2px;width:6px;height:6px;background:var(--cd-info);border-radius:50%;box-shadow:0 0 0 2px var(--cd-panel);}
-.crew-tab[data-active="true"] .crew-tab-unread {box-shadow:0 0 0 2px var(--cd-sheet);}
-@keyframes crew-tab-breathe {50%{opacity:.5}}
+.crew-tab-working::after {content:"";position:absolute;inset:-2px;border:1.5px solid color-mix(in srgb,var(--cd-working) 70%,var(--cd-accent));border-radius:inherit;animation:crew-tab-breathe 2.4s ease-in-out infinite;}
+.crew-tab-name-unread {font-weight:500;color:var(--cd-text);}
+.crew-tab-signal {flex:none;margin-inline-start:auto;}
+.crew-tab-signal[data-tone="unread"] {width:5px;height:5px;border-radius:50%;background:var(--cd-info);}
+.crew-tab-signal[data-tone="unknown"] {width:6px;height:6px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--cd-text-3);}
+.crew-tab-signal:is([data-tone="attention"],[data-tone="error"]) {display:grid;place-items:center;min-width:17px;height:16px;padding:0 5px;box-sizing:border-box;border-radius:9px;font-size:10px;font-weight:500;font-variant-numeric:tabular-nums;}
+.crew-tab-signal[data-tone="attention"] {background:var(--cd-warn-soft);color:color-mix(in srgb,var(--cd-warn) 79%,var(--cd-text));}
+.crew-tab-signal[data-tone="error"] {background:color-mix(in srgb,var(--cd-danger) 14%,transparent);color:color-mix(in srgb,var(--cd-danger) 85%,var(--cd-text));}
+@media (prefers-color-scheme: dark) {
+  .crew-tab-signal[data-tone="error"] {background:#36221E;color:#F29B8B;}
+}
+@keyframes crew-tab-breathe {50%{opacity:.45}}
 .crew-tab>.crew-tab-close {display:flex;align-items:center;justify-content:center;flex:none;padding:0;width:20px;height:20px;margin-right:4px;border-radius:6px;color:var(--cd-text-3);}
 .crew-tab-close:hover {background:var(--cd-hover);color:var(--cd-text);}
 .crew-tab-close svg {width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;}
@@ -134,4 +143,4 @@ html.crew-desktop-shell body {
 #crew-tab-recovery button:focus-visible {outline:2px solid color-mix(in srgb,var(--cd-accent) 60%,transparent);outline-offset:2px;}
 
 @media (max-width:620px) {#crew-desktop-titlebar :is(.crew-chrome-admin,.crew-chrome-brand) span,#crew-desktop-titlebar :is(.crew-chrome-divider,.crew-chrome-title) {display:none;}}
-@media (prefers-reduced-motion:reduce) {html.crew-desktop-shell{--cd-motion:0s;}.crew-tab-signal[data-tone="working"]{animation:none;}}
+@media (prefers-reduced-motion:reduce) {html.crew-desktop-shell{--cd-motion:0s;}.crew-tab-working::after{animation:none;}}

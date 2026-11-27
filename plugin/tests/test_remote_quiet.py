@@ -15,8 +15,8 @@ from test_notifications import FakeQQ
 from test_shell import NOW, PLUGIN, ShellFixture
 
 
-FOOTER = '直接回复这里，全局助手会处理。'
-UNAVAILABLE = '全局助手未启用，请先在 Crew 打开全局助手。'
+FOOTER = '直接回复这里，系统管理员会处理。'
+UNAVAILABLE = '系统管理员未启用，请先在 Crew 打开系统管理员。'
 
 
 class RemoteQuietTests(ShellFixture, unittest.TestCase):
@@ -271,7 +271,7 @@ class RemoteQuietTests(ShellFixture, unittest.TestCase):
                     self.assertEqual(self.clients[channel].sent[-1]['text'], '未知命令，请用 /h 查看帮助。')
             self.receive(channel, '/h')
             text = self.clients[channel].sent[-1]['text']
-            self.assertIn('全局助手', text)
+            self.assertIn('系统管理员', text)
             for removed in ('/leader', '/projects', '/project', '/1'):
                 self.assertNotIn(removed, text)
 

@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="light dark"><title>助手 · Crew</title>
+  <meta name="color-scheme" content="light dark"><title>系统管理员 · Crew</title>
   <link rel="icon" href="/logo.svg"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/assistant.css"><link rel="stylesheet" href="/skill-picker.css"><script src="/access-context.js" defer></script>
   <script src="/browser-utils.js" defer></script>
   <script src="/sounds.js" defer></script>
@@ -15,15 +15,22 @@
 <body class="assistant-page">
   <aside class="sb" id="sidebar" aria-label="主导航"></aside>
   <main class="assistant-main">
-    <header class="head"><div><h1 class="title">助手</h1><p class="sub">在所有工作区之间，陪你把事情理清。</p></div><div class="right"><a class="btn ghost assistant-overview-open" href="#assistant-context" hidden>手边的事</a><button class="btn ghost" id="assistant-notes">随手记</button><button class="btn ghost" id="assistant-prompts" hidden>行为配置</button></div></header>
+    <header class="head"><div><h1 class="title"><span id="assistant-title">系统管理员</span><span id="assistant-scope" class="assistant-scope" hidden></span></h1><p class="sub" id="assistant-sub">看得到所有工作区：汇总近况、记想法、开局和整理架构都可以交给我。</p></div><div class="right"><button class="btn assistant-confirmation-trigger" id="assistant-confirmation-trigger" type="button" aria-haspopup="dialog" aria-controls="assistant-confirmation-dialog" hidden></button><a class="btn ghost assistant-overview-open" id="assistant-overview-open" href="#assistant-context" hidden>手边的事</a><button class="btn ghost" id="assistant-notes">随手记</button><button class="btn ghost" id="assistant-prompts" hidden>行为配置</button><button class="btn ghost assistant-operations" id="assistant-operations" title="后台状态、恢复、事故处理和运维对话" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg>运维</button></div></header>
     <div id="assistant-error" class="assistant-error" role="alert" hidden></div>
-    <section id="assistant-confirmations" class="assistant-confirmations" aria-label="等你确认的 AI 操作" hidden></section>
     <div id="assistant-chat" class="assistant-chat"><p class="assistant-loading" role="status">正在打开你的助手…</p></div>
   </main>
-  <aside class="assistant-context" id="assistant-context" aria-label="跨工作区概览">
-    <header><div><h2>手边的事</h2><p>所有工作区的待办与近况</p></div><a class="assistant-overview-close" href="#" aria-label="关闭手边的事" hidden>×</a></header>
+  <aside class="assistant-context" id="assistant-context" aria-label="手边的事">
+    <header><div><h2 id="assistant-context-title">手边的事</h2><p id="assistant-context-sub">所有工作区的待办与近况</p></div><a class="assistant-overview-close" href="#" aria-label="关闭手边的事" hidden>×</a></header>
     <div id="assistant-overview"><p class="assistant-loading">正在读取…</p></div>
   </aside>
+  <dialog id="assistant-confirmation-dialog" class="assistant-confirmation-dialog" aria-labelledby="assistant-confirmation-heading">
+    <header class="assistant-confirmation-head">
+      <h2 id="assistant-confirmation-heading"></h2>
+      <form method="dialog"><button class="btn ghost" autofocus>关闭</button></form>
+    </header>
+    <p id="assistant-confirmation-status" class="assistant-confirmation-status" role="status"></p>
+    <div id="assistant-confirmation-cards" class="assistant-confirmation-cards"></div>
+  </dialog>
   <div id="assistant-toast" class="toast" role="status" hidden></div>
 </body>
 </html>

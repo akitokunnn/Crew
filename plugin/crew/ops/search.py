@@ -3,7 +3,7 @@ import json
 import re
 
 LIMIT = 8
-RISK_NOTE = {'normal': '', 'confirm': '全局助手调用需附触发它的用户消息 message_id',
+RISK_NOTE = {'normal': '', 'confirm': '调用需附触发它的用户消息 message_id',
              'high': '高风险：AI 调用会生成用户确认请求，用户在界面确认后才执行'}
 
 
@@ -31,14 +31,14 @@ def describe(op, caller, exposure='core'):
     if op.access != 'read':
         params.setdefault('properties', {})['request_id'] = {'type': 'string', 'description': '本次操作的稳定编号'}
         params['required'] = list(params.get('required', [])) + ['request_id']
-    if op.risk == 'confirm' and caller.role == 'assistant':
+    if op.needs_message(caller.role):
         params.setdefault('properties', {})['message_id'] = {'type': 'string', 'description': '触发它的用户消息编号'}
         params['required'] = list(params.get('required', [])) + ['message_id']
     how = ('用 crew_call 调用：op="%s"，args 按 params 填写' % op.name if caller.runtime == 'codex' and exposure == 'core'
            else '直接调用工具 %s' % op.tool_name)
     return {'op': op.name, 'tool': op.tool_name, 'summary': op.summary, 'when': op.description_for(caller),
             'access': op.access,
-            'risk': (RISK_NOTE[op.risk] if op.risk != 'confirm' or caller.role == 'assistant' else '') or None, 'params': params, 'how': how}
+            'risk': (RISK_NOTE['confirm'] if op.needs_message(caller.role) else RISK_NOTE['high'] if op.risk == 'high' else '') or None, 'params': params, 'how': how}
 
 
 def search(ops, query, domain, caller, exposure='core'):

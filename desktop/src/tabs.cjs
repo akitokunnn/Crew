@@ -2,10 +2,21 @@
 const { serviceOrigin } = require('./core.cjs');
 const { presentation } = require('./workspace-activity.cjs');
 
-// Global pages (idea wall, assistant) live to the right of the workspaces, in
-// this order, so switching to or from one pushes whole pages sideways.
-const GLOBAL_PAGES = { notes: { path: '/notes.html', name: '想法', rank: 1 }, assistant: { path: '/assistant.html', name: '助手', rank: 2 } };
+// The system administrator is the one global page; it lives to the right of the
+// workspaces, so switching to or from it pushes whole pages sideways. A workspace's
+// own assistant and ideas pages load inside that workspace's tab.
+const GLOBAL_PAGES = { assistant: { path: '/assistant.html', name: '系统管理员', rank: 1 } };
 const isGlobal = tab => Object.hasOwn(GLOBAL_PAGES, tab?.kind ?? '');
+// Pages a workspace tab can show, each addressed by exactly one ?project=<name>.
+const PROJECT_PAGES = { workspace: '/', assistant: '/assistant.html', notes: '/notes.html' };
+const pageOf = pathname => Object.keys(PROJECT_PAGES).find(page => PROJECT_PAGES[page] === pathname) || null;
+// An old idea-wall link may carry cross-workspace filters; they never choose a workspace.
+function notesHash(hash) {
+  const params = new URLSearchParams(String(hash || '').replace(/^#/, ''));
+  params.delete('ws'); params.delete('global');
+  const text = params.toString();
+  return text ? '#' + text : '';
+}
 const SLIDE_MS = 340;
 // Chromium holds the window's frames until a brand-new page's renderer is up,
 // so a slide into a new page waits for its document, briefly; a slow backend
@@ -33,7 +44,7 @@ class WorkspaceTabs {
     this.openProject = openProject; this.workspaceSettings = workspaceSettings; this.onKeyboard = onKeyboard;
     this.onTitleChange = onTitleChange;
     this.onNavigationError = onNavigationError;
-    this.entries = new Map(); this.activeId = 'home'; this.counter = 0; this.disposed = false;
+    this.entries = new Map(); this.activeId = 'home'; this.counter = 0; this.disposed = false; this.recent = [];
     this.bounds = { x: 0, y: 76, width: 0, height: 0 };
     this.stage = createStage(); window.contentView.addChildView(this.stage);
     this.stage.setBounds(this.bounds); this.stage.setVisible(false);
@@ -44,7 +55,7 @@ class WorkspaceTabs {
 
   _public(tab) { if (isGlobal(tab)) return {id:tab.id,kind:tab.kind,name:GLOBAL_PAGES[tab.kind].name,project:null,loading:tab.loading,error:tab.error};
     return { id: tab.id, name: tab.project.display_name || tab.project.name, project: tab.project.name, loading: tab.loading, error: tab.error,
-    readOnly:Boolean(tab.project.read_only), activity:tab.project.read_only ? {tone:'idle',label:'已保存的只读历史',badge:0,unread:0,items:[],stale:false,error:''} : tab.activity||null }; }
+    readOnly:Boolean(tab.project.read_only), activity:tab.project.read_only ? {marker:null,working:false,label:'已保存的只读历史',rows:[]} : tab.activity||null }; }
   async refreshActivity() {
     if(this.disposed||this.activityBusy||!this.readActivity||!this.entries.size)return;
     const tabs=[...this.entries.values()].filter(tab=>!isGlobal(tab) && !tab.project.read_only);
@@ -101,29 +112,46 @@ class WorkspaceTabs {
       this._layout(); this._syncPageVisibility(tab); this._notify();
     }
   }
-  _openProject(tab, name, hash = '') {
+  _openProject(tab, name, target = {}) {
     try {
-      const pending = this.openProject(name, hash);
+      const pending = this.openProject(name, target);
       if (pending && typeof pending.catch === 'function') pending.catch(error => this.onNavigationError(error));
     } catch (error) { this.onNavigationError(error); }
   }
+  // The most recently selected writable workspace that still has a tab, for links without one.
+  _recentProject() {
+    for (const name of this.recent) {
+      const tab = [...this.entries.values()].find(item => item.project?.name === name);
+      if (tab && !tab.project.read_only) return name;
+    }
+    return null;
+  }
 
+  // One classifier for every navigation path: will-navigate, redirects, window.open,
+  // did-navigate, titles and visibility all read the same destination.
   _destination(tab, value) {
     let url;
     try { url = new URL(value); } catch (_) { return { kind: 'blocked' }; }
     if (url.username || url.password) return { kind: 'blocked' };
     if (/^codex:\/\/threads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return {kind:'external'};
-    const page = Object.keys(GLOBAL_PAGES).find(kind => GLOBAL_PAGES[kind].path === url.pathname);
-    if (url.origin === this.origin && page && !url.search) return tab.kind === page ? { kind: 'same' } : { kind: 'global', page, hash: url.hash };
-    if (url.origin === this.origin && url.pathname === '/') {
-      const settings = url.searchParams.getAll('workspace-settings');
-      if (settings.length === 1 && settings[0] === tab.project?.name && url.searchParams.size === 1) return { kind:'workspace-settings' };
-      const names = url.searchParams.getAll('project');
-      if (names.length === 0 && url.searchParams.size === 0) return { kind: 'home' };
-      if (names.length !== 1 || !names[0] || url.searchParams.size !== 1) return { kind: 'blocked' };
-      return { kind: names[0] === tab.project?.name ? 'same' : 'project', name: names[0], hash:url.hash };
+    const page = url.origin === this.origin ? pageOf(url.pathname) : null;
+    if (page === null) return { kind: ['http:', 'https:'].includes(url.protocol) ? 'external' : 'blocked' };
+    const params = url.searchParams, names = params.getAll('project');
+    if (params.size === 0) {
+      if (page === 'workspace') return { kind: 'home' };
+      if (page === 'assistant') return tab.kind === 'assistant' ? { kind: 'same' } : { kind: 'global', page, hash: url.hash };
+      // A bare idea-wall link opens the ideas of the workspace it came from, else the most recent one.
+      const name = tab.project && !tab.project.read_only ? tab.project.name : this._recentProject();
+      return name ? { kind: 'project', name, page, hash: notesHash(url.hash) } : { kind: 'home' };
     }
-    return { kind: ['http:', 'https:'].includes(url.protocol) ? 'external' : 'blocked' };
+    if (page === 'workspace') {
+      const settings = params.getAll('workspace-settings');
+      if (settings.length === 1 && settings[0] === tab.project?.name && params.size === 1) return { kind:'workspace-settings' };
+    }
+    if (names.length !== 1 || !names[0] || params.size !== 1) return { kind: 'blocked' };
+    // Saved read-only history never opens a page that creates an assistant or reads live ideas.
+    if (page !== 'workspace' && names[0] === tab.project?.name && tab.project.read_only) return { kind: 'blocked' };
+    return { kind: names[0] === tab.project?.name ? 'same' : 'project', name: names[0], page, hash: url.hash };
   }
 
   _guard(tab, event, url, redirect = false, isMainFrame = true) {
@@ -136,7 +164,7 @@ class WorkspaceTabs {
     if (target.kind === 'home') { this.select('home'); return; }
     if (target.kind === 'global') { void this.openGlobal(target.page, target.hash).catch(this.onNavigationError); return; }
     if (target.kind === 'workspace-settings') { this.workspaceSettings(tab.project.name); return; }
-    if (target.kind === 'project') { this._openProject(tab, target.name, target.hash); return; }
+    if (target.kind === 'project') { this._openProject(tab, target.name, { page: target.page, hash: target.hash }); return; }
     if (target.kind === 'external' && !redirect) this.external(url);
     else this._error(tab);
   }
@@ -148,11 +176,13 @@ class WorkspaceTabs {
     wc.setWindowOpenHandler(({ url }) => {
       if (this._alive(tab)) {
         const target = this._destination(tab, url);
-        if (target.kind === 'same') this.select(tab.id);
+        // A new-window link to another page of the same workspace still loads that page in this tab.
+        if (target.kind === 'same' && isGlobal(tab)) void this.openGlobal(tab.kind, new URL(url).hash).catch(this.onNavigationError);
+        else if (target.kind === 'same') void this.open(tab.project, { page: target.page, hash: target.hash }).catch(this.onNavigationError);
+        else if (target.kind === 'project') this._openProject(tab, target.name, { page: target.page, hash: target.hash });
         else if (target.kind === 'home') this.select('home');
         else if (target.kind === 'global') void this.openGlobal(target.page, target.hash).catch(this.onNavigationError);
         else if (target.kind === 'workspace-settings') this.workspaceSettings(tab.project.name);
-        else if (target.kind === 'project') this._openProject(tab, target.name, target.hash);
         else if (target.kind === 'external') this.external(url);
       }
       return { action: 'deny' };
@@ -187,13 +217,28 @@ class WorkspaceTabs {
     wc.on('destroyed', () => { if (this._alive(tab)) this.close(tab.id); });
   }
 
-  async open(project, hash = '') {
+  _url(name, page, hash) {
+    return this.origin + PROJECT_PAGES[page] + '?project=' + encodeURIComponent(name) + (hash.startsWith('#') ? hash : '');
+  }
+  // target: a hash string (the workspace's own page) or {page, hash}. Without a page an open
+  // tab is only selected; with one, a tab on another page loads it and a tab already there takes the hash.
+  async open(project, target = {}) {
     if (this.disposed) throw new Error('Workspace tabs are closed');
     if (!project || typeof project.name !== 'string' || !project.name.trim()) throw new TypeError('A registered project name is required');
+    const wanted = typeof target === 'string' ? { page: null, hash: target } : { page: target?.page ?? null, hash: target?.hash ?? '' };
+    if (wanted.page !== null && !Object.hasOwn(PROJECT_PAGES, wanted.page)) throw new TypeError('Unknown workspace page');
+    if (project.read_only && wanted.page !== null && wanted.page !== 'workspace') throw new Error('已保存的只读历史不能打开助手或想法页');
+    const hash = typeof wanted.hash === 'string' ? wanted.hash : '';
     const existing = [...this.entries.values()].find(tab => tab.project?.name === project.name);
     if (existing) {
       this.updateProject(project); this.select(existing.id);
-      if (hash) await existing.view.webContents.executeJavaScript('location.hash=' + JSON.stringify(hash));
+      const wc = existing.view.webContents;
+      let current = null;
+      try { current = pageOf(new URL(wc.getURL()).pathname); } catch (_) { /* Not loaded yet: load the requested page. */ }
+      if (wanted.page !== null && current !== wanted.page) {
+        try { await wc.loadURL(this._url(project.name, wanted.page, hash)); }
+        catch (error) { if (this._alive(existing)) { this._error(existing); throw error; } }
+      } else if (hash) await wc.executeJavaScript('location.hash=' + JSON.stringify(hash));
       return this._public(existing);
     }
     const view = this.createView(project);
@@ -205,7 +250,7 @@ class WorkspaceTabs {
     if (typeof view.setBorderRadius === 'function') view.setBorderRadius(8);
     this.select(tab.id);
     try {
-      await view.webContents.loadURL(this.origin + '/?project=' + encodeURIComponent(project.name) + (hash.startsWith('#') ? hash : ''));
+      await view.webContents.loadURL(this._url(project.name, wanted.page || 'workspace', hash));
       if (this._alive(tab)) { tab.loading = false; this._syncPageVisibility(tab); this._notify(); }
     } catch (error) {
       if (this._alive(tab)) { this._error(tab); throw error; }
@@ -215,9 +260,8 @@ class WorkspaceTabs {
   }
 
   openAssistant(hash = '') { return this.openGlobal('assistant', hash); }
-  openNotes(hash = '') { return this.openGlobal('notes', hash); }
-  // One persistent document per global page; a link hash (#note=…, filters)
-  // reaches an open page in place so its drafts and scroll stay.
+  // One persistent administrator document; a link hash reaches the open page
+  // in place so its draft and scroll stay.
   async openGlobal(kind, hash = '') {
     if (this.disposed) throw new Error('Workspace tabs are closed');
     const existing = this.entries.get(kind);
@@ -244,6 +288,8 @@ class WorkspaceTabs {
     if (this.disposed || id !== 'home' && !this.entries.has(id)) return false;
     const from = this.activeId, slide = this.slide;
     this.activeId = id;
+    const chosen = this.entries.get(id)?.project?.name;
+    if (chosen) this.recent = [chosen, ...this.recent.filter(name => name !== chosen)];
     if (slide && id === slide.from) {
       // Reverse in place: both pages keep their current offsets and head back.
       const t = easeOutInverse(1 - easeOut(this._elapsed(slide)));

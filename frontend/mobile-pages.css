@@ -344,13 +344,14 @@ body:has(>.nw-menu)::after{content:"";position:fixed;inset:0;z-index:69;backgrou
 .cs-notification-routing label{min-width:0}
 .cs-notification-routing .cs-button{width:100%}
 .co-chat-status,.st-legend,.st-category-copy .st-category-meta{font-size:12px}
-.crew-settings .sl-body{padding:4px 0 24px}
+.sl-body{padding-bottom:calc(var(--m-bottom) + 16px)}
+.crew-settings .sl-body{padding-block-start:4px;padding-inline:0}
 .sl-toolbar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .sl-toolbar label{font-size:14px}
 .sl-search{grid-column:1/-1;min-width:0}
 .sl-toolbar select{max-width:none}
 .sl-toolbar input,.sl-toolbar select{min-height:var(--m-tap)}
-.sl-categories{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:16px calc(-1 * var(--m-gutter)) 10px;padding:0 var(--m-gutter)}
+.sl-categories{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:14px 0 10px}
 .sl-categories::-webkit-scrollbar{display:none}
 .sl-categories button{flex:none;min-height:40px;border-color:var(--line);border-radius:999px;white-space:nowrap}
 .sl-categories button span{font-size:13px}

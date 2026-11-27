@@ -9,8 +9,8 @@ from typing import Callable
 
 from . import schema as schema_check
 
-ROLES = ('human', 'device_browser', 'device_desktop', 'assistant', 'leader', 'execution', 'git_admin')
-AI_ROLES = frozenset(('assistant', 'leader', 'execution', 'git_admin'))
+ROLES = ('human', 'device_browser', 'device_desktop', 'assistant', 'workspace_assistant', 'leader', 'execution', 'git_admin')
+AI_ROLES = frozenset(('assistant', 'workspace_assistant', 'leader', 'execution', 'git_admin'))
 HUMAN_ROLES = frozenset(('human', 'device_browser', 'device_desktop'))
 ACCESS = ('read', 'write', 'external', 'host')
 RISK = ('normal', 'confirm', 'high')
@@ -81,7 +81,15 @@ class Operation:
     def schema_for(self, caller):
         if self.as_user(caller):
             return self.assistant_params
-        return self.ai_params if caller.is_ai and self.ai_params is not None else self.params
+        schema = self.ai_params if caller.is_ai and self.ai_params is not None else self.params
+        if caller.role == 'workspace_assistant':
+            return {**schema, 'properties': {**schema.get('properties', {}),
+                                              'project': {'type': 'string', 'minLength': 1, 'description': '本工作区名，可省略'}},
+                    'required': [field for field in schema.get('required', ()) if field != 'project']}
+        return schema
+
+    def needs_message(self, role):
+        return role in ('assistant', 'workspace_assistant') and self.risk == 'confirm'
 
     def description_for(self, caller):
         if caller.is_ai and self.ai_description and not self.as_user(caller):

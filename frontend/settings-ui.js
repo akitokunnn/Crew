@@ -39,8 +39,11 @@
     const tier = speedsFor(runtime, modelId).find(item => item.id === value);
     return tier ? tier.description || (FAST_SPEEDS.has(value) ? "生成更快，消耗更多用量" : "") : "所选模型未列出这个速度";
   }
-  const tasks = [["assistant", "全局助手", "所有工作区共用一个助手；首次发送时使用此选择"], ["leader", "新建 leader", "新建 leader 时的载体、模型与思考强度；创建时仍可临时调整"], ["member", "leader 开执行", "任务里新开的执行默认使用的大脑；每个 leader 也能单独覆盖，开执行时也可单独指定。已在跑的不受影响"], ["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "运维 AI", "后台聊天与事故处理共用此选择；自动修复另按已保存策略执行"]];
-  const categories = [["library", "会话库", "查找、接入与管理已有会话"], ["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["prompts", "行为配置", "提示内容、覆盖范围与使用记录"], ["appearance", "外观", "让工作区更顺手"], ["sounds", "音效", "回复完成与任务交付的提示音"], ["remote", "局域网访问", "连接同一网络中的手机和电脑"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["storage", "存储与清理", "空间占用、回收与保留"], ["backend", "后台与运维", "运维对话、状态与配置"]];
+  const tasks = [["assistant", "系统管理员与工作区助手", "系统管理员和各工作区的助手首次发送时使用此选择"], ["leader", "新建 leader", "新建 leader 时的载体、模型与思考强度；创建时仍可临时调整"], ["member", "leader 开执行", "任务里新开的执行默认使用的大脑；每个 leader 也能单独覆盖，开执行时也可单独指定。已在跑的不受影响"], ["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "系统管理员 · 运维", "运维对话与事故处理共用此选择；自动修复另按已保存策略执行"]];
+  const warRoom = [["war_room", "作战室默认载体", "新建拟任成员时使用，助手开局可按人指定"],
+    ["creative", "创意顾问", "界面、文案和交互"], ["routine", "常规顾问", "盘点和挑刺"], ["difficult", "疑难顾问", "查根因和做设计取舍"]];
+  const choices = [...tasks, ...warRoom];
+  const CATEGORIES = [["library", "会话库", "查找、接入与管理已有会话"], ["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["prompts", "行为配置", "提示内容、覆盖范围与使用记录"], ["appearance", "外观", "让工作区更顺手"], ["canvas", "画布", "架构图和导图的滚轮设置"], ["sounds", "音效", "回复完成与任务交付的提示音"], ["remote", "局域网访问", "连接同一网络中的手机和电脑"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["storage", "存储与清理", "空间占用、回收与保留"], ["backend", "系统管理员 · 运维", "后台状态、运维对话与自动修复"]];
   const icons = {
     library:'<path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/>',
     ai:'<rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
@@ -48,6 +51,7 @@
     execution:'<path d="m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6l8-3Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
     sounds:'<path d="m4 9 5-4v14l-5-4H1V9h3Z"/><path d="M13 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>',
     appearance:'<circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/>',
+    canvas:'<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 12h8m-4-4v8"/>',
     tools:'<path d="M14.8 6.2a5 5 0 0 0-6.6 6.6L3 18a2.1 2.1 0 0 0 3 3l5.2-5.2a5 5 0 0 0 6.6-6.6L14 13l-3-3 3.8-3.8Z"/>',
     remote:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c5 5 5 13 0 18M12 3c-5 5-5 13 0 18"/>',
     connections:'<path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l1.8-4.2A8.5 8.5 0 1 1 21 11.5Z"/><path d="M8 11h8"/>',
@@ -78,13 +82,13 @@
     return ai;
   }
   function validate(ai, catalog) {
-    if (!defaultRuntime(ai, catalog) && !tasks.some(([key]) => ai[key]?.runtime)) throw Error(catalog.some(item => item.available) ? "请先选择默认载体。" : "没有可用的执行工具，请先安装并登录，再重新检测。");
-    for (const key of ["default", ...tasks.map(item => item[0])]) {
+    if (!defaultRuntime(ai, catalog) && !choices.some(([key]) => ai[key]?.runtime)) throw Error(catalog.some(item => item.available) ? "请先选择默认载体。" : "没有可用的执行工具，请先安装并登录，再重新检测。");
+    for (const key of ["default", ...choices.map(item => item[0])]) {
       if (ai[key] == null) continue;
       for (const field of ["model", "effort"]) if (ai[key][field] !== null && !ai[key][field].trim()) throw Error("模型和 effort 为空时请选择原生默认。");
       const selectedRuntime = ai[key].runtime || defaultRuntime(null,catalog);
       if (key === "default" && !selectedRuntime && ai[key].model === null && ai[key].effort === null && !ai[key].speed) continue;
-      if (!selectedRuntime) throw Error(`${key === "default" ? "默认大脑" : tasks.find(item => item[0] === key)[1]}：请选择执行载体，或使用“跟随默认”。`);
+      if (!selectedRuntime) throw Error(`${key === "default" ? "默认大脑" : choices.find(item => item[0] === key)[1]}：请选择执行载体，或使用“跟随默认”。`);
       const runtime = catalog.find(item => item.id === selectedRuntime), model = runtime?.models?.find(item => item.id === ai[key].model);
       if (ai[key].effort !== null && model && Array.isArray(model.efforts) && !model.efforts.includes(ai[key].effort)) throw Error(`${model.name || model.id} 不支持所填的 effort，请按实际支持情况修改。`);
       if (ai[key].speed && selectedRuntime !== "codex") throw Error("速度只适用于 Codex，请改为原生默认。");
@@ -111,25 +115,44 @@
   function create(options) {
     const root = options.host;
     const customFields = new Set();
-    let snapshot = null, draft = null, executionDraft = null, category = "ai", loading = false, saving = false, error = "", note = "", cleanup = null, generation = 0;
+    // On the desktop the operations conversation lives on its native 系统管理员 · 运维 page; settings keep status and connection.
+    // A page without host operations (a LAN device's browser) only shows where the backend runs.
+    const backendInfo = options.operationsPage ? ["backend", "后台与连接", "连接与目录；运维在系统管理员"] : options.operations ? null : ["backend", "后台", "数据目录与后台位置"];
+    const categories = backendInfo ? CATEGORIES.map(item => item[0] === "backend" ? backendInfo : item) : CATEGORIES;
+    let snapshot = null, draft = null, executionDraft = null, canvasDraft = null, category = "ai", loading = false, saving = false, error = "", note = "", cleanup = null, generation = 0;
     root.classList.add("crew-settings");
     root.innerHTML = `<div class="cs-sidebar"><div class="cs-brand"><span class="cs-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14.26 8.54a4.9 4.9 0 1 0 0 6.92" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="17.4" cy="16.4" r="1.75" fill="currentColor"/></svg></span><div><strong>设置</strong><small>${options.remote ? "Crew · 所连主机" : "Crew · 本机偏好"}</small></div></div><nav aria-label="设置分类">${categories.filter(([id]) => !["library", "appearance", "sounds", "connections", "storage", "prompts", "remote"].includes(id) || options.panels?.[id]).map(([id, label, description]) => `<button type="button" data-settings-category="${id}"><span class="cs-nav-icon">${icon(id)}</span><span>${label}<small>${description}</small></span></button>`).join("")}</nav>${options.onClose ? `<button type="button" class="cs-back" data-settings-action="close">${icon("back")}返回工作区</button>` : ""}<p class="cs-local">${options.remote ? "所连主机的设置" : "本机偏好"} · 所有工作区共用<span class="cs-font-credit">HarmonyOS Sans · 华为</span></p></div><div class="cs-body"><header class="cs-header"><div><span class="cs-eyebrow">偏好设置</span><h1 id="crew-settings-title"></h1><p class="cs-subtitle"></p></div>${options.onClose ? `<button type="button" class="cs-close" data-settings-action="close" aria-label="关闭设置">${icon("close")}</button>` : ""}</header><div class="cs-content"></div><footer class="cs-footer"><p class="cs-status" role="status"></p><button type="button" class="cs-button" data-settings-action="reset">撤销更改</button><button type="button" class="cs-button cs-primary" data-settings-action="save">保存设置</button></footer></div>`;
     const content = root.querySelector(".cs-content"), footer = root.querySelector(".cs-footer"), status = root.querySelector(".cs-status");
     const operations = options.operations ? window.CrewOperations.create({api:options.operations, service:options.service, remote:options.remote === true,
-      mountHealth:options.panels?.backend, onBrain() { category = "ai"; render(); const card = content.querySelector('[data-ai-task="operations"]'); card?.scrollIntoView({block:"center"}); card?.focus({preventScroll:true}); }}) : null;
+      ...(options.operationsPage ? {sections:["status", "launch"], operationsPage:options.operationsPage} : {mountHealth:options.panels?.backend}), onBrain() { category = "ai"; render(); const card = content.querySelector('[data-ai-task="operations"]'); card?.scrollIntoView({block:"center"}); card?.focus({preventScroll:true}); }}) : null;
     function release() { if (cleanup) { cleanup(); cleanup = null; } }
-    function changed() { return snapshot && (JSON.stringify(draft) !== JSON.stringify(snapshot.ai) || JSON.stringify(executionDraft) !== JSON.stringify(initialExecution(snapshot))); }
+    function restoreDrafts(value) {
+      draft = initialAI(value); executionDraft = initialExecution(value); canvasDraft = value.canvas_wheel_zoom;
+    }
+    function changed() {
+      return snapshot && (JSON.stringify(draft) !== JSON.stringify(snapshot.ai)
+        || JSON.stringify(executionDraft) !== JSON.stringify(initialExecution(snapshot)) || canvasDraft !== snapshot.canvas_wheel_zoom);
+    }
     function controls() {
       const dirty = changed();
-      status.textContent = error || note || (dirty ? "有尚未保存的设置" : "保存后用于新任务；已有会话保留各自的设置。");
+      status.textContent = error || note || (dirty ? "有尚未保存的设置" : category === "canvas" ? "" : "保存后用于新任务；已有会话保留各自的设置。");
       status.classList.toggle("cs-error", Boolean(error));
       root.querySelector('[data-settings-action="save"]').disabled = !snapshot || loading || saving || !dirty;
       root.querySelector('[data-settings-action="save"]').textContent = saving ? "正在保存…" : "保存设置";
       root.querySelector('[data-settings-action="reset"]').disabled = !snapshot || saving || !dirty;
     }
+    function renderChoices(entries, draft, catalog, customFields) {
+      return entries.map(([key, title, description]) => {
+        const advisor = key === "creative" || key === "routine" || key === "difficult";
+        const defaultBrain = advisor ? "全局默认大脑" : "默认大脑";
+        const label = key === "member" ? "跟随各自 leader" : advisor ? "跟随全局默认大脑" : "跟随默认";
+        const inherit = key === "war_room" ? "" : `<label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] == null ? "checked" : ""}>${label}</label>`;
+        return `<section class="cs-card" data-ai-task="${key}" tabindex="-1"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div>${inherit}</div>${draft[key] == null ? `<p class="cs-follow">${key === 'member' ? '使用所属 leader 的载体、模型与思考强度；在组内设置时可覆盖。' : `使用${defaultBrain}的载体、模型与思考强度。`}</p>` : selectionMarkup(key, draft[key], catalog, customFields)}</section>`;
+      }).join("");
+    }
     function renderAI() {
       const catalog = snapshot.runtimes || [];
-      content.innerHTML = `<section class="cs-card cs-default"><div class="cs-card-heading"><div><h2>默认大脑</h2><p>选择“跟随默认”的用途使用这里的选择；下面可分别指定大脑。</p></div><span class="cs-badge">默认</span></div>${selectionMarkup("default", draft.default, catalog, customFields)}<p class="cs-hint">下拉选择本机检测到的模型与强度；也可自定义输入。选择“原生默认”沿用工具配置。速度只对 Codex 生效，较快的档位会消耗更多用量。</p></section><div class="cs-section-heading"><h2>任务分配</h2><p>按用途选择大脑，也可以全部跟随默认。</p></div><div class="cs-task-list">${tasks.map(([key, title, description]) => `<section class="cs-card" data-ai-task="${key}" tabindex="-1"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div><label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] === null ? "checked" : ""}>${key === "member" ? "跟随各自 leader" : "跟随默认"}</label></div>${draft[key] === null ? `<p class="cs-follow">${key === 'member' ? '使用所属 leader 的载体、模型与思考强度；在组内设置时可覆盖。' : '使用默认大脑的载体、模型与思考强度。'}</p>` : selectionMarkup(key, draft[key], catalog, customFields)}</section>`).join("")}</div><p class="cs-footnote">保存设置不会运行 AI。新建会话时仍可单独选择；组员沿用 leader 的明确分配。</p>`;
+      content.innerHTML = `<section class="cs-card cs-default"><div class="cs-card-heading"><div><h2>默认大脑</h2><p>选择“跟随默认”的用途使用这里的选择；下面可分别指定大脑。</p></div><span class="cs-badge">默认</span></div>${selectionMarkup("default", draft.default, catalog, customFields)}<p class="cs-hint">下拉选择本机检测到的模型与强度；也可自定义输入。选择“原生默认”沿用工具配置。速度只对 Codex 生效，较快的档位会消耗更多用量。</p></section><div class="cs-section-heading"><h2>任务分配</h2><p>按用途选择大脑，也可以全部跟随默认。</p></div><div class="cs-task-list">${renderChoices(tasks, draft, catalog, customFields)}</div><div class="cs-section-heading"><h2>作战室</h2></div><div class="cs-task-list">${renderChoices(warRoom, draft, catalog, customFields)}</div><p class="cs-footnote">保存设置不会运行 AI。新建会话时仍可单独选择；组员沿用 leader 的明确分配。</p>`;
     }
     function renderTools() {
       content.innerHTML = `<section class="cs-card"><div class="cs-card-heading"><div><h2>执行工具</h2><p>${options.remote ? "以下信息来自所连主机的实际检测。" : "以下信息来自本机实际检测。"}</p></div><button type="button" class="cs-button" data-settings-action="reload">重新检测</button></div>${(snapshot.runtimes || []).map(item => `<div class="cs-tool-row"><div><strong>${esc(item.name || item.id)}</strong><p>${esc(item.error || (item.available ? "已就绪" : "未就绪"))}</p></div><span class="cs-badge ${item.available ? "cs-ready" : ""}">${item.available ? "可用" : "需配置"}</span></div>`).join("")}</section><p class="cs-footnote">${options.remote ? "安装、登录与工具更新请在主机上的 Crew 中管理。" : "安装、登录与工具更新可在 Crew 桌面首页的设置中管理。"}</p>`;
@@ -143,12 +166,13 @@
       const info = categories.find(item => item[0] === category);
       root.querySelector("#crew-settings-title").textContent = info[1];
       root.querySelector(".cs-subtitle").textContent = info[2];
-      footer.hidden = !["ai", "execution"].includes(category);
+      footer.hidden = !["ai", "execution", "canvas"].includes(category);
       if (category === "backend" && operations) { content.replaceChildren(); cleanup = operations.mount(content, snapshot); }
       else if (options.panels?.[category]) { content.replaceChildren(); cleanup = options.panels[category](content, snapshot) || null; }
       else if (!snapshot) content.innerHTML = `<div class="cs-empty"><h2>${loading ? "正在读取设置…" : "设置暂时无法读取"}</h2><p>${esc(error)}</p>${loading ? "" : '<button type="button" class="cs-button" data-settings-action="reload">重试</button>'}</div>`;
       else if (category === "ai") renderAI();
       else if (category === "execution") content.innerHTML = executionMarkup(executionDraft);
+      else if (category === "canvas") content.innerHTML = `<section class="cs-card"><label class="cs-inherit cs-canvas-option"><input type="checkbox" data-canvas-wheel ${canvasDraft ? "checked" : ""}>鼠标滚轮缩放</label><p class="cs-hint">打开后，竖向滚轮缩放两张图。关闭时滚轮平移，按住 Ctrl 或 ⌘ 滚动可以缩放。</p></section>`;
       else if (category === "tools") renderTools();
       else if (category === "backend") content.innerHTML = `<section class="cs-card"><h2>${options.remote ? "所连主机的后台" : "本机后台"}</h2><p class="cs-hint">${options.remote ? "设置保存在所连主机的 HOME 数据目录中，所有工作区共用。重启与运维请在主机上的 Crew 中进行。" : "设置保存在 HOME 数据目录中，所有工作区共用。"}</p><dl class="cs-paths"><dt>数据目录 · HOME</dt><dd>${esc(snapshot.home)}</dd><dt>后台程序目录</dt><dd>${esc(snapshot.backend)}</dd>${options.service ? `<dt>连接地址</dt><dd>${esc(options.service())}</dd>` : ""}</dl></section>`;
       controls();
@@ -156,15 +180,24 @@
     async function load() {
       if (loading || saving) return;
       const request = ++generation, edited = changed(); loading = true; error = ""; note = ""; render();
-      try { const value = await options.read(); if (request !== generation) return; snapshot = value; if (!edited) { draft = initialAI(value); executionDraft = initialExecution(value); } options.onSnapshot?.(value); }
+      try { const value = await options.read(); if (request !== generation) return; snapshot = value; if (!edited) restoreDrafts(value); options.onSnapshot?.(value); }
       catch (caught) { if (request === generation) error = caught.message || String(caught); }
       finally { if (request === generation) { loading = false; if (root.hidden || ownsData(category) && cleanup) controls(); else render(); } }
     }
     async function save() {
       if (!snapshot || saving) return;
       try {
-        const ai = JSON.stringify(draft) === JSON.stringify(snapshot.ai) ? clone(draft) : validate(draft, snapshot.runtimes || []), execution = validateExecution(executionDraft); saving = true; error = ""; note = ""; controls();
-        const value = await options.save({ai,execution}); snapshot = value; draft = initialAI(value); executionDraft = initialExecution(value); options.onSnapshot?.(value); note = "已保存。后续新任务使用这些设置。";
+        const body = {};
+        const aiChanged = JSON.stringify(draft) !== JSON.stringify(snapshot.ai);
+        if (aiChanged || JSON.stringify(executionDraft) !== JSON.stringify(initialExecution(snapshot))) {
+          body.ai = aiChanged ? validate(draft, snapshot.runtimes || []) : clone(draft);
+          body.execution = validateExecution(executionDraft);
+        }
+        if (canvasDraft !== snapshot.canvas_wheel_zoom) body.canvas_wheel_zoom = canvasDraft;
+        if (!Object.keys(body).length) return;
+        saving = true; error = ""; note = ""; controls();
+        const value = await options.save(body); snapshot = value; restoreDrafts(value); options.onSnapshot?.(value);
+        note = category === "canvas" ? "已保存。" : "已保存。后续新任务使用这些设置。";
       } catch (caught) { error = caught.message || String(caught); }
       finally { saving = false; controls(); }
     }
@@ -180,14 +213,21 @@
       const action = button.dataset.settingsAction;
       if (action === "close") options.onClose?.();
       if (action === "reload") void load();
-      if (action === "reset" && !saving) { draft = initialAI(snapshot); executionDraft = initialExecution(snapshot); error = ""; note = ""; render(); }
+      if (action === "reset" && !saving) { restoreDrafts(snapshot); error = ""; note = ""; render(); }
       if (action === "save") void save();
     });
     root.addEventListener("change", event => {
       if (!draft || saving) return;
       const element = event.target, key = element.dataset.aiKey, field = element.dataset.aiField;
-      if (element.dataset.executionRuntime) { executionDraft[element.dataset.executionRuntime] = element.value; error = ""; note = ""; controls(); }
-      else if (element.dataset.aiInherit) { const task = element.dataset.aiInherit; draft[task] = element.checked ? null : clone(draft.default); render(); }
+      if (element.dataset.canvasWheel !== undefined) { canvasDraft = element.checked; error = ""; note = ""; controls(); }
+      else if (element.dataset.executionRuntime) { executionDraft[element.dataset.executionRuntime] = element.value; error = ""; note = ""; controls(); }
+      else if (element.dataset.aiInherit) {
+        const task = element.dataset.aiInherit;
+        if (!element.checked) draft[task] = clone(draft.default);
+        else if (Object.hasOwn(snapshot.ai, task)) draft[task] = null;
+        else delete draft[task];
+        render();
+      }
       else if (key && field) {
         draft[key][field] = element.value.trim() || null;
         if (field === "runtime") { draft[key].model = null; draft[key].effort = null; draft[key].speed = null; }

@@ -141,6 +141,11 @@ class RegistryCoverageTests(unittest.TestCase):
 
     def test_remote_device_scopes_match_frozen_rules(self):
         ops = registry.operations()
+        self.assertEqual({name for name, op in ops.items() if 'workspace_assistant' in op.scopes}, expected.WORKSPACE_ASSISTANT)
+        # War-room routine writes keep their own risk: a room lead woken by a report posts without a user message.
+        for name in expected.WORKSPACE_ASSISTANT:
+            self.assertEqual(ops[name].needs_message('workspace_assistant'), ops[name].needs_message('assistant'), name)
+        self.assertFalse(ops['war_room.post'].needs_message('workspace_assistant'))
         self.assertEqual({name for name, op in ops.items() if 'device_browser' in op.scopes}, expected.DEVICE_BROWSER)
         self.assertEqual({name for name, op in ops.items() if 'device_desktop' in op.scopes}, expected.DEVICE_DESKTOP)
         for kind in ('browser', 'desktop'):
@@ -209,10 +214,10 @@ class OperationCallTests(ShellFixture, unittest.TestCase):
         self.assertEqual(caught.exception.code, 'not_found')
 
     def test_split_actions_rebuild_the_old_body(self):
-        note = self.service.op('note.capture', {'data': {'text': '一个想法'}})
+        note = self.service.op('note.capture', {'project': 'demo', 'data': {'text': '一个想法'}})
         self.assertEqual(note['note']['original_text'], '一个想法')
-        replay = self.service.op('note.capture', {'data': {'text': '一个想法'}}, request_id='n-1')
-        again = self.service.op('note.capture', {'data': {'text': '一个想法'}}, request_id='n-1')
+        replay = self.service.op('note.capture', {'project': 'demo', 'data': {'text': '一个想法'}}, request_id='n-1')
+        again = self.service.op('note.capture', {'project': 'demo', 'data': {'text': '一个想法'}}, request_id='n-1')
         self.assertEqual(again['note']['id'], replay['note']['id'])
 
 

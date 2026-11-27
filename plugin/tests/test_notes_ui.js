@@ -15,7 +15,7 @@ const note = patch => ({id: `n${++serial}`, project: null, title: null, text: "�
   version: 1, created_at: iso(1), updated_at: iso(1), pinned_at: null, snoozed_until: null, merged_into: null, merged_from: [], last_discussed_at: null,
   reviewed_at: null, summaries: [], discussions: {count: 0, last_at: null, session_id: null, last_seq: null}, stale: false, source: {type: "human"}, leader: null, ...patch});
 
-test("tag filters default to all-of, switch to any-of, and untagged/workspace/view narrow independently", () => {
+test("tag filters default to all-of, switch to any-of, and untagged/view narrow independently", () => {
   const a = note({tags: ["产品", "体验"]}), b = note({tags: ["产品"], project: "Crew"}), c = note({tags: []}), d = note({tags: ["产品"], state: "archived"});
   const promoted = note({tags: ["产品"], state: "archived", stage: "promoted"}), stale = note({tags: ["体验"], stale: true});
   const all = [a, b, c, d, promoted, stale], ids = list => list.map(item => item.id);
@@ -23,8 +23,8 @@ test("tag filters default to all-of, switch to any-of, and untagged/workspace/vi
   assert.deepEqual(ids(M.filter(all, view({tags: ["产品", "体验"]}))), [a.id]);
   assert.deepEqual(ids(M.filter(all, view({tags: ["产品", "体验"], mode: "any"}))), [a.id, b.id, stale.id]);
   assert.deepEqual(ids(M.filter(all, view({untagged: true}))), [c.id]);
-  assert.deepEqual(ids(M.filter(all, view({ws: "Crew"}))), [b.id]);
-  assert.deepEqual(ids(M.filter(all, view({global: true, tags: ["产品"]}))), [a.id]);
+  // The server returns one workspace's ideas; a leftover cross-workspace filter narrows nothing.
+  assert.deepEqual(ids(M.filter(all, view({ws: "Crew", global: true}))), [a.id, b.id, c.id, stale.id]);
   assert.deepEqual(ids(M.filter(all, view({view: "stale"}))), [stale.id]);
   assert.deepEqual(ids(M.filter(all, view({view: "archived"}))), [d.id], "promoted ideas are listed under their own view");
   assert.deepEqual(ids(M.filter(all, view({view: "promoted", tags: ["产品"]}))), [promoted.id]);
@@ -65,15 +65,18 @@ test("duplicate hints use local character-bigram Jaccard at 0.6 and only pair op
 });
 
 test("filter state round-trips through the URL hash and ignores unknown values", () => {
-  const state = {...M.DEFAULTS, tags: ["产品", "体验 设计"], mode: "any", ws: "Crew 工作区", sort: "discussed", group: "stage", view: "stale"};
+  const state = {...M.DEFAULTS, tags: ["产品", "体验 设计"], mode: "any", sort: "discussed", group: "stage", view: "stale"};
   const hash = M.toHash(state);
   assert.match(hash, /^#tags=/); assert(!hash.includes("产品"), "non-ASCII names are encoded");
   assert.deepEqual(M.parseHash(hash), state);
   assert.equal(M.toHash({...M.DEFAULTS}), "");
   assert.deepEqual(M.parseHash(""), {...M.DEFAULTS, tags: []});
-  assert.deepEqual(M.parseHash("#global=1&untagged=1&tags=a"), {...M.DEFAULTS, tags: [], untagged: true, global: true});
+  // Old links' cross-workspace filters are dropped; the rest of their view survives.
+  assert.deepEqual(M.parseHash("#ws=Crew&global=1&untagged=1&tags=a"), {...M.DEFAULTS, tags: [], untagged: true});
   assert.deepEqual(M.parseHash("#sort=random&group=board&view=trash&mode=some"), {...M.DEFAULTS, tags: []});
-  assert.deepEqual(M.parseHash(M.toHash({...M.DEFAULTS, global: true})), {...M.DEFAULTS, tags: [], global: true});
+  assert.equal(M.DEFAULTS.layout, "map", "the mind map is the default view");
+  assert.equal(M.toHash({...M.DEFAULTS, layout: "wall"}), "#layout=wall");
+  assert.equal(M.parseHash("#layout=wall").layout, "wall");
 });
 
 test("quick capture extracts #tags, completes the token under the caret and keeps titles from the first line", () => {
@@ -81,7 +84,7 @@ test("quick capture extracts #tags, completes the token under the caret and keep
   assert.deepEqual(M.parseCapture("#只有标签"), {text: "", tags: ["只有标签"]});
   assert.deepEqual(M.parseCapture("issue#12 不是标签"), {text: "issue#12 不是标签", tags: []});
   assert.deepEqual(M.token("想法 #产", 5), {kind: "#", query: "产", start: 3, end: 5});
-  assert.deepEqual(M.token("@Cr", 3), {kind: "@", query: "Cr", start: 0, end: 3});
+  assert.equal(M.token("@Cr", 3), null, "ideas no longer pick a workspace with @");
   assert.equal(M.token("写完了 ", 4), null);
   assert(M.fuzzy("稳定性", "稳性")); assert(!M.fuzzy("体验", "产"));
   const untitled = note({text: "\n  Leader 栏放任务\n组员随派工增减"});
@@ -93,52 +96,94 @@ test("quick capture extracts #tags, completes the token under the caret and keep
 });
 
 // The assistant page reads #note=<id>, asks the chat to attach it and prefill,
-// and never sends anything by itself.
-function assistantPage(hash, notes) {
-  const nodes = new Map(), calls = [], replaced = [], listeners = new Map(), chat = {mounts: [], notes: []};
-  const stub = () => ({hidden: false, textContent: "", innerHTML: "", dataset: {}, onclick: null, append() {}, replaceChildren() {}, addEventListener() {}});
+// and never sends anything by itself. ?project=X is that workspace's assistant; no query is 系统管理员.
+function assistantPage(hash, {search = "", note: found = null, state = {}, fail = null} = {}) {
+  const nodes = new Map(), calls = [], replaced = [], listeners = new Map(), chat = {mounts: [], notes: [], prefills: []}, timers = [];
+  const stub = () => ({hidden: false, textContent: "", innerHTML: "", dataset: {}, onclick: null, children: [], append(...items) { this.children.push(...items); }, replaceChildren(...items) { this.children = items; }, addEventListener() {}});
   const sandbox = {URLSearchParams, URL, Date, JSON, Promise, console,
     matchMedia: () => ({matches: false, addEventListener() {}}),
     localStorage: {getItem: () => null},
-    location: {hash, pathname: "/assistant.html", search: "", href: "http://127.0.0.1/assistant.html" + hash},
+    location: {hash, pathname: "/assistant.html", search, href: "http://127.0.0.1/assistant.html" + search + hash, replace: url => replaced.push("replace:" + url)},
     history: {replaceState: (_state, _title, url) => { replaced.push(url); sandbox.location.hash = ""; }},
-    setTimeout: () => 0, clearTimeout() {},
+    setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout() {},
     addEventListener: (type, fn) => listeners.set(type, fn),
     document: {documentElement: {dataset: {}}, addEventListener() {}, createElement: stub, createTextNode: text => ({text}), getElementById: id => { if (!nodes.has(id)) nodes.set(id, stub()); return nodes.get(id); }},
     fetch: async (url, options) => {
-      calls.push({url, method: options.method});
-      const value = url === "/api/op/assistant.state" ? {assistant: {session_id: "assistant"}, projects: [], todos: [], goals: [], sounds: {}, now: "now"}
-        : url.startsWith("/api/op/notes.list") ? {notes, stale_days: 14} : {};
+      calls.push({url, method: options.method, body: options.body ? JSON.parse(options.body) : undefined});
+      if (fail && url.startsWith(fail.prefix)) return {ok: false, status: fail.status, json: async () => fail.body};
+      const project = new URLSearchParams(search).get("project");
+      const value = url.startsWith("/api/op/assistant.state") ? {assistant: {session_id: project ? "helper-" + project : "admin", kind: project ? "workspace_assistant" : "assistant", project},
+          project: project ? {name: project, display_name: project + " 工作区", root: "/w", theme: null} : null, projects: [], todos: [], goals: [], sounds: {}, now: "now", ...state}
+        : url.startsWith("/api/op/note.get") ? found
+        : url.startsWith("/api/op/interaction.list") ? {requests: []} : {};
+      if (url.startsWith("/api/op/note.get") && new URL(url, "http://x").searchParams.get("note_id") !== found?.note?.id) return {ok: false, status: 404, json: async () => ({error: "not visible", error_code: "not_visible"})};
       return {ok: true, status: 200, json: async () => value};
     },
     CrewSound: {observe() {}}, CrewPersonalNotes: {create: () => ({open() {}})},
-    CrewChat: {initFiles() {}, unmount() {}, update() {}, mount: options => chat.mounts.push(options), setNote: (value, prefill) => chat.notes.push([value, prefill])}};
+    CrewChat: {initFiles() {}, unmount() {}, update() {}, mount: options => chat.mounts.push(options), setNote: (value, prefill) => chat.notes.push([value, prefill]), prefill: text => { chat.prefills.push(text); return true; }}};
   sandbox.window = sandbox;
   vm.runInNewContext(web("browser-utils.js"), sandbox);
   vm.runInNewContext(web("assistant.js"), sandbox);
-  return {sandbox, nodes, calls, replaced, listeners, chat};
+  return {sandbox, nodes, calls, replaced, listeners, chat, timers};
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-test("assistant page attaches the idea from #note, prefills without sending, and clears the hash once the idea is used", async () => {
-  const page = assistantPage("#note=n-7", [note({id: "n-7", title: null, text: "\n想法墙\n卡片能维护"})]);
+test("a workspace assistant attaches the idea from #note through note.get, prefills without sending, and clears the hash once used", async () => {
+  const page = assistantPage("#note=n-7", {search: "?project=A", note: {note: note({id: "n-7", project: "A", title: null, text: "\n想法墙\n卡片能维护"})}});
   await settle(); await settle();
   assert.equal(page.chat.mounts.length, 1);
+  assert.deepEqual(page.calls.find(call => call.url === "/api/op/assistant.open").body, {project: "A"});
+  assert(page.calls.some(call => call.url === "/api/op/assistant.state?project=A" && call.method === "GET"));
   assert.deepEqual(JSON.parse(JSON.stringify(page.chat.notes)), [[{id: "n-7", title: "想法墙"}, "帮我把这个想法想清楚"]]);
-  assert(page.calls.some(call => call.url === "/api/op/notes.list?include_archived=1" && call.method === "GET"));
+  assert(page.calls.some(call => call.url === "/api/op/note.get?project=A&note_id=n-7" && call.method === "GET"));
+  assert(!page.calls.some(call => call.url.startsWith("/api/op/notes.list")), "one idea is read by id, never the whole list");
   assert(!page.calls.some(call => call.url === "/api/op/chat.send"), "opening an idea never sends a message");
+  assert(page.calls.some(call => call.url === "/api/op/interaction.list?project=A" && call.method === "GET"), "confirmations are this workspace's");
+  assert.equal(page.nodes.get("assistant-sub").textContent, "「A 工作区」的助手：只看这个工作区，帮你理清想法、开局和推进。");
+  assert.equal(page.chat.mounts[0].emptyGuide.prompts[1].text, "帮我在这个工作区记一个想法：");
   page.chat.mounts[0].onNoteCleared();
-  assert.deepEqual(page.replaced, ["/assistant.html"]);
+  assert.deepEqual(page.replaced, ["/assistant.html?project=A"]);
 
   page.sandbox.location.hash = "#note=gone";
   page.listeners.get("hashchange")(); await settle(); await settle();
   assert.equal(page.chat.notes.length, 1, "a missing idea attaches nothing");
-  assert.equal(page.nodes.get("assistant-toast").textContent, "没有找到这条想法，可能已被删除。");
-  assert.deepEqual(page.replaced, ["/assistant.html", "/assistant.html"]);
+  assert.equal(page.nodes.get("assistant-toast").textContent, "这条想法不在这个工作区，或已被删除。");
+});
+
+test("系统管理员 (no query) keeps the HOME-wide inbox and sends ideas to their workspace's assistant", async () => {
+  const page = assistantPage("#note=n-1");
+  await settle(); await settle();
+  assert.deepEqual(page.calls.find(call => call.url === "/api/op/assistant.open").body, {});
+  assert(page.calls.some(call => call.url === "/api/op/assistant.state"));
+  assert(page.calls.some(call => call.url === "/api/op/interaction.list" && call.method === "POST"), "the administrator keeps the global inbox");
+  assert(!page.calls.some(call => call.url.startsWith("/api/op/note")), "no idea is read on the administrator page");
+  assert.match(page.nodes.get("assistant-toast").textContent, /所属工作区的助手/);
+  assert.equal(page.chat.notes.length, 0);
+});
+
+test("a past discussion elsewhere goes to the administrator", async () => {
+  const past = assistantPage("#discussion=admin", {search: "?project=A"});
+  await settle(); await settle();
+  assert.deepEqual(past.replaced, ["replace:/assistant.html#discussion=admin"]);
+  const here = assistantPage("#discussion=helper-A", {search: "?project=A"});
+  await settle(); await settle();
+  assert.deepEqual(here.replaced, ["/assistant.html?project=A"]);
+});
+
+test("a malformed or unknown workspace link stops with the reason and never opens the administrator", async () => {
+  const empty = assistantPage("", {search: "?project="});
+  await settle(); await settle();
+  assert.equal(empty.calls.length, 0);
+  assert.match(empty.nodes.get("assistant-error").children[0].text, /链接里的工作区是空的/);
+  const gone = assistantPage("", {search: "?project=Gone", fail: {prefix: "/api/op/assistant.open", status: 404, body: {error: "工作区不存在", error_code: "project_unavailable"}}});
+  await settle(); await settle();
+  assert.match(gone.nodes.get("assistant-error").children[0].text, /工作区「Gone」不存在或已移除/);
+  assert.equal(gone.timers.length, 0, "a dead link is not retried");
+  assert(!gone.calls.some(call => call.url === "/api/op/assistant.state"), "no fallback to the administrator");
 });
 
 test("assistant page without #note reads no ideas", async () => {
-  const page = assistantPage("", []);
+  const page = assistantPage("", {search: "?project=A"});
   await settle(); await settle();
   assert.equal(page.chat.notes.length, 0);
   assert(!page.calls.some(call => call.url.startsWith("/api/op/notes.list") || call.url.startsWith("/api/op/note.")));

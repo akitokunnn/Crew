@@ -409,7 +409,10 @@ class RestructureTests(ShellFixture, unittest.TestCase):
                  'domains.restructure.apply', 'leader.merge', 'leader.retire')
         for name in names:
             op = registry.get(name)
-            self.assertEqual(op.scopes, {'human', 'device_browser', 'device_desktop', 'assistant'}, name)
+            roles = {'human', 'device_browser', 'device_desktop', 'assistant'}
+            if name in ('domains.restructure.preview', 'domains.restructure.apply', 'leader.merge', 'leader.retire'):
+                roles.add('workspace_assistant')
+            self.assertEqual(op.scopes, roles, name)
             self.assertEqual(op.risk, 'normal' if op.access == 'read' else 'high', name)
             self.assertTrue(op.assistant_as_user, name)
         with self.assertRaisesRegex(OpError, 'leader不能调用 domains.restructure.preview'):

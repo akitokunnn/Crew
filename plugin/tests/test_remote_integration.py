@@ -152,6 +152,53 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(self.request(path, body, remote=True)[0], 403)
         self.assertEqual(self.processes, [])
 
+    def test_paired_devices_use_the_workspace_chat_with_their_existing_permissions(self):
+        self.start_remote()
+        self.login()
+        code, assistant, _ = self.request('/api/op/assistant.open', {'project': 'demo'}, remote=True)
+        self.assertEqual(code, 200, assistant)
+        sid = assistant['session_id']
+        message = {'session_id': sid, 'text': '设备上的本区对话', 'message_id': 'remote-workspace'}
+        code, sent, _ = self.request('/api/op/chat.send?project=demo', message, remote=True)
+        self.assertEqual(code, 200, sent)
+        self.assertTrue(sent['accepted'])
+        self.finish_turn(sid, self.processes[0])
+        code, history, _ = self.request('/api/op/chat.history?project=demo&session_id=' + sid, remote=True)
+        self.assertEqual(code, 200, history)
+        self.assertTrue(any(e.get('id') == 'remote-workspace' for e in history['events']))
+        body = {'session_id': sid, 'runtime': 'codex'}
+        self.assertEqual(self.request('/api/op/session.runtime.prepare?project=demo', body, remote=True)[0], 403)
+        _, headers = self.pair_desktop()
+        def desktop(op, args):
+            return self.request('/api/op/' + op + '?project=demo', args, remote=True,
+                                authenticated=False, headers=headers, origin=False)
+        catalog = [{'id': 'claude', 'available': True}, {'id': 'codex', 'available': True, 'models': []}]
+        with mock.patch.object(self.server.service.runtime_catalog, 'refresh', return_value=catalog):
+            code, preview, _ = desktop('session.runtime.prepare', body)
+            self.assertEqual(code, 200, preview)
+            code, result, _ = desktop('session.runtime.switch', {'session_id': sid, 'preview_id': preview['preview_id'],
+                                                                 'confirm': True})
+            self.assertEqual((code, result['status']), (200, 'configured'))
+
+    def test_paired_browser_and_desktop_can_claim_and_read_assigned_ideas(self):
+        self.start_remote()
+        self.login()
+        _, desktop = self.pair_desktop()
+        for index, auth in enumerate(({}, desktop)):
+            if auth:
+                self.cookie = None
+            key = 'legacy-' + str(index)
+            self.conn.execute('INSERT INTO personal_notes(id,text,original_text,tags_json,created_at,updated_at) '
+                              "VALUES(?,?,?,'[]',?,?)", (key, key, key, NOW, NOW))
+            options = dict(remote=True, headers=auth, origin=not bool(auth))
+            code, listing, _ = self.request('/api/op/unassigned.list', **options)
+            self.assertEqual((code, listing['counts']['notes']), (200, 1))
+            args = dict(project='demo', note_ids=[key], root_ids=[], expected_version=listing['version'])
+            code, result, _ = self.request('/api/op/unassigned.claim', args, **options)
+            self.assertEqual((code, result['remaining']['notes']), (200, 0))
+            code, result, _ = self.request('/api/op/note.get?project=demo&note_id=' + key, **options)
+            self.assertEqual((code, result['note']['id'], result['note']['project']), (200, key, 'demo'))
+
     def test_desktop_forbidden_routes_return_403_before_business_dispatch(self):
         self.start_remote()
         _, bearer = self.pair_desktop()
@@ -387,8 +434,9 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         first = self.read_event(response)
         response.close()
         connection.close()
+        journal.emit('assistant', id='room-only', content=[{'type': 'text', 'text': '房内回复'}], room_id=1)
         journal.consume({'type': 'assistant', 'message': {'id': 'second', 'content': [{'type': 'text', 'text': '第二段'}]}})
-        expected = journal.after(first['seq'], wait=False)
+        expected = [e for e in journal.after(first['seq'], wait=False) if 'room_id' not in e]
         connection, response = self.event_stream({**query, 'after': 0}, after=first['seq'])
         self.assertEqual([self.read_event(response) for _ in expected], expected)
         start = time.monotonic()
@@ -396,7 +444,7 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(response.read(), b'')
         self.assertLess(time.monotonic() - start, 2)
         self.assertEqual(self.request('/api/chat/events?' + urlencode(query), remote=True)[0], 401)
-        self.assertEqual(self.request('/api/op/chat.history?' + urlencode(query))[1]['events'], journal.events)
+        self.assertEqual(self.request('/api/op/chat.history?' + urlencode(query))[1]['events'], [first, *expected])
 
     def test_remote_stop_keeps_local_listener_manager_and_business_journal_usable(self):
         self.start_remote()

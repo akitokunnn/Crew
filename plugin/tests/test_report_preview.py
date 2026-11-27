@@ -33,7 +33,7 @@ class ReportPreviewTests(unittest.TestCase):
         result = []
         thread = threading.Thread(target=lambda: result.append(self.manager.capture(
             '<h1>Isolated synthetic report</h1><script>document.body.dataset.ready="yes"</script>',
-            title='Synthetic report', goal_id='goal-one', **options)))
+            field='document_html', title='Synthetic report', goal_id='goal-one', **options)))
         thread.start()
         self.addCleanup(lambda: thread.join(2))
         return thread, result
@@ -47,7 +47,7 @@ class ReportPreviewTests(unittest.TestCase):
             png(job['width'], job['height'])).decode('ascii'), 'console_errors': [], **options})
 
     def test_no_desktop_is_an_explicit_failure_without_creating_artifacts(self):
-        result = self.manager.capture('<h1>Synthetic</h1>', title='Test', goal_id='one')
+        result = self.manager.capture('<h1>Synthetic</h1>', field='document_html', title='Test', goal_id='one')
         self.assertFalse(result['ok'])
         self.assertIn('打开 Crew 桌面', result['error'])
         self.assertEqual(list(self.home.iterdir()), [])
@@ -179,11 +179,11 @@ class ReportPreviewTests(unittest.TestCase):
         self.assertFalse((self.home / 'report-previews').exists())
 
     def test_document_and_output_limits_reject_invalid_inputs(self):
-        for document in ('', ' ' * 2, 'x' * (report_documents.MAX_HTML + 1)):
+        for document in ('', ' ' * 2, 'x' * (report_documents.MAX_DOCUMENT + 1)):
             with self.assertRaises(board.BoardError):
-                self.manager.capture(document, title='Synthetic', goal_id='one')
+                self.manager.capture(document, field='document_html', title='Synthetic', goal_id='one')
         with self.assertRaises(board.BoardError):
-            self.manager.capture('<p>Synthetic</p>', viewport='arbitrary', title='Synthetic', goal_id='one')
+            self.manager.capture('<p>Synthetic</p>', field='document_html', viewport='arbitrary', title='Synthetic', goal_id='one')
         worker = self.credentials()
         thread, result = self.begin()
         job = self.manager.next(worker)['job']

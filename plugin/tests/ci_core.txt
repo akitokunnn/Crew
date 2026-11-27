@@ -8,6 +8,8 @@
 
 # 测试隔离护栏：禁止连到正式 Crew 端口
 test_test_isolation
+test_workspace_assistant
+test_workspace_notes_migration
 
 # 任务生命周期：建任务、补充要求、执行、验收与打回、报告
 test_goals
@@ -67,6 +69,7 @@ test_storage_v2_objects
 test_storage_v2_database
 test_storage_v2_context
 test_storage_v2_features
+test_storage_v2_workspace_notes
 test_storage_v2_packages
 test_storage_v2_activation
 test_storage_legacy
@@ -96,3 +99,4 @@ test_leader_trust_cli
 test_trust_mode
 test_workspace_settings
 test_workspace_execution
+test_war_room_plan

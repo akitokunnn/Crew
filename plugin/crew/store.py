@@ -4,10 +4,14 @@ import os
 import sqlite3
 from pathlib import Path
 
-from . import change_triggers, themes
+from . import change_triggers, native_origins, themes
+from .workspace_notes_migration import migrate as _migrate_workspace_notes
 
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 BUSY_TIMEOUT_MS = 5000
+NOTICE_WAITING = ("TEXT CHECK (waiting IN ('external', 'busy', 'stopped', 'maintenance', 'liveness_unknown') "
+                  "OR waiting GLOB 'failed|?*|?*')")
+CARRIER_DEFAULT_EFFORT = '载体默认'
 
 
 def default_home():
@@ -18,25 +22,98 @@ def db_path(home):
     return Path(home) / "crew.db"
 
 
+def schema_sections():
+    """Return the base schema, shared migration table, and workspace notes DDL."""
+    header, marker_section = SCHEMA_FILE.read_text(encoding="utf-8").split("-- BEGIN schema_migrations\n")
+    markers, rest = marker_section.split("-- END schema_migrations\n")
+    before, notes_section = rest.split("-- BEGIN workspace_notes_v1\n")
+    notes, after = notes_section.split("-- END workspace_notes_v1\n")
+    return header + markers + before + after, markers, notes
+
+
 def connect(home):
     """Open (and create / migrate) the board database under `home`."""
     home = Path(home)
     home.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path(home), timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = %d" % BUSY_TIMEOUT_MS)
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
-    _migrate_quiet_leader_notices(conn)
-    _migrate_git_integration_branch(conn)
-    _migrate_channel_replies(conn)
-    _migrate_leader_pins(conn)
-    _migrate_codex_speed(conn)
-    _migrate_domain_members(conn)
-    _migrate_project_themes(conn)
-    change_triggers.install(conn)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = %d" % BUSY_TIMEOUT_MS)
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA foreign_keys = ON")
+        base, _, notes = schema_sections()
+        conn.executescript(base)
+        _migrate_quiet_leader_notices(conn)
+        _migrate_git_integration_branch(conn)
+        _migrate_channel_replies(conn)
+        _migrate_notice_waiting(conn)
+        _migrate_leader_pins(conn)
+        _migrate_codex_speed(conn)
+        _migrate_domain_members(conn)
+        _migrate_project_themes(conn)
+        _migrate_workspace_notes(conn, notes)
+        _migrate_mindmap_positions(conn)
+        native_origins.migrate(conn)
+        _migrate_war_room_plans(conn)
+        change_triggers.install(conn)
+    except BaseException:
+        conn.close()
+        raise
     return conn
+
+
+def _migrate_war_room_plans(conn):
+    # All rows predating the phase column are historical. New rooms specify preparing explicitly.
+    columns = {
+        'war_rooms': {'phase': "TEXT NOT NULL DEFAULT 'active' CHECK(phase IN ('preparing','active'))",
+                      'draft_version': 'INTEGER NOT NULL DEFAULT 0', 'approved_version': 'INTEGER',
+                      'legacy': 'INTEGER NOT NULL DEFAULT 1', 'close_reason': 'TEXT', 'open_request_id': 'TEXT'},
+        'war_room_items': {'entry_id': 'TEXT', 'kind': 'TEXT', 'plan_version': 'INTEGER', 'answer': 'TEXT',
+                           'goal_id': 'TEXT REFERENCES goals(id)'},
+        'war_room_consults': {'native_model': 'TEXT'},
+        'war_room_decisions': {'answer_notice_id':'INTEGER REFERENCES leader_notices(id)'},
+        'leader_notices': {'room_id': 'INTEGER REFERENCES war_rooms(id)'},
+    }
+
+    def missing():
+        for table, definitions in columns.items():
+            present = {row['name'] for row in conn.execute('PRAGMA table_info(%s)' % table)}
+            for name, definition in definitions.items():
+                if name not in present:
+                    yield table, name, definition
+
+    if any(missing()):
+        from . import board
+        with board.transaction(conn):
+            for table, name, definition in list(missing()):
+                conn.execute('ALTER TABLE %s ADD COLUMN %s %s' % (table, name, definition))
+                if table == 'leader_notices' and name == 'room_id':
+                    conn.execute('UPDATE leader_notices SET room_id=(SELECT m.room_id FROM channel_mentions t '
+                                 'JOIN channel_messages m ON m.id=t.message_id WHERE t.notice_id=leader_notices.id) '
+                                 'WHERE id IN (SELECT notice_id FROM channel_mentions WHERE notice_id IS NOT NULL)')
+                if table == 'war_rooms' and name == 'close_reason':
+                    conn.execute("UPDATE war_rooms SET close_reason='legacy' WHERE status='closed'")
+                if table == 'war_room_consults' and name == 'native_model':
+                    conn.execute("UPDATE war_room_consults SET native_model=NULLIF(model, '原生默认（未回报型号）'), "
+                                 'model=requested_model, effort=COALESCE(requested_effort, :default), '
+                                 'requested_effort=COALESCE(requested_effort, :default)',
+                                 {'default': CARRIER_DEFAULT_EFFORT})
+
+
+def _migrate_mindmap_positions(conn):
+    def missing():
+        present = {row['name'] for row in conn.execute('PRAGMA table_info(personal_mindmap_nodes)')}
+        return [column for column in ('x', 'y') if column not in present]
+
+    if missing():
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            for column in missing():
+                conn.execute('ALTER TABLE personal_mindmap_nodes ADD COLUMN %s REAL' % column)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 def assign_project_themes(conn, at):
@@ -149,7 +226,7 @@ def _migrate_channel_replies(conn):
                'war_rooms': (('budget_tokens', 'INTEGER'), ('budget_base', "TEXT NOT NULL DEFAULT '{}'"),
                              ('paused_at', 'TEXT')),
                'leader_notices': (('delivered_via', "TEXT CHECK (delivered_via IN ('hook'))"), ('batch_id', 'TEXT'),
-                                  ('waiting', "TEXT CHECK (waiting IN ('external', 'busy', 'stopped'))"))}
+                                  ('waiting', NOTICE_WAITING))}
 
     def missing():
         return [(table, name, kind) for table, wanted in columns.items()
@@ -165,6 +242,31 @@ def _migrate_channel_replies(conn):
     except BaseException:
         conn.rollback()
         raise
+
+
+def _migrate_notice_waiting(conn):
+    """Expand the waiting constraint without rebuilding the notice IDs referenced by channel posts."""
+    old = "CHECK (waiting IN ('external', 'busy', 'stopped'))"
+
+    def needs_migration():
+        return old in conn.execute("SELECT sql FROM sqlite_master WHERE name='leader_notices'").fetchone()[0]
+
+    if not needs_migration():
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        if needs_migration():
+            trigger = 'feed_channel_leader_notices_update'
+            conn.execute('DROP TRIGGER IF EXISTS ' + trigger)
+            conn.execute('ALTER TABLE leader_notices RENAME COLUMN waiting TO waiting_previous')
+            conn.execute('ALTER TABLE leader_notices ADD COLUMN waiting ' + NOTICE_WAITING)
+            conn.execute('UPDATE leader_notices SET waiting=waiting_previous WHERE waiting_previous IS NOT NULL')
+            conn.execute('ALTER TABLE leader_notices DROP COLUMN waiting_previous')
+            conn.execute(change_triggers.STATEMENTS[trigger])
+        conn.commit()
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
 
 
 def _migrate_leader_pins(conn):

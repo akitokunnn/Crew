@@ -1,11 +1,16 @@
 'use strict';
 const {randomUUID} = require('node:crypto');
+const MARKDOWN_ASSETS = [
+  '/style.css', '/report-markdown.css', '/report-markdown.js', '/vendor/markdown-it.min.js',
+  '/fonts/HarmonyOS_Sans_SC_Regular.woff2', '/fonts/HarmonyOS_Sans_SC_Medium.woff2',
+];
 
 // A report gets its own renderer, with no desktop preload, persistent profile,
-// network access or Node. This is a report capture surface, not a browser API.
+// or Node. Only Crew-rendered Markdown can request the listed backend assets.
 class ReportPreviewRenderer {
-  constructor({BrowserWindow, timeoutMs = 20000}) {
+  constructor({BrowserWindow, base, timeoutMs = 20000}) {
     this.BrowserWindow = BrowserWindow;
+    this.base = base;
     this.timeoutMs = timeoutMs;
     this.windows = new Set();
     this.closed = false;
@@ -17,6 +22,8 @@ class ReportPreviewRenderer {
         ![[1280,900],[390,844]].some(([w,h]) => w === job.width && h === job.height)) {
       throw Error('报告预览内容或视口无效');
     }
+    const markdownBase = job.document_format === 'markdown' ? new URL('/', this.base) : null;
+    const assets = new Set(markdownBase ? MARKDOWN_ASSETS.map(path => new URL(path, markdownBase).href) : []);
     const win = new this.BrowserWindow({show:false, width:job.width, height:job.height,
       useContentSize:true, skipTaskbar:true,
       webPreferences:{contextIsolation:true, nodeIntegration:false, sandbox:true, webSecurity:true,
@@ -31,7 +38,8 @@ class ReportPreviewRenderer {
     session.setPermissionCheckHandler(() => false);
     session.on('will-download', event => event.preventDefault());
     session.webRequest.onBeforeRequest((details, callback) => {
-      const allowed = details.url.startsWith('data:') || details.url.startsWith('about:') || details.url.startsWith('blob:');
+      const allowed = details.url.startsWith('data:') || details.url.startsWith('about:') ||
+        details.url.startsWith('blob:') || (details.method === 'GET' && assets.has(details.url));
       if (!allowed) record('报告预览已阻止外部资源：' + details.url);
       callback({cancel:!allowed});
     });
@@ -50,7 +58,8 @@ class ReportPreviewRenderer {
       wc.once('render-process-gone', (_event, details) => reject(Error('报告预览渲染进程退出：' + details.reason)));
     });
     const render = async () => {
-      await wc.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(job.html));
+      const url = 'data:text/html;charset=utf-8,' + encodeURIComponent(job.html);
+      await wc.loadURL(url, markdownBase ? {baseURLForDataURL:markdownBase.href} : undefined);
       // Loading includes the sandboxed report iframe. Wait in each frame's own
       // context so inline fonts/charts settle without weakening origin isolation.
       const ready = 'document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))).then(() => true)';

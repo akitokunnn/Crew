@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest import mock
 
-from crew import board, domain_versions, goals, personal, store, war_room, web
+from crew import board, domain_versions, goals, personal, runtimes, settings, store, war_room, web
 from crew.ops import confirmations, executor
 from crew.ops.errors import OpError
 from ops_helpers import ai_call
@@ -62,26 +62,39 @@ class CampaignTests(ShellFixture, unittest.TestCase):
         value = self.call('campaign.preview', bad)
         self.assertFalse(value['ok'])
         text = '\n'.join(value['errors'])
-        for fragment in ('ref 要是', '领域 nowhere 不存在', '负责人要是本方案里新建的 leader', '至少要两位新 leader'):
+        for fragment in ('ref 要是', '领域 nowhere 不存在', '负责人要是本方案里新建的 leader'):
             self.assertIn(fragment, text)
 
     def test_launch_builds_everything_as_one_version_and_opens_the_room(self):
-        checked = self.call('campaign.preview', plan())
-        result = self.call('campaign.launch', {**plan(), 'board_version': checked['board_version']})
-        self.assertTrue(result['started'])
-        by_name = {leader['name']: leader['session_id'] for leader in result['leaders']}
-        self.assertEqual(set(by_name), {'后端', '页面'})
-        versions = domain_versions.listing(self.conn, 'demo')['versions']
-        self.assertEqual([(v['source'], v['parts'], v['leaders']) for v in versions][:1], [('restructure', 1, 2)])
-        self.assertEqual([goal['title'] for goal in result['goals']], ['登录接口', '登录页'])
-        for goal in result['goals']:
-            self.assertNotEqual(goals.get(self.conn, goal['id'])['status'], 'draft')
-        room = war_room.get(self.conn, result['room']['id'])
-        self.assertEqual(room['budget']['tokens'], 200000)
-        self.assertEqual({m['crew_name'] for m in room['members']}, {'后端', '页面'})
-        # Running the same plan again is refused: its parts and leader names now exist.
-        with self.assertRaises(board.BoardError):
+        settings.save(self.conn, {**settings.get(self.conn),
+            'war_room': {'runtime': 'codex', 'model': None, 'effort': None, 'speed': None}})
+        proposed = plan()
+        del proposed['leaders'][1]['runtime']
+        checked = self.call('campaign.preview', proposed)
+        self.assertTrue(checked['ok'], checked['errors'])
+        self.assertEqual([item['runtime'] for item in checked['leaders']], ['claude', 'codex'])
+        result = self.call('campaign.launch', {**proposed, 'board_version': checked['board_version']})
+        self.assertFalse(result['started'])
+        room = result['room']
+        self.assertEqual(room['phase'], 'preparing')
+        self.assertFalse(self.conn.execute("SELECT 1 FROM sessions WHERE crew_name='后端'").fetchone())
+        with self.assertRaises(OpError):
             self.call('campaign.launch', {**plan(), 'board_version': checked['board_version']})
+        from crew import war_room_plan
+        body = "## 分工\n- [BE] 拟任：后端 | 登录接口\n- [UI] 拟任：页面 | 登录页\n## 等你定\n## 完成标准\n- [C] 登录成功"
+        war_room_plan.update(self.conn, room['id'], room['lead_session_id'], 0, body, '首稿', 200000, NOW)
+        active = war_room_plan.approve(self.conn, room['id'], 'user', 1, {}, 200000, NOW)
+        self.assertEqual({m['crew_name'] for m in active['members']}, {'后端', '页面'})
+        self.assertEqual({m['crew_name']: runtimes.get(self.conn, m['session_id'])['runtime'] for m in active['members']},
+                         {'后端': 'claude', '页面': 'codex'})
+        versions = domain_versions.listing(self.conn, 'demo')['versions']
+        self.assertEqual((versions[0]['parts'], versions[0]['leaders']), (1, 2))
+        for item in active['board']:
+            if item['kind'] == 'assignment':
+                req = goals.requirements(self.conn, item['goal_id'])
+                self.assertIn('文件分工', req['constraints'][1])
+                self.assertIn('作战室 #', req['constraints'][0])
+        self.assertTrue(war_room_plan.approve(self.conn, room['id'], 'user', 1, {}, 200000, NOW)['replayed'])
 
     def test_leaders_sharing_the_workspace_must_split_its_files(self):
         # Scenario 8: two new leaders in one folder, no written split, and the front end rewrote the back end's data.
@@ -108,30 +121,6 @@ class CampaignTests(ShellFixture, unittest.TestCase):
         # One new leader has nobody to split with; a split it is given is still carried.
         alone = {key: value for key, value in plan()['leaders'][0].items() if key != 'owns'}
         self.assertTrue(self.call('campaign.preview', plan(leaders=[alone], goals=plan()['goals'][:1], room=None))['ok'])
-
-    def test_launch_hands_each_leader_its_file_split_in_the_opening_and_the_first_task(self):
-        checked = self.call('campaign.preview', plan())
-        with mock.patch.object(self.service.chat, 'start', wraps=self.service.chat.start) as start:
-            result = self.call('campaign.launch', {**plan(), 'board_version': checked['board_version']})
-        briefs = {call.args[2]: call.args[3] for call in start.call_args_list}
-        self.assertTrue(briefs['后端'].startswith('负责登录接口与签名校验\n\n文件分工'))
-        self.assertIn('你负责 server/、data/users.json；「页面」负责 web/。只改自己负责的', briefs['后端'])
-        self.assertIn('你负责 web/；「后端」负责 server/、data/users.json。', briefs['页面'])
-        room = result['room']['id']
-        rules = {}
-        for task in result['goals']:
-            constraints = goals.requirements(self.conn, task['id'])['constraints']
-            self.assertEqual(constraints[0], briefs[task['leader']].split('\n\n', 1)[1])
-            self.assertEqual(len(constraints), 2)
-            rules[task['leader']] = constraints[1]
-        # Room posts reach the leader's own conversation, not the task's execution: the task names its room. The user
-        # opened this campaign, so the first leader leads the room and sends the card itself.
-        self.assertEqual(rules['页面'], '这个任务属于作战室 #%d《登录起盘》（牵头：后端）：和别的成员冲突、要用户定的事，'
-                                        '当场用 `war_room_post`（room=%d）点名牵头和对方，写清分歧、方案和推荐，由牵头发拍板卡；'
-                                        '不在本任务里先问用户、不自己 `decision_ask`。' % (room, room))
-        self.assertEqual(rules['后端'], '这个任务属于作战室 #%d《登录起盘》，你是牵头：和成员冲突、要用户定的事，在房里（room=%d）'
-                                        '点名对方核对清楚后，马上用 `war_room_decide` 发拍板卡；不在本任务里先问用户、'
-                                        '不自己 `decision_ask`。' % (room, room))
 
     def test_without_a_room_the_first_task_carries_only_the_file_split(self):
         checked = self.call('campaign.preview', plan(room=None))
@@ -161,32 +150,9 @@ class CampaignTests(ShellFixture, unittest.TestCase):
         self.assertIsNone(self.conn.execute("SELECT 1 FROM sessions WHERE crew_name='后端'").fetchone())
         with mock.patch.object(confirmations, '_tell'):
             done = confirmations.resolve(self.service, asked['confirmation_id'], True, NOW)
-        self.assertEqual(done['status'], 'approved', done['error'])
-        room = war_room.get(self.conn, done['result']['room']['id'])
-        self.assertEqual((room['lead_session_id'], room['lead_name']), (assistant, '助手'))
-        # Both leaders are members of the assistant's room: each first task sends conflicts to the room, not the user.
-        for task in done['result']['goals']:
-            rule = goals.requirements(self.conn, task['id'])['constraints'][1]
-            self.assertIn('（牵头：助手）', rule)
-            self.assertIn('`war_room_post`（room=%d）点名牵头和对方' % room['id'], rule)
-
-
-    def test_the_assistant_leads_its_own_room_without_a_fresh_user_message_but_no_other(self):
-        assistant = personal.ensure_assistant(self.conn, self.home)['session_id']
-        checked = self.call('campaign.preview', plan())
-        result = self.call('campaign.launch', {**plan(), 'board_version': checked['board_version']})
-        other = war_room.start(self.conn, 'demo', board.HUMAN, '别的房', '另一件事', ['后端', '页面'], lead='后端', now=NOW)
-        own = war_room.start(self.conn, 'demo', assistant, '自己的房', '盯首轮', ['后端', '页面'], now=NOW)
-        posted = ai_call(self.service, self.conn, assistant, 'war_room.post',
-                         {'project': 'demo', 'room': own['id'], 'body': '@后端 接口好了就在状态板标完成'})
-        self.assertEqual(posted['message']['speaker_name'], '助手')
-        with self.assertRaises(board.BoardError):
-            ai_call(self.service, self.conn, assistant, 'war_room.post', {'project': 'demo', 'room': other['id'], 'body': '插一句'})
-        closed = ai_call(self.service, self.conn, assistant, 'war_room.close',
-                         {'project': 'demo', 'room': own['id'], 'summary': '首轮交付，交棒'})
-        self.assertEqual(closed['status'], 'closed')
-        self.assertEqual(result['started'], True)
-
+        self.assertNotEqual(done['status'], 'approved')
+        self.assertIsNone(self.conn.execute('SELECT 1 FROM war_rooms').fetchone())
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM sessions WHERE crew_name='后端'").fetchone())
 
 if __name__ == '__main__':
     unittest.main()

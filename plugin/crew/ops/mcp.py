@@ -28,7 +28,7 @@ def _envelope_props(op, caller):
     if op.access != 'read':
         props['request_id'] = {'type': 'string', 'minLength': 1, 'maxLength': 300,
                                'description': '这次操作的稳定编号；原样重试时保持不变（Crew 只执行一次）。参数被拒后改了参数再试，要换一个新编号'}
-    if op.risk == 'confirm' and caller.role == 'assistant':
+    if op.needs_message(caller.role):
         props['message_id'] = {'type': 'string', 'minLength': 1, 'maxLength': 300,
                                'description': '触发这项操作的那条用户消息的编号（Crew 在用户消息里提供）'}
     return props
@@ -45,7 +45,7 @@ def input_schema(op, caller):
 def tool(op, caller):
     hints = op.hints
     description = op.description_for(caller)
-    if op.risk == 'confirm' and caller.role == 'assistant':
+    if op.needs_message(caller.role):
         description += '\n需要附上触发它的用户消息 message_id。'
     if op.risk == 'high':
         description += '\n高风险：AI 调用不会直接执行，而是请用户在 Crew 界面确认。'
@@ -114,7 +114,7 @@ def _text_result(value, error=False):
 
 
 def _error(code, message, detail=None):
-    return _text_result({'error': {'code': code, 'message': message, 'detail': detail or {}}}, error=True)
+    return _text_result(OpError(code, message, detail).payload(), error=True)
 
 
 def call_tool(service, caller, grants, name, arguments, exposure='core'):
@@ -148,12 +148,14 @@ def call_tool(service, caller, grants, name, arguments, exposure='core'):
         return _error('invalid_arguments', 'args 必须是对象'), False
     args = dict(args)
     request_id = args.pop('request_id', None)
-    message_id = args.pop('message_id', None) if op.risk == 'confirm' and caller.role == 'assistant' else None
+    message_id = args.pop('message_id', None) if op.needs_message(caller.role) else None
     try:
         value = executor.call(service, caller, op.name, args, request_id=request_id, grants=grants,
                               message_id=message_id)
     except OpError as exc:
         return _error(exc.code, str(exc), exc.detail), False
+    except board.VersionConflict as exc:
+        return _error('version_conflict', str(exc)), False
     except board.Conflict as exc:
         return _error('conflict', str(exc)), False
     except (board.BoardError, ValueError) as exc:
@@ -202,7 +204,7 @@ def handle(handler, service, payload):
             caller, grants = tokens.caller(conn, auth[len('Bearer '):].strip())
             found = loaded(conn, caller)
     except OpError as exc:
-        return handler._send(401, {'error': str(exc)})
+        return handler._send(401, {'error': str(exc), **exc.public_code()})
     if not launch.live(caller):
         return handler._send(401, {'error': '这个令牌所属的会话进程已结束；会话需要由 Crew 重新启动'})
     try:

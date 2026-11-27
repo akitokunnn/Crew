@@ -54,6 +54,8 @@ body.m-chat .main{height:100dvh!important}
 .m-sheet-item svg{flex:none;width:22px;height:22px;fill:none;stroke:var(--text-2);stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .m-sheet-item>span{flex:1;min-width:0}
 .m-sheet-item>small{color:var(--text-3);font-size:var(--m-fs-meta)}
+.m-sheet-item>[data-m-room-state][data-state="preparing"]{color:var(--text)}
+.m-sheet-item>[data-m-room-state][data-state="waiting"]{color:var(--dl-st-fg);font-weight:600}
 .m-sheet-item .m-count{min-width:20px;height:20px;padding:0 6px;box-sizing:border-box;border-radius:10px;background:var(--warn);color:var(--on-accent);font-size:12px;font-weight:700;line-height:20px;text-align:center}
 [data-access-local-controls="false"] .m-sheet-item[data-local-control]{display:none}
 
@@ -72,6 +74,8 @@ body.m-chat .main{height:100dvh!important}
 .leader-row-name>strong{font-size:16px!important}
 .leader-row .goal{font-size:var(--m-fs-meta)!important}
 .leader-row-sub>:is(.st,.group-work-label){font-size:var(--m-fs-min)!important}
+.leader-row button.leader-queued{min-height:var(--m-tap);padding-inline:8px}
+.leader-row .leader-notice-note{font-size:calc(12px * var(--fs))}
 .leader-panel-new{min-height:var(--m-tap);margin-top:8px!important;font-size:15px!important}
 .leader-panel-quota{margin:4px var(--m-gutter) 8px;flex-direction:row!important;gap:16px!important;padding:12px var(--m-gutter)!important}
 .leader-panel-quota-row{flex:1;min-width:0}

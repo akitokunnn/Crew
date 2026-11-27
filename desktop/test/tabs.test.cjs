@@ -5,6 +5,11 @@ const { EventEmitter } = require('node:events');
 const vm = require('node:vm');
 const { WorkspaceTabs } = require('../src/tabs.cjs');
 
+function activitySnapshot(project, counts = {}) {
+  return {project, counts:{working:0,working_leaders:0,decisions:0,todos:0,approvals:0,waiting:0,acceptance:0,
+    attention:0,errors:0,chat_unread:0,channel_unread:0,...counts},items:[],war_rooms:[],unknown:false,updated_at:new Date().toISOString()};
+}
+
 function fixture(options = {}) {
   const views = [], changed = [], external = [], projects = [], keyboard = [];
   let homes = 0, windowClosed = 0;
@@ -23,7 +28,7 @@ function fixture(options = {}) {
     wc.page = { dispatchEvent: event => wc.pageEvents.push(event), CustomEvent: class {
       constructor(type, options) { this.type = type; this.detail = options.detail; }
     } };
-    wc.page.window = wc.page;
+    wc.page.window = wc.page; wc.page.location = {};
     wc.executeJavaScript = async source => vm.runInNewContext(source, wc.page);
     return wc;
   }
@@ -85,20 +90,23 @@ test('workspace and assistant pages receive active-tab visibility while their do
 });
 
 test('cross-workspace task links retain their hash and select the existing document without reloading its draft',async()=>{
-  const destinations=[];const f=fixture({openProject:(name,hash)=>destinations.push({name,hash})});
+  const destinations=[];const f=fixture({openProject:(name,target)=>destinations.push({name,target})});
   await f.manager.openAssistant();const assistant=f.views[0].webContents;
   assistant.emit('will-navigate',event(),'http://127.0.0.1:1234/?project=fitness#leader=coach&goal=checkins');
-  assert.deepEqual(destinations,[{name:'fitness',hash:'#leader=coach&goal=checkins'}]);
-  await f.manager.open({name:'fitness'},destinations[0].hash);const workspace=f.views[1].webContents;
+  assert.deepEqual(destinations,[{name:'fitness',target:{page:'workspace',hash:'#leader=coach&goal=checkins'}}]);
+  await f.manager.open({name:'fitness'},destinations[0].target);const workspace=f.views[1].webContents;
   assert.equal(new URL(workspace.loads[0]).hash,'#leader=coach&goal=checkins');
   workspace.document.draft='不要丢失的输入';const calls=[];workspace.executeJavaScript=async text=>calls.push(text);
   await f.manager.open({name:'fitness'},'#leader=coach&goal=review');
   assert.equal(workspace.loads.length,1);assert.equal(workspace.document.draft,'不要丢失的输入');
   assert.deepEqual(calls,['location.hash="#leader=coach&goal=review"']);
+  // A plain tab click (no page) only selects, even when the tab shows another page of the workspace.
+  await f.manager.open({name:'fitness'},{page:'notes'});assert.equal(workspace.loads.at(-1),'http://127.0.0.1:1234/notes.html?project=fitness');
+  await f.manager.open({name:'fitness'});assert.equal(workspace.loads.length,2);
 });
 
 test('the assistant is one global conversation across workspace tabs with no project activity polling',async()=>{
-  const calls=[];const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async names=>{calls.push(names);return {projects:names.map(project=>({project,counts:{},items:[]}))};}});
+  const calls=[];const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async names=>{calls.push(names);return {projects:names.map(project=>activitySnapshot(project))};}});
   const first=await f.manager.openAssistant();
   assert.equal(first.project,null);assert.equal(first.kind,'assistant');
   assert.equal(f.views[0].webContents.loads[0],'http://127.0.0.1:1234/assistant.html');
@@ -117,7 +125,7 @@ test('the assistant is one global conversation across workspace tabs with no pro
 });
 
 test('saved history tabs remain readable without polling the execution activity endpoint',async()=>{
-  const calls=[];const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async names=>{calls.push(names);return {projects:names.map(project=>({project,counts:{},items:[]}))};}});
+  const calls=[];const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async names=>{calls.push(names);return {projects:names.map(project=>activitySnapshot(project))};}});
   await f.manager.open({name:'storage:archive',read_only:true});await f.manager.refreshActivity();
   assert.equal(calls.length,0);assert.equal(f.manager.state().tabs[1].readOnly,true);
   assert.equal(f.manager.state().tabs[1].activity.label,'已保存的只读历史');
@@ -128,25 +136,25 @@ test('saved history tabs remain readable without polling the execution activity 
 test('one batched activity poll keeps hidden projects current without reloading or acknowledging them',async()=>{
   let tick,cleared=0;const calls=[];
   const f=fixture({setTimer:fn=>(tick=fn,1),clearTimer:()=>cleared++,readActivity:async names=>{
-    calls.push(names);return {projects:names.map(project=>({project,counts:{working:2,decisions:1,unread:3},items:[],updated_at:'now'}))};
+    calls.push(names);return {projects:names.map(project=>activitySnapshot(project,{working:2,working_leaders:1,decisions:1,attention:1,chat_unread:3}))};
   }});
   const a=await f.manager.open({name:'A'});await f.manager.open({name:'B'});await new Promise(resolve=>setImmediate(resolve));
   tick();await new Promise(resolve=>setImmediate(resolve));
   assert.deepEqual(calls.at(-1),['A','B']);
-  for(const tab of f.manager.state().tabs.filter(tab=>tab.project)){assert.equal(tab.activity.badge,1);assert.equal(tab.activity.unread,3);}
-  f.manager.select(a.id);assert.equal(f.manager.state().tabs[1].activity.unread,3);
+  for(const tab of f.manager.state().tabs.filter(tab=>tab.project)){assert.equal(tab.activity.markerCount,1);assert.equal(tab.activity.rows.find(row=>row.label==='未读').count,3);}
+  f.manager.select(a.id);assert.equal(f.manager.state().tabs[1].activity.rows.find(row=>row.label==='未读').count,3);
   assert(f.views.every(view=>view.webContents.loads.length===1));f.manager.dispose();assert.equal(cleared,1);
 });
 test('activity fetch failure keeps the last facts and explicitly marks them stale',async()=>{
   let failing=false;
-  const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async()=>{if(failing)throw Error('connection lost');return {projects:[{project:'A',counts:{working:2},items:[]}]};}});
+  const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async()=>{if(failing)throw Error('connection lost');return {projects:[activitySnapshot('A',{working:2,working_leaders:2})]};}});
   await f.manager.open({name:'A'});await new Promise(resolve=>setImmediate(resolve));failing=true;await f.manager.refreshActivity();
-  const activity=f.manager.state().tabs[1].activity;assert.equal(activity.tone,'stale');assert.equal(activity.counts.working,2);assert.equal(activity.error,'connection lost');f.manager.dispose();
+  const activity=f.manager.state().tabs[1].activity;assert.equal(activity.stale,true);assert.equal(activity.marker,'unknown');assert.equal(activity.working,false);assert(!activity.rows.some(row=>row.label==='正在推进'));assert.equal(activity.error,'connection lost');f.manager.dispose();
 });
 test('an in-flight activity response cannot revive a closed or disposed project view',async()=>{
   let resolve;const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:()=>new Promise(done=>resolve=done)});
   const a=await f.manager.open({name:'A'});f.manager.close(a.id);const b=await f.manager.open({name:'A'});
-  resolve({projects:[{project:'A',counts:{decisions:9}}]});await new Promise(done=>setImmediate(done));
+  resolve({projects:[activitySnapshot('A',{attention:9})]});await new Promise(done=>setImmediate(done));
   assert.equal(f.manager.state().tabs.find(tab=>tab.id===b.id).activity,null);f.manager.dispose();
 });
 
@@ -504,78 +512,92 @@ test('a page that fails mid-slide ends the slide with the recovery controls focu
 });
 
 // The idea wall is a second global page, between the workspaces and the assistant.
-test('the idea wall opens as one global page from a workspace link, without project polling or title updates', async () => {
-  const calls = [], titles = [];
-  const f = fixture({ setTimer: () => 1, clearTimer: () => {}, onTitleChange: name => titles.push(name),
-    readActivity: async names => { calls.push(names); return { projects: names.map(project => ({ project, counts: {}, items: [] })) }; } });
+test('a workspace keeps its assistant and ideas inside its own tab; only the administrator is a global page', async () => {
+  const calls = [], titles = [], destinations = [];
+  const f = fixture({ setTimer: () => 1, clearTimer: () => {}, onTitleChange: name => titles.push(name), openProject: (name, target) => destinations.push({ name, target }),
+    readActivity: async names => { calls.push(names); return { projects: names.map(project => activitySnapshot(project)) }; } });
   await f.manager.open({ name: 'A' });
-  const link = event(); f.views[0].webContents.emit('will-navigate', link, 'http://127.0.0.1:1234/notes.html');
-  assert.equal(link.prevented, true, 'the workspace document stays mounted');
-  await new Promise(resolve => setImmediate(resolve));
-  const notes = f.views[1].webContents;
-  assert.equal(f.views[1].project.kind, 'notes');
-  assert.deepEqual(notes.loads, ['http://127.0.0.1:1234/notes.html']);
-  assert.deepEqual(f.manager.state().tabs.at(-1), { id: 'notes', kind: 'notes', name: '想法', project: null, loading: false, error: false });
-  assert.equal(f.manager.state().activeId, 'notes'); assert.equal(notes.page.crewTabVisible, true);
+  const wc = f.views[0].webContents;
+  // Same-workspace pages are ordinary navigation of the one document.
+  for (const url of ['http://127.0.0.1:1234/notes.html?project=A#layout=wall', 'http://127.0.0.1:1234/assistant.html?project=A#note=n-1', 'http://127.0.0.1:1234/?project=A#all']) {
+    const move = event(); wc.emit('will-navigate', move, url); assert.equal(move.prevented, false, url);
+    wc.emit('did-navigate', {}, url); assert.equal(f.manager.state().tabs[1].error, false, url);
+  }
+  wc.emit('did-navigate', {}, 'http://127.0.0.1:1234/notes.html?project=A'); wc.emit('page-title-updated', event());
+  assert.deepEqual(titles, ['A'], 'the ideas page of a workspace still refreshes its tab title');
+  // A bare idea-wall link opens this workspace's ideas; old cross-workspace filters are dropped.
+  const bare = event(); wc.emit('will-navigate', bare, 'http://127.0.0.1:1234/notes.html#ws=B&global=1&layout=wall&view=archived');
+  assert.equal(bare.prevented, true);
+  assert.deepEqual(destinations, [{ name: 'A', target: { page: 'notes', hash: '#layout=wall&view=archived' } }]);
+  // Another workspace's assistant opens that workspace with the target page and hash.
+  wc.emit('will-navigate', event(), 'http://127.0.0.1:1234/assistant.html?project=B#note=n-2');
+  assert.deepEqual(destinations.at(-1), { name: 'B', target: { page: 'assistant', hash: '#note=n-2' } });
+  // Malformed workspace links never fall through to a browser or to the administrator.
+  for (const url of ['http://127.0.0.1:1234/notes.html?project=', 'http://127.0.0.1:1234/assistant.html?project=A&project=B',
+    'http://127.0.0.1:1234/notes.html?project=A&ws=B', 'http://127.0.0.1:1234/assistant.html?context_project=A', 'http://user:pw@127.0.0.1:1234/assistant.html?project=A']) {
+    assert.equal(f.manager._destination(f.manager.entries.get('workspace-1'), url).kind, 'blocked', url);
+  }
+  assert.equal(f.external.length, 0);
+  // The administrator is the one global tab, named 系统管理员, after the workspaces.
   await f.manager.openAssistant();
-  assert.deepEqual(f.manager.state().tabs.map(tab => tab.id), ['home', 'workspace-1', 'notes', 'assistant'], 'the assistant stays last');
-  // Filter changes on the wall are in-page hash navigation of the same document.
-  notes.emit('did-navigate-in-page', {}, 'http://127.0.0.1:1234/notes.html#tags=%E4%BA%A7%E5%93%81&mode=any', true);
-  notes.emit('page-title-updated', event());
-  assert.equal(f.manager.state().tabs.find(tab => tab.id === 'notes').error, false);
-  assert.deepEqual(titles, []);
+  assert.deepEqual(f.manager.state().tabs.map(tab => [tab.id, tab.name]), [['home', '工作区'], ['workspace-1', 'A'], ['assistant', '系统管理员']]);
+  assert.equal(f.manager.openNotes, undefined, 'there is no global idea wall');
+  // From the administrator a bare idea link opens the most recent workspace, or home when there is none.
+  const admin = f.views[1].webContents;
+  admin.emit('will-navigate', event(), 'http://127.0.0.1:1234/notes.html');
+  assert.deepEqual(destinations.at(-1), { name: 'A', target: { page: 'notes', hash: '' } });
+  f.manager.closeProject('A');
+  admin.emit('will-navigate', event(), 'http://127.0.0.1:1234/notes.html#layout=map');
+  assert.equal(f.manager.state().activeId, 'home');
   await f.manager.refreshActivity(); assert(calls.every(names => names.every(name => name === 'A')));
-  const again = await f.manager.openNotes(); assert.equal(again.id, 'notes'); assert.equal(notes.loads.length, 1);
-  assert.equal(f.manager.close('notes'), true); assert.equal(notes.closed, 1);
   f.manager.dispose();
 });
 
-test('“去聊聊” hands its note hash to the assistant, reusing an open assistant without reloading its draft', async () => {
-  const f = fixture(); await f.manager.openNotes();
-  const notes = f.views[0].webContents;
-  const chat = event(); notes.emit('will-navigate', chat, 'http://127.0.0.1:1234/assistant.html#note=n-1');
-  assert.equal(chat.prevented, true);
-  await new Promise(resolve => setImmediate(resolve));
-  const assistant = f.views[1].webContents;
-  assert.deepEqual(assistant.loads, ['http://127.0.0.1:1234/assistant.html#note=n-1']);
-  assert.equal(f.manager.state().activeId, 'assistant');
-  assistant.document.draft = '还没发出的草稿'; const calls = []; assistant.executeJavaScript = async text => calls.push(text);
-  f.manager.select('notes');
-  notes.emit('will-navigate', event(), 'http://127.0.0.1:1234/assistant.html#note=n-2');
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(assistant.loads.length, 1); assert.equal(assistant.document.draft, '还没发出的草稿');
-  assert(calls.includes('location.hash="#note=n-2"'));
-  assert.equal(f.manager.state().activeId, 'assistant');
-  // A workspace task link from the wall still opens that workspace.
-  notes.emit('will-navigate', event(), 'http://127.0.0.1:1234/?project=fitness#leader=coach');
-  assert.deepEqual(f.projects, ['fitness']);
-  // A link the wall opens in a new window goes to the same global page.
-  assert.deepEqual(notes.popup({ url: 'http://127.0.0.1:1234/notes.html#view=archived' }), { action: 'deny' });
-  assert.equal(f.manager.state().activeId, 'notes');
+test('saved read-only history never opens an assistant or ideas page', async () => {
+  const f = fixture();
+  await f.manager.open({ name: 'storage:w1', read_only: true });
+  const tab = f.manager.entries.get('workspace-1');
+  assert.equal(f.manager._destination(tab, 'http://127.0.0.1:1234/assistant.html?project=storage%3Aw1').kind, 'blocked');
+  assert.equal(f.manager._destination(tab, 'http://127.0.0.1:1234/notes.html?project=storage%3Aw1').kind, 'blocked');
+  assert.equal(f.manager._destination(tab, 'http://127.0.0.1:1234/?project=storage%3Aw1').kind, 'same');
+  // A bare idea link from history goes home: history is not a workspace to write ideas into.
+  assert.equal(f.manager._destination(tab, 'http://127.0.0.1:1234/notes.html').kind, 'home');
+  await assert.rejects(f.manager.open({ name: 'storage:w1', read_only: true }, { page: 'assistant' }), /只读历史/);
   f.manager.dispose();
 });
 
-test('project, idea wall and assistant slide in their tab order', async () => {
+test('“去聊聊” loads the workspace assistant in the same tab and hands later notes to it without reloading its draft', async () => {
+  const f = fixture(); await f.manager.open({ name: 'A' }, { page: 'notes' });
+  const wc = f.views[0].webContents;
+  assert.deepEqual(wc.loads, ['http://127.0.0.1:1234/notes.html?project=A']);
+  // Clicking 去聊聊 in the page is plain same-workspace navigation.
+  const chat = event(); wc.emit('will-navigate', chat, 'http://127.0.0.1:1234/assistant.html?project=A#note=n-1');
+  assert.equal(chat.prevented, false);
+  // A link opened as a new window still loads the assistant in this tab, then later notes only change the hash.
+  assert.deepEqual(wc.popup({ url: 'http://127.0.0.1:1234/assistant.html?project=A#note=n-1' }), { action: 'deny' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(wc.loads.at(-1), 'http://127.0.0.1:1234/assistant.html?project=A#note=n-1');
+  wc.document.draft = '还没发出的草稿'; const calls = []; wc.executeJavaScript = async text => calls.push(text);
+  await f.manager.open({ name: 'A' }, { page: 'assistant', hash: '#note=n-2' });
+  assert.equal(wc.loads.length, 2); assert.equal(wc.document.draft, '还没发出的草稿');
+  assert.deepEqual(calls, ['location.hash="#note=n-2"']);
+  assert.equal(f.manager.state().tabs.length, 2, 'no global assistant or idea tab was created');
+  f.manager.dispose();
+});
+
+test('a workspace and the administrator slide in their tab order', async () => {
   const f = await slideFixture(), a = await f.manager.open({ name: 'A' });
-  await f.manager.openNotes(); const [project, notes] = f.views;
-  assert.deepEqual(f.manager.state().transition, { from: a.id, to: 'notes' });
-  assert(project.bounds.x === 0); assert.equal(notes.bounds.x, WIDTH, 'the wall enters from the right of the workspace');
-  f.advance(400); settled(f); assert.equal(f.manager.activeView, notes);
-
-  await f.manager.openAssistant(); const assistant = f.views[2];
-  assert.deepEqual(f.manager.state().transition, { from: 'notes', to: 'assistant' });
-  assert.equal(assistant.bounds.x, WIDTH, 'the assistant sits to the right of the wall');
-  f.advance(400); settled(f);
-
-  f.manager.select('notes');
-  assert.deepEqual(f.manager.state().transition, { from: 'assistant', to: 'notes' });
-  assert.equal(notes.bounds.x, -WIDTH, 'going back to the wall slides it in from the left');
-  f.advance(400); settled(f); assert.equal(f.manager.activeView, notes);
+  await f.manager.openAssistant(); const [project, assistant] = f.views;
+  assert.deepEqual(f.manager.state().transition, { from: a.id, to: 'assistant' });
+  assert(project.bounds.x === 0); assert.equal(assistant.bounds.x, WIDTH, 'the administrator enters from the right of the workspace');
+  f.advance(400); settled(f); assert.equal(f.manager.activeView, assistant);
 
   f.manager.select(a.id);
-  f.advance(100); assert(notes.bounds.x > 0, 'leaving the wall for a workspace slides it out to the right');
-  f.advance(300); settled(f);
+  assert.deepEqual(f.manager.state().transition, { from: 'assistant', to: a.id });
+  f.advance(100); assert(assistant.bounds.x > 0, 'leaving the administrator slides it out to the right');
+  f.advance(300); settled(f); assert.equal(f.manager.activeView, project);
 
-  f.reduced = true; f.manager.select('notes');
+  f.reduced = true; f.manager.select('assistant');
   assert.equal(f.manager.state().transition, null, 'reduced motion switches without a slide'); settled(f);
 });
+

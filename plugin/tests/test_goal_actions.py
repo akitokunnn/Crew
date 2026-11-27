@@ -297,7 +297,7 @@ class GoalActionTests(GoalFixture):
         receipt = {'ok': True, 'preview': {'id': 'draft'}}
         with mock.patch.object(self.service.report_previews, 'capture', return_value=receipt) as capture:
             self.assertEqual(self.call(execution, 'goal.report.preview', {'document_html': document, 'viewport': 'mobile'}), receipt)
-        capture.assert_called_once_with(document, viewport='mobile', title=goal['title'], goal_id=goal['id'],
+        capture.assert_called_once_with(document, field='document_html', viewport='mobile', title=goal['title'], goal_id=goal['id'],
                                         report_id=None, actor_session_id='chief-id')
         with mock.patch.object(self.service.report_previews, 'capture', side_effect=board.BoardError('Crew 桌面预览未连接')):
             with self.assertRaisesRegex(board.BoardError, '桌面预览未连接'):
@@ -345,6 +345,42 @@ class GoalActionTests(GoalFixture):
                 self.assertIn('<details class="crew-evidence">', saved['html'])
                 self.assertIn('data-status="passed"', saved['html'])
                 self.assertIn('measurements/sample-1.json', saved['html'])
+
+    def test_finish_requires_one_body_and_saves_markdown_for_both_agent_roles(self):
+        for role in ('leader', 'execution'):
+            with self.subTest(role=role):
+                goal = self.goal()
+                goals.transition(self.conn, goal['id'], 'running')
+                execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex') if role == 'execution' else None
+                data = self.report()
+                authored_html = data.pop('document_html')
+                base = {'goal_id': goal['id'], 'report': data}
+                call = (lambda args: self.call(execution, 'goal.finish', args)) if execution else (
+                    lambda args: ai_call(self.service, self.conn, 'chief-id', 'goal.finish', args))
+                for fields, message in (({}, '请用 goal.finish'), ({'document_md': '# Plain', 'document_html': authored_html}, '只能选一种'),
+                                        ({'document_md': '# Plain', 'document_html': ''}, '只能选一种'),
+                                        ({'document_md': ' \n'}, 'document_md 报告正文')):
+                    with self.subTest(fields=fields), self.assertRaisesRegex(board.BoardError, message):
+                        call({**base, 'report': {**data, **fields}})
+                self.assertIsNone(goals.get_finish(self.conn, goal['id']))
+                self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports WHERE goal_id=?', (goal['id'],)).fetchone()[0], 0)
+                document = '# 结论\n\n正文保留原始 Markdown。'
+                receipt = call({**base, 'report': {**data, 'document_md': document}})
+                self.assertTrue(receipt['pending_finish'])
+                saved = goals.get_report(self.conn, receipt['report_id'])
+                self.assertEqual(saved['document_format'], 'markdown')
+                self.assertEqual(saved['data']['document_md'], document)
+                self.assertNotIn('document_html', saved['data'])
+
+    def test_markdown_delivery_cannot_be_published_as_a_stage_report(self):
+        goal = self.goal()
+        data = self.report()
+        del data['document_html']
+        with self.assertRaisesRegex(board.BoardError, 'Markdown.*goal.finish'):
+            ai_call(self.service, self.conn, 'chief-id', 'goal.report.publish', {
+                'goal_id': goal['id'], 'request_id': 'markdown-stage',
+                'report': {**data, 'outcome': 'progress', 'document_md': '# Plain'}})
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports WHERE goal_id=?', (goal['id'],)).fetchone()[0], 0)
 
 
 if __name__ == '__main__':

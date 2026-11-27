@@ -76,8 +76,8 @@ def post_claude_budget(service, path, data, project_name):
 
 
 def post_settings(service, path, data, project_name):
-    if not data or not set(data) <= {'ai', 'execution', 'sounds'}:
-        raise ValueError('设置请求只能包含 ai、execution 和 sounds 配置')
+    if not data or not set(data) <= settings.SETTINGS_FIELDS:
+        raise ValueError('设置请求包含无效字段')
     with service.write_lock, closing(store.connect(service.home)) as conn, goals.transaction(conn):
         if 'ai' in data:
             settings.save(conn, data['ai'])
@@ -85,6 +85,8 @@ def post_settings(service, path, data, project_name):
             settings.save_execution(conn, data['execution'])
         if 'sounds' in data:
             event_sounds.save(conn, data['sounds'], service.home)
+        if 'canvas_wheel_zoom' in data:
+            settings.save_canvas_wheel_zoom(conn, data['canvas_wheel_zoom'])
     return service.settings_state()
 
 

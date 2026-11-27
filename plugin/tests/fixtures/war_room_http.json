@@ -1,0 +1,339 @@
+{
+  "errors": {
+    "room_occupied": {
+      "status": 409,
+      "body": {
+        "error": "本工作区已有开放的作战室",
+        "code": "room_occupied",
+        "detail": {
+          "room_id": 1
+        },
+        "error_code": "room_occupied"
+      }
+    },
+    "version_conflict": {
+      "status": 409,
+      "body": {
+        "error": "确认期间计划书已经改变，请重新查看",
+        "code": "version_conflict",
+        "detail": {},
+        "error_code": "version_conflict"
+      }
+    },
+    "missing_recommendation": {
+      "status": 400,
+      "body": {
+        "error": "每个待定项都需要推荐值",
+        "code": "missing_recommendation",
+        "detail": {},
+        "error_code": "missing_recommendation"
+      }
+    },
+    "invalid_criteria": {
+      "status": 400,
+      "body": {
+        "error": "第 13 行：条目要写成 - [ID] 内容",
+        "code": "invalid_criteria",
+        "detail": {
+          "line": 13
+        },
+        "error_code": "invalid_criteria"
+      }
+    },
+    "invalid_plan": {
+      "status": 400,
+      "body": {
+        "error": "第 6 行：条目要写成 - [ID] 内容",
+        "code": "invalid_plan",
+        "detail": {
+          "line": 6
+        },
+        "error_code": "invalid_plan"
+      }
+    }
+  },
+  "plans": [
+    {
+      "room_id": 1,
+      "version": 3,
+      "body": "# 切换签名\n\n用统一的 v2。\n\n## 分工\n- [A1] 支付 | 逐步切换网关\n- [A2] 支付 | 观察错误率\n\n## 等你定\n- [Q1] 用什么算法 | HMAC-SHA256\n- [Q2] 何时上线 | 周五 | 下周一\n\n## 完成标准\n- [C1] 全部回归通过\n",
+      "summary": "分批切换",
+      "author": "s3",
+      "created_at": "2026-11-28T02:04:00Z",
+      "budget_tokens": 500000,
+      "approval": null,
+      "entries": [
+        {
+          "entry_id": "A1",
+          "kind": "assignment",
+          "title": "逐步切换网关",
+          "owner": "支付",
+          "recommendation": null,
+          "answer": null,
+          "line": 6,
+          "owner_session_id": "s4"
+        },
+        {
+          "entry_id": "A2",
+          "kind": "assignment",
+          "title": "观察错误率",
+          "owner": "支付",
+          "recommendation": null,
+          "answer": null,
+          "line": 7,
+          "owner_session_id": "s4"
+        },
+        {
+          "entry_id": "Q1",
+          "kind": "decision",
+          "title": "用什么算法",
+          "owner": null,
+          "recommendation": "HMAC-SHA256",
+          "answer": null,
+          "line": 10,
+          "owner_session_id": null
+        },
+        {
+          "entry_id": "Q2",
+          "kind": "decision",
+          "title": "何时上线",
+          "owner": null,
+          "recommendation": "周五",
+          "answer": "下周一",
+          "line": 11,
+          "owner_session_id": null
+        },
+        {
+          "entry_id": "C1",
+          "kind": "criterion",
+          "title": "全部回归通过",
+          "owner": null,
+          "recommendation": null,
+          "answer": null,
+          "line": 14,
+          "owner_session_id": null
+        }
+      ]
+    },
+    {
+      "room_id": 1,
+      "version": 2,
+      "body": "# 切换签名\n\n用统一的 v2。\n\n## 分工\n- [A1] 支付 | 切换网关\n\n## 等你定\n- [Q1] 用什么算法 | HMAC-SHA256\n- [Q2] 何时上线 | 周五 | 下周一\n\n## 完成标准\n- [C1] 全部回归通过\n",
+      "summary": "补充网关",
+      "author": "s3",
+      "created_at": "2026-11-28T02:02:00Z",
+      "budget_tokens": 500000,
+      "approval": {
+        "recommendations": {
+          "Q1": "HMAC-SHA256"
+        },
+        "budget_tokens": 500000,
+        "at": "2026-10-21T08:00:00.000Z"
+      },
+      "entries": [
+        {
+          "entry_id": "A1",
+          "kind": "assignment",
+          "title": "切换网关",
+          "owner": "支付",
+          "recommendation": null,
+          "answer": null,
+          "line": 6,
+          "owner_session_id": "s4"
+        },
+        {
+          "entry_id": "Q1",
+          "kind": "decision",
+          "title": "用什么算法",
+          "owner": null,
+          "recommendation": "HMAC-SHA256",
+          "answer": null,
+          "line": 9,
+          "owner_session_id": null
+        },
+        {
+          "entry_id": "Q2",
+          "kind": "decision",
+          "title": "何时上线",
+          "owner": null,
+          "recommendation": "周五",
+          "answer": "下周一",
+          "line": 10,
+          "owner_session_id": null
+        },
+        {
+          "entry_id": "C1",
+          "kind": "criterion",
+          "title": "全部回归通过",
+          "owner": null,
+          "recommendation": null,
+          "answer": null,
+          "line": 13,
+          "owner_session_id": null
+        }
+      ]
+    },
+    {
+      "room_id": 1,
+      "version": 1,
+      "body": "# 切换签名\n\n用统一的 v2。\n\n## 分工\n- [A1] 支付 | 整理方案\n\n## 等你定\n- [Q1] 用什么算法 | HMAC\n- [Q2] 何时上线 | 周五\n\n## 完成标准\n- [C1] 全部回归通过\n",
+      "summary": "第一份",
+      "author": "s3",
+      "created_at": "2026-11-28T02:01:00Z",
+      "budget_tokens": null,
+      "approval": null,
+      "entries": [
+        {
+          "entry_id": "A1",
+          "kind": "assignment",
+          "title": "整理方案",
+          "owner": "支付",
+          "recommendation": null,
+          "answer": null,
+          "line": 6,
+          "owner_session_id": "s4"
+        },
+        {
+          "entry_id": "Q1",
+          "kind": "decision",
+          "title": "用什么算法",
+          "owner": null,
+          "recommendation": "HMAC",
+          "answer": null,
+          "line": 9,
+          "owner_session_id": null
+        },
+        {
+          "entry_id": "Q2",
+          "kind": "decision",
+          "title": "何时上线",
+          "owner": null,
+          "recommendation": "周五",
+          "answer": null,
+          "line": 10,
+          "owner_session_id": null
+        },
+        {
+          "entry_id": "C1",
+          "kind": "criterion",
+          "title": "全部回归通过",
+          "owner": null,
+          "recommendation": null,
+          "answer": null,
+          "line": 13,
+          "owner_session_id": null
+        }
+      ]
+    }
+  ],
+  "queued": {
+    "id": 1,
+    "project": "demo",
+    "speaker_session_id": "user",
+    "speaker_name": "用户",
+    "body": "这条先留给领头",
+    "created_at": "2026-10-21T08:00:00.000Z",
+    "reply_to": null,
+    "detail": false,
+    "auto": false,
+    "room_id": 1,
+    "mentions": [
+      {
+        "session_id": "s3",
+        "name": "lead",
+        "replied": false,
+        "delivery": "queued",
+        "queued_at": "2026-10-21T08:00:00.000Z",
+        "delivered_at": null,
+        "via": null,
+        "waiting": null,
+        "reply_id": null
+      }
+    ],
+    "notified": [],
+    "reply": null,
+    "room": null
+  },
+  "room": 1,
+  "history": {
+    "id": "1bed5a5899bd4e4f94041321d4592bc1",
+    "goal_id": "8faf737dfff745a083ac1f9b3f49f7f6",
+    "session_id": "s4",
+    "round": 1,
+    "generation": 1,
+    "status": "queued",
+    "read_seq": 0,
+    "room_id": 1,
+    "latest_seq": 3,
+    "unread": 3,
+    "events": [
+      {
+        "seq": 2,
+        "type": "tool_result",
+        "at": "2026-11-27T19:37:57.301Z",
+        "tool_use_id": "call-1",
+        "content": "接口检查通过",
+        "room_id": 1,
+        "execution_id": "1bed5a5899bd4e4f94041321d4592bc1"
+      },
+      {
+        "seq": 3,
+        "type": "assistant",
+        "at": "2026-11-27T19:37:57.301Z",
+        "id": "assistant-1",
+        "content": [
+          {
+            "type": "text",
+            "text": "回归已完成。"
+          }
+        ],
+        "room_id": 1,
+        "execution_id": "1bed5a5899bd4e4f94041321d4592bc1"
+      }
+    ],
+    "has_more": true
+  },
+  "older": {
+    "id": "1bed5a5899bd4e4f94041321d4592bc1",
+    "goal_id": "8faf737dfff745a083ac1f9b3f49f7f6",
+    "session_id": "s4",
+    "round": 1,
+    "generation": 1,
+    "status": "queued",
+    "read_seq": 0,
+    "room_id": 1,
+    "latest_seq": 3,
+    "unread": 3,
+    "events": [
+      {
+        "seq": 1,
+        "type": "message",
+        "at": "2026-11-27T19:37:57.300Z",
+        "id": "user-1",
+        "role": "user",
+        "text": "请先验证回滚步骤",
+        "source": "human",
+        "room_id": 1,
+        "execution_id": "1bed5a5899bd4e4f94041321d4592bc1"
+      }
+    ],
+    "has_more": false
+  },
+  "job": {
+    "id": 1,
+    "room_id": 1,
+    "entry_id": "A1",
+    "kind": "assignment",
+    "plan_version": 2,
+    "answer": null,
+    "goal_id": "8faf737dfff745a083ac1f9b3f49f7f6",
+    "title": "切换网关",
+    "owner_session_id": "s4",
+    "status": "todo",
+    "note": null,
+    "updated_at": "2026-10-21T08:00:00.000Z",
+    "updated_by": "user",
+    "owner_name": "支付",
+    "updated_by_name": "用户"
+  }
+}

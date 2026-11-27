@@ -40,6 +40,12 @@ def post(service, path, data, project_name, caller=HUMAN, request_id=None):
         return call_op(service, data, project_name, caller)
     if path.startswith(OP_PATH + '/'):
         # The page form: the body is the arguments, the request id rides in X-Crew-Request-Id.
+        if path == OP_PATH + '/mindmap.convert' and 'request_id' in data:
+            data = dict(data)
+            body_id = _request_id(data.pop('request_id'))
+            if request_id is not None and request_id != body_id:
+                raise OpError('request_conflict', '正文与请求头的 request_id 不一致')
+            request_id = body_id
         return executor.call(service, caller, path[len(OP_PATH) + 1:], data,
                              request_id=_request_id(request_id), project_name=project_name)
     raise OpError('not_found', '接口不存在')

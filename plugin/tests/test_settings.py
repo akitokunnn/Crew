@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from crew import board, runtimes, settings, store
+from crew import board, domains, mindmap_api, runtimes, settings, store
 
 
 class Rollback(Exception):
@@ -45,8 +45,25 @@ class SettingsTests(unittest.TestCase):
             settings.resolve(self.home, which=self.installed())
         self.assertFalse(self.home.exists())
 
+    def test_wheel_preference_is_persisted_and_shared_by_both_canvases(self):
+        self.assertFalse(settings.canvas_wheel_zoom(self.home))
+        work = Path(self.temp.name) / 'work'
+        work.mkdir()
+        with closing(store.connect(self.home)) as conn:
+            board.init_project(conn, 'demo', work)
+            with self.assertRaises(settings.SettingsError):
+                settings.save_canvas_wheel_zoom(conn, 1)
+            self.assertFalse(domains.summary(conn, 'demo')['canvas_wheel_zoom'])
+            self.assertFalse(mindmap_api.snapshot(self.home, 'demo')['canvas_wheel_zoom'])
+            for value in (True, True, False):
+                with board.transaction(conn):
+                    settings.save_canvas_wheel_zoom(conn, value)
+                self.assertIs(settings.canvas_wheel_zoom(self.home), value)
+                self.assertIs(domains.summary(conn, 'demo')['canvas_wheel_zoom'], value)
+                self.assertIs(mindmap_api.snapshot(self.home, 'demo')['canvas_wheel_zoom'], value)
+
     def test_saved_home_options_survive_connections_and_task_null_follows_default(self):
-        ai = {'default': choice('codex', 'future-provider/custom-model', 'future-effort'),
+        ai = {**settings.DEFAULT, 'default': choice('codex', 'future-provider/custom-model', 'future-effort'),
               'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': choice('claude'), 'operations': choice('codex', None, 'low-latency')}
         self.assertEqual(settings.save(self.home, ai), ai)
         with closing(store.connect(self.home)) as conn:
@@ -62,6 +79,18 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(settings.SettingsError, '已选择 codex.*未找到'):
             settings.resolve(self.home, 'digest', discovery)
         discovery.assert_called_once_with('codex')
+
+    def test_war_room_choice_round_trip_keeps_its_own_default(self):
+        installed = self.installed('claude', 'codex')
+        global_choice = choice('codex', 'global')
+        self.assertEqual(settings.resolve(self.home, 'war_room', installed), choice('claude'))
+        settings.save(self.home, {'default': global_choice})
+        self.assertEqual(settings.get(self.home)['war_room'], choice('claude'))
+        room_choice = choice('codex', 'room', 'low', 'default')
+        settings.save(self.home, {'default': global_choice, 'war_room': room_choice})
+        self.assertEqual(settings.get(self.home)['war_room'], room_choice)
+        self.assertEqual(settings.resolve(self.home, 'war_room', installed), room_choice)
+        self.assertEqual(settings.resolve(self.home, 'default', installed), global_choice)
 
     def test_operations_only_choice_resolves_without_a_global_default(self):
         settings.save(self.home, {'default': choice(), 'operations': choice('codex')})
@@ -125,7 +154,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.get(self.home), original)
 
     def test_save_and_resolve_use_callers_transaction_without_extra_connection_or_commit(self):
-        original = {'default': choice('claude'), 'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': None, 'operations': None}
+        original = {**settings.DEFAULT, 'default': choice('claude'), 'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': None, 'operations': None}
         settings.save(self.home, original)
         with closing(store.connect(self.home)) as conn:
             with self.assertRaises(Rollback), board.transaction(conn):

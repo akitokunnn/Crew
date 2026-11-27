@@ -1,36 +1,38 @@
-"""HTTP handlers for the personal mind map. Routing lives in web.py (see docs/MINDMAP_DESIGN.md, 待接线)."""
+"""Workspace mind map operations used by the HTTP and AI registry."""
 from contextlib import closing
 
-from . import board, mindmap, store
+from . import board, mindmap, settings, store
 
 
-def _open(home):
-    conn = store.connect(home)
-    mindmap.ensure_schema(conn)
-    return conn
-
-
-def snapshot(home):
+def snapshot(home, project):
     """GET /api/personal/mindmap"""
-    with closing(_open(home)) as conn:
-        return mindmap.snapshot(conn)
+    with closing(store.connect(home)) as conn:
+        conn.execute('BEGIN')
+        return _canvas_snapshot(conn, mindmap.snapshot(conn, project))
 
 
 def edit(home, data):
-    """POST /api/personal/mindmap — body {ops, base_version}."""
-    if not isinstance(data, dict) or set(data) != {'ops', 'base_version'}:
-        raise board.BoardError('请求体必须正好包含 ops、base_version')
-    with closing(_open(home)) as conn:
-        return mindmap.apply(conn, data['ops'], data['base_version'])
+    """POST /api/personal/mindmap — body {project, ops, base_version}."""
+    if not isinstance(data, dict) or set(data) != {'project', 'ops', 'base_version'}:
+        raise board.BoardError('请求体必须正好包含 project、ops、base_version')
+    with closing(store.connect(home)) as conn:
+        result = mindmap.apply(conn, data['ops'], data['base_version'], project=data['project'])
+        return dict(result, map=_canvas_snapshot(conn, result['map']))
 
 
 def preview(home, data):
     """POST /api/personal/mindmap/preview — read-only conversion plan."""
-    with closing(_open(home)) as conn:
+    with closing(store.connect(home)) as conn:
+        conn.execute('BEGIN')
         return mindmap.preview(conn, data)
 
 
 def convert(home, data):
     """POST /api/personal/mindmap/convert — writes the target workspace's board; run it under the service write lock."""
-    with closing(_open(home)) as conn:
-        return mindmap.convert(conn, data)
+    with closing(store.connect(home)) as conn:
+        result = mindmap.convert(conn, data)
+        return dict(result, map=_canvas_snapshot(conn, result['map']))
+
+
+def _canvas_snapshot(conn, snapshot):
+    return dict(snapshot, canvas_wheel_zoom=settings.canvas_wheel_zoom(conn))

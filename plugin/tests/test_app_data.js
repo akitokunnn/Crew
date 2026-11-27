@@ -241,13 +241,14 @@ test("every managed kind of the server has a place in the snapshot",()=>{
   const {KINDS}=load();
   eq(Object.keys(KINDS).filter(name=>["conversations","channel_digest","sound_events","runtimes","notification","scanner"].includes(name)).sort(),
      ["channel_digest","conversations","notification","runtimes","scanner","sound_events"]);
-  const base={leaders:[],members:[],attention:[],native_approvals:[],git_assistant:null,git_branches:null,candidates:{running:[],others:[]},channel:{unread:2,latest_id:3,digest_id:null,digesting:false,digest_error:null},sounds:{preferences:{},revision:1,catalog:{},missing:[],events:[]},runtimes:[],notification:{away:false},agents_error:null,vscode_error:"x"};
+  const base={leaders:[],members:[],notice_history:[],attention:[],native_approvals:[],git_assistant:null,git_branches:null,candidates:{running:[],others:[]},channel:{unread:2,latest_id:3,digest_id:null,digesting:false,digest_error:null},sounds:{preferences:{},revision:1,catalog:{},missing:[],events:[]},runtimes:[],notification:{away:false},agents_error:null,vscode_error:"x"};
   const next=load().merge(base,[
-    {seq:1,type:"conversations.updated",entity:"demo",data:{leaders:[{session_id:"s1"}],members:[],attention:[],native_approvals:[],git_assistant:null,git_branches:null,candidates:{running:[],others:[]}}},
+    {seq:1,type:"conversations.updated",entity:"demo",data:{leaders:[{session_id:"s1"}],members:[],notice_history:[{name:"已关闭",count:1}],attention:[],native_approvals:[],git_assistant:null,git_branches:null,candidates:{running:[],others:[]}}},
     {seq:2,type:"channel_digest.updated",entity:"demo",data:{digesting:true,digest_error:null}},
     {seq:3,type:"sound_events.updated",entity:"sound_events",data:{events:[{id:"reply:s1:4"}]}},
     {seq:4,type:"scanner.updated",entity:"scanner",data:{agents_error:"失败",vscode_error:null}}]);
   eq(next.leaders,[{session_id:"s1"}]);eq(next.channel,{unread:2,latest_id:3,digest_id:null,digesting:true,digest_error:null});
+  eq(next.notice_history,[{name:"已关闭",count:1}]);
   eq(next.sounds.events,[{id:"reply:s1:4"}]);assert.equal(next.sounds.revision,1);eq([next.agents_error,next.vscode_error],["失败",null]);
 });
 

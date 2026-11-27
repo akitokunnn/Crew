@@ -684,17 +684,21 @@ def validate_report(conn, goal_id, data):
         if item['recommendation'] and item['recommendation'] not in item['options']:
             raise board.BoardError('user_decisions.recommendation 必须是 options 之一')
     result['user_decisions'] = entries
-    if 'document_html' in result:
-        document = _text(result['document_html'], 'document_html 自包含 HTML 正文', required=False,
-                         limit=report_documents.MAX_HTML)
-        if len(document.encode('utf-8')) > report_documents.MAX_HTML:
-            raise board.BoardError('document_html 自包含 HTML 正文超过 512 KiB')
+    final = outcome in ('awaiting_acceptance', 'completed')
+    field = report_documents.body_field(result, required=final)
+    if field is not None:
+        if field == 'document_md' and outcome == 'progress':
+            raise board.BoardError('Markdown 报告正文请用 goal.finish 提交')
+        document = _text(result[field], field + ' 报告正文', required=final or field == 'document_md',
+                         limit=report_documents.MAX_DOCUMENT)
+        if len(document.encode('utf-8')) > report_documents.MAX_DOCUMENT:
+            raise board.BoardError(field + ' 报告正文超过 512 KiB')
+    result['document_format'] = 'markdown' if field == 'document_md' else 'html'
     for key in ('delivered', 'unresolved', 'artifacts', 'tradeoffs'):
         result[key] = _strings(result.get(key, []), key)
     result['follow_up'] = _text(result.get('follow_up', ''), '后续修改入口', required=False)
     if 'folder' in result:
         result['folder'] = _text(result['folder'], 'folder 交付文件夹', required=False, limit=1000).strip()
-    final = outcome in ('awaiting_acceptance', 'completed')
     entries, standards = result.get('acceptance', []), {item['id']: item['title'] for item in req['acceptance']}
     if not isinstance(entries, builtins.list) or final and len(entries) != len(standards):
         raise board.BoardError('acceptance 必须为对象数组；awaiting_acceptance/completed 必须逐项对应全部原始验收标准')
@@ -727,8 +731,6 @@ def validate_report(conn, goal_id, data):
     if outcome == 'completed' and (any(item['status'] != 'passed' for item in entries)
                                    or not any(item['kind'] == 'actual' for item in examples)):
         raise board.BoardError('未验证、模拟或仅示意 example 不能宣称目标达标')
-    if final and not result.get('document_html', '').strip():
-        raise board.BoardError('最终交付需要 HTML 正文 document_html（CLI 用 finish --html-file）')
     if final and any(item['status'] in ('unverified', 'simulated') for item in entries) and not result['unresolved']:
         raise board.BoardError('有未验证或模拟验证的标准时，unresolved 必须写明没覆盖的边界')
     investment = result.get('investment', {})
@@ -755,6 +757,10 @@ def validate_report(conn, goal_id, data):
 
 def render_report(conn, goal_id, data):
     data, goal = validate_report(conn, goal_id, data), _row(conn, goal_id)
+    if report_documents.document_format(data) == 'markdown':
+        return report_documents.render_markdown(goal['title'], data['document_md'], report_documents.verification(data))
+    if data.get('document_html', '').strip():
+        return report_documents.render(goal['title'], data['document_html'], report_documents.verification(data))
     esc = lambda value: html.escape(str(value), quote=True)
     labels = {'passed': '通过', 'failed': '失败', 'unverified': '未验证', 'simulated': '模拟验证'}
     counts = {key: sum(item['status'] == key for item in data['acceptance']) for key in labels}
@@ -785,8 +791,6 @@ def render_report(conn, goal_id, data):
                      esc(_json(investment['usage']) if investment.get('usage') is not None else '未知，未估作零用量或费用'),
                      listing([item['role'] + '：' + str(item.get('contribution', '未记录')) for item in investment.get('roles', [])]),
                      esc(investment.get('note', '')), esc(data['follow_up'])))
-    if data.get('document_html', '').strip():
-        return report_documents.render(goal['title'], data['document_html'], report_documents.verification(data))
     return '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'"><title>%s</title><style>body{font:16px/1.7 system-ui,sans-serif;max-width:960px;margin:40px auto;padding:0 24px;color:#292929;background:#fafafa}h2{margin-top:32px}svg{width:100%%;max-width:600px}table{border-collapse:collapse;width:100%%}th,td{border:1px solid #ddd;text-align:left;vertical-align:top;padding:10px;white-space:pre-wrap;overflow-wrap:anywhere}th{width:140px}p,li{white-space:pre-wrap;overflow-wrap:anywhere}</style><body>%s</body></html>' % (esc(goal['title']), ''.join(sections))
 
 
@@ -832,6 +836,7 @@ def get_report(conn, report_id):
     value = dict(row)
     value['data'] = json.loads(value.pop('data_json'))
     value['data']['requirement_version'] = row['requirement_version']
+    value['document_format'] = report_documents.document_format(value['data'])
     goal = _row(conn, value['goal_id'])
     latest = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND round=? ORDER BY version DESC LIMIT 1',
                           (value['goal_id'], goal['current_round'])).fetchone()
@@ -914,8 +919,16 @@ def review_acceptance(conn, goal_id, accepted, *, note='', actor=board.HUMAN, ex
         if not notify_rejection:
             return result
         text = rejection_notice(goal, note)
-    board._queue_leader_notice(conn, goal['leader_session_id'], text, 'web', now)
+    queue_task_notice(conn, goal_id, goal['leader_session_id'], text, 'web', now)
     return result
+
+
+def queue_task_notice(conn, goal_id, session_id, text, source, now, *, wake=True):
+    notice = board._queue_leader_notice(conn, session_id, text, source, now, wake=wake)
+    conn.execute('UPDATE leader_notices SET room_id=i.room_id,wake=CASE WHEN r.status=\'closed\' THEN 0 ELSE wake END '
+                 'FROM war_room_items i JOIN war_rooms r ON r.id=i.room_id WHERE i.goal_id=? AND leader_notices.id=?',
+                 (goal_id, notice))
+    return notice
 
 
 def rejection_notice(goal, note):
@@ -1045,17 +1058,16 @@ def finalize_finish(conn, goal_id, *, now=None):
         todo.add_native(conn, leader_session_id, item['title'], '来自任务「%s」：%s' % (goal['title'], item['detail']),
                         '完成上述操作后，在人工待办中标记完成。', operation_key='report:%s:%s' % (report['id'], index), now=now)
     for item in report['data'].get('user_decisions', []):
-        board.ask.__wrapped__(conn, goal['leader_session_id'], '来自任务「%s」：%s\n原因：%s' %
+        decision_id = board.ask.__wrapped__(conn, goal['leader_session_id'], '来自任务「%s」：%s\n原因：%s' %
                   (goal['title'], item['question'], item['why']), item.get('options', []),
                   item.get('recommendation'), blocking=False, now=now)
-    # The leader's general chat does not share the task execution's context; tell it the task has
-    # come back, unless that general chat submitted this delivery itself.
-    if finish['execution_id'] is not None or finish['actor'] != goal['leader_session_id']:
+        conn.execute('INSERT INTO war_room_decisions(decision_id,room_id) SELECT DISTINCT ?,room_id FROM war_room_items '
+                     'WHERE goal_id=?', (decision_id, goal_id))
+    from . import war_room
+    room_owned = war_room.task_returned(conn, goal, finish['outcome'], now=now, report_text=_finish_notice(goal, report))
+    if not room_owned and (finish['execution_id'] is not None or finish['actor'] != goal['leader_session_id']):
         board._queue_leader_notice(conn, goal['leader_session_id'], _finish_notice(goal, report),
                                    'crew', now, wake=report['outcome'] != 'cancelled')
-    if report['outcome'] != 'cancelled':
-        from . import war_room
-        war_room.task_returned(conn, {**goal, 'status': finish['outcome']}, finish['outcome'], now=now)
     conn.execute("UPDATE goal_round_finishes SET status='finalized',finalized_at=? WHERE goal_id=? AND round=?", (board._time(now), goal_id, goal['current_round']))
     touch(conn, goal_id)
     return {'finalized': True, 'already': False, 'goal': result, 'finish': get_finish(conn, goal_id)}
@@ -1227,9 +1239,9 @@ def finalize_transfer(conn, goal_id, *, now=None):
                      (goal['project'], branch, to, goal_id, at))
     conn.execute("UPDATE goal_transfers SET status='finalized',finalized_at=? WHERE id=?", (at, transfer['id']))
     text, wake = _transfer_notice(goal, transfer, giver, status, manual_pause)
-    board._queue_leader_notice(conn, to, text, 'crew', now, wake=wake)
+    queue_task_notice(conn, goal_id, to, text, 'crew', now, wake=wake)
     if transfer['actor'] != giver['session_id']:
-        board._queue_leader_notice(conn, giver['session_id'], '用户把任务「%s」（ID %s）交给了 %s 负责，你和你组里的成员不用再推进它。'
+        queue_task_notice(conn, goal_id, giver['session_id'], '用户把任务「%s」（ID %s）交给了 %s 负责，你和你组里的成员不用再推进它。'
                                    % (goal['title'], goal_id, board.session(conn, to)['crew_name'] or to), 'crew', now, wake=False)
     board._event(conn, 'goal:transfer', goal['project'], transfer['actor'],
                  {'goal_id': goal_id, 'transfer_id': transfer['id'], 'from': giver['session_id'], 'to': to}, now)

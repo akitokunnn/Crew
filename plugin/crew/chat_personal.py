@@ -19,13 +19,12 @@ class PersonalMixin:
             return self.start(conn, project, name or ('leader-' + uuid.uuid4().hex[:8]), task,
                               role='leader', caller_session_id=board.HUMAN, _registered=registered if note is not None else None, **chosen)
 
-    def _recover_personal_note(self, conn, note_id):
-        note = personal.get_note(conn, note_id)
-        link = conn.execute('SELECT * FROM personal_note_leaders WHERE note_id=?', (note_id,)).fetchone()
+    def _recover_personal_note(self, conn, note_id, project):
+        link = conn.execute('SELECT * FROM personal_note_leaders WHERE note_id=? AND project=?', (note_id, project)).fetchone()
         if link is None or link['status'] == 'completed':
             return None
         matches = []
-        for leader in personal.note_recovery(conn, note_id)['leaders']:
+        for leader in personal.note_recovery(conn, note_id, project=project)['leaders']:
             sid = leader['session_id']
             origins = [event for event in self.journal(sid).events if event.get('type') == 'personal_note_origin'
                        and event.get('note_id') == note_id and event.get('request_id') == link['request_id']
@@ -35,29 +34,28 @@ class PersonalMixin:
         if len(matches) != 1:
             return None
         sid, origin = matches[0]
-        return personal.bind_note_leader(conn, note_id, sid, request_id='note-recovery:' + hashlib.sha256(
+        return personal.bind_note_leader(conn, note_id, sid, project=project, request_id='note-recovery:' + hashlib.sha256(
             (note_id + ':' + link['request_id']).encode('utf-8')).hexdigest(),
             reason='宿主创建前登记及会话来源日志确认对话已存在；没有重放原输入', actor='crew-recovery',
             evidence={'type': 'personal_note_origin', 'session_id': sid, 'seq': origin['seq'], 'request_id': link['request_id']})
 
     @_admitted
-    def start_personal_note(self, note_id, project, *, request_id):
+    def start_personal_note(self, note_id, project, *, request_id, proof=None):
         """Only the explicit UI Start discussing action enters model work."""
         with self.lock, closing(store.connect(self.home)) as conn:
-            note = personal.get_note(conn, note_id)
-            if note['leader'] is not None and note['leader']['project'] != project:
-                raise board.Conflict('这条想法已有其他工作区的对话关联')
-            recovered = self._recover_personal_note(conn, note_id)
+            note = personal.get_note(conn, note_id, project=project)
+            personal._check_leader_scope(conn, project, note_id)
+            recovered = self._recover_personal_note(conn, note_id, project)
             if recovered is not None:
                 return recovered
             # Configuration failures occur before reserving an external action.
             # An already-linked note remains navigable without any installed CLI.
             selection = settings.resolve(conn, 'leader') if note['leader'] is None else None
             try:
-                return personal.start_note(conn, note_id, project, request_id=request_id,
+                return personal.start_note(conn, note_id, project, request_id=request_id, proof=proof,
                     create_leader=lambda *args, **kwargs: self._personal_leader(*args, selection=selection, **kwargs))
             except Exception as error:
-                recovered = self._recover_personal_note(conn, note_id)
+                recovered = self._recover_personal_note(conn, note_id, project)
                 if recovered is not None:
                     self.journal(recovered['session_id']).emit('error', text='对话已创建，但首轮启动或返回失败：' + str(error) +
                         '。已找回原对话，没有重放输入。原始想法：' + note['original_text'], note_recovery_id=note_id)

@@ -1,7 +1,7 @@
 import datetime as dt
 import os
 
-from .. import board, hooks, runtimes, session_ops
+from .. import board, hooks, native_origins, runtimes, session_ops
 
 
 class RosterMixin:
@@ -19,6 +19,10 @@ class RosterMixin:
             hidden = self.vscode_hidden_ids
         live = board.live_sessions(agents) if error is None else {}
         project_root = board.project(conn, project_name)["root"]
+        reserved = {row[0] for row in conn.execute(
+            'SELECT session_id FROM workspace_assistants UNION '
+            'SELECT r.native_id FROM workspace_assistants a JOIN session_runtimes r ON r.session_id=a.session_id '
+            "WHERE r.runtime='claude' AND r.native_id IS NOT NULL")}
         registered = {row["session_id"]: row for row in conn.execute("SELECT * FROM sessions")}
         sources = {s["session_id"]: s for s in snapshot if hidden is not None or s["session_id"] in live}
         scoped_native = self.chat.goal_controller.native_ids(conn)
@@ -36,6 +40,8 @@ class RosterMixin:
                 continue
             project = board.project_for_path(conn, source["cwd"])
             if project is None or project["name"] != project_name:
+                continue
+            if sid in reserved:
                 continue
             session = registered.get(sid)
             if session is not None and (session["project"] != project_name or session["role"] == "leader" or session["status"] == "closed"
@@ -62,6 +68,12 @@ class RosterMixin:
 
     def adopt(self, conn, project_name, candidate, name, group_name, now):
         with board.transaction(conn):
+            sid = candidate['session_id']
+            mapping = runtimes.get(conn, sid)
+            if mapping['native_id']:
+                runtimes.check_native_owner(conn, **mapping, session_id=sid)
+            if not conn.execute('SELECT 1 FROM sessions WHERE session_id=?', (sid,)).fetchone():
+                native_origins.record(conn, 'claude', sid, 'user_adopted')
             return self._adopt(conn, project_name, candidate, name, group_name, now)
 
     def _adopt(self, conn, project_name, candidate, name, group_name, now):

@@ -31,9 +31,12 @@
     root.className = "co-workspace";
     // A LAN host keeps its operations chat and repair policy on the host; only status and connection remain.
     const chatAvailable = typeof api.snapshot === "function", configAvailable = typeof api.configGet === "function";
-    const tabs = [...(chatAvailable ? [["chat","对话"]] : []),["status","状态"],...(configAvailable ? [["config","自动修复"]] : []), ...(api.launch ? [["launch","连接与目录"]] : [])];
+    // sections narrows the tabs (the desktop 系统管理员 · 运维 page shows chat and repair; desktop settings keep status and connection);
+    // toolbar:false leaves the tab choice to the host page through select().
+    const wanted = Array.isArray(options.sections) ? new Set(options.sections) : null;
+    const tabs = [...(chatAvailable ? [["chat","运维对话"]] : []),["status","状态"],...(configAvailable ? [["config","自动修复"]] : []), ...(api.launch ? [["launch","连接与目录"]] : [])].filter(([id]) => !wanted || wanted.has(id));
     const first = tabs[0][0];
-    root.innerHTML = `<div class="co-toolbar"><div class="co-tabs" role="tablist" aria-label="后台与运维">${tabs.map(([id,label]) => `<button type="button" role="tab" data-operations-tab="${id}" aria-controls="co-operations-panel" aria-selected="${id === first}" tabindex="${id === first ? 0 : -1}">${label}</button>`).join("")}</div>${chatAvailable ? '<button type="button" class="co-brain" data-operations-action="brain">运维 AI 大脑 <span aria-hidden="true">↗</span></button>' : ""}</div><div class="co-panel" id="co-operations-panel" role="tabpanel"></div>`;
+    root.innerHTML = `<div class="co-toolbar"${options.toolbar === false ? " hidden" : ""}><div class="co-tabs" role="tablist" aria-label="后台与运维">${tabs.map(([id,label]) => `<button type="button" role="tab" data-operations-tab="${id}" aria-controls="co-operations-panel" aria-selected="${id === first}" tabindex="${id === first ? 0 : -1}">${label}</button>`).join("")}</div>${chatAvailable ? '<button type="button" class="co-brain" data-operations-action="brain">运维 AI 大脑 <span aria-hidden="true">↗</span></button>' : ""}</div><div class="co-panel" id="co-operations-panel" role="tabpanel"></div>`;
     const panel = root.querySelector(".co-panel");
     let launchIntent = null, tab = first, active = false, timer = null, healthCleanup = null, snapshot = null;
     let chat = null, chatLoaded = false, chatError = "", chatReadError = "", chatRead = 0, chatNote = "", chatDraft = "", pending = null, messageId = null;
@@ -75,7 +78,7 @@
       const brain = panel.querySelector(".co-last-brain");
       brain.hidden = !chat?.brain;
       if (chat?.brain) brain.textContent = "上次：" + [({claude:"Claude Code",codex:"Codex"})[chat.brain.runtime] || chat.brain.runtime, chat.brain.model || "原生默认"].filter(Boolean).join(" · ");
-      status.textContent = chatError || chatReadError || chat?.error || setupIssue || chatNote || (pending === "send" ? "正在发送…" : busy ? "运维 AI 正在回复…" : "发消息才调用 AI；打开此页不会唤醒模型。");
+      status.textContent = chatError || chatReadError || chat?.error || setupIssue || chatNote || (pending === "send" ? "正在发送…" : busy ? "运维正在回复…" : "发消息才调用 AI；打开此页不会唤醒模型。");
       status.classList.toggle("co-error", Boolean(chatError || chatReadError || chat?.error));
       panel.querySelector('[data-operations-action="setup-brain"]').hidden = !setupIssue;
       panel.querySelector('[data-operations-action="retry-chat"]').hidden = !chatReadError;
@@ -88,7 +91,7 @@
       if (messageSignature !== signature) {
         const nearBottom = list.scrollHeight - list.clientHeight - list.scrollTop < 60;
         const top = list.scrollTop;
-        list.innerHTML = !chatLoaded ? '<div class="co-chat-empty"><h2>正在读取运维对话…</h2></div>' : !chat?.messages?.length ? '<div class="co-chat-empty"><span class="co-ops-mark" aria-hidden="true">⌘</span><h2>和运维 AI 聊聊</h2><p>后台连不上、会话卡住、设置不清楚，都可以直接问。</p><button type="button" data-operations-example="帮我检查一下 Crew 当前的连接和运行状态，告诉我有没有需要处理的问题。">检查当前运行状态 <span aria-hidden="true">↗</span></button></div>' : `${chat.older_count > 0 ? `<p class="co-history-count">显示最近 ${chat.messages.length} 条，更早记录已保留。</p>` : ""}${chat.messages.map(item => `<article class="co-message co-message-${item.role === "user" ? "user" : "assistant"}"><div class="co-message-label">${item.role === "user" ? "你" : "运维 AI"}${item.at ? `<time>${esc(new Date(item.at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}))}</time>` : ""}</div><div class="co-message-text">${esc(item.text)}</div>${item.truncated ? '<p class="co-history-count">本条较长，显示前 64000 字；完整记录已保留。</p>' : ""}</article>`).join("")}`;
+        list.innerHTML = !chatLoaded ? '<div class="co-chat-empty"><h2>正在读取运维对话…</h2></div>' : !chat?.messages?.length ? '<div class="co-chat-empty"><span class="co-ops-mark" aria-hidden="true">⌘</span><h2>后台有问题，直接问</h2><p>后台连不上、会话卡住、设置不清楚，都可以直接问。后台停了也能用。</p><button type="button" data-operations-example="帮我检查一下 Crew 当前的连接和运行状态，告诉我有没有需要处理的问题。">检查当前运行状态 <span aria-hidden="true">↗</span></button></div>' : `${chat.older_count > 0 ? `<p class="co-history-count">显示最近 ${chat.messages.length} 条，更早记录已保留。</p>` : ""}${chat.messages.map(item => `<article class="co-message co-message-${item.role === "user" ? "user" : "assistant"}"><div class="co-message-label">${item.role === "user" ? "你" : "运维"}${item.at ? `<time>${esc(new Date(item.at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}))}</time>` : ""}</div><div class="co-message-text">${esc(item.text)}</div>${item.truncated ? '<p class="co-history-count">本条较长，显示前 64000 字；完整记录已保留。</p>' : ""}</article>`).join("")}`;
         messageSignature = signature;
         list.scrollTop = nearBottom && chatPinned ? list.scrollHeight : top;
       }
@@ -155,7 +158,7 @@
       finally { configSaving = false; if (active && tab === "config") renderConfig(); }
     }
     function renderChat() {
-      panel.innerHTML = `<section class="co-chat" aria-label="运维 AI 对话"><div class="co-chat-heading"><div><h2>运维 AI</h2><p>所有工作区共用。对话用于诊断；自动修复遵循已保存策略。</p><p class="co-last-brain" hidden></p></div><span class="cs-badge">按需响应</span></div><div class="co-messages" tabindex="0" aria-label="聊天记录"></div><form class="co-composer"><label class="co-sr-only" for="co-chat-input">发给运维 AI</label><textarea id="co-chat-input" rows="3" maxlength="8000" placeholder="例如：为什么这个工作区连不上？">${esc(chatDraft)}</textarea><div class="co-compose-footer"><span>Enter 发送 · Shift+Enter 换行或续列表</span><div><button type="button" class="cs-button" data-operations-action="interrupt" hidden>停止</button><button type="submit" class="cs-button cs-primary" data-operations-action="send">发送</button></div></div></form><div class="co-status-row"><p class="co-chat-status" role="status"></p><span class="co-chat-elapsed" aria-live="off" hidden></span><button type="button" class="cs-button co-retry" data-operations-action="setup-brain" hidden>选择运维 AI</button><button type="button" class="cs-button co-retry" data-operations-action="retry-chat" hidden>重新连接</button></div></section>`;
+      panel.innerHTML = `<section class="co-chat" aria-label="系统管理员 · 运维对话"><div class="co-chat-heading"><div><h2>系统管理员 · 运维</h2><p>所有工作区共用。只读诊断后台与连接；自动修复遵循已保存策略。</p><p class="co-last-brain" hidden></p></div><span class="cs-badge">按需响应</span></div><div class="co-messages" tabindex="0" aria-label="聊天记录"></div><form class="co-composer"><label class="co-sr-only" for="co-chat-input">发给系统管理员 · 运维</label><textarea id="co-chat-input" rows="3" maxlength="8000" placeholder="例如：为什么这个工作区连不上？">${esc(chatDraft)}</textarea><div class="co-compose-footer"><span>Enter 发送 · Shift+Enter 换行或续列表</span><div><button type="button" class="cs-button" data-operations-action="interrupt" hidden>停止</button><button type="submit" class="cs-button cs-primary" data-operations-action="send">发送</button></div></div></form><div class="co-status-row"><p class="co-chat-status" role="status"></p><span class="co-chat-elapsed" aria-live="off" hidden></span><button type="button" class="cs-button co-retry" data-operations-action="setup-brain" hidden>选择运维大脑</button><button type="button" class="cs-button co-retry" data-operations-action="retry-chat" hidden>重新连接</button></div></section>`;
       const input = panel.querySelector(".co-composer textarea");
       CrewBrowser.enableChatLists(input);
       const list = panel.querySelector(".co-messages"); messageSignature = "";
@@ -174,7 +177,8 @@
     }
     function renderStatus() {
       const host = options.remote === true;
-      panel.innerHTML = `<section class="cs-card co-status-facts"><h2>${host ? "所连主机" : "当前启动位置"}</h2><p class="cs-hint">${host ? '以下目录都在所连主机上。需要改连其他设备或切回本机，可在“连接与目录”中调整。' : api.launch ? '需要更换数据目录、后台程序或地址，可在“连接与目录”中调整。' : '需要更换数据目录、后台程序或地址，请打开 Crew 桌面设置。'}工作区路径仍在工作区设置中修改。</p><dl class="cs-paths"><dt>${host ? "主机数据目录 · HOME" : "数据目录 · HOME"}</dt><dd>${esc(snapshot?.home || "尚未从后台读取")}</dd><dt>${host ? "主机后台程序目录" : api.launch ? "桌面运维程序目录" : "后台程序目录"}</dt><dd>${esc(snapshot?.backend || "尚未从后台读取")}</dd>${options.service ? `<dt>连接地址</dt><dd>${esc(options.service())}</dd>` : ""}</dl>${api.launch && !host ? '<div class="co-actual-service"><p class="cs-hint">正在读取实际后台来源…</p></div>' : ""}${api.launch ? '<button type="button" class="cs-button co-launch-link" data-operations-action="launch-settings">更改连接与目录</button>' : ""}</section><div class="co-native-health"></div>`;
+      const jump = options.operationsPage ? `<section class="cs-card co-ops-jump"><div><h2>系统管理员 · 运维</h2><p class="cs-hint">后台状态、恢复、事故处理、运维对话和自动修复都在这里，后台停了也能打开。</p></div><button type="button" class="cs-button cs-primary" data-operations-action="operations-page">打开系统管理员 · 运维</button></section>` : "";
+      panel.innerHTML = jump + `<section class="cs-card co-status-facts"><h2>${host ? "所连主机" : "当前启动位置"}</h2><p class="cs-hint">${host ? '以下目录都在所连主机上。需要改连其他设备或切回本机，可在“连接与目录”中调整。' : api.launch ? '需要更换数据目录、后台程序或地址，可在“连接与目录”中调整。' : '需要更换数据目录、后台程序或地址，请打开 Crew 桌面设置。'}工作区路径仍在工作区设置中修改。</p><dl class="cs-paths"><dt>${host ? "主机数据目录 · HOME" : "数据目录 · HOME"}</dt><dd>${esc(snapshot?.home || "尚未从后台读取")}</dd><dt>${host ? "主机后台程序目录" : api.launch ? "桌面运维程序目录" : "后台程序目录"}</dt><dd>${esc(snapshot?.backend || "尚未从后台读取")}</dd>${options.service ? `<dt>连接地址</dt><dd>${esc(options.service())}</dd>` : ""}</dl>${api.launch && !host ? '<div class="co-actual-service"><p class="cs-hint">正在读取实际后台来源…</p></div>' : ""}${api.launch ? '<button type="button" class="cs-button co-launch-link" data-operations-action="launch-settings">更改连接与目录</button>' : ""}</section><div class="co-native-health"></div>`;
       // A LAN host's version and health follow below, read from the host itself.
       if (api.launch && !host) {
         const actual = panel.querySelector(".co-actual-service");
@@ -198,6 +202,7 @@
       const action = button.dataset.operationsAction;
       if (action === "brain" || action === "setup-brain") options.onBrain();
       if (action === "launch-settings" && api.launch) { tab = "launch"; render(); }
+      if (action === "operations-page") options.operationsPage?.();
       if (action === "retry-chat") void readChat();
       if (action === "interrupt") void interrupt();
       if (action === "retry-config") void readConfig();
@@ -225,6 +230,8 @@
     return {mount(host, value) { snapshot = value; active = true; host.append(root); render(); return hide; }, hide,
       // Settings renders right after (open → mount), which shows the tab and hands over the intent once.
       openLaunch(intent) { if (!api.launch) return; tab = "launch"; launchIntent = intent; },
+      // The host page's own tabs pick the section (toolbar:false).
+      select(next) { if (!tabs.some(item => item[0] === next) || next === tab) return; tab = next; if (active) render(); },
       getState:() => ({tab, chatDraft, configDraft:configDraft && clone(configDraft), chatLoaded, chatError:chatError || chatReadError})};
   }
   window.CrewOperations = {create, parseCommands, policyDraft, policyValue, brainIssue};

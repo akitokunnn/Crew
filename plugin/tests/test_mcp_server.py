@@ -4,12 +4,14 @@ from http.server import ThreadingHTTPServer
 import json
 import threading
 import unittest
+from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from crew import board, guard, hooks, runtimes, store, war_room, web
+from crew import board, channel, guard, hooks, runtimes, store, war_room, web
 from crew.ops import guide, launch, registry, tokens
 from test_shell import NOW, PLUGIN, ShellFixture
+from test_war_room_plan import approve_assignments
 
 
 class LiveProcess:
@@ -95,6 +97,106 @@ class McpServerTests(ShellFixture, unittest.TestCase):
         tool = self.tools(leader)['message_send']
         self.assertIn('request_id', tool['inputSchema']['required'])
         self.assertFalse(tool['annotations']['readOnlyHint'])
+
+    def test_git_admin_may_reply_only_to_delivered_mentions_in_its_workspace(self):
+        board.enable_git(self.conn, 'demo', base='main', admin_session_id='s3', now=NOW)
+        board.join(self.conn, 'author', 'demo', '发帖人', self.project, None, None, role='leader', now=NOW)
+        board.join(self.conn, 'third', 'demo', '第三人', self.project, None, None, role='leader', now=NOW)
+        board.init_project(self.conn, 'foreign', self.root / 'foreign', now=NOW)
+        foreign = channel.post(self.conn, 'foreign', board.HUMAN, '别的工作区', source='web', now=NOW)
+        other = channel.post(self.conn, 'demo', board.HUMAN, '点名别人', ['第三人'], source='web', now=NOW)
+
+        for runtime in ('claude', 'codex'):
+            with self.subTest(runtime=runtime):
+                token, _ = self.grant('s3', runtime)
+                names = self.tools(token)
+                self.assertIn('channel_post', names)
+                self.assertNotIn('channel_consume', names)
+                error, me = self.call(token, 'session_whoami', {})
+                self.assertFalse(error)
+                self.assertEqual((me['role'], me['mcp_role']), ('leader', 'git_admin'))
+                original = channel.post(self.conn, 'demo', 'author', '请确认分支', ['lead'], now=NOW)
+                notice_id = self.conn.execute('SELECT notice_id FROM channel_mentions WHERE message_id=?',
+                                              (original['id'],)).fetchone()[0]
+                self.assertIn('reply_to=%d' % original['id'], board.pending_notices(self.conn, 's3')[0]['text'])
+
+                def reply(args, request_id, indirect=False):
+                    args = {'text': '已确认', 'request_id': request_id, **args}
+                    if indirect:
+                        return self.call(token, 'crew_call', {'op': 'channel.post', 'args': args})
+                    return self.call(token, 'channel_post', args)
+
+                self.assertTrue(reply({'reply_to': original['id']}, runtime + '-pending')[0])
+                board.mark_notice_sent(self.conn, notice_id, now=NOW)
+                for indirect in ([False] if runtime == 'claude' else [False, True]):
+                    for case, args in enumerate([
+                            {}, {'reply_to': foreign['id']}, {'reply_to': other['id']},
+                            {'reply_to': original['id'], 'to': ['第三人']},
+                            {'reply_to': original['id'], 'to': ['*']},
+                            {'reply_to': original['id'], 'text': '也请 @第三人 看'}]):
+                        with self.subTest(args=args, indirect=indirect):
+                            denied, value = reply(args, f'{runtime}-{indirect}-{case}', indirect)
+                            self.assertTrue(denied, value)
+                args = {'reply_to': original['id']}
+                error, posted = reply(args, runtime + '-ok', runtime == 'codex')
+                self.assertFalse(error, posted)
+                self.assertEqual((posted['speaker_session_id'], posted['reply_to']), ('s3', original['id']))
+                self.assertEqual([target['session_id'] for target in posted['notified']], ['author'])
+                self.assertEqual(reply(args, runtime + '-ok', runtime == 'codex'),
+                                 (False, {**posted, 'replayed': True}))
+        self.assertFalse(any('已确认' in notice['text'] for notice in board.pending_notices(self.conn, 'third')))
+
+    def test_mention_hint_respects_already_issued_scopes(self):
+        token, _ = self.grant('s3')
+        self.conn.execute('UPDATE mcp_tokens SET own_scopes=? WHERE token_hash=?',
+                          (json.dumps(['session.whoami']), tokens.digest(token)))
+        channel.post(self.conn, 'demo', board.HUMAN, '点到你', ['lead'], source='web', now=NOW)
+        [notice] = board.pending_notices(self.conn, 's3')
+        self.assertIn('点到你', notice['text'])
+        self.assertNotIn('channel_post', notice['text'])
+
+    def test_first_delivery_refreshes_the_hint_after_the_grant_changes(self):
+        token, _ = self.grant('s3')
+        channel.post(self.conn, 'demo', board.HUMAN, '请看看原帖', ['lead'], source='web', now=NOW)
+        [notice] = board.pending_notices(self.conn, 's3')
+        self.assertIn('channel_post', notice['text'])
+        self.conn.execute('UPDATE mcp_tokens SET own_scopes=? WHERE token_hash=?',
+                          (json.dumps(['session.whoami']), tokens.digest(token)))
+        with mock.patch.object(self.service.chat, 'send', return_value={'accepted': True}) as send:
+            self.service.chat.deliver_leader_notices(self.conn, frozenset(), NOW)
+        sent_text = send.call_args.args[1]
+        self.assertIn('请看看原帖', sent_text)
+        self.assertNotIn('channel_post', sent_text)
+        self.assertEqual(board.pending_notices(self.conn, 's3'), [])
+
+    def test_git_admin_room_reply_checks_membership_and_open_status(self):
+        board.enable_git(self.conn, 'demo', base='main', admin_session_id='s3', now=NOW)
+        board.join(self.conn, 'author', 'demo', '牵头人', self.project, None, None, role='leader', now=NOW)
+        board.join(self.conn, 'third', 'demo', '成员', self.project, None, None, role='leader', now=NOW)
+        token, _ = self.grant('s3')
+        room = war_room.start(self.conn, 'demo', 'author', '一起核对', '确认分支', now=NOW)
+        approve_assignments(self.conn, room, ['lead', '成员'])
+        original = war_room.say(self.conn, room['id'], 'author', '请核对分支', to=['lead'], now=NOW)
+        notice_id = self.conn.execute('SELECT notice_id FROM channel_mentions WHERE message_id=? AND session_id=?',
+                                      (original['id'], 's3')).fetchone()[0]
+        [notice] = [item for item in board.pending_notices(self.conn, 's3') if item['id'] == notice_id]
+        self.assertEqual(notice['room_id'], room['id'])
+        self.assertIn('channel_post', notice['text'])
+        self.assertNotIn('war_room_', notice['text'])
+        board.mark_notice_sent(self.conn, notice_id, now=NOW)
+
+        def reply(identity):
+            return self.call(token, 'channel_post', {'text': '已经核对', 'reply_to': original['id'],
+                                                      'request_id': identity})
+
+        denied, posted = reply('room-open')
+        self.assertFalse(denied, posted)
+        self.assertEqual(posted['room_id'], room['id'])
+        war_room.change_members(self.conn, room['id'], 'author', remove=['lead'], now=NOW)
+        self.assertTrue(reply('room-left')[0])
+        war_room.change_members(self.conn, room['id'], 'author', add=['lead'], now=NOW)
+        war_room.close(self.conn, room['id'], board.HUMAN, now=NOW, reason='user_stop')
+        self.assertTrue(reply('room-closed')[0])
 
     def test_search_loads_tools_for_claude_with_list_changed(self):
         token, _ = self.grant('s3')
@@ -286,6 +388,7 @@ class McpServerTests(ShellFixture, unittest.TestCase):
         self.assertIn('新增时不要带', item['params']['properties']['id']['description'])
         self.assertEqual(item['params']['properties']['title']['maxLength'], war_room.ITEM_LIMIT)
         self.assertIn('最多 %d 字' % war_room.ITEM_LIMIT, item['params']['properties']['title']['description'])
+        self.assertIn('必须填写完成证据', item['params']['properties']['note']['description'])
         self.assertNotIn('project', item['params']['properties'])
 
 if __name__ == '__main__':

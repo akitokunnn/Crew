@@ -71,6 +71,13 @@ class Journal:
                 subagents.apply_task(self.subagents, event)
         self.messages = {event["id"] for event in self.events if event["type"] in ("message", "compact_request")}
         self.inputs = {event.get('message_id', event.get('id')): event for event in self.events if event["type"] == "input_delivery"}
+        self._room_id = None
+        for event in reversed(self.events):
+            if event['type'] == 'turn_result' or (event['type'] == 'input_delivery' and event['status'] == 'rejected'):
+                break
+            if event['type'] == 'input_delivery' and event['status'] == 'submitted':
+                self._room_id = event.get('room_id')
+                break
         self.results = {event["tool_use_id"] for event in self.events if event["type"] == "tool_result"}
         self.assistant = {event["id"]: event["content"] for event in self.events if event["type"] == "assistant"}
         self.status = next((event["status"] for event in reversed(self.events) if event["type"] == "status"), "offline")
@@ -93,6 +100,15 @@ class Journal:
     def emit(self, kind, **fields):
         with self.condition:
             self.refresh()
+            if kind == 'input_delivery':
+                if fields['status'] == 'submitted':
+                    self._room_id = fields.get('room_id')
+                else:
+                    prior = self.inputs.get(fields['message_id'])
+                    if prior and prior.get('room_id') is not None:
+                        fields['room_id'] = prior['room_id']
+            elif self._room_id is not None and kind not in ('status', 'leader_notice_batch'):
+                fields.setdefault('room_id', self._room_id)
             event = {"seq": len(self.events) + 1, "type": kind, "at": store.now_iso(), **fields}
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as stream:
@@ -102,6 +118,8 @@ class Journal:
                 subagents.apply_task(self.subagents, event)
             if kind == "input_delivery":
                 self.inputs[fields['message_id']] = event
+            if kind == 'turn_result' or (kind == 'input_delivery' and fields['status'] == 'rejected'):
+                self._room_id = None
             stat = self.path.stat()
             self.signature = (stat.st_size, stat.st_mtime_ns)
             self.condition.notify_all()

@@ -8,6 +8,7 @@ from crew import board, channel, store, war_room
 from crew.ops import executor
 from crew.ops.caller import Caller
 from crew.ops.errors import OpError
+from test_war_room_plan import approve_assignments
 from test_message_delivery import NOW, DeliveryFixture
 from test_leader_channel_http import ChannelHttpFixture
 
@@ -18,8 +19,9 @@ class WarRoomFixture(DeliveryFixture):
         board.join(self.conn, "c", "demo", "gamma", self.root, None, None, role="leader", now=NOW)
 
     def open_room(self, members=("beta", "gamma"), actor="a", **kwargs):
-        return war_room.start(self.conn, "demo", actor, "签名 v2 联调", "登录接口签名换成 v2 并联调通过", list(members),
+        room = war_room.start(self.conn, "demo", actor, "签名 v2 联调", "登录接口签名换成 v2 并联调通过", list(members),
                               now=NOW, **kwargs)
+        return approve_assignments(self.conn, room, members)
 
     def main(self):
         return channel.messages(self.conn, "demo", limit=50)["messages"]
@@ -39,7 +41,7 @@ class OpenAndTalkTests(WarRoomFixture):
         [first] = self.room_posts(room)
         self.assertEqual([(m["name"], m["delivery"]) for m in first["mentions"]], [("beta", "queued"), ("gamma", "queued")])
         texts = [n["text"] for n in self.notices("b")]
-        self.assertTrue(texts[0].startswith("作战室 #%d《签名 v2 联调》：「alpha」点名你（作战室发言 #%d）" % (room["id"], first["id"])))
+        self.assertIn("作战室", texts[0])
 
     def test_replies_stay_in_the_room_and_only_members_speak_or_are_named(self):
         room = self.open_room(members=("beta",))
@@ -67,30 +69,25 @@ class OpenAndTalkTests(WarRoomFixture):
             board.mark_notice_sent(self.conn, notice["id"], now=NOW)
         war_room.say(self.conn, room["id"], "a", "契约草稿放右边了", now=NOW)
         text, upto = channel.preview(self.conn, "b")
-        self.assertIn("[Crew 作战室 #%d《签名 v2 联调》] 牵头：alpha" % room["id"], text)
-        self.assertIn("契约草稿放右边了", text)
+        self.assertNotIn("契约草稿放右边了", text or "")
+        summary, cursor = war_room.context(self.conn, war_room._room(self.conn, room["id"]), "b")
+        self.assertIn("契约草稿放右边了", summary)
+        war_room.mark_read(self.conn, room["id"], "b", cursor)
+        self.assertNotIn("契约草稿放右边了", war_room.context(self.conn, war_room._room(self.conn, room["id"]), "b")[0])
         self.assertNotIn("契约草稿放右边了", channel.preview(self.conn, "c")[0] or "")
-        channel.seen(self.conn, "b", upto, now=NOW)
-        self.assertNotIn("[Crew 作战室", channel.preview(self.conn, "b")[0] or "")
-        self.assertEqual(channel.state(self.conn, "demo")["unread"], 1)
 
-    def test_one_person_is_not_a_war_room_and_the_user_names_the_lead(self):
-        with self.assertRaisesRegex(board.BoardError, "至少要两位"):
-            self.open_room(members=())
-        with self.assertRaisesRegex(board.BoardError, "指定牵头"):
+    def test_solo_room_and_user_chosen_lead(self):
+        with self.assertRaisesRegex(board.BoardError, "请选择"):
             self.open_room(actor=board.HUMAN)
-        room = self.open_room(actor=board.HUMAN, members=("alpha", "beta"), lead="gamma")
+        room = self.open_room(actor=board.HUMAN, members=(), lead="gamma")
         self.assertEqual(room["lead_name"], "gamma")
-        [first] = self.room_posts(room)
-        self.assertEqual(first["speaker_name"], "用户")
-        self.assertEqual({m["name"] for m in first["mentions"]}, {"alpha", "beta", "gamma"})
 
     def test_raised_from_a_channel_thread(self):
         question = self.post("签名换 v2，谁那边受影响？")
         room = self.open_room(from_message=question["id"])
         detail = war_room.get(self.conn, room["id"])
         self.assertEqual(detail["origin"]["id"], question["id"])
-        self.assertIn("起因是交流区 #%d" % question["id"], detail["messages"][0]["body"])
+        self.assertEqual(detail["origin_message_id"], question["id"])
 
 
 class BoardAndDecisionTests(WarRoomFixture):
@@ -110,9 +107,8 @@ class BoardAndDecisionTests(WarRoomFixture):
                          [("item", "todo"), ("item", "blocked")])
         with self.assertRaisesRegex(board.BoardError, "状态只能是"):
             war_room.set_item(self.conn, room["id"], "b", item_id=item["id"], status="late", now=NOW)
-        other = war_room.start(self.conn, "demo", "b", "另一间", "目标", ["alpha"], now=NOW)
-        with self.assertRaisesRegex(board.BoardError, "gamma 不是作战室成员"):
-            war_room.set_item(self.conn, other["id"], "b", title="x", owner="gamma", now=NOW)
+        with self.assertRaisesRegex(OpError, "已有开放"):
+            war_room.start(self.conn, "demo", "b", "另一间", "目标", ["alpha"], now=NOW)
 
     def test_contract_edits_never_overwrite_unseen_changes(self):
         room = self.open_room()
@@ -122,6 +118,36 @@ class BoardAndDecisionTests(WarRoomFixture):
             war_room.set_contract(self.conn, room["id"], "b", "POST /login sig=v3", None, now=NOW)
         war_room.set_contract(self.conn, room["id"], "b", "POST /login sig=v3", saved["updated_at"], now=NOW)
 
+    def test_marking_done_requires_evidence_in_the_same_request(self):
+        room = self.open_room()["id"]
+        item = war_room.set_item(self.conn, room, "b", title="签名适配", status="blocked", note="等签名算法")
+        before = war_room.get(self.conn, room)
+        for args in ({"item_id": item["id"]}, {"item_id": item["id"], "note": ""},
+                     {"item_id": item["id"], "note": " \t\n"}, {"title": "直接完成的新事项"}):
+            with self.subTest(args=args), self.assertRaises(OpError) as error:
+                war_room.set_item(self.conn, room, "b", status="done", **args)
+            self.assertEqual(error.exception.code, "missing_evidence")
+            self.assertIn("完成证据", str(error.exception))
+        after = war_room.get(self.conn, room)
+        self.assertEqual((after["board"], after["events"]), (before["board"], before["events"]))
+
+        for args in ({"item_id": item["id"]}, {"title": "直接完成的新事项"}):
+            done = war_room.set_item(self.conn, room, "b", status="done", note=" 联调记录已保存 ", **args)
+            self.assertEqual((done["status"], done["note"]), ("done", "联调记录已保存"))
+        reopened = war_room.set_item(self.conn, room, "b", item_id=item["id"], status="todo")
+        self.assertEqual(reopened["status"], "todo")
+        with self.assertRaisesRegex(OpError, "完成证据"):
+            war_room.set_item(self.conn, room, "b", item_id=item["id"], status="done")
+
+    def test_old_done_item_without_evidence_can_still_be_edited(self):
+        room = self.open_room()["id"]
+        item = war_room.set_item(self.conn, room, "b", title="历史事项")
+        self.conn.execute("UPDATE war_room_items SET status='done' WHERE id=?", (item["id"],))
+        replay = war_room.set_item(self.conn, room, "b", item_id=item["id"], status="done")
+        edited = war_room.set_item(self.conn, room, "b", item_id=item["id"], title="历史事项改名")
+        self.assertEqual((replay["status"], edited["status"], edited["note"], edited["title"]),
+                         ("done", "done", None, "历史事项改名"))
+
     def test_only_the_lead_raises_the_decision_card(self):
         room = self.open_room()
         with self.assertRaisesRegex(board.BoardError, "只有牵头"):
@@ -129,8 +155,11 @@ class BoardAndDecisionTests(WarRoomFixture):
         card = war_room.decide(self.conn, room["id"], "a", "要不要兼容 v1？", ["兼容一个月", "直接切"], "兼容一个月", now=NOW)
         self.assertEqual((card["status"], card["options"]), ("open", ["兼容一个月", "直接切"]))
         [decision] = board.decisions(self.conn, "demo")
-        self.assertEqual(decision["question"], "作战室《签名 v2 联调》：要不要兼容 v1？")
-        self.assertEqual(war_room.get(self.conn, room["id"])["open_decisions"], 1)
+        self.assertEqual(decision["question"], "要不要兼容 v1？")
+        self.assertEqual((card['question'], card['room_title']), ('要不要兼容 v1？', '签名 v2 联调'))
+        detail = war_room.get(self.conn, room['id'])
+        self.assertEqual(detail['open_decisions'], 1)
+        self.assertEqual(detail['decisions'], [card])
 
 
 class CloseTests(WarRoomFixture):
@@ -141,18 +170,18 @@ class CloseTests(WarRoomFixture):
                 board.mark_notice_sent(self.conn, notice["id"], now=NOW)
         with self.assertRaisesRegex(board.BoardError, "只有牵头"):
             war_room.close(self.conn, room["id"], "b", "完成", now=NOW)
+        criterion = next(i for i in room["board"] if i["kind"] == "criterion")
+        war_room.set_item(self.conn, room["id"], "a", item_id=criterion["id"], status="done", note="v2 已联调通过")
         closed = war_room.close(self.conn, room["id"], "a", "v2 已联调通过，v1 兼容一个月", now=NOW)
         self.assertEqual(closed["status"], "closed")
         notice = self.main()[-1]
         self.assertEqual(notice["room"]["event"], "closed")
         for sid in ("b", "c"):
-            [note] = self.notices(sid)
-            self.assertEqual(note["wake"], 0)
-            self.assertIn("回到原岗位", note["text"])
+            self.assertTrue(all(n["wake"] == 0 and n["room_id"] == room["id"] for n in self.notices(sid)))
 
     def test_room_mentions_still_queued_at_close_stop_waking(self):
         room = self.open_room(members=("beta",))
-        war_room.close(self.conn, room["id"], "a", "先停", now=NOW)
+        war_room.close(self.conn, room["id"], "user", now=NOW, reason="user_stop")
         self.assertEqual(sorted(n["wake"] for n in self.notices("b")), [0, 0])
         with self.assertRaisesRegex(board.BoardError, "已收尾"):
             war_room.say(self.conn, room["id"], "b", "还有一句", now=NOW)
@@ -178,17 +207,68 @@ class WarRoomOperationTests(ChannelHttpFixture):
         super().setUp()
         board.join(self.conn, "s4", "demo", "web", self.project, None, None, role="leader", now=NOW)
 
+    def test_browser_can_load_the_plan_script(self):
+        with self.opener.open(self.server.url + '/war-room-plan.js', timeout=5) as response:
+            self.assertEqual((response.status, response.headers.get_content_type()), (200, 'text/javascript'))
+
     def test_user_opens_and_posts_over_http(self):
         code, room = self.request('/api/op/war_room.open', {'project': 'demo', 'title': '联调', 'goal': '打通登录',
                                                        'members': ['web'], 'lead': 'lead'})
         self.assertEqual(code, 200, room)
+        active = approve_assignments(self.conn, room, ['web', 'lead'])
+        for kind in ('assignment', 'criterion'):
+            item = next(i for i in active['board'] if i['kind'] == kind)
+            war_room.set_item(self.conn, room['id'], 's3', item_id=item['id'], status='done', note='完成核对')
         code, result = self.request('/api/op/war_room.post', {'project': 'demo', 'room': room['id'], 'body': '@web 先看契约'})
         self.assertEqual(code, 200, result)
         self.assertEqual([m['name'] for m in result['message']['mentions']], ['web'])
         code, listed = self.request('/api/op/war_room.list', project='demo')
+        self.assertEqual(code, 200, listed)
         self.assertEqual([item['id'] for item in listed['rooms']], [room['id']])
+        self.assertEqual(listed['rooms'][0]['progress'], {'done': 1, 'total': 2})
         code, detail = self.request('/api/op/war_room.get', project='demo', id=room['id'])
         self.assertEqual((code, len(detail['messages'])), (200, 2))
+
+    def test_snapshot_keeps_new_and_legacy_room_questions_separate_from_source(self):
+        room = war_room.start(self.conn, 'demo', 's3', '联调', '打通登录')
+        approve_assignments(self.conn, room, ['web'])
+        question = '要启用新登录吗？'
+        legacy_question = '作战室《联调》：要保留旧登录吗？'
+        current = war_room.decide(self.conn, room['id'], 's3', question)
+        legacy = board.ask(self.conn, 's3', legacy_question)
+        self.conn.execute('INSERT INTO war_room_decisions(decision_id,room_id) VALUES(?,?)', (legacy, room['id']))
+        code, snapshot = self.request('/api/op/workspace.snapshot', project='demo')
+        self.assertEqual(code, 200, snapshot)
+        decisions = {row['id']: (row['question'], row['room_title']) for row in snapshot['data']['decisions']}
+        self.assertEqual(decisions, {current['id']: (question, '联调'), legacy: (legacy_question, '联调')})
+
+    def test_room_executor_history_and_its_read_cursor(self):
+        from crew import goals
+        room = war_room.start(self.conn, 'demo', 's3', '联调', '打通登录')
+        active = approve_assignments(self.conn, room, ['web'])
+        goal = next(i['goal_id'] for i in active['board'] if i['goal_id'])
+        execution = goals.create_execution(self.conn, goal, 's4', runtime='codex')['id']
+        journal = self.server.service.chat.journal(execution)
+        receipt = journal.emit('tool_result', tool_use_id='call-1', content='4')
+        code, room = self.request('/api/op/war_room.get', project='demo', id=room['id'], execution_id=execution)
+        self.assertEqual(code, 200)
+        stream, = room['executions']
+        self.assertEqual((stream['unread'], stream['events'][0]['room_id']), (1, room['id']))
+        code, seen = self.request('/api/op/war_room.mark_read',
+                                  {'project':'demo', 'room':room['id'], 'execution_id':execution, 'seq':receipt['seq']})
+        self.assertEqual((code, seen['read_seq']), (200, receipt['seq']))
+        code, room = self.request('/api/op/war_room.get', project='demo', id=room['id'])
+        self.assertEqual(room['unread_execution_events'], 0)
+        code, _ = self.request('/api/op/war_room.get', project='demo', id=room['id'], execution_id='another')
+        self.assertNotEqual(code, 200)
+
+    def test_marking_done_without_evidence_returns_a_public_error(self):
+        room = approve_assignments(self.conn, war_room.start(self.conn, 'demo', 's3', '联调', '打通登录'), ['web'])
+        item = next(item for item in room['board'] if item['kind'] == 'criterion')
+        code, result = self.request('/api/op/war_room.item',
+                                    {'project': 'demo', 'room': room['id'], 'id': item['id'], 'status': 'done'})
+        self.assertEqual((code, result['error_code']), (400, 'missing_evidence'))
+        self.assertIn('完成证据', result['error'])
 
     def test_the_host_stops_the_members_of_a_room_over_its_cap(self):
         from crew import messaging
@@ -198,9 +278,9 @@ class WarRoomOperationTests(ChannelHttpFixture):
         self.conn.execute("INSERT INTO claude_requests(request_key,session_id,ts,model,input_tokens,output_tokens) "
                           "VALUES('r','s4',?,'m',120000,0)", (NOW,))
         service.chat._pause_over_budget(self.conn, NOW)
-        self.assertTrue(messaging.stopped(self.conn, 's4'))
-        self.assertTrue(messaging.stopped(self.conn, 's3'))
-        self.assertIsNotNone(war_room.get(self.conn, room['id'])['budget']['paused_at'])
+        self.assertFalse(messaging.stopped(self.conn, 's4'))
+        self.assertFalse(messaging.stopped(self.conn, 's3'))
+        self.assertIsNone(war_room.get(self.conn, room['id'])['budget']['paused_at'])
 
     def test_a_leader_acts_as_itself_and_cannot_reach_another_workspace(self):
         leader = Caller('leader', session_id='s3', project='demo')
@@ -209,6 +289,7 @@ class WarRoomOperationTests(ChannelHttpFixture):
         room = executor.call(service, leader, 'war_room.open', {'title': '联调', 'goal': '打通登录', 'members': ['web']},
                              request_id='r1', grants=grants)
         self.assertEqual(room['lead_name'], 'lead')
+        approve_assignments(self.conn, room, ['web'])
         item = executor.call(service, leader, 'war_room.item', {'room': room['id'], 'title': '接口改签名'},
                              request_id='r2', grants=grants)['item']
         self.assertEqual(item['owner_name'], 'lead')
@@ -218,6 +299,17 @@ class WarRoomOperationTests(ChannelHttpFixture):
         stranger = Caller('leader', session_id='s3', project='elsewhere')
         with self.assertRaises((OpError, board.BoardError)):
             executor.call(service, stranger, 'war_room.get', {'id': room['id']}, grants=grants)
+
+    def test_user_device_reserves_room_and_queues_lead_wake(self):
+        service = self.server.service
+        for role in ('device_browser', 'device_desktop'):
+            caller = Caller(role, device_id='fixture')
+            room = executor.call(service, caller, 'war_room.open',
+                                 {'project': 'demo', 'title': '联调', 'goal': '核对登录', 'lead': 'lead'},
+                                 request_id=role)
+            notices = self.conn.execute('SELECT session_id,wake FROM leader_notices WHERE room_id=?', (room['id'],))
+            self.assertEqual([tuple(n) for n in notices], [('s3', 1)])
+            war_room.close(self.conn, room['id'], board.HUMAN, '撤销', reason='cancelled')
 
 
 if __name__ == "__main__":
@@ -236,7 +328,7 @@ class LiveUpdateTests(WarRoomFixture):
         from crew import change_feed
         start = change_feed.latest_seq(self.conn)
         room = self.open_room()
-        [opened] = self.room_changes(start)
+        opened = self.room_changes(start)[-1]
         self.assertEqual((opened["type"], opened["entity"], opened["data"]["title"]), ("war_room.updated", str(room["id"]), "签名 v2 联调"))
         writes = [
             lambda: war_room.say(self.conn, room["id"], "b", "收到契约", now=NOW),
@@ -251,7 +343,7 @@ class LiveUpdateTests(WarRoomFixture):
             write()
             self.assertEqual(len(self.room_changes(before)), 1, write)
         before = change_feed.latest_seq(self.conn)
-        war_room.close(self.conn, room["id"], "a", "完成", now=NOW)
+        war_room.close(self.conn, room["id"], "user", now=NOW, reason="user_stop")
         [closed] = self.room_changes(before)
         self.assertEqual(closed["data"]["status"], "closed")
 
@@ -290,8 +382,8 @@ class AssistantLeadTests(WarRoomFixture):
 
     def setUp(self):
         super().setUp()
-        from crew import personal
-        self.assistant = personal.ensure_assistant(self.conn, self.home)["session_id"]
+        from crew import workspace_assistant
+        self.assistant = workspace_assistant.ensure(self.conn, self.home, "demo")["session_id"]
 
     def test_assistant_decision_stays_open_in_the_room_project_with_a_trusted_leader(self):
         from crew import trust_mode
@@ -307,66 +399,39 @@ class AssistantLeadTests(WarRoomFixture):
         [event] = self.conn.execute("SELECT project FROM events WHERE kind='decision:ask' AND session_id=?", (self.assistant,))
         self.assertEqual(event["project"], room["project"])
 
-    def test_answer_queues_one_room_notice_only_for_an_assistant_lead(self):
+    def test_answer_queues_one_room_notice_for_each_lead(self):
         room = self.open_room(actor=self.assistant)
         card = war_room.decide(self.conn, room["id"], self.assistant, "是否兼容 v1？", now=NOW)
         board.answer(self.conn, card["id"], "兼容一个月", now=NOW)
-        [notice] = self.notices(self.assistant)
+        notice = self.notices(self.assistant)[-1]
         self.assertEqual((notice["project"], notice["source"], notice["wake"]), (room["project"], "crew", 1))
         self.assertEqual(notice["text"], f'作战室 #{room["id"]}《{room["title"]}》的拍板卡已由用户答复。\n'
                          f'问题：{card["question"]}\n答复：兼容一个月\n'
                          f'请在房里（war_room_post，room={room["id"]}）告诉成员结论和接下来谁做什么。')
 
+        war_room.close(self.conn, room["id"], "user", reason="user_stop")
         leader_room = self.open_room()
         leader_card = war_room.decide(self.conn, leader_room["id"], "a", "何时切换？", now=NOW)
         before = self.conn.execute("SELECT COUNT(*) FROM leader_notices").fetchone()[0]
         board.answer(self.conn, leader_card["id"], "月底", now=NOW)
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM leader_notices").fetchone()[0], before)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM leader_notices").fetchone()[0], before+1)
 
     def test_the_assistant_leads_without_a_member_seat_and_speaks_as_itself(self):
-        room = war_room.start(self.conn, "demo", self.assistant, "开局", "两位 leader 跑通首个里程碑", ["alpha", "beta"],
-                              now=NOW)
-        self.assertEqual((room["lead_session_id"], room["lead_name"]), (self.assistant, "助手"))
+        room = self.open_room(actor=self.assistant, members=("alpha", "beta"))
+        self.assertEqual(room["lead_session_id"], self.assistant)
         self.assertEqual([m["crew_name"] for m in room["members"]], ["alpha", "beta"])
-        [first] = self.room_posts(room)
-        self.assertEqual((first["speaker_name"], [m["name"] for m in first["mentions"]]), ("助手", ["alpha", "beta"]))
-        self.assertEqual(self.main()[-1]["speaker_name"], "助手")
-
-    def test_a_members_delivered_task_tells_the_assistant_where_every_members_task_stands(self):
-        """Nothing else wakes the lead when a task comes back; its rules wrap the room up once the first tasks wait."""
-        from crew import goals
-        from tests.test_goals import GoalFixture
-        room = war_room.start(self.conn, "demo", self.assistant, "开局", "跑通首个里程碑", ["alpha", "beta"], now=NOW)
-        ids = {}
-        for sid, title in (("a", "签名验签"), ("b", "登录页")):
-            ids[sid] = goals.create(self.conn, "demo", sid, title, "需求：" + title,
-                                    [{"id": "short", "title": "The new short speaker is identified"}], now=NOW)["id"]
-            goals.transition(self.conn, ids[sid], "running")
-        report = goals.save_report(self.conn, ids["a"], GoalFixture.report(None, "awaiting_acceptance"))
-        goals.request_finish(self.conn, ids["a"], report["id"])
-        goals.finalize_finish(self.conn, ids["a"])
-        [note] = self.conn.execute("SELECT text,wake FROM leader_notices WHERE session_id=?", (self.assistant,)).fetchall()
-        self.assertEqual(note["wake"], 1)
-        self.assertIn("作战室 #%d" % room["id"], note["text"])
-        self.assertIn("「alpha」的任务「签名验签」已交付，等用户验收", note["text"])
-        self.assertIn("「beta」登录页：执行中", note["text"])
-        self.assertIn("war_room.close", note["text"])
-        war_room.close(self.conn, room["id"], self.assistant, "首批都交付了", now=NOW)
-        report = goals.save_report(self.conn, ids["b"], GoalFixture.report(None, "awaiting_acceptance"))
-        goals.request_finish(self.conn, ids["b"], report["id"])
-        goals.finalize_finish(self.conn, ids["b"])
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM leader_notices WHERE session_id=?",
-                                           (self.assistant,)).fetchone()[0], 1, "a closed room tells nobody")
+        self.assertEqual(self.room_posts(room)[0]["speaker_name"], "助手")
 
     def test_leaders_reach_the_assistant_by_name_or_by_answering_it(self):
-        room = war_room.start(self.conn, "demo", self.assistant, "开局", "跑通首个里程碑", ["alpha", "beta"], now=NOW)
+        room = self.open_room(actor=self.assistant, members=("alpha", "beta"))
+        self.deliver(self.assistant)
         first = self.room_posts(room)[0]
         asked = self.post("@助手 契约里的超时写多少？", actor="a", reply_to=first["id"])
         self.assertEqual([(m["name"], m["delivery"]) for m in asked["mentions"]], [("助手", "queued")])
         answer = war_room.say(self.conn, room["id"], self.assistant, "写 3 秒", reply_to=asked["id"], now=NOW)
         self.post("好的", actor="a", reply_to=answer["id"])
         notes = [row["text"] for row in self.conn.execute(
-            "SELECT text FROM leader_notices WHERE session_id=? ORDER BY id", (self.assistant,))]
+            "SELECT text FROM leader_notices WHERE session_id=? AND sent_at IS NULL ORDER BY id", (self.assistant,))]
         self.assertEqual(len(notes), 2)
         self.assertIn("「alpha」点名你", notes[0])
         self.assertIn("回复了你的作战室发言 #%d" % answer["id"], notes[1])
@@ -384,55 +449,20 @@ class BudgetTests(WarRoomFixture):
                           "cache_read_tokens,output_tokens) VALUES(?,?,?,?,?,?,?,?)",
                           ("req-%s-%d-%s" % (sid, tokens, ts), sid, ts, "claude-haiku-5-5", tokens, 0, 10 ** 9, 0))
 
-    def test_reaching_the_cap_pauses_once_and_raising_it_lets_the_members_go(self):
-        from crew import messaging
-        room = self.open_room(members=("beta",), budget_tokens=500_000)
-        self.spend("b", 300_000, ts="2026-11-27T07:00:00.000Z")  # before the room opened: not counted
-        self.spend("b", 300_000)
-        self.assertEqual(war_room.get(self.conn, room["id"])["budget"], {"tokens": 500_000, "spent": 300_000, "paused_at": None})
-        self.assertEqual(war_room.over_budget(self.conn, now=NOW), [])
-        self.spend("a", 250_000)
-        [(paused, stopped)] = war_room.over_budget(self.conn, now=NOW)
-        self.assertEqual((paused, sorted(stopped)), (room["id"], ["a", "b"]))
-        self.assertEqual(war_room.over_budget(self.conn, now=NOW), [])
-        detail = war_room.get(self.conn, room["id"])
-        self.assertEqual(detail["budget"]["paused_at"], NOW)
-        self.assertIn("预算到了", detail["messages"][-1]["body"])
-        self.conn.execute("INSERT INTO session_stop_gates(session_id,stopped_at,stopped_by) VALUES('b',?,?)", (NOW, board.HUMAN))
-        with self.assertRaisesRegex(board.BoardError, "只能由用户"):
-            war_room.set_budget(self.conn, room["id"], "a", 2_000_000, now=NOW)
-        with self.assertRaisesRegex(board.BoardError, "要大于已用"):
-            war_room.set_budget(self.conn, room["id"], board.HUMAN, 500_000, now=NOW)
-        resumed = war_room.set_budget(self.conn, room["id"], board.HUMAN, 2_000_000, now=NOW)
-        self.assertEqual((resumed["budget"]["paused_at"], resumed["budget"]["tokens"]), (None, 2_000_000))
-        self.assertFalse(messaging.stopped(self.conn, "b"))
-        self.assertIn("用户确认继续", resumed["messages"][-1]["body"])
-
-    def test_raising_the_cap_resumes_tasks_that_were_running_when_the_pause_stopped_them(self):
-        """The pause stops a working leader like the stop button: its running task goes pausing, then paused once
-        the native ends. Raising the cap must find that task again, not only tasks that were idle at the pause."""
+    def test_only_room_executions_use_room_budget(self):
         from crew import goals
-        room = self.open_room(members=("beta",), budget_tokens=100_000)
-        goal = goals.create(self.conn, "demo", "b", "接口签名", "换成 v2", ["联调通过"], now=NOW)["id"]
-        goals.transition(self.conn, goal, "running")
-        execution = goals.create_execution(self.conn, goal, "b", runtime="claude")
-        goals.set_execution_status(self.conn, execution["id"], "running")
-        goals.request_pause(self.conn, goal, manual=True, reason="明确停止此人员")   # what stop_identity does
-        self.assertEqual(goals.get(self.conn, goal)["status"], "pausing")
-        goals.set_execution_status(self.conn, execution["id"], "paused")
-        goals.confirm_paused(self.conn, goal)                                         # the host saw the native end
-        self.assertEqual(goals.get(self.conn, goal)["status"], "paused")
-        self.conn.execute("UPDATE war_rooms SET paused_at=? WHERE id=?", (NOW, room["id"]))
-        war_room.set_budget(self.conn, room["id"], board.HUMAN, 2_000_000, now=NOW)
-        self.assertNotIn(goals.get(self.conn, goal)["status"], ("paused", "pausing"))
-
-    def test_codex_usage_counts_only_what_grew_after_joining(self):
-        self.conn.execute("INSERT INTO session_runtime_bindings(session_id,runtime,native_id,updated_at) VALUES('b','codex','thread-b',?)", (NOW,))
-        self.conn.execute("INSERT INTO codex_sessions(rollout_id,path,input_tokens,cached_input_tokens,output_tokens) "
-                          "VALUES('thread-b','x',90000,40000,10000)")
-        room = self.open_room(members=("beta",), budget_tokens=100_000)
-        self.conn.execute("UPDATE codex_sessions SET input_tokens=120000,output_tokens=15000 WHERE rollout_id='thread-b'")
-        self.assertEqual(war_room.get(self.conn, room["id"])["budget"]["spent"], 35_000)
+        room = self.open_room(members=("beta",), budget_tokens=100000)
+        self.spend("b", 120000)
+        self.assertEqual(war_room.spent(self.conn, room), 0)
+        task = next(i['goal_id'] for i in room['board'] if i['goal_id'])
+        execution = goals.create_execution(self.conn, task, "b", runtime="claude")
+        goals.bind_native(self.conn, execution['id'], "claude", "room-native")
+        self.spend("room-native", 100001)
+        self.assertEqual(war_room.over_budget(self.conn, NOW), [room["id"]])
+        self.assertEqual(war_room.over_budget(self.conn, NOW), [])
+        self.assertEqual(goals.get(self.conn, task)['status'], "paused")
+        war_room.set_budget(self.conn, room["id"], "user", 200000, now=NOW)
+        self.assertNotEqual(goals.get(self.conn, task)['status'], "paused")
 
     def test_the_cap_has_sensible_bounds(self):
         with self.assertRaisesRegex(board.BoardError, "预算上限"):

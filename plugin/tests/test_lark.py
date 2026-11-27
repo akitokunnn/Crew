@@ -443,13 +443,18 @@ class LarkDecisionFlowTests(unittest.TestCase):
         self.assertEqual(0, self.conn.execute('SELECT COUNT(*) FROM notification_inbound').fetchone()[0])
 
     def test_quoted_stale_decision_is_context_without_direct_answer(self):
+        from crew import workspace_assistant
+        board.init_project(self.conn, 'other', self.home.parent / 'other')
+        for project in ('demo', 'other'):
+            workspace_assistant.ensure(self.conn, self.home, project)
         identity = board.ask(self.conn, 'member', '旧的问题', ['旧选项'], now=self.now)
         self.receive('/decisions', 'query')
         parent_id = self.conn.execute('SELECT message_id FROM lark_notification_messages WHERE decision_id=?', (identity,)).fetchone()[0]
         self.conn.execute('UPDATE decisions SET question=? WHERE id=?', ('新的问题', identity))
         self.receive('旧选项', 'answer', parent_id=parent_id)
         self.assertEqual('open', self.conn.execute('SELECT status FROM decisions WHERE id=?', (identity,)).fetchone()[0])
-        self.assertEqual('已转给全局助手', self.sent[-1])
+        self.assertEqual('已转给系统管理员', self.sent[-1])
+        self.assertEqual(self.conn.execute('SELECT session_id FROM lark_notification_replies').fetchone()[0], self.assistant)
         self.assertIn('decision_id=' + str(identity), json.loads(
             self.conn.execute('SELECT text FROM lark_notification_replies').fetchone()[0])['text'])
         self.assertEqual([], board.pending_notices(self.conn, 'leader'))

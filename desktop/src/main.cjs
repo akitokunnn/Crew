@@ -42,7 +42,7 @@ app.setPath('userData', config.userData);
 const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;
 const errorPage = pathToFileURL(path.join(__dirname, 'error.html')).href;
 let lastPublishedTab=null;
-let window, tray, backend, tabs, activityPreview, reportPreviews, tools, crewUpdates, selfUpdate, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, homeBootstrapped = false;
+let window, tray, backend, tabs, activityPreview, reportPreviews, tools, crewUpdates, selfUpdate, launchSettings, windowMenu, quitting = false, finishedQuit = false, parentDirectory = null, smokeStarted = false, pendingAction = null, pendingWorkspace = null, pendingReason = null, homeBootstrapped = false;
 let startupWork = null, cleanupPromise = null, remoteHeartbeat = null, localVersion = null;
 const { Appearance } = require('./appearance.cjs');
 const appearance = new Appearance(config.userData, { nativeTheme });
@@ -186,8 +186,7 @@ ipcMain.on('desktop:tabs-layout',(event,bounds)=>{
 ipcMain.handle('desktop:chrome-action', async (event, command, value) => {
   trustedChrome(event);
   if (command === 'home') return showHome();
-  if (command === 'assistant') return tabs.openAssistant();
-  if (command === 'admin') return showHome('admin');
+  if (command === 'admin') return openAdministrator();
   if (command === 'settings') return showHome('settings');
   if (command === 'back') return tabs.back();
   if (command === 'retry') return event.senderFrame.url===errorPage ? window.loadURL(homePage) : tabs.reload();
@@ -202,10 +201,11 @@ function external(url) {
   try { const parsed = new URL(url); if ((['http:', 'https:'].includes(parsed.protocol) || /^codex:\/\/threads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(url)) && !parsed.username && !parsed.password) void shell.openExternal(parsed.href).catch(error=>actionError(new Error('无法打开外部应用：'+error.message))); }
   catch (_) { /* Invalid external link: keep the application on its current page. */ }
 }
-async function showHome(action = null, workspace = null) {
+async function showHome(action = null, workspace = null, reason = null) {
   if (!liveWindow()) return;
   const target = window;
   pendingWorkspace = action === 'workspace-settings' ? workspace : null;
+  pendingReason = action === 'admin' ? reason : null;
   if(action==='new')parentDirectory=null;
   if(target.webContents.getURL()!==homePage){
     homeBootstrapped=false;pendingAction=action;
@@ -214,7 +214,7 @@ async function showHome(action = null, workspace = null) {
   }
   if (!liveWindow(target)) return;
   tabs?.select('home');
-  if(action && homeBootstrapped){window.webContents.send('desktop:home-action',{action,...(workspace ? {project:workspace} : {})});pendingWorkspace=null;}
+  if(action && homeBootstrapped){window.webContents.send('desktop:home-action',{action,...(workspace ? {project:workspace} : {}),...(pendingReason ? {reason:pendingReason} : {})});pendingWorkspace=null;pendingReason=null;}
   else if(action)pendingAction=action;
   if (!config.smoke) showWindow();
 }
@@ -224,10 +224,18 @@ function actionError(error) {
     .catch(failure=>console.error('Crew error dialog failed:',failure));
 }
 function menuAction(action) { return ()=>{ if (!liveWindow()) return; Promise.resolve().then(()=>{if(liveWindow())return action();}).catch(actionError); }; }
-async function openProject(name, hash = '') {
+// The system administrator is the AI conversation; with no backend it cannot open, so
+// every administrator entry lands on the file-backed operations page, which says why.
+function backendDown() { return new URL(backend.url).port==='0' || Boolean(backend.startupError); }
+async function openAdministrator() {
+  if (!liveWindow()) return;
+  if (backendDown()) return showHome('admin', null, 'offline');
+  return tabs.openAssistant();
+}
+async function openProject(name, destination = '') {
   if (!liveWindow()) return false;
   const target = window;
-  if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
+  if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员 · 运维');
   let project=(await core.projects(backend.url)).find(item=>item.name===name);
   if (!liveWindow(target)) return false;
   if(!project&&name.startsWith('storage:')){
@@ -236,12 +244,14 @@ async function openProject(name, hash = '') {
   }
   if (!liveWindow(target)) return false;
   if(!project)throw new Error('工作区不存在，请刷新列表');
+  const page=typeof destination==='string'?null:destination?.page??null;
+  if(project.read_only&&page&&page!=='workspace')throw new Error('已保存的只读历史不能打开助手或想法页');
   if(!project.read_only&&project.directory_state.status!=='ready'){await showHome('workspace-settings',name);return false;}
   const alreadyOpen=tabs.state().tabs.some(tab=>tab.project===project.name);
   const alreadyPrepared=preparedWorkspaces.delete(project.name);
   if(!alreadyOpen&&!alreadyPrepared)project=await storage.prepare(project,backend.url,chooseHistory,storageProgress,workspaceDataRequest);
   if(!project||!liveWindow(target))return false;
-  await tabs.open(project, hash);return true;
+  await tabs.open(project, destination);return true;
 }
 function storageProgress(message){if(liveWindow())window.webContents.send('desktop:storage-progress',message);}
 async function chooseHistory({kind,discovery}) {
@@ -397,7 +407,8 @@ function workspaceMenu() {
       const active=tabs.state().tabs.find(tab=>tab.id===tabs.state().activeId);
       if(active?.project)return showHome('workspace-settings',active.project);
     }) },
-    { id:'system-administrator',label:'系统管理员…',click:menuAction(()=>showHome('admin')) },
+    { id:'system-administrator',label:'系统管理员…',click:menuAction(openAdministrator) },
+    { id:'system-operations',label:'系统管理员 · 运维…',click:menuAction(()=>showHome('admin')) },
     ...local({ id:'tools-updates',label:'工具与更新…',click:menuAction(()=>showHome('tools')) }),
     { id:'app-settings',label:'设置…',accelerator:'CmdOrCtrl+,',click:menuAction(()=>showHome('settings')) },
     { type:'separator' },
@@ -484,12 +495,12 @@ async function visualEvidence(target, evidence) {
 
 handle('desktop:bootstrap', async () => {
   const target = window;
-  if(new URL(backend.url).port==='0'||backend.remote&&backend.startupError)throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
-  const projects = await core.projects(backend.url), action = pendingAction, workspace = pendingWorkspace; pendingAction = null; pendingWorkspace = null;
+  if(new URL(backend.url).port==='0'||backend.remote&&backend.startupError)throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员 · 运维');
+  const projects = await core.projects(backend.url), action = pendingAction, workspace = pendingWorkspace, reason = pendingReason; pendingAction = null; pendingWorkspace = null; pendingReason = null;
   if (!liveWindow(target)) return null;
   for(const project of projects)tabs.updateProject(project);
   homeBootstrapped=true;
-  return { platform, projects, service: { url:backend.url, owned:backend.owned, remote:Boolean(backend.remote) }, pendingAction:action, ...(workspace ? {pendingWorkspace:workspace} : {}) };
+  return { platform, projects, service: { url:backend.url, owned:backend.owned, remote:Boolean(backend.remote) }, pendingAction:action, ...(workspace ? {pendingWorkspace:workspace} : {}), ...(reason ? {pendingReason:reason} : {}) };
 });
 handle('desktop:connection',()=>connectionState());
 handle('desktop:admin-status',async()=>{
@@ -521,9 +532,10 @@ handle('desktop:admin-status',async()=>{
 });
 handle('desktop:home-ready',()=>{
   homeBootstrapped=true;
-  if(pendingAction){const action=pendingAction,project=pendingWorkspace;pendingAction=null;pendingWorkspace=null;window.webContents.send('desktop:home-action',{action,...(project?{project}:{})});}
+  if(pendingAction){const action=pendingAction,project=pendingWorkspace,reason=pendingReason;pendingAction=null;pendingWorkspace=null;pendingReason=null;window.webContents.send('desktop:home-action',{action,...(project?{project}:{}),...(reason?{reason}:{})});}
   return {ok:true};
 });
+handle('desktop:open-administrator',()=>openAdministrator());
 localHandle('desktop:admin-check',()=>administrator.request('check'));
 localHandle('desktop:admin-restart',()=>administrator.request('recover'));
 localHandle('desktop:admin-chat-snapshot',()=>operations.request('snapshot'));
@@ -573,8 +585,10 @@ handle('desktop:create', async (name,parent) => {
   if (!parentDirectory) throw new Error('请先选择工作区的保存位置');
   const result=await core.newWorkspace(parentDirectory, name, backend.url);parentDirectory=null;return result;
 });
-handle('desktop:open', async name => {
-  return {ok:await openProject(name)};
+handle('desktop:open', async (name, kickoff) => {
+  if (kickoff === undefined) return {ok:await openProject(name)};
+  if (!['war-room', 'leader', 'mindmap'].includes(kickoff)) throw new Error('未知的开局方式');
+  return {ok:await openProject(name, {page:kickoff === 'mindmap' ? 'notes' : 'workspace', hash:'#start=' + kickoff})};
 });
 localHandle('desktop:tools-snapshot',()=>tools.snapshot());
 localHandle('desktop:tools-check',()=>tools.check());
@@ -627,6 +641,11 @@ function themeSender(event){
 }
 ipcMain.handle('desktop:theme',event=>{themeSender(event);return appearance.state();});
 ipcMain.handle('desktop:theme-set',(event,mode)=>{themeSender(event);return appearance.set(mode);});
+// The administrator page's 运维 button: only a workspace tab's own main frame may show the native operations page.
+ipcMain.handle('desktop:open-operations',event=>{
+  if(!liveWindow()||!tabs||event.senderFrame!==event.sender.mainFrame||![...tabs.entries.values()].some(tab=>tab.view.webContents===event.sender))throw new Error('运维页只接受 Crew 窗口内的页面');
+  return showHome('admin');
+});
 // The font size has no native event: every Crew page hears the new appearance state at once.
 ipcMain.handle('desktop:font-scale-set',async(event,value)=>{themeSender(event);const state=await appearance.setFontScale(value);publishAppearance();return state;});
 function publishAppearance(){
@@ -672,6 +691,14 @@ handle('desktop:settings-save',body=>{
 handle('desktop:onboarding-get',()=>settingsRequest('/api/op/onboarding.get'));
 handle('desktop:onboarding-save',status=>settingsRequest('/api/op/onboarding.set',{status}));
 handle('desktop:runtime-readiness',()=>settingsRequest('/api/op/runtimes.readiness',undefined,60000));
+handle('desktop:copy-login-command', runtime => {
+  if (runtime !== 'claude' && runtime !== 'codex') throw new Error('未知的 AI 引擎');
+  clipboard.writeText(runtime === 'claude' ? 'claude' : 'codex login');
+});
+handle('desktop:onboarding-ui', async () => {
+  const directory = await core.resolveFrontendDir(config.helperBackendDir, config.helperFrontendDir);
+  return injectAssets(directory, [['executeJavaScript','workspace-start.js']]);
+});
 handle('desktop:launch-settings-get',()=>launchSettings.get());
 handle('desktop:launch-settings-validate',body=>launchSettings.validate(body));
 handle('desktop:launch-settings-apply',body=>launchSettings.apply(body));
@@ -837,14 +864,14 @@ else {
             if(!candidate)try{candidate=JSON.parse(await fs.readFile(path.join(config.home,'web.json'),'utf8')).url;}catch(_){}
           }
           try{backend.url=core.loopback(candidate);}catch(_){backend.url='http://127.0.0.1:0';}
-          pendingAction='admin';
+          pendingAction='admin';pendingReason='offline';
         }
       }
       if (quitting) return;
       // The host already forbids report preview workers for LAN devices; only this computer's backend gets one.
       if (!remoteMode && !backend.startupError) {
         reportPreviews = new ReportPreviewClient({base:backend.url, request:core.request,
-          renderer:new ReportPreviewRenderer({BrowserWindow})});
+          renderer:new ReportPreviewRenderer({BrowserWindow, base:backend.url})});
         try { await startupStep(reportPreviews.start()); }
         catch (error) { console.error('Crew 报告预览不可用：', error.message); }
       }

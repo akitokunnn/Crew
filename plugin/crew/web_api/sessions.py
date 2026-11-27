@@ -12,8 +12,10 @@ from .common import UNHANDLED, _text, _optional_text
 
 def post_session_runtime(service, path, data, project_name):
     with closing(store.connect(service.home)) as conn:
-        project=service.selected_project(conn,project_name if project_name is not None else data.get('project'))
-        target=board.session(conn,_text(data,'session_id'))
+        target = board.session(conn, _text(data, 'session_id'))
+        selected = project_name if project_name is not None else data.get('project')
+        project = (service.chat_project(conn, selected, target['session_id']) if target['project'] is not None
+                   else service.selected_project(conn, selected))
         if target['project']!=project or data.get('project',project)!=project:
             raise board.BoardError('会话不属于当前工作区')
         if path.endswith('/prepare'):
@@ -192,12 +194,12 @@ def post_chat_send(service, path, data, project_name, conn, now, project):
     if not isinstance(text, str) or (not text.strip() and not images):
         raise ValueError('请提供文字或图片')
     note_id = data.get('note_id')
-    assistant = project is None and personal.is_assistant(conn, session['session_id'])
+    assistant = personal.can_lead_as_assistant(conn, session['session_id'])
     if note_id is not None and (not assistant or data.get('goal_id')):
-        raise board.BoardError('只有发给全局助手的普通消息可以带想法')
+        raise board.BoardError('只有发给系统管理员或工作区助手的普通消息可以带想法')
     # The note is read here by ID before anything is configured or
     # sent; the page only names it and never supplies its text.
-    context = personal.discussion_context(conn, note_id) if note_id is not None else None
+    context = personal.discussion_context(conn, note_id, project=project) if note_id is not None else None
     reading = data.get('reading')
     reading_text = (reading_context.context(conn, project, reading, service.resolve_file, session['session_id'])
                     if reading is not None else None)
@@ -218,7 +220,7 @@ def post_chat_send(service, path, data, project_name, conn, now, project):
         return service.chat.send(session, text, images=images, identity=data.get('message_id'))
     sent = service.chat.send(session, prefix + '\n\n' + text, images=images,
                           identity=data.get('message_id'), display_text=text)
-    if note_id is None:
+    if note_id is None or not sent['accepted']:
         return sent
     seqs = [event['seq'] for event in service.chat.history(session['session_id'])['events']
             if event['type'] == 'message' and event['id'] == sent['message_id']]

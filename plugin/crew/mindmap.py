@@ -1,6 +1,6 @@
 """Personal mind map: ideas and topics arranged as trees, and branches turned into a workspace's architecture board.
 
-One canvas per HOME holds any number of root trees. A node is either an idea (``note_id``; title, tags and state
+One canvas per workspace holds any number of root trees. A node is either an idea (``note_id``; title, tags and state
 stay on the note) or a topic (``label``). Removing a node never touches the note, and its children move up one
 level. Edits arrive as a batch applied in one transaction and bump the map version, like the architecture board.
 
@@ -11,7 +11,8 @@ board (through ``domains.apply_ops``), the node → part links and the map versi
 import re
 import uuid
 
-from . import board, domains, personal
+from . import board, domains, personal, workspace_assistant
+from .ops.errors import OpError
 
 ID = re.compile(r'[A-Za-z0-9_-]{6,64}\Z')
 LABEL_MAX = domains.NAME_MAX
@@ -24,44 +25,27 @@ PREVIEW_KEYS = frozenset(('project', 'roots', 'parent_id', 'decisions', 'names',
 CONVERT_KEYS = PREVIEW_KEYS | {'map_version', 'board_version'}
 
 
-def ensure_schema(conn):
-    """Feature-owned additive storage next to the idea wall's tables."""
-    personal.ensure_schema(conn)
-    conn.execute('CREATE TABLE IF NOT EXISTS personal_mindmap ('
-                 'singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL, updated_at TEXT NOT NULL)')
-    conn.execute('CREATE TABLE IF NOT EXISTS personal_mindmap_nodes ('
-                 'id TEXT PRIMARY KEY, parent_id TEXT REFERENCES personal_mindmap_nodes(id), '
-                 'note_id TEXT UNIQUE REFERENCES personal_notes(id), label TEXT, sort_order INTEGER NOT NULL, '
-                 'collapsed INTEGER NOT NULL DEFAULT 0 CHECK(collapsed IN (0,1)), '
-                 'created_at TEXT NOT NULL, updated_at TEXT NOT NULL, CHECK((note_id IS NULL) <> (label IS NULL)))')
-    conn.execute('CREATE INDEX IF NOT EXISTS personal_mindmap_nodes_parent ON personal_mindmap_nodes(parent_id, sort_order)')
-    # domain_id has no foreign key: deleting a part on the board must not be blocked by the map. A link whose part
-    # is gone reads as "not converted" and the next conversion replaces it.
-    conn.execute('CREATE TABLE IF NOT EXISTS personal_mindmap_links ('
-                 'node_id TEXT NOT NULL REFERENCES personal_mindmap_nodes(id), '
-                 'project TEXT NOT NULL REFERENCES projects(name), domain_id TEXT NOT NULL, '
-                 'converted_at TEXT NOT NULL, PRIMARY KEY(node_id, project))')
-
-
-def version(conn):
-    row = conn.execute('SELECT version FROM personal_mindmap WHERE singleton=1').fetchone()
+def version(conn, project):
+    workspace_assistant.available(conn, project)
+    row = conn.execute('SELECT version FROM workspace_mindmaps WHERE project=?', (project,)).fetchone()
     return row['version'] if row is not None else 0
 
 
-def _bump(conn, now):
-    conn.execute('INSERT INTO personal_mindmap(singleton,version,updated_at) VALUES(1,1,?) ON CONFLICT(singleton) '
-                 'DO UPDATE SET version=version+1,updated_at=excluded.updated_at', (now,))
+def _bump(conn, project, now):
+    conn.execute('INSERT INTO workspace_mindmaps(project,version,updated_at) VALUES(?,1,?) ON CONFLICT(project) '
+                 'DO UPDATE SET version=version+1,updated_at=excluded.updated_at', (project, now))
 
 
-def snapshot(conn):
+def snapshot(conn, project):
     """Every node in sibling order, and each node's live link to a board part (links to deleted parts are left out)."""
     nodes = [{'id': row['id'], 'parent_id': row['parent_id'], 'note_id': row['note_id'], 'label': row['label'],
-              'sort_order': row['sort_order'], 'collapsed': bool(row['collapsed'])}
-             for row in conn.execute('SELECT * FROM personal_mindmap_nodes ORDER BY sort_order,created_at,id')]
+              'sort_order': row['sort_order'], 'collapsed': bool(row['collapsed']), 'x': row['x'], 'y': row['y']}
+             for row in conn.execute('SELECT * FROM personal_mindmap_nodes WHERE project=? ORDER BY sort_order,created_at,id', (project,))]
     links = [dict(row) for row in conn.execute(
         'SELECT l.node_id,l.project,l.domain_id,d.name AS domain_name FROM personal_mindmap_links l '
-        'JOIN domains d ON d.id=l.domain_id AND d.project=l.project ORDER BY l.node_id,l.project')]
-    return {'version': version(conn), 'nodes': nodes, 'links': links}
+        'JOIN personal_mindmap_nodes n ON n.id=l.node_id AND n.project=l.project '
+        'JOIN domains d ON d.id=l.domain_id AND d.project=l.project WHERE l.project=? ORDER BY l.node_id', (project,))]
+    return {'project': project, 'version': version(conn, project), 'nodes': nodes, 'links': links}
 
 
 def _label(value):
@@ -73,19 +57,25 @@ def _label(value):
     return label
 
 
+def _position(op):
+    if 'x' not in op and 'y' not in op:
+        return None
+    return domains._coordinate(op, 'x'), domains._coordinate(op, 'y')
+
+
 @board.atomic
-def apply(conn, ops, base_version, now=None):
+def apply(conn, ops, base_version, *, project, now=None):
     """Apply a batch of map edits in order; any invalid one rejects the whole batch."""
     if type(base_version) is not int:
         raise board.BoardError('base_version 必须是整数')
-    if base_version != version(conn):
-        raise board.Conflict('导图已在别处改动，请刷新后再改')
+    if base_version != version(conn, project):
+        raise board.VersionConflict('导图已在别处改动，请刷新后再改')
     if not isinstance(ops, list) or not ops:
         raise board.BoardError('ops 必须是非空数组')
     if len(ops) > OPS_MAX:
         raise board.BoardError('一次最多 %d 步改动' % OPS_MAX)
     now = board._time(now)
-    edit, effects = _Edit(conn, now), []
+    edit, effects = _Edit(conn, project, now), []
     for index, op in enumerate(ops):
         if not isinstance(op, dict) or not isinstance(op.get('op'), str):
             raise board.BoardError('第 %d 步缺少 op' % (index + 1))
@@ -93,21 +83,22 @@ def apply(conn, ops, base_version, now=None):
         if handler is None:
             raise board.BoardError('不认识的导图改动：%s' % op['op'])
         effects.append(handler(op))
-    _bump(conn, now)
+    _bump(conn, project, now)
     # effects[i] says what ops[i] did beyond the request (a new id; what a removal moved up), enough to undo it.
-    return {'map': snapshot(conn), 'effects': effects}
+    return {'map': snapshot(conn, project), 'effects': effects}
 
 
 class _Edit:
-    def __init__(self, conn, now):
+    def __init__(self, conn, project, now):
+        self.project = project
         self.conn, self.now = conn, now
 
     def node(self, node_id):
         if not isinstance(node_id, str):
             raise board.BoardError('导图节点 id 无效')
-        row = self.conn.execute('SELECT * FROM personal_mindmap_nodes WHERE id=?', (node_id,)).fetchone()
+        row = self.conn.execute('SELECT * FROM personal_mindmap_nodes WHERE project=? AND id=?', (self.project, node_id)).fetchone()
         if row is None:
-            raise board.BoardError('导图节点不存在：%s' % node_id)
+            raise OpError('not_visible', '本工作区没有该导图节点')
         return row
 
     def parent(self, op):
@@ -117,7 +108,7 @@ class _Edit:
 
     def siblings(self, parent_id):
         return [row['id'] for row in self.conn.execute(
-            'SELECT id FROM personal_mindmap_nodes WHERE parent_id IS ? ORDER BY sort_order,created_at,id', (parent_id,))]
+            'SELECT id FROM personal_mindmap_nodes WHERE project=? AND parent_id IS ? ORDER BY sort_order,created_at,id', (self.project, parent_id))]
 
     def place(self, node_id, parent_id, index):
         """Put the node at index among parent_id's children (None = last) and renumber that sibling list."""
@@ -141,20 +132,25 @@ class _Edit:
             node_id = uuid.uuid4().hex[:12]
         elif not isinstance(node_id, str) or not ID.match(node_id):
             raise board.BoardError('导图节点 id 格式不正确')
-        if self.conn.execute('SELECT 1 FROM personal_mindmap_nodes WHERE id=?', (node_id,)).fetchone() is not None:
+        existing = self.conn.execute('SELECT project FROM personal_mindmap_nodes WHERE id=?', (node_id,)).fetchone()
+        if existing is not None:
+            if existing['project'] != self.project:
+                raise OpError('not_visible', '本工作区不能使用该节点 ID')
             raise board.BoardError('导图节点 id 已存在：%s' % node_id)
         if ('note_id' in op) == ('label' in op):
             raise board.BoardError('新节点要么引用一条想法（note_id），要么是一个主题（label）')
         note_id = label = None
         if 'note_id' in op:
-            note_id = personal._row(self.conn, op['note_id'])['id']
+            note_id = personal._row(self.conn, self.project, op['note_id'])['id']
             if self.conn.execute('SELECT 1 FROM personal_mindmap_nodes WHERE note_id=?', (note_id,)).fetchone() is not None:
                 raise board.BoardError('这条想法已经在导图上')
         else:
             label = _label(op['label'])
         parent_id = self.parent(op)
-        self.conn.execute('INSERT INTO personal_mindmap_nodes(id,parent_id,note_id,label,sort_order,collapsed,created_at,updated_at) '
-                          'VALUES(?,?,?,?,0,0,?,?)', (node_id, parent_id, note_id, label, self.now, self.now))
+        position = _position(op)
+        x, y = (None, None) if position is None else position
+        self.conn.execute('INSERT INTO personal_mindmap_nodes(project,id,parent_id,note_id,label,sort_order,collapsed,created_at,updated_at,x,y) '
+                          'VALUES(?,?,?,?,?,0,0,?,?,?,?)', (self.project, node_id, parent_id, note_id, label, self.now, self.now, x, y))
         self.place(node_id, parent_id, op.get('index'))
         return {'op': 'create', 'id': node_id}
 
@@ -167,6 +163,12 @@ class _Edit:
 
     def op_move(self, op):
         node = self.node(op.get('id'))
+        position = _position(op)
+        if position is not None:
+            self.conn.execute('UPDATE personal_mindmap_nodes SET x=?,y=?,updated_at=? WHERE id=?',
+                              (*position, self.now, node['id']))
+            if 'parent_id' not in op and 'index' not in op:
+                return
         parent_id = self.parent(op)
         ancestor = parent_id
         while ancestor is not None:
@@ -177,6 +179,10 @@ class _Edit:
         self.place(node['id'], parent_id, op.get('index'))
         if previous != parent_id:
             self.renumber(self.siblings(previous))
+
+    def op_auto_layout(self, op):
+        self.conn.execute('UPDATE personal_mindmap_nodes SET x=NULL,y=NULL,updated_at=? '
+                          'WHERE project=? AND (x IS NOT NULL OR y IS NOT NULL)', (self.now, self.project))
 
     def op_collapse(self, op):
         node = self.node(op.get('id'))
@@ -197,7 +203,8 @@ class _Edit:
         self.conn.execute('DELETE FROM personal_mindmap_nodes WHERE id=?', (node['id'],))
         self.renumber(order[:index] + children + order[index + 1:])
         return {'op': 'remove', 'id': node['id'], 'parent_id': node['parent_id'], 'index': index, 'children': children,
-                'note_id': node['note_id'], 'label': node['label'], 'collapsed': bool(node['collapsed'])}
+                'note_id': node['note_id'], 'label': node['label'], 'collapsed': bool(node['collapsed']),
+                'x': node['x'], 'y': node['y']}
 
 
 # ---- conversion ---------------------------------------------------------------------------------------------------
@@ -206,7 +213,7 @@ def _request(data, keys):
     if not isinstance(data, dict) or set(data) != keys:
         raise board.BoardError('请求体必须正好包含 ' + '、'.join(sorted(keys)))
     roots = data['roots']
-    if not isinstance(roots, list) or not roots or len(set(roots)) != len(roots) or not all(isinstance(item, str) for item in roots):
+    if not isinstance(roots, list) or not roots or not all(isinstance(item, str) for item in roots) or len(set(roots)) != len(roots):
         raise board.BoardError('roots 必须是不重复的节点 id 数组')
     for key in ('decisions', 'names', 'leaders'):
         if not isinstance(data[key], dict):
@@ -238,14 +245,14 @@ def _active_leaders(conn, project):
 def _plan(conn, request):
     """The conversion as rows in pre-order, plus the board before and after. Reads only."""
     project = request['project']
-    board.project(conn, project)
-    nodes = {row['id']: dict(row) for row in conn.execute('SELECT * FROM personal_mindmap_nodes')}
+    workspace_assistant.available(conn, project)
+    nodes = {row['id']: dict(row) for row in conn.execute('SELECT * FROM personal_mindmap_nodes WHERE project=?', (project,))}
     children = {}
-    for row in conn.execute('SELECT id,parent_id FROM personal_mindmap_nodes ORDER BY sort_order,created_at,id'):
+    for row in conn.execute('SELECT id,parent_id FROM personal_mindmap_nodes WHERE project=? ORDER BY sort_order,created_at,id', (project,)):
         children.setdefault(row['parent_id'], []).append(row['id'])
     for node_id in request['roots']:
         if node_id not in nodes:
-            raise board.BoardError('导图节点不存在：%s' % node_id)
+            raise OpError('not_visible', '本工作区没有该导图节点')
     picked = set(request['roots'])
 
     def inside_other(node_id):
@@ -268,15 +275,16 @@ def _plan(conn, request):
     for key in ('decisions', 'names', 'leaders'):
         stray = sorted(set(request[key]) - planned)
         if stray:
-            raise board.BoardError('%s 里有不在这次转换范围内的节点：%s' % (key, '、'.join(stray)))
+            raise OpError('not_visible', '%s 里有不在这次转换范围内的节点：%s' % (key, '、'.join(stray)))
 
     snap = domains.snapshot(conn, project)
     parts = {part['id']: part for part in snap['parts']}
     parent_id = request['parent_id']
     if parent_id is not None and parent_id not in parts:
-        raise board.BoardError('要挂到的 part 不在这个工作区的架构图里')
+        raise OpError('not_visible', '要挂到的 part 不在这个工作区的架构图里')
     links = {row['node_id']: row['domain_id'] for row in conn.execute(
-        'SELECT node_id,domain_id FROM personal_mindmap_links WHERE project=?', (project,)) if row['domain_id'] in parts}
+        'SELECT node_id,domain_id FROM personal_mindmap_links l JOIN personal_mindmap_nodes n '
+        'ON n.id=l.node_id AND n.project=l.project WHERE l.project=?', (project,)) if row['domain_id'] in parts}
     claimed = set(links.values())
     active = _active_leaders(conn, project)
     placed = {place['session_id']: place['domain_id'] for place in snap['leaders']}
@@ -284,7 +292,7 @@ def _plan(conn, request):
     rows, resolved, used = [], {}, set()
     for node_id, depth in order:
         node = nodes[node_id]
-        note = personal.get_note(conn, node['note_id']) if node['note_id'] is not None else None
+        note = personal.get_note(conn, node['note_id'], project=project) if node['note_id'] is not None else None
         default = node['label'] if note is None else _clip(_title(note))
         if node_id in tops:
             above = node['parent_id']
@@ -321,8 +329,10 @@ def _plan(conn, request):
         if node_id in request['leaders']:
             session_id = request['leaders'][node_id]
             if session_id is not None:
+                if not isinstance(session_id, str):
+                    raise board.BoardError('leader 会话标识必须是文本或 null')
                 if session_id not in active:
-                    raise board.BoardError('不是这个工作区在用的 leader：%s' % session_id)
+                    raise OpError('not_visible', '本工作区没有该在用 leader')
                 if action == 'skip':
                     raise board.BoardError('跳过的「%s」不会建 part，不能放 leader' % name)
                 if session_id in used:
@@ -351,7 +361,7 @@ def _plan(conn, request):
         parent['name'] = parts[parent['id']]['name'] if parent['kind'] == 'part' else names[parent['id']] if parent['kind'] == 'new' else None
     nothing = not any(row['action'] in ('create', 'merge') or (row['leader'] and not row['leader']['unchanged'])
                       for row in rows)
-    return {'project': project, 'map_version': version(conn), 'board_version': snap['version'],
+    return {'project': project, 'map_version': version(conn, project), 'board_version': snap['version'],
             'direction': snap['direction'], 'parent_id': parent_id, 'rows': rows, 'nothing': nothing,
             'leaders': [{'session_id': session_id, 'name': name, 'domain_id': placed.get(session_id)}
                         for session_id, name in active.items()],
@@ -437,8 +447,8 @@ def convert(conn, data, now=None):
     for key in ('map_version', 'board_version'):
         if type(request[key]) is not int:
             raise board.BoardError('%s 必须是整数' % key)
-    if request['map_version'] != version(conn) or request['board_version'] != domains.version(conn, request['project']):
-        raise board.Conflict('导图或架构图在预览之后又有改动，请重新预览')
+    if request['map_version'] != version(conn, request['project']) or request['board_version'] != domains.version(conn, request['project']):
+        raise board.VersionConflict('导图或架构图在预览之后又有改动，请重新预览')
     plan = _plan(conn, request)
     if plan['nothing']:
         raise board.BoardError('这次选择的分支都已转过，也没有要放的 leader')
@@ -469,6 +479,6 @@ def convert(conn, data, now=None):
             conn.execute('INSERT INTO personal_mindmap_links(node_id,project,domain_id,converted_at) VALUES(?,?,?,?) '
                          'ON CONFLICT(node_id,project) DO UPDATE SET domain_id=excluded.domain_id,converted_at=excluded.converted_at',
                          (row['node_id'], project, created.get(row['node_id'], row['domain_id']), now))
-    _bump(conn, now)
-    return {'map': snapshot(conn), 'board_version': domains.version(conn, project), 'summary': plan['summary'],
+    _bump(conn, project, now)
+    return {'map': snapshot(conn, project), 'board_version': domains.version(conn, project), 'summary': plan['summary'],
             'created': [created[row['node_id']] for row in plan['rows'] if row['node_id'] in created]}
