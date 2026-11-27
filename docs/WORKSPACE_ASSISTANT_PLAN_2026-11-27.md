@@ -101,3 +101,5 @@
 2. 人用 `GET note.get?project=X&note_id=…` → `{note:{…}}`，与 notes.list 元素同形。
 3. `interaction.list` 保持 `{requests:[…]}`，元素含 id, op, project, session_id, status, args, summary；GET 或 POST `{project?}`。
 4. `assistant.open` 身份对象的 `project` 为字符串或 null；`assistant.state.project` 为项目对象。
+5. `unassigned.list` 的 `notes[]` 只列不在遗留树里的散落想法，树内未归属想法只在 `trees[].note_ids`，只能随树认领；counts 只数散落部分；claim 的 note_ids 含树内想法 → 400「请认领所在的导图树」。
+6. 遗留树只含未归属想法与主题（混合树迁移时已拆），认领树整棵归目标区。工作区助手的 MCP 令牌不含 `chat.*`（人和设备对它的聊天接口照常）。
