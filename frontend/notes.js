@@ -24,7 +24,8 @@
   async function api(path, body) {
     const response = await fetch(path, body === undefined ? {method:"GET", headers:{"X-Crew":"1"}} : window.CrewBrowser.postOptions(body));
     const value = await response.json();
-    if (!response.ok) { const error = Error(value.error || `请求失败 (${response.status})`); error.status = response.status; error.body = value; throw error; }
+    // A 202 with error_code "outcome_unknown" (e.g. a leader start whose result is unconfirmed) is not a success.
+    if (!response.ok || value?.error_code) { const error = Error(value.error || `请求失败 (${response.status})`); error.status = response.status; error.body = value; throw error; }
     return value;
   }
   // crew-op: note.annotate note.archive note.bulk note.keep note.merge note.pin note.restore note.snooze note.unmerge note.update
@@ -526,8 +527,8 @@
       const rows = (items, kind, line) => items.map(item => { const id = kind === "notes" ? item.id : item.root_id; return `<label class="nw-claim-row"><input type="checkbox" data-claim="${kind}" value="${esc(id)}" ${picked[kind].has(id) ? "checked" : ""}><span>${line(item)}</span></label>`; }).join("");
       const noteLine = item => `<b>${esc(M.title(item))}</b>${item.state === "archived" ? '<em class="nw-claim-tag">已归档</em>' : ""}${item.tags?.length ? `<small>${item.tags.map(name => `#${esc(name)}`).join(" ")}</small>` : ""}`;
       const treeLine = item => `<b>${esc(item.label || "未命名主题")}</b><small>${item.node_count} 个节点${item.note_ids?.length ? ` · 含 ${item.note_ids.length} 条想法` : ""}</small>`;
-      body.innerHTML = (list.notes.length ? `<section><h3>旧想法 <span class="nw-count">${list.notes.length}</span><button type="button" class="text-link" data-claim-all="notes">全选</button></h3><div class="nw-claim-list">${rows(list.notes, "notes", noteLine)}</div></section>` : "")
-        + (list.trees.length ? `<section><h3>导图 <span class="nw-count">${list.trees.length}</span><button type="button" class="text-link" data-claim-all="trees">全选</button></h3><p class="nw-quiet">认领一棵导图时，图里还没归属的想法一起归到这里。</p><div class="nw-claim-list">${rows(list.trees, "trees", treeLine)}</div></section>` : "")
+      body.innerHTML = (list.notes.length ? `<section><h3>散落的旧想法 <span class="nw-count">${list.notes.length}</span><button type="button" class="text-link" data-claim-all="notes">全选</button></h3><div class="nw-claim-list">${rows(list.notes, "notes", noteLine)}</div></section>` : "")
+        + (list.trees.length ? `<section><h3>导图 <span class="nw-count">${list.trees.length}</span><button type="button" class="text-link" data-claim-all="trees">全选</button></h3><p class="nw-quiet">导图里的旧想法只能随整棵导图认领，认领后一起归到这里。</p><div class="nw-claim-list">${rows(list.trees, "trees", treeLine)}</div></section>` : "")
         || '<p class="nw-quiet">旧想法都已经有归属了。</p>';
       const count = picked.notes.size + picked.trees.size, submit = form.querySelector("[type=submit]");
       submit.disabled = count === 0; submit.textContent = count ? `认领 ${count} 项到「${workspaceName()}」` : "认领";

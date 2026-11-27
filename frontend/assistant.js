@@ -28,7 +28,8 @@
   async function api(path,body) {
     const response = await fetch(path, body === undefined ? {method:"GET", headers:{"X-Crew":"1"}} : window.CrewBrowser.postOptions(body));
     const value=await response.json();
-    if(!response.ok){const failure=Error(value.error||`请求失败 (${response.status})`);failure.status=response.status;failure.body=value;throw failure;}
+    // error_code marks a failure even on 202 (outcome_unknown); the other codes come with 404 / 409.
+    if(!response.ok||value?.error_code){const failure=Error(value.error||`请求失败 (${response.status})`);failure.status=response.status;failure.body=value;throw failure;}
     return value;
   }
   function fatal(message) {
