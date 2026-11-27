@@ -144,6 +144,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(landing["channel"], {"unread": 0, "latest_id": 0, "digesting": False, "digest_error": None, "digest_id": None})
         for key in ("leaders", "members", "decisions", "attention", "goals"):
             self.assertEqual(landing[key], [])
+        for query in ({}, {'project': 'demo'}):
+            with self.subTest(query=query):
+                code, snapshot, _ = self.request('/api/op/workspace.snapshot', **query)
+                self.assertEqual(code, 200, snapshot)
+                self.assertIsInstance(snapshot['data']['attention'], list)
 
     def test_claude_api_budget_replaces_subscription_quota_until_cleared(self):
         code, error, _ = self.request("/api/op/claude_budget.set", {"budget": {"amount_usd": -1, "cycle": "monthly", "start": None}})
@@ -390,7 +395,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         decision = next(row for row in state["decisions"] if row["id"] == opened)
         self.assertEqual(set(decision), {"id", "session_id", "asker", "leader_session_id", "question",
                                         "options", "recommendation", "blocking", "created_at", "brief", "needs_review",
-                                        "goal_id", "presentation_stage", "discussed_at", "ready_at", "notice_id"})
+                                        "goal_id", "room_title", "presentation_stage", "discussed_at", "ready_at", "notice_id"})
+        self.assertIsNone(decision['room_title'])
         self.assertTrue(decision['needs_review'])
         self.assertIsNone(decision['brief'])
         self.assertEqual((decision["asker"], decision["leader_session_id"]), ("one", "s3"))

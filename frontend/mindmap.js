@@ -25,7 +25,7 @@ window.CrewMindmap = (() => {
     // pendingAttach: an idea already recorded whose hanging failed; a retry only hangs it.
     let armed = null, pendingAttach = null, capturing = false, captureNote = "";
     let camera = null, controls = null, marquee = new Set(), resizing = null, startRequested = false;
-    const cameraKey = `crew.mindmap.camera.${ctx.project}`;
+    let cameraKey = null, cameraWidth = null, manualCamera = false;
     const $ = selector => host.querySelector(selector);
     const note = id => ctx.byId(t.nodes.get(id).note_id);
     // Ideas are never deleted, so every idea node finds its note once the page has read them.
@@ -87,7 +87,7 @@ window.CrewMindmap = (() => {
         wheelZoom:() => map.canvas_wheel_zoom, hit, editable:() => !picking && !draft && renaming === null && armed === null,
         forcePan:() => false, start:startGesture, preview:previewGesture, commit:finishGesture,
         cancel:rollbackGesture, menu:openCanvasMenu, settled:() => {}});
-      resizing = new ResizeObserver(() => { if (camera === null && layoutInfo) fit(); });
+      resizing = new ResizeObserver(() => { if (layoutInfo) syncCamera(); });
       resizing.observe(scroll);
       // Hanging uses pointer events; a native drag of selected text would cancel them midway.
       const shell = $(".mm-shell");
@@ -247,10 +247,7 @@ window.CrewMindmap = (() => {
         const branch = MM.branch(t, id), tone = MM.parentList(t, branch).indexOf(branch) % 10;
         return `<path class="${pickCovered.has(id) && pickCovered.has(t.nodes.get(id).parent_id) ? "picked" : ""}" style="--bc:var(--tag-c${tone}-fg)" d="${MM.wire(layoutInfo.pos.get(t.nodes.get(id).parent_id), layoutInfo.pos.get(id))}"/>`;
       }).join("");
-      if (camera === null) {
-        const saved = localStorage.getItem(cameraKey);
-        if (saved === null) fit(); else setCamera(JSON.parse(saved), false);
-      } else applyCamera();
+      syncCamera();
       const editor = $(".mm-input");
       if (editor) {
         if (previousEditor) editor.value = previousEditor.value;
@@ -274,15 +271,34 @@ window.CrewMindmap = (() => {
     }
     function setCamera(value, save) {
       camera = value; closeCanvasMenu(); ctx.closeMenu(); applyCamera();
-      if (save) localStorage.setItem(cameraKey, JSON.stringify(camera));
+      if (save) {
+        manualCamera = true;
+        localStorage.setItem(cameraKey, JSON.stringify(camera));
+      }
     }
-    function fit() {
+    function syncCamera() {
       const rect = controls.rect();
       if (!rect.width || !rect.height) return;
+      const layout = window.matchMedia("(max-width:760px)").matches ? "narrow" : "wide";
+      const key = `crew.mindmap.manual-camera.${layout}.${ctx.project}`;
+      if (cameraKey !== key) {
+        cameraKey = key;
+        const saved = localStorage.getItem(key);
+        camera = saved === null ? null : JSON.parse(saved);
+        manualCamera = saved !== null;
+      }
+      if (camera === null || (!manualCamera && cameraWidth !== rect.width)) fit(rect);
+      else applyCamera();
+      cameraWidth = rect.width;
+    }
+    function fit(rect = controls.rect()) {
+      if (!rect.width || !rect.height) return;
+      if (manualCamera) localStorage.removeItem(cameraKey);
+      manualCamera = false;
       const pad = rect.width < 500 ? 18 : 28;
       const bottom = rect.bottom - visibleBottom(rect) + pad;
-      if (layoutInfo.bounds) setCamera(CrewCanvas.fit(rect, layoutInfo.bounds, {left:pad, right:pad, top:pad, bottom}, clampZoom), true);
-      else setCamera({x:0, y:0, z:1}, false);
+      const fitted = layoutInfo.bounds ? CrewCanvas.fit(rect, layoutInfo.bounds, {left:pad, right:pad, top:pad, bottom}, clampZoom) : {x:0, y:0, z:1};
+      setCamera(fitted, false);
     }
     function visibleBottom(rect) {
       const actions = $(".mm-actions");
@@ -295,7 +311,7 @@ window.CrewMindmap = (() => {
       const rect = controls.rect(), box = el.getBoundingClientRect(), pad = 20;
       const dx = box.left < rect.left + pad ? rect.left + pad - box.left : Math.min(0, rect.right - pad - box.right);
       const dy = box.top < rect.top + pad ? rect.top + pad - box.top : Math.min(0, visibleBottom(rect) - pad - box.bottom);
-      if (dx || dy) setCamera({...camera, x:camera.x + dx, y:camera.y + dy}, true);
+      if (dx || dy) setCamera({...camera, x:camera.x + dx, y:camera.y + dy}, false);
     }
     function renderActions() {
       const bar = $(".mm-actions");
@@ -754,6 +770,7 @@ window.CrewMindmap = (() => {
       unmount() {
         finishEditor(true);
         controls.destroy(); resizing.disconnect(); host.innerHTML = "";
+        camera = null; cameraKey = null; cameraWidth = null; layoutInfo = null;
         host = null; picking = null; draft = null; renaming = null; armed = null; startRequested = false;
       },
       render() { if (host) { sync(); render(); const box = $(".mm-capture-input"); if (document.activeElement !== box && box.value !== ctx.draft.get()) { box.value = ctx.draft.get(); resizeBox(); } } },

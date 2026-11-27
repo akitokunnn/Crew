@@ -48,7 +48,7 @@
     if (ctx.rooms === null) return '<p role="status">正在读取作战室…</p>';
     const live = ctx.rooms.filter(isOpen), history = ctx.rooms.filter(room => !isOpen(room));
     const rows = (rooms, label, empty) => `<section class="wr-room-group"><h2>${label}</h2>${rooms.length ? rooms.map(room =>
-      `<a class="wr-room-row" href="${roomLink(room.id)}" data-wr-route="${room.id}"><span><strong>${esc(room.title)}</strong><small>${esc(room.goal)} · 领头 ${esc(room.lead_name)}</small></span><span class="wr-room-state" data-state="${CrewGlobalRail.roomState([room])}">${esc(isOpen(room) ? CrewGlobalRail.roomLabel([room]) : ending[room.close_reason])}${room.unread ? ` · ${room.unread} 条未读` : ""}</span></a>`).join("") : `<p>${empty}</p>`}</section>`;
+      `<a class="wr-room-row" href="${roomLink(room.id)}" data-wr-route="${room.id}"><span><strong>${esc(room.title)}</strong><small>${esc(room.goal)} · 领头 ${esc(room.lead_name)}</small></span><span class="wr-room-state" data-state="${CrewGlobalRail.roomState([room])}">${esc(isOpen(room) ? CrewGlobalRail.roomLabel([room]) : ending[room.close_reason])}${room.unread ? ` · ${room.unread} 条未读` : ""}${isOpen(room) && !preparing(room) ? `<small>分工 ${room.progress.done}/${room.progress.total}</small>` : ""}</span></a>`).join("") : `<p>${empty}</p>`}</section>`;
     return `<div class="wr-directory-head"><h1>作战室</h1>${live.length ? "" : ctx.state.leaders.length ? action("open", "开作战室") :
       `<a class="cx-btn" href="/assistant.html?project=${encodeURIComponent(ctx.state.project.name)}#opening=${encodeURIComponent(ctx.state.project.name)}">找助手开局</a>`}</div>` +
       rows(live, "进行中", "当前没有作战室") + rows(history, "历史", "还没有结束的作战室");
@@ -114,7 +114,7 @@
   function decisionHTML(room, decision) {
     const state = decision.status === "open" && !isOpen(room) ? "closed" : decision.status;
     const label = {open:"等你定", closed:"随房间结束关闭", answered:"已定", withdrawn:"已撤回"}[state];
-    return `<section class="wr-note wr-decision" data-state="${state}" id="wr-decision-${decision.id}"><strong>${label}</strong><p>${esc(decision.question)}</p>${decision.answer ? `<p>${esc(decision.answer)}</p>` : ""}
+    return `<section class="wr-note wr-decision" data-state="${state}" id="wr-decision-${decision.id}"><strong>${label}</strong><small class="decision-source">作战室 · ${esc(decision.room_title)}</small><p>${esc(decision.question)}</p>${decision.answer ? `<p>${esc(decision.answer)}</p>` : ""}
       ${state === "open" ? `${decision.recommendation ? `<p>建议 ${esc(decision.recommendation)}</p>` : ""}<a class="cx-btn" data-act="view" data-view="all" href="#all">去拍板</a>` : ""}</section>`;
   }
 

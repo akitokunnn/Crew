@@ -391,7 +391,7 @@ test("手机摘要打开同一份计划并在单内敲定，正常发言和回�
 });
 
 test("作战中战况显示卡住和待定项，成员和内部消息在独立抽屉，顾问用量未知时有明确提示", async () => {
-  const asked = {id:8, status:"open", question:"先做哪项？", recommendation:"网关", answer:null, created_at:"2026-11-28T02:05:00Z"};
+  const asked = {id:8, status:"open", question:"先做哪项？", room_title:"签名", recommendation:"网关", answer:null, created_at:"2026-11-28T02:05:00Z"};
   const f = harness(room({phase:"active", approved_version:2, open_decisions:1, decisions:[asked],
     board:[job("A1","assignment","blocked","切换网关")], members:[{session_id:"pay",crew_name:"支付"}],
     messages:[message(1,"assistant","先写计划"),message(2,"pay","内部讨论")],
@@ -443,7 +443,7 @@ test("用户可以回复领头的消息，自己的消息没有回复按钮", as
 
 test("结束后摘要和战况只提示进度与结局，排队回执和未决拍板随房间结束", async () => {
   const queued = http.queued, [lead] = queued.mentions;
-  const decision = {id:8, status:"open", question:"作战室《签名》：可以上线吗？", recommendation:"明天", answer:null, created_at:"2026-11-28T02:05:00Z"};
+  const decision = {id:8, status:"open", question:"作战室《签名》：可以上线吗？", room_title:"签名", recommendation:"明天", answer:null, created_at:"2026-11-28T02:05:00Z"};
   for (const [phase, close_reason, label] of [["active","completed","做完了"],["preparing","cancelled","筹备已撤销"]]) {
     const f = harness(room({status:"closed", phase, close_reason, lead_session_id:lead.session_id,
       board:[job("A1","assignment","done","核对签名"),job("A2","assignment","blocked","发布")],
@@ -459,7 +459,7 @@ test("结束后摘要和战况只提示进度与结局，排队回执和未决�
     assert.doesNotMatch(f.node(".wr-pane-content").innerHTML, /<h2>战况/);
     const feed = f.node(".wr-timeline").innerHTML;
     assert.match(feed, /data-delivery="undelivered">未送达<\/small>/);
-    assert.match(feed, /wr-decision" data-state="closed"[^>]*><strong>随房间结束关闭<\/strong><p>作战室《签名》：可以上线吗？<\/p>/);
+    assert.match(feed, /wr-decision" data-state="closed"[^>]*><strong>随房间结束关闭<\/strong><small class="decision-source">作战室 · 签名<\/small><p>作战室《签名》：可以上线吗？<\/p>/);
     assert.doesNotMatch(feed, /待送达|领头还在忙|去拍板/);
   }
 });
@@ -525,10 +525,12 @@ test("各出口发送对应操作，关闭后只读，追加预算提交新的�
 
 test("历史可逐个进入，六种结束说法明确且列表本身没有逐个取详情", async () => {
   const reasons = ["completed","user_stop","abandoned","budget","cancelled","legacy"];
-  const f = harness(null,{directory:[room({id:7,phase:"active",legacy:true}),room({id:8}), ...reasons.map((close_reason,i) => room({id:10+i,status:"closed",close_reason}))]});
+  const f = harness(null,{directory:[room({id:7,phase:"active",legacy:true,progress:{done:1,total:2}}),room({id:8}), ...reasons.map((close_reason,i) => room({id:10+i,status:"closed",close_reason}))]});
   await tick();
   const html = f.node(".wr-directory").innerHTML;
   assert.match(html, /统一 v2 · 领头 工作区助手/);
+  assert.match(html, /data-wr-route="7"[^]*?<small>分工 1\/2<\/small>/);
+  assert.equal(html.match(/分工 \d+\/\d+/g).length, 1);
   for (const label of ["做完了","你叫停了","领头放弃了","预算用完了","筹备已撤销","已退出旧房"]) assert(html.includes(label));
   assert.match(html, /data-wr-route="7"[\s\S]*data-wr-route="8"/);
   f.host.onclick({target:{closest:selector => selector === "[data-wr-route]" ? {dataset:{wrRoute:"8"}} : null}, preventDefault(){}});

@@ -129,6 +129,7 @@
 .wr-room-group+.wr-room-group{margin-top:24px}
 .wr-room-row{display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:48px;padding:8px 4px;border-bottom:1px solid var(--line);color:var(--text);text-decoration:none}
 .wr-room-row:hover{background:var(--hover)}
+.wr-room-row>span:first-child{min-width:0;overflow-wrap:anywhere}
 .wr-room-row strong{font-size:calc(14px * var(--fs));font-weight:600}
 .wr-room-row small{font-size:calc(12px * var(--fs))}
 .wr-room-state{text-align:right;flex:none;max-width:40%}

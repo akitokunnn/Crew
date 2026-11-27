@@ -45,14 +45,16 @@ def ai(conn, _, __):
 def decision(conn, project_name, decision_id):
     """An open decision as the workspace lists it; answered or withdrawn ones leave the list."""
     from . import decision_briefs, decision_flow
-    row = conn.execute('SELECT * FROM decisions WHERE id=?', (decision_id,)).fetchone()
+    row = conn.execute('SELECT d.*,r.title AS room_title FROM decisions d '
+                       'LEFT JOIN war_room_decisions w ON w.decision_id=d.id '
+                       'LEFT JOIN war_rooms r ON r.id=w.room_id WHERE d.id=?', (decision_id,)).fetchone()
     if row is None or row['status'] != 'open':
         return None
     value = {key: row[key] for key in DECISION_FIELDS}
     value['options'] = json.loads(row['options'])
     link = conn.execute("SELECT l.goal_id FROM goal_links l JOIN goals g ON g.id=l.goal_id "
                         "WHERE l.kind='decision' AND l.item_id=? AND g.project=?", (row['id'], project_name)).fetchone()
-    value.update(asker=board.session(conn, row['session_id'])['crew_name'],
+    value.update(room_title=row['room_title'], asker=board.session(conn, row['session_id'])['crew_name'],
                  leader_session_id=trust_mode.decision_leader(conn, row['id']),
                  goal_id=link['goal_id'] if link is not None else None)
     return decision_flow.enrich(conn, decision_briefs.enrich(conn, value))

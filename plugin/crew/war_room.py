@@ -291,7 +291,7 @@ def decide(conn, room_id, actor, question, options=(), recommendation=None, now=
     require_active(room)
     _gate(conn, room, actor, lead_only=True)
     question = _text(question, '拍板问题', 300)
-    decision_id = board.ask.__wrapped__(conn, room['lead_session_id'], '作战室《%s》：%s' % (room['title'], question),
+    decision_id = board.ask.__wrapped__(conn, room['lead_session_id'], question,
                                         options, recommendation, now=now, project=room['project'])
     conn.execute('INSERT INTO war_room_decisions(decision_id,room_id) VALUES(?,?)', (decision_id, room_id))
     _event(conn, room_id, actor, 'decision', {'id': decision_id, 'question': question}, now)
@@ -496,8 +496,9 @@ def _item(conn, row):
 
 
 def _decision(conn, decision_id):
-    row = dict(conn.execute('SELECT id,question,options,recommendation,status,answer,created_at,answered_at '
-                            'FROM decisions WHERE id=?', (decision_id,)).fetchone())
+    row = dict(conn.execute('SELECT d.id,d.question,d.options,d.recommendation,d.status,d.answer,d.created_at,d.answered_at, '
+                            'r.title AS room_title FROM decisions d JOIN war_room_decisions w ON w.decision_id=d.id '
+                            'JOIN war_rooms r ON r.id=w.room_id WHERE d.id=?', (decision_id,)).fetchone())
     row['options'] = json.loads(row['options'])
     return row
 
@@ -507,13 +508,20 @@ def _card(conn, room, reader):
     usage_pending = conn.execute('SELECT COUNT(*) FROM war_room_consults WHERE room_id=? AND tokens IS NULL',
                                  (room['id'],)).fetchone()[0]
     counts = {state: 0 for state in ITEM_STATES}
-    for row in conn.execute('SELECT status,COUNT(*) FROM war_room_items WHERE room_id=? AND (entry_id IS NULL OR plan_version=?) GROUP BY status', (room['id'], room['approved_version'])):
-        counts[row[0]] = row[1]
+    progress = {'done': 0, 'total': 0}
+    for status, total, assignments in conn.execute(
+            "SELECT status,COUNT(*),COUNT(CASE WHEN kind='assignment' OR (? AND entry_id IS NULL) THEN 1 END) "
+            'FROM war_room_items WHERE room_id=? AND (entry_id IS NULL OR plan_version=?) GROUP BY status',
+            (room['legacy'], room['id'], room['approved_version'])):
+        counts[status] = total
+        progress['total'] += assignments
+        if status == 'done':
+            progress['done'] = assignments
     return {key: room[key] for key in ('id', 'project', 'title', 'goal', 'lead_session_id', 'origin_message_id',
                                        'opened_message_id', 'closed_message_id', 'status', 'summary', 'created_at',
                                        'closed_at', 'phase', 'draft_version', 'approved_version', 'legacy', 'close_reason')} | {
         'usage_pending': usage_pending,
-        'lead_name': lead, 'members': members(conn, room['id']), 'items': counts,
+        'lead_name': lead, 'members': members(conn, room['id']), 'items': counts, 'progress': progress,
         'open_decisions': conn.execute("SELECT COUNT(*) FROM war_room_decisions w JOIN decisions d ON d.id=w.decision_id "
                                        "WHERE w.room_id=? AND d.status='open'", (room['id'],)).fetchone()[0],
         'unread': _unread(conn, room['id'], reader), 'latest_id': _latest(conn, room['id']),

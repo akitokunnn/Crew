@@ -155,8 +155,11 @@ class BoardAndDecisionTests(WarRoomFixture):
         card = war_room.decide(self.conn, room["id"], "a", "要不要兼容 v1？", ["兼容一个月", "直接切"], "兼容一个月", now=NOW)
         self.assertEqual((card["status"], card["options"]), ("open", ["兼容一个月", "直接切"]))
         [decision] = board.decisions(self.conn, "demo")
-        self.assertEqual(decision["question"], "作战室《签名 v2 联调》：要不要兼容 v1？")
-        self.assertEqual(war_room.get(self.conn, room["id"])["open_decisions"], 1)
+        self.assertEqual(decision["question"], "要不要兼容 v1？")
+        self.assertEqual((card['question'], card['room_title']), ('要不要兼容 v1？', '签名 v2 联调'))
+        detail = war_room.get(self.conn, room['id'])
+        self.assertEqual(detail['open_decisions'], 1)
+        self.assertEqual(detail['decisions'], [card])
 
 
 class CloseTests(WarRoomFixture):
@@ -212,14 +215,32 @@ class WarRoomOperationTests(ChannelHttpFixture):
         code, room = self.request('/api/op/war_room.open', {'project': 'demo', 'title': '联调', 'goal': '打通登录',
                                                        'members': ['web'], 'lead': 'lead'})
         self.assertEqual(code, 200, room)
-        approve_assignments(self.conn, room, ['web'])
+        active = approve_assignments(self.conn, room, ['web', 'lead'])
+        for kind in ('assignment', 'criterion'):
+            item = next(i for i in active['board'] if i['kind'] == kind)
+            war_room.set_item(self.conn, room['id'], 's3', item_id=item['id'], status='done', note='完成核对')
         code, result = self.request('/api/op/war_room.post', {'project': 'demo', 'room': room['id'], 'body': '@web 先看契约'})
         self.assertEqual(code, 200, result)
         self.assertEqual([m['name'] for m in result['message']['mentions']], ['web'])
         code, listed = self.request('/api/op/war_room.list', project='demo')
+        self.assertEqual(code, 200, listed)
         self.assertEqual([item['id'] for item in listed['rooms']], [room['id']])
+        self.assertEqual(listed['rooms'][0]['progress'], {'done': 1, 'total': 2})
         code, detail = self.request('/api/op/war_room.get', project='demo', id=room['id'])
         self.assertEqual((code, len(detail['messages'])), (200, 2))
+
+    def test_snapshot_keeps_new_and_legacy_room_questions_separate_from_source(self):
+        room = war_room.start(self.conn, 'demo', 's3', '联调', '打通登录')
+        approve_assignments(self.conn, room, ['web'])
+        question = '要启用新登录吗？'
+        legacy_question = '作战室《联调》：要保留旧登录吗？'
+        current = war_room.decide(self.conn, room['id'], 's3', question)
+        legacy = board.ask(self.conn, 's3', legacy_question)
+        self.conn.execute('INSERT INTO war_room_decisions(decision_id,room_id) VALUES(?,?)', (legacy, room['id']))
+        code, snapshot = self.request('/api/op/workspace.snapshot', project='demo')
+        self.assertEqual(code, 200, snapshot)
+        decisions = {row['id']: (row['question'], row['room_title']) for row in snapshot['data']['decisions']}
+        self.assertEqual(decisions, {current['id']: (question, '联调'), legacy: (legacy_question, '联调')})
 
     def test_room_executor_history_and_its_read_cursor(self):
         from crew import goals

@@ -28,8 +28,10 @@ function harness(api){
   vm.runInContext(read("browser-utils.js"),sandbox);
   vm.runInContext(read("app-data.js"),sandbox);
   sandbox.CrewAppData=sandbox.window.CrewAppData;
-  vm.runInContext(read("app.js").replace("  setup();\n})();",`const route=syncRoute;window.ui={loadState,startWorkspace,enableRoute(){syncRoute=route;},services(values){api=values.api;toast=values.toast;applyTheme=()=>{};renderSettings=()=>{};readRoute=()=>{view="all";};render=()=>{values.rendered();document.getElementById("main").innerHTML="已恢复的工作区";};syncRoute=()=>{};syncSidecar=()=>{};refreshUsage=()=>{};}};\n})();`),sandbox);
-  sandbox.window.ui.services({api,toast:message=>notices.push(message),rendered:()=>{renders+=1;}});
+  vm.runInContext(read("app.js").replace("  setup();\n})();",`const route=syncRoute;window.ui={loadState,startWorkspace,enableRoute(){syncRoute=route;},services(values){api=values.api;toast=values.toast;applyTheme=()=>{};renderSettings=()=>{};readRoute=()=>{view="all";};render=()=>{values.rendered();document.getElementById("main").innerHTML="已恢复的工作区";};renderSidebar=()=>{};syncRoute=()=>{};syncSidecar=()=>{};refreshUsage=()=>{};}};\n})();`),sandbox);
+  // Room badges load independently of workspace snapshots and opening submissions.
+  const request=(path,...args)=>path==="/api/op/war_room.list" ? Promise.resolve({rooms:[]}) : api(path,...args);
+  sandbox.window.ui.services({api:request,toast:message=>notices.push(message),rendered:()=>{renders+=1;}});
   return {ui:sandbox.window.ui,main,retry,notices,streams,timers,connection,location,backdrop,form,input,send,error,
     setGoal(value){input.value=value;input.change();},get renders(){return renders;}};
 }
