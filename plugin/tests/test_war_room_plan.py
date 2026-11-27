@@ -2,12 +2,17 @@
 import tests
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+import json
 import sqlite3
+import subprocess
+import sys
 import threading
 from unittest import mock
 
 from crew import board, settings, store, war_room, war_room_plan, workspace_assistant
 from crew.ops.errors import OpError
+from test_channel_digest import FakeProcess
+from test_channel_digest_codex import SERVER
 from test_message_delivery import DeliveryFixture, NOW
 
 
@@ -95,7 +100,7 @@ class PlanTests(DeliveryFixture):
                     with self.assertRaises(OpError):
                         war_room.close(self.conn, room, 'a', '结束', NOW)
                     key = self.conn.execute("SELECT id FROM war_room_items WHERE room_id=? AND kind='criterion'", (room,)).fetchone()[0]
-                    war_room.set_item(self.conn, room, 'a', item_id=key, status='done', now=NOW)
+                    war_room.set_item(self.conn, room, 'a', item_id=key, status='done', note='校验通过', now=NOW)
                 if reason == 'legacy':
                     self.conn.execute("UPDATE war_rooms SET legacy=1,phase='active',lead_session_id='old-admin' WHERE id=?", (room,))
                 actor = 'a' if reason in ('completed', 'abandoned') else 'user'
@@ -121,6 +126,68 @@ class PlanTests(DeliveryFixture):
             war_room_plan.consult(self.conn, room, 'a', 1, 'Q2', 'routine', '第二个问题')
             war_room_plan.consult(self.conn, room, 'a', 1, 'Q2', 'routine', '第二个问题')
         self.assertEqual(war_room.spent(self.conn, war_room._room(self.conn, room)), 12)
+
+    def test_claude_consult_receipt_separates_request_and_native_models(self):
+        room = self.open()
+        self.plan(room)
+        settings.save(self.conn, {'default': {'runtime': 'claude', 'model': 'requested-haiku', 'effort': None}})
+        response = {'is_error': False, 'result': '先确认边界', 'total_cost_usd': .01,
+                    'modelUsage': {'~anthropic/claude-haiku-latest': {}, 'claude-haiku-5-5': {}}}
+        with mock.patch('shutil.which', return_value='fixture-claude'), \
+                mock.patch('subprocess.Popen', return_value=FakeProcess(output=json.dumps(response))) as process:
+            receipt = war_room_plan.consult(self.conn, room, 'a', 1, 'Q', 'routine', '挑刺')
+        command = process.call_args.args[0]
+        self.assertEqual(command[command.index('--model') + 1], 'requested-haiku')
+        self.assertNotIn('--effort', command)
+        self.assertEqual((receipt['runtime'], receipt['model'], receipt['effort'], receipt['native_model']),
+                         ('claude', 'requested-haiku', '载体默认', '~anthropic/claude-haiku-latest, claude-haiku-5-5'))
+        self.assertEqual(receipt['requested_effort'], '载体默认')
+        self.assertEqual(war_room.get(self.conn, room, 'a')['consults'], [receipt])
+
+    def test_codex_consult_receipt_preserves_resolved_effort_for_explicit_and_default_requests(self):
+        room = self.open()
+        self.plan(room)
+        log = self.base / 'consult-protocol.jsonl'
+        popen = subprocess.Popen
+
+        def fake_codex(command, **options):
+            self.assertEqual(command[-3:], ['app-server', '--listen', 'stdio://'])
+            options['env'].update(DIGEST_TEST_MODE='ok', DIGEST_TEST_LOG=str(log),
+                                  DIGEST_TEST_CARD='先确认边界', PYTHONIOENCODING='utf-8')
+            return popen([sys.executable, '-u', '-c', SERVER], **options)
+
+        with mock.patch('shutil.which', return_value='fixture-codex'), \
+                mock.patch('subprocess.Popen', side_effect=fake_codex):
+            settings.save(self.conn, {'default': {'runtime': 'codex', 'model': None, 'effort': None},
+                                      'routine': {'runtime': 'codex', 'model': 'requested-alias', 'effort': 'low'}})
+            explicit = war_room_plan.consult(self.conn, room, 'a', 1, 'Q1', 'routine', '挑刺')
+            default = war_room_plan.consult(self.conn, room, 'a', 1, 'Q2', 'difficult', '再校验')
+        calls = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+        first, second = [call['params'] for call in calls if call.get('method') == 'thread/start']
+        self.assertEqual((first['model'], first['config']['model_reasoning_effort']), ('requested-alias', 'low'))
+        self.assertNotIn('model', second)
+        self.assertNotIn('model_reasoning_effort', second['config'])
+        self.assertEqual((explicit['runtime'], explicit['model'], explicit['effort'], explicit['native_model']),
+                         ('codex', 'requested-alias', 'low', 'resolved-native-default'))
+        self.assertEqual((default['runtime'], default['model'], default['effort'], default['native_model']),
+                         ('codex', None, '载体默认', 'resolved-native-default'))
+
+    def test_old_consult_migration_preserves_native_metadata_across_reopens(self):
+        room = self.open()
+        self.plan(room)
+        self.conn.execute('ALTER TABLE war_room_consults DROP COLUMN native_model')
+        self.conn.executemany("INSERT INTO war_room_consults(room_id,question_id,plan_version,purpose,question,runtime,"
+                              "model,effort,requested_model,requested_effort,response,tokens,created_at) "
+                              "VALUES(?,?,1,'routine','挑刺',?,?,'high','requested',?,'意见',12,?)",
+                              [(room, 'Q', 'codex', 'native-model', None, NOW),
+                               (room, 'Q2', 'claude', '原生默认（未回报型号）', 'low', NOW)])
+        for _ in range(2):
+            with closing(store.connect(self.home)) as conn:
+                receipts = war_room.get(conn, room, 'a')['consults']
+                self.assertCountEqual([(row['model'], row['effort'], row['requested_effort'], row['native_model'],
+                                        row['response'], row['tokens']) for row in receipts],
+                                      [('requested', '载体默认', '载体默认', 'native-model', '意见', 12),
+                                       ('requested', 'low', 'low', None, '意见', 12)])
 
     def test_workspace_lead_and_admin_gate(self):
         from crew import personal
@@ -222,7 +289,8 @@ class PlanTests(DeliveryFixture):
                 war_room_plan.consult(self.conn, room, 'a', 1, 'unknown', 'routine', '校验')
             self.assertEqual(error.exception.code, 'outcome_unknown')
             result = war_room_plan.consult(self.conn, room, 'a', 1, 'unknown', 'routine', '校验')
-            self.assertEqual((result['usage_status'], result['tokens'], result['model']), ('pending', None, None))
+            self.assertEqual((result['usage_status'], result['tokens'], result['model'], result['effort'],
+                              result['native_model']), ('pending', None, 'requested', 'low', None))
             self.assertIn('receipt lost', result['error'])
             native.assert_called_once()
 

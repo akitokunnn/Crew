@@ -388,6 +388,7 @@ class McpServerTests(ShellFixture, unittest.TestCase):
         self.assertIn('新增时不要带', item['params']['properties']['id']['description'])
         self.assertEqual(item['params']['properties']['title']['maxLength'], war_room.ITEM_LIMIT)
         self.assertIn('最多 %d 字' % war_room.ITEM_LIMIT, item['params']['properties']['title']['description'])
+        self.assertIn('必须填写完成证据', item['params']['properties']['note']['description'])
         self.assertNotIn('project', item['params']['properties'])
 
 if __name__ == '__main__':

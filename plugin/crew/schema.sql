@@ -513,7 +513,7 @@ CREATE TABLE IF NOT EXISTS war_room_delivery (
 CREATE TABLE IF NOT EXISTS war_room_consults (
     room_id INTEGER NOT NULL REFERENCES war_rooms(id), question_id TEXT NOT NULL, plan_version INTEGER NOT NULL,
     purpose TEXT NOT NULL, question TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT, effort TEXT,
-    requested_model TEXT, requested_effort TEXT, error TEXT, response TEXT, tokens INTEGER,
+    requested_model TEXT, requested_effort TEXT, native_model TEXT, error TEXT, response TEXT, tokens INTEGER,
     created_at TEXT NOT NULL, PRIMARY KEY(room_id,question_id)
 );
 -- Board and membership changes, shown as handoff points on the room timeline.

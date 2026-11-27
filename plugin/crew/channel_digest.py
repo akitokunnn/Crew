@@ -82,7 +82,9 @@ def _claude(home, text, process_factory, selected, *, receipt=None):
     model = result.get('model')
     if not isinstance(model, str) or not model.strip():
         usage = result.get('modelUsage')
-        model = ', '.join(usage) if isinstance(usage, dict) and usage else '原生默认（未回报型号）'
+        model = ', '.join(usage) if isinstance(usage, dict) and usage else None
+        if model is None and receipt is None:
+            model = '原生默认（未回报型号）'
     return result["result"], result["total_cost_usd"], model
 
 
@@ -155,8 +157,6 @@ def _codex(text, process_factory, selected, cancelled=None, *, receipt=None):
                                                developerInstructions=('仅就给出的问题提供一轮顾问意见。不要调用工具。' if receipt is not None else
                                                    '仅把输入数据整理成指定格式的中文 Markdown 卡片。不要调用工具、执行命令、读取文件或发起协作。'))
                 model = started.get('model')
-                if receipt is not None:
-                    receipt['effort'] = started.get('reasoningEffort') or selected['effort']
                 if not isinstance(model, str) or not model.strip():
                     raise ValueError('Codex thread/start 未返回实际模型')
                 client.timeout = remaining()

@@ -199,7 +199,7 @@ def say(conn, room_id, actor, body, to=(), reply_to=None, detail=False, now=None
 
 @board.atomic
 def set_item(conn, room_id, actor, title=None, owner=None, status=None, note=None, item_id=None, now=None):
-    """Add a board item, or change one: who owns it, its state, and why it is blocked."""
+    """Add or update a board item and record evidence when it is marked done."""
     room = open_room(conn, room_id)
     require_active(room)
     _gate(conn, room, actor)
@@ -210,20 +210,23 @@ def set_item(conn, room_id, actor, title=None, owner=None, status=None, note=Non
         raise board.BoardError('%s 不是作战室成员' % owner)
     note = None if note is None else _text(note, '说明', ITEM_LIMIT * 2, empty=True)
     stamp = board._time(now)
-    if item_id is None:
-        title = _text(title, '事项', ITEM_LIMIT)
-        item_id = conn.execute('INSERT INTO war_room_items(room_id,title,owner_session_id,status,note,updated_at,updated_by) '
-                               'VALUES(?,?,?,?,?,?,?)', (room_id, title, owner_id if owner is not None else
-                                                         (None if actor == board.HUMAN else actor),
-                                                         status or 'todo', note or None, stamp, actor)).lastrowid
-        before = None
-    else:
+    before = None
+    if item_id is not None:
         row = conn.execute('SELECT * FROM war_room_items WHERE id=? AND room_id=?', (item_id, room_id)).fetchone()
         if row is None:
             raise board.BoardError('状态板里没有这一项: %s' % item_id)
         before = dict(row)
         if before['entry_id'] and (before['plan_version'] != room['approved_version'] or title is not None or owner is not None):
             raise board.BoardError('请由领头修订计划书并由用户批准')
+    if status == 'done' and (before is None or before['status'] != 'done') and not note:
+        raise OpError('missing_evidence', '标为完成前，请在说明里写下完成证据')
+    if before is None:
+        title = _text(title, '事项', ITEM_LIMIT)
+        item_id = conn.execute('INSERT INTO war_room_items(room_id,title,owner_session_id,status,note,updated_at,updated_by) '
+                               'VALUES(?,?,?,?,?,?,?)', (room_id, title, owner_id if owner is not None else
+                                                         (None if actor == board.HUMAN else actor),
+                                                         status or 'todo', note or None, stamp, actor)).lastrowid
+    else:
         conn.execute('UPDATE war_room_items SET title=?,owner_session_id=?,status=?,note=?,updated_at=?,updated_by=? '
                      'WHERE id=?', (before['title'] if title is None else _text(title, '事项', ITEM_LIMIT),
                                     before['owner_session_id'] if owner is None else owner_id,
@@ -498,6 +501,7 @@ def rooms(conn, project_name, reader=board.HUMAN):
 
 
 def get(conn, room_id, reader=board.HUMAN, limit=50, before=None):
+    from . import war_room_plan
     room = _room(conn, room_id)
     if room['phase'] == 'preparing' and room['status'] == 'open' and reader not in (board.HUMAN, room['lead_session_id']):
         raise OpError('forbidden', '筹备对话只对领头和用户开放')
@@ -517,7 +521,7 @@ def get(conn, room_id, reader=board.HUMAN, limit=50, before=None):
         if plan['approval']:
             plan['approval'] = json.loads(plan['approval'])
     return {**_card(conn, room, reader), 'origin': origin,
-            'consults': [dict(row, usage_status='pending' if row['tokens'] is None else 'confirmed') for row in conn.execute(
+            'consults': [war_room_plan.consult_view(row) for row in conn.execute(
                 'SELECT * FROM war_room_consults WHERE room_id=? ORDER BY created_at', (room_id,))],
             'plans': plans,
             'contract': {'text': room['contract'], 'updated_at': room['contract_updated_at'],

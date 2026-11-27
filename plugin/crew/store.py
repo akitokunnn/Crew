@@ -11,6 +11,7 @@ SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 BUSY_TIMEOUT_MS = 5000
 NOTICE_WAITING = ("TEXT CHECK (waiting IN ('external', 'busy', 'stopped', 'maintenance', 'liveness_unknown') "
                   "OR waiting GLOB 'failed|?*|?*')")
+CARRIER_DEFAULT_EFFORT = '载体默认'
 
 
 def default_home():
@@ -69,6 +70,7 @@ def _migrate_war_room_plans(conn):
                       'legacy': 'INTEGER NOT NULL DEFAULT 1', 'close_reason': 'TEXT', 'open_request_id': 'TEXT'},
         'war_room_items': {'entry_id': 'TEXT', 'kind': 'TEXT', 'plan_version': 'INTEGER', 'answer': 'TEXT',
                            'goal_id': 'TEXT REFERENCES goals(id)'},
+        'war_room_consults': {'native_model': 'TEXT'},
         'war_room_decisions': {'answer_notice_id':'INTEGER REFERENCES leader_notices(id)'},
         'leader_notices': {'room_id': 'INTEGER REFERENCES war_rooms(id)'},
     }
@@ -91,6 +93,11 @@ def _migrate_war_room_plans(conn):
                                  'WHERE id IN (SELECT notice_id FROM channel_mentions WHERE notice_id IS NOT NULL)')
                 if table == 'war_rooms' and name == 'close_reason':
                     conn.execute("UPDATE war_rooms SET close_reason='legacy' WHERE status='closed'")
+                if table == 'war_room_consults' and name == 'native_model':
+                    conn.execute("UPDATE war_room_consults SET native_model=NULLIF(model, '原生默认（未回报型号）'), "
+                                 'model=requested_model, effort=COALESCE(requested_effort, :default), '
+                                 'requested_effort=COALESCE(requested_effort, :default)',
+                                 {'default': CARRIER_DEFAULT_EFFORT})
 
 
 def _migrate_mindmap_positions(conn):
