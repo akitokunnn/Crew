@@ -146,6 +146,13 @@ app.once('browser-window-created', (_event, win) => {
       const state = await js('window.crewDesktop.bootstrap()'); evidence.service = state.service;
       assert.notEqual(new URL(state.service.url).port, '47811');
       const homeDirectory = process.argv[process.argv.indexOf('--home') + 1]; evidence.home = homeDirectory;
+      // The empty isolated HOME is this computer's first start, so the first-run guide opens over the home page.
+      await wait('!!document.querySelector("dialog.onboarding[open] [data-ob-act=skip]")', 'first-run guide');
+      await capture('00-first-run-guide');
+      await click('dialog.onboarding [data-ob-act=skip]');
+      await wait('!document.querySelector("dialog.onboarding")', 'first-run guide skipped');
+      assert.equal((await js('window.crewDesktop.onboardingGet()')).status, 'skipped');
+      evidence.checks.push('the first start in an empty HOME opens the first-run guide, and skipping it is saved');
       await click('#nav-settings');
       await wait('!!document.querySelector("[data-settings-category=sounds]")', 'native sound category');
       await click('[data-settings-category=sounds]');

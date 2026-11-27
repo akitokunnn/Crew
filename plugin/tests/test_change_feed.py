@@ -16,7 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from crew import board, change_feed, goal_links, goals, store, todo
+from crew import board, change_feed, goal_links, goals, store, todo, usage
 from crew.web_service import events
 from tests.test_runtimes import RuntimeFixture
 
@@ -173,6 +173,20 @@ class CardTriggerTests(FeedFixture):
         self.conn.execute("INSERT INTO notification_messages(item_id,project,leader_session_id,kind,created_at,content,status) "
                           "VALUES('n1','demo','chief-id','report','t','{}','queued')")
         self.assertEqual([(row['scope'], row['type']) for row in rows(self.conn)], [('global', 'notification.invalidated')])
+
+    def test_a_dispatch_receipt_invalidates_the_workspace_of_its_crew_session_once(self):
+        (self.root / 'side').mkdir()
+        board.init_project(self.conn, 'side', self.root / 'side')
+        board.join(self.conn, 'side-id', 'side', 'side-lead', self.root / 'side', self.root / 'side', 'main', role='leader')
+        clear_feed(self.conn)
+        receipt = {'run_id': 'run-1', 'task_file': 'task.md', 'workdir': str(self.root), 'started_at': 't',
+                   'runtime': 'codex', 'crew_session_id': 'member-id'}
+        usage._save(self.conn, 'codex_runs', 'run_id', receipt)
+        self.assertEqual([(row['scope'], row['type'], row['entity']) for row in rows(self.conn)],
+                         [('workspace:demo', 'conversations.invalidated', 'demo')])
+        seq = change_feed.latest_seq(self.conn)
+        usage._save(self.conn, 'codex_runs', 'run_id', receipt)
+        self.assertEqual(rows(self.conn, seq), [])
 
     def test_every_connection_finds_the_trigger_set_installed_once(self):
         with closing(store.connect(self.home)) as other:

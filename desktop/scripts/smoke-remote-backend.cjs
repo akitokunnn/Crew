@@ -17,7 +17,8 @@ async function until(test, label, timeout = 30000) { const end = Date.now() + ti
 function hostRequest(base, route, body) {
   return new Promise((resolve, reject) => {
     const target = new URL(route, base), payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-    const headers = { Origin:target.origin, ...(payload ? { 'X-Crew':'1', 'Content-Type':'application/json', 'Content-Length':payload.length } : {}) };
+    // Each write is one owner action; /api/op runs a write once per request id.
+    const headers = { Origin:target.origin, ...(payload ? { 'X-Crew':'1', 'X-Crew-Request-Id':crypto.randomUUID(), 'Content-Type':'application/json', 'Content-Length':payload.length } : {}) };
     const req = http.request(target, { method:payload ? 'POST' : 'GET', headers }, res => { const chunks = []; res.on('data', value => chunks.push(value)); res.on('end', () => { try { resolve({ status:res.statusCode, value:JSON.parse(Buffer.concat(chunks).toString('utf8')) }); } catch (error) { reject(error); } }); });
     req.on('error', reject); req.setTimeout(10000, () => req.destroy(Error('HTTP response timed out'))); req.end(payload);
   });
@@ -192,6 +193,10 @@ finally:
         if (phase === 'pair') {
           await wait('document.querySelector("#service")?.textContent==="已连接"', 'client local backend');
           check('The client first runs on its own isolated local backend', true);
+          // Its empty HOME is this computer's first start: the first-run guide opens over the home page and is skipped.
+          await click('dialog.onboarding[open] [data-ob-act="skip"]');
+          await wait('!document.querySelector("dialog.onboarding")', 'first-run guide skipped');
+          check('The first-run guide opens on the empty client and skipping it is saved', (await js('window.crewDesktop.onboardingGet()')).status === 'skipped');
           // The home shortcut lands on "后台与运维 → 连接与目录" with the LAN mode chosen and the add-host form open.
           await wait('document.querySelector("#connection-switch")?.textContent==="连接其他主机"', 'home connection shortcut');
           await click('#connection-switch');

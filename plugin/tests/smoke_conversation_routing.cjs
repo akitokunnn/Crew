@@ -15,6 +15,8 @@ if(!process.versions.electron){
 }else{
   require.cache[require.resolve(path.join(desktop,'src/main.cjs'))]={id:path.join(desktop,'src/main.cjs'),filename:path.join(desktop,'src/main.cjs'),loaded:true,exports:{}};
   const {app,BrowserWindow,nativeTheme}=require('electron'),home=process.argv.find(value=>value.startsWith('--crew-routing-home=')).slice('--crew-routing-home='.length);
+  // Viewport checks use exact breakpoints (375 / 760); a scaled host display rounds the offscreen window a few pixels wider.
+  app.commandLine.appendSwitch('force-device-scale-factor','1');
   require('node:fs').mkdirSync(path.join(home,'electron'),{recursive:true});app.setPath('userData',path.join(home,'electron'));
   const evidence={home,checks:[],screenshots:[],errors:[],modelTurnsStarted:0,carrier:'FakeProcess only'},messages=[];
   let fixture,window,closed=false;
