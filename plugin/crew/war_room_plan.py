@@ -143,9 +143,9 @@ def create_planned_leaders(conn, room, by_name, stamp, step):
                 board.register_session.__wrapped__(conn, sid, room['project'], workspace['root'], None, None,
                                                    name=handle, role='leader', now=stamp)
                 from . import models, runtimes, settings
-                chosen = proposals.get(handle) or settings.resolve(conn, 'leader')
+                chosen = proposals.get(handle) or settings.resolve(conn, 'war_room')
                 runtimes.set.__wrapped__(conn, sid, chosen['runtime'], now=stamp)
-                models.set(conn, sid, chosen['model'], chosen['effort'], runtime=chosen['runtime'], now=stamp)
+                models.set(conn, sid, chosen['model'], chosen['effort'], runtime=chosen['runtime'], speed=chosen.get('speed'), now=stamp)
                 if handle in proposals:
                     conn.execute('UPDATE sessions SET task=? WHERE session_id=?', (chosen['brief'], sid))
                     if chosen['part']:

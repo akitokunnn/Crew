@@ -6,6 +6,9 @@
     budget:"预算用完了", cancelled:"筹备已撤销", legacy:"已退出旧房"};
   const purposes = {creative:"创意", routine:"常规", difficult:"疑难"};
   const itemStatus = {todo:"待做", doing:"在做", blocked:"卡住", done:"完成"};
+  const deliveryStatus = {queued:"待送达", delivered:"已送达", replied:"已回复"};
+  const deliveryWait = {busy:"领头还在忙", stopped:"领头已停止", external:"领头在外部窗口", maintenance:"领头正在维护",
+    liveness_unknown:"还不清楚领头是否在线", failed:"上次没送成"};
   const launchStep = {leader:"建好领队", invite:"邀请成员", goal:"建好任务", announce:"发布开打公告"};
   const roomPath = "/api/op/war_room.";
   let active = null;
@@ -22,6 +25,10 @@
   const planRoot = ctx => ctx.panelDialog.open ? ctx.panelContent : ctx.aside;
   const pending = room => room.decisions.filter(item => item.status === "open");
   const assignments = room => room.board.filter(item => item.kind === "assignment" || (room.legacy && item.entry_id == null));
+  const jobExecutions = (room, goalId) => room.executions.filter(item => item.goal_id === goalId)
+    .sort((a, b) => b.round - a.round || b.generation - a.generation);
+  const participants = room => room.members.some(item => item.session_id === room.lead_session_id) ? room.members :
+    [{session_id:room.lead_session_id, crew_name:room.lead_name}, ...room.members];
   const canApprove = room => isOpen(room) && !room.legacy && room.draft_version > (room.approved_version ?? 0);
   const field = (label, control) => `<label class="wr-field"><span>${label}</span>${control}</label>`;
 
@@ -51,8 +58,9 @@
     const avatar = user ? `<span class="av round cx-av-user" style="--s:28px" aria-hidden="true">${name.slice(0, 1)}</span>` : ctx.avatar(message.speaker_name, 28, true);
     const reply = !internal && isOpen(ctx.room) ? action("reply", "回复", `data-message="${message.id}"`) : "";
     const quote = message.reply ? `<blockquote class="wr-message-quote"><strong>${esc(message.reply.speaker_name)}</strong> ${esc(K.plain(message.reply.excerpt))}</blockquote>` : "";
-    const delivered = [...message.mentions, ...message.notified].filter(item => item.delivery !== "none");
-    const delivery = delivered.length && user ? `<small class="wr-delivery">${delivered.map(item => `${esc(item.name)} · ${({queued:"排队中", delivered:"已送达", replied:"已回复", archived:"已留档", failed:"投递失败"})[item.delivery]}`).join("、")}</small>` : "";
+    const mention = user && message.mentions.find(item => item.session_id === ctx.room.lead_session_id);
+    const waiting = mention?.delivery === "queued" && (deliveryWait[mention.waiting] ?? mention.waiting);
+    const delivery = deliveryStatus[mention?.delivery] ? `<small class="wr-delivery" data-delivery="${mention.delivery}">${deliveryStatus[mention.delivery]}${waiting ? ` · ${esc(waiting)}` : ""}</small>` : "";
     return `<article class="cx-msg${user ? " cx-user" : ""}">${avatar}<div class="cx-body-col"><div class="cx-meta"><strong>${name}</strong><time datetime="${esc(message.created_at)}">${esc(K.clock(message.created_at))}</time>${reply}</div>${quote}<div class="${user ? "cx-bubble" : "cx-content"}"><div class="markdown cx-md">${CrewChat.renderMarkdown(message.body, message.speaker_session_id)}</div></div>${delivery}</div></article>`;
   }
 
@@ -67,7 +75,7 @@
   }
 
   function planData(ctx, plan) {
-    if (!ctx.documents.has(plan.version)) ctx.documents.set(plan.version, P.document(plan.body));
+    if (!ctx.documents.has(plan.version)) ctx.documents.set(plan.version, P.document(plan));
     return ctx.documents.get(plan.version);
   }
 
@@ -86,16 +94,18 @@
   }
 
   function consultHTML(card) {
-    const usage = card.tokens === null ? "用量待确认" : `${count(card.tokens)} tokens`;
+    const usage = card.usage_status === "pending" ? "用量待确认" : `${count(card.tokens)} tokens`;
     const runtime = ({claude:"Claude Code", codex:"Codex"})[card.runtime] ?? card.runtime;
+    const response = card.error ? `<p class="wr-error">${esc(card.error)}</p>` : card.response === null ?
+      "<p>正在等答复</p>" : `<div class="crew-md-doc">${CrewReportMarkdown.render(card.response)}</div>`;
     return `<details class="wr-note wr-consult" data-wr-card="consult-${esc(card.question_id)}"><summary><strong>${purposes[card.purpose]}顾问</strong><span>${esc([runtime, card.model, card.effort && `强度 ${card.effort}`, usage].filter(Boolean).join(" · "))}</span></summary>
-      <div class="wr-consult-body"><h3>问题</h3><div class="crew-md-doc">${CrewReportMarkdown.render(card.question)}</div><h3>答复</h3>${card.response === null ? "<p>正在等答复</p>" : `<div class="crew-md-doc">${CrewReportMarkdown.render(card.response)}</div>`}</div></details>`;
+      <div class="wr-consult-body"><h3>问题</h3><div class="crew-md-doc">${CrewReportMarkdown.render(card.question)}</div><h3>${card.error ? "顾问调用失败" : "答复"}</h3>${response}</div></details>`;
   }
 
   function timelineHTML(ctx, main) {
     const room = ctx.room;
     const rows = main.map(message => ({at:message.created_at, render:() => messageHTML(ctx, message)}));
-    for (const plan of room.plans) rows.push({at:plan.created_at, render:() => versionCard(ctx, plan)});
+    for (const plan of [...room.plans].sort((a, b) => a.version - b.version)) rows.push({at:plan.created_at, render:() => versionCard(ctx, plan)});
     for (const card of room.consults) rows.push({at:card.created_at, render:() => consultHTML(card)});
     for (const event of room.events) {
       if (event.kind === "approved") rows.push({at:event.at, render:() => `<p class="wr-note">计划 v${event.detail.version} 已批准，开始作战。</p>`});
@@ -129,7 +139,7 @@
     return `<header class="wr-panel-head"><h2>作战计划书 <span>v${plan.version}</span></h2><div>${previous ? action("compare", ctx.compare ? "收起对比" : "对比上一版", `aria-pressed="${ctx.compare}"`) : ""}
       ${!currentPlan ? action("latest", "回最新版") : ""}</div></header>
       <div class="wr-panel-scroll">
-        ${questions.length ? `<section class="wr-plan-decisions"><h3>等你定 <span>${questions.length}</span></h3>${questions.map(q => `<div class="wr-question"><strong>${esc(q.id)}</strong><div>${esc(q.title)}<small>${q.recommendation ? `领头建议 ${esc(q.recommendation)}` : "还没有推荐值"}</small></div>${action("reference", "引用回答", `data-entry="${esc(q.id)}"`)}</div>`).join("")}</section>` : ""}
+        ${questions.length ? `<section class="wr-plan-decisions"><h3>等你定 <span>${questions.length}</span></h3>${questions.map(q => `<div class="wr-question"><strong>${esc(q.entry_id)}</strong><div>${esc(q.title)}<small>${q.recommendation ? `领头建议 ${esc(q.recommendation)}` : "还没有推荐值"}</small></div>${action("reference", "引用回答", `data-entry="${esc(q.entry_id)}"`)}</div>`).join("")}</section>` : ""}
         ${closedDecisions.length ? `<details class="wr-plan-decided" data-wr-card="decided"><summary>✓ 已定 (${closedDecisions.length})</summary><ul>${closedDecisions.map(item => `<li>${esc(item.title)}${item.answer ? ` · ${esc(item.answer)}` : ""}</li>`).join("")}</ul></details>` : ""}
         ${ctx.compare && previous ? `<section class="wr-compare"><strong>v${previous.version} → v${plan.version}</strong><ul>${changes.map(change => `<li>${change.type} · ${esc(change.label)}</li>`).join("") || "<li>正文没有改动</li>"}</ul><details data-wr-card="previous-${previous.version}"><summary>展开上一版全文</summary><article class="crew-md-doc">${planData(ctx, previous).html}</article></details></section>` : ""}
         <article class="crew-md-doc wr-plan-document">${budget ? `<p class="wr-plan-budget" data-wr-block="budget">${budget}</p>` : ""}${planData(ctx, plan).html}</article></div>
@@ -145,11 +155,45 @@
       ${blocked.map(item => `<li>卡住了 · ${esc(item.title)}${item.note ? ` · ${esc(item.note)}` : ""}</li>`).join("")}
       ${decisions.map(item => `<li>${action("decision-jump", esc(item.question), `data-decision="${item.id}"`)}</li>`).join("")}</ul></section>` : ""}
       <section class="wr-progress"><h3>分工进度 <span>${done}/${jobs.length}</span></h3><progress value="${done}" max="${Math.max(1, jobs.length)}" aria-label="分工完成进度"></progress>
-      ${jobs.length ? `<ul>${jobs.map(item => `<li><span><strong>${esc(item.title)}</strong>${item.owner_name ? `<small>${esc(item.owner_name)}</small>` : ""}</span><span data-status="${esc(item.status)}">${esc(itemStatus[item.status])}</span></li>`).join("")}</ul>` : '<p class="wr-muted">还没有分工</p>'}</section>
+      ${jobs.length ? `<ul>${jobs.map(item => assignmentHTML(room, item)).join("")}</ul>` : '<p class="wr-muted">还没有分工</p>'}
+      ${room.unread_execution_events ? `<p class="wr-muted">${count(room.unread_execution_events)} 条执行记录未读</p>` : ""}</section>
+      ${room.budget || room.usage_pending ? `<section class="wr-budget"><h3>预算</h3>
+        ${room.budget ? `<p>已用 ${count(room.budget.spent)} / ${count(room.budget.tokens)} tokens</p>` : "<p>未设上限</p>"}
+        ${room.usage_pending ? `<p>另有 ${count(room.usage_pending)} 次用量待确认</p>` : ""}</section>` : ""}
       <div class="wr-drawers">${latest(room) ? action("full", `<span>计划书 v${room.draft_version}</span><span>${canApprove(room) ? "有修订待敲定 ›" : "看全文 ›"}</span>`) : ""}
-      ${action("internal", `<span>内部交流</span><span>${internal.length} 条 ›</span>`)}${action("members", `<span>参战成员</span><span>${room.members.length} 人 ›</span>`)}</div>
+      ${action("internal", `<span>内部交流</span><span>${internal.length} 条 ›</span>`)}${action("members", `<span>参战成员</span><span>${participants(room).length} 人 ›</span>`)}</div>
       ${steps.length ? `<details class="wr-steps" data-wr-card="steps"><summary>开局记录 · ${steps.length} 项</summary><ul>${steps.map(event => `<li>${esc(launchStep[event.detail.step])}${event.detail.step === "goal" ? ` · ${esc(event.detail.target)}` : ""}</li>`).join("")}</ul></details>` : ""}
       </div>`;
+  }
+
+  function assignmentHTML(room, job) {
+    const executions = jobExecutions(room, job.goal_id), unread = executions.reduce((n, item) => n + item.unread, 0);
+    const label = `<span><strong>${esc(job.title)}</strong>${job.owner_name ? `<small>${esc(job.owner_name)}</small>` : ""}</span>
+      <span class="wr-job-state"><span data-status="${esc(job.status)}">${esc(itemStatus[job.status])}</span>
+      ${executions.length ? `<small>${unread ? `${count(unread)} 条未读` : "执行记录"} ›</small>` : ""}</span>`;
+    return `<li>${executions.length ? action("history", label, `data-execution="${esc(executions[0].id)}"`) : label}</li>`;
+  }
+
+  function historyEvent(event, owner) {
+    const label = event.type === "assistant" || event.role === "assistant" ? owner :
+      event.type === "tool_result" ? (event.is_error ? "工具报错" : "工具结果") :
+      event.type === "error" ? "执行报错" : (event.sender || "收到的消息");
+    const body = event.type === "assistant" ? event.content.map(block => block.type === "text" ?
+      CrewReportMarkdown.render(block.text) : `<p>调用工具 · ${esc(block.name)}</p>`).join("") :
+      event.type === "tool_result" ? `<pre>${esc(typeof event.content === "string" ? event.content : JSON.stringify(event.content, null, 2))}</pre>` :
+      CrewReportMarkdown.render(event.text);
+    return `<article class="wr-note"><div class="wr-history-meta"><strong>${esc(label)}</strong><time datetime="${esc(event.at)}">${esc(K.clock(event.at))}</time></div><div class="crew-md-doc">${body}</div></article>`;
+  }
+
+  function historyHTML(ctx) {
+    const h = ctx.history, executions = jobExecutions(ctx.room, h.goalId);
+    return `<section class="wr-history"><h3>${esc(h.title)}</h3>
+      ${executions.length > 1 ? `<nav aria-label="选择执行">${executions.map(item => action("history", `第 ${item.round} 轮 · 第 ${item.generation} 次${item.unread ? ` · ${item.unread} 条未读` : ""}`,
+        `data-execution="${esc(item.id)}" aria-pressed="${item.id === h.id}"`)).join("")}</nav>` : ""}
+      ${h.error ? `<p class="wr-error" role="alert">${esc(h.error)}</p>${action("history-more", "重试")}` :
+        h.hasMore ? action("history-more", "看更早的记录", h.loading ? "disabled" : "") : ""}
+      ${h.events ? h.events.map(event => historyEvent(event, h.owner_name)).join("") || '<p class="wr-muted">还没有执行记录</p>' : ""}
+      ${h.loading ? '<p class="wr-muted" role="status">正在读取执行记录…</p>' : ""}</section>`;
   }
 
   function panelHTML(ctx) {
@@ -179,10 +223,12 @@
 
   function membersHTML(ctx) {
     const room = ctx.room;
-    return `<ul class="wr-participants">${room.members.map(item => {
+    return `<ul class="wr-participants">${participants(room).map(item => {
       const live = ctx.state.leaders.find(person => person.session_id === item.session_id);
+      const lead = item.session_id === room.lead_session_id;
+      const working = lead ? room.lead_working_room_id : item.working_room_id;
       return `<li>${ctx.avatar(item.crew_name, 28, true)}<strong>${esc(item.crew_name)}</strong>
-        ${item.session_id === room.lead_session_id ? "<span>领头</span>" : ""}${isOpen(room) && item.working_room_id === room.id ? '<small class="room-working-tag">作战室中</small>' : isOpen(room) && live ? `<small>${esc(K.presence(live).text)}</small>` : ""}</li>`;
+        ${lead ? "<span>领头</span>" : ""}${isOpen(room) && working === room.id ? '<small class="room-working-tag">作战室中</small>' : isOpen(room) && live ? `<small>${esc(K.presence(live).text)}</small>` : ""}</li>`;
     }).join("")}</ul>`;
   }
 
@@ -216,10 +262,10 @@
     if (!dialog.open) return;
     const type = ctx.panelType;
     const panel = type === "plan" || type === "panel";
-    const title = ({internal:"内部交流", members:"参战成员", plan:"计划书", panel:"作战室详情"})[type];
+    const title = ({internal:"内部交流", members:"参战成员", plan:"计划书", panel:"作战室详情", history:"执行记录"})[type];
     const {internal} = conversation(ctx.room);
     const body = type === "plan" ? planHTML(ctx) : type === "panel" ? panelHTML(ctx) :
-      type === "members" ? membersHTML(ctx) :
+      type === "members" ? membersHTML(ctx) : type === "history" ? historyHTML(ctx) :
         internal.map(message => messageHTML(ctx, message, true)).join("") || '<p class="wr-panel-empty">还没有内部交流</p>';
     put(ctx.panelTitle, esc(title));
     put(ctx.panelContent, body);
@@ -250,7 +296,7 @@
   }
 
   function anchorLocation(ctx, version, block) {
-    const plans = ctx.room.plans.filter(plan => plan.version >= version).reverse();
+    const plans = ctx.room.plans.filter(plan => plan.version >= version).sort((a, b) => a.version - b.version);
     const original = planData(ctx, plans[0]).blocks.find(item => item.key === block);
     if (original && !original.stable) {
       let key = block;
@@ -393,11 +439,68 @@
       ctx.surface.hidden = false;
       render(ctx, follow || bottom);
       void read(ctx);
+      const h = ctx.history, execution = h && room.executions.find(item => item.id === h.id);
+      if (historyOpen(ctx, h) && h.events && execution?.latest_seq > (h.events.at(-1)?.seq ?? 0)) void loadHistory(ctx);
     } catch (error) {
       if (!current(ctx) || seq !== ctx.readSeq) return;
       ctx.readError = error.message;
       ctx.error.textContent = ctx.readError;
       ctx.loading.hidden = true;
+    }
+  }
+
+  function historyOpen(ctx, history) {
+    return current(ctx) && history && ctx.history === history && ctx.panelDialog.open && ctx.panelType === "history";
+  }
+
+  async function readHistory(ctx) {
+    const h = ctx.history;
+    if (!historyOpen(ctx, h) || h.reading || !h.seq || h.seq <= h.readSeq || document.visibilityState !== "visible") return;
+    const seq = h.seq;
+    h.reading = true;
+    try {
+      const read = await ctx.api(roomPath + "mark_read", {room:ctx.id, execution_id:h.id, seq});
+      h.readSeq = read.read_seq;
+      if (current(ctx)) {
+        await load(ctx);
+        if (current(ctx)) ctx.onChanged();
+      }
+    } catch (error) {
+      if (historyOpen(ctx, h)) ctx.toast(error.message, null, ctx.panelToast);
+    } finally {
+      h.reading = false;
+      if (h.seq > seq && historyOpen(ctx, h)) void readHistory(ctx);
+    }
+  }
+
+  async function loadHistory(ctx, before = null) {
+    const h = ctx.history;
+    if (h.loading) return;
+    h.loading = true;
+    h.error = "";
+    h.before = before;
+    renderPanelDialog(ctx);
+    const query = new URLSearchParams({id:ctx.id, execution_id:h.id, limit:50});
+    if (before !== null) query.set("before_seq", before);
+    try {
+      const {executions} = await ctx.api(`${roomPath}get?${query}`);
+      if (!historyOpen(ctx, h)) return;
+      const page = executions.find(item => item.id === h.id);
+      const height = ctx.panelContent.scrollHeight, top = ctx.panelContent.scrollTop;
+      h.events = before === null ? page.events : [...page.events, ...h.events];
+      h.hasMore = page.has_more;
+      h.readSeq = page.read_seq;
+      h.seq = h.events.at(-1)?.seq;
+      h.loading = false;
+      renderPanelDialog(ctx);
+      ctx.panelContent.scrollTop = before === null ? ctx.panelContent.scrollHeight : top + ctx.panelContent.scrollHeight - height;
+      void readHistory(ctx);
+    } catch (error) {
+      if (historyOpen(ctx, h)) {
+        h.loading = false;
+        h.error = error.message;
+        renderPanelDialog(ctx);
+      }
     }
   }
 
@@ -443,13 +546,24 @@
   }
 
   function click(ctx, button) {
-    const {wr, version, block, message, entry, decision} = button.dataset;
+    const {wr, version, block, message, entry, decision, execution} = button.dataset;
     switch (wr) {
     case "reload": if (ctx.id === 0) ctx.refreshRooms(); else void load(ctx); break;
     case "collapse": ctx.collapsed = !ctx.collapsed; render(ctx); break;
     case "panel": showPanel(ctx, "panel", true); break;
     case "full": showPanel(ctx, "plan", true); break;
     case "internal": case "members": showPanel(ctx, wr); break;
+    case "history": {
+      if (historyOpen(ctx, ctx.history) && execution === ctx.history.id) break;
+      const stream = ctx.room.executions.find(item => item.id === execution);
+      const job = ctx.room.board.find(item => item.goal_id === stream.goal_id);
+      const {title, owner_name} = job ?? ctx.history;
+      ctx.history = {id:execution, goalId:stream.goal_id, title, owner_name};
+      showPanel(ctx, "history");
+      void loadHistory(ctx);
+      break;
+    }
+    case "history-more": void loadHistory(ctx, ctx.history.error ? ctx.history.before : ctx.history.events[0].seq); break;
     case "hide-panel": ctx.panelDialog.close(); break;
     case "latest": ctx.planVersion = null; ctx.compare = false; render(ctx); break;
     case "compare": ctx.compare = !ctx.compare; render(ctx); break;
@@ -508,11 +622,12 @@
     ctx.confirmDialog.oncancel = event => { if (ctx.writing) event.preventDefault(); };
     ctx.panelDialog.onclose = () => {
       ctx.panelToast.replaceChildren();
+      ctx.history = null;
       if (ctx.panelType === "panel" && !preparing(ctx.room)) ctx.planVersion = null;
     };
     if (ctx.id === 0) { render(ctx); return; }
     ctx.scroll.onscroll = () => void read(ctx);
-    ctx.visibility = () => void read(ctx);
+    ctx.visibility = () => { void read(ctx); void readHistory(ctx); };
     document.addEventListener("visibilitychange", ctx.visibility);
     CrewBrowser.enableChatLists(ctx.input);
     ctx.input.oninput = () => { ctx.send.disabled = ctx.sending || !ctx.input.value.trim(); };
@@ -535,6 +650,7 @@
     const ctx = active;
     if (!ctx || ctx.id === 0) return;
     if (changes === null || changes.some(change => change.type.startsWith("war_room.") && Number(change.entity) === ctx.id ||
+      change.type.startsWith("conversations.") && ctx.room?.phase === "active" && isOpen(ctx.room) ||
       change.type.startsWith("channel_message.") && (change.data?.room_id === ctx.id ||
         ctx.room?.messages.some(message => String(message.id) === String(change.entity))))) void load(ctx);
   }

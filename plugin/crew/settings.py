@@ -8,12 +8,13 @@ import sqlite3
 from . import board, change_feed, guard, store
 
 
-PURPOSES = ('default', 'leader', 'member', 'assistant', 'digest', 'git', 'operations', 'creative', 'routine', 'difficult')
-TASK_OVERRIDES = ('leader', 'member', 'assistant', 'creative', 'routine', 'difficult')
+PURPOSES = ('default', 'leader', 'member', 'assistant', 'digest', 'git', 'operations', 'creative', 'routine', 'difficult', 'war_room')
+TASK_OVERRIDES = ('leader', 'member', 'assistant', 'creative', 'routine', 'difficult', 'war_room')
 FIELDS = ('runtime', 'model', 'effort', 'speed')
 DEFAULT = {'default': {'runtime': None, 'model': None, 'effort': None, 'speed': None},
            'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': None, 'operations': None,
-           'creative': None, 'routine': None, 'difficult': None}
+           'creative': None, 'routine': None, 'difficult': None,
+           'war_room': {'runtime': 'claude', 'model': None, 'effort': None, 'speed': None}}
 EXECUTION_DEFAULT = {'codex': 'workspace-write', 'claude': 'default'}
 EXECUTION_CHOICES = {'codex': ('read-only', 'workspace-write', 'danger-full-access'),
                      'claude': ('default', 'acceptEdits', 'bypassPermissions')}
@@ -43,13 +44,13 @@ def _selection(value, name):
 
 
 def validate(ai):
-    """A null task follows default; an explicit task replaces all three fields."""
+    """Use built-in choices for unset purposes; other null tasks follow the global choice."""
     if not isinstance(ai, dict) or 'default' not in ai or any(key not in PURPOSES for key in ai):
         raise SettingsError('AI 设置必须包含 default，且只能包含 ' + '、'.join(PURPOSES))
     result = {'default': _selection(ai['default'], 'default')}
     for purpose in PURPOSES[1:]:
         value = ai.get(purpose)
-        result[purpose] = None if value is None else _selection(value, purpose)
+        result[purpose] = copy.deepcopy(DEFAULT[purpose]) if value is None else _selection(value, purpose)
     return result
 
 

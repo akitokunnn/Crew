@@ -24,6 +24,7 @@
 .wr-feed .cx-composer textarea{font-size:calc(14px * var(--fs));line-height:1.55;min-height:48px;max-height:160px}
 .wr-feed .cx-c-row{justify-content:flex-end}
 .wr-message-quote,.wr-delivery{display:block;margin:4px 0;color:var(--text-2);font-size:calc(12px * var(--fs))}
+.wr-delivery[data-delivery="queued"]{color:var(--dl-st-fg)}
 .wr-message-quote{padding:5px 8px;border-left:2px solid var(--line-strong)}
 .wr-reply{display:flex;align-items:center;gap:8px;padding:0 0 7px;font-size:calc(12px * var(--fs))}
 .wr-reply .cx-btn,.wr-timeline .cx-meta .cx-btn{min-height:30px}
@@ -78,6 +79,21 @@
 .wr-progress li [data-status]{flex:none;color:var(--text-2)}
 .wr-progress li [data-status="blocked"]{color:var(--dl-st-fg)}
 .wr-progress li [data-status="done"]{color:var(--accent-text)}
+.wr-progress li:has(>button){padding:0}
+.wr-progress li>button{width:100%;min-height:44px;justify-content:space-between;gap:8px;padding:6px 4px;border:0;white-space:normal;text-align:start}
+.wr-job-state{flex:none;text-align:end}
+.wr-progress button .wr-job-state small{color:var(--accent-text)}
+.wr-budget{margin-top:14px;padding-top:10px;border-top:1px solid var(--line);font-size:calc(12px * var(--fs));color:var(--text-2)}
+.wr-budget h3{margin:0;font-size:calc(13px * var(--fs));color:var(--text)}
+.wr-budget p{margin:4px 0 0}
+.wr-history{padding:12px 16px}
+.wr-history h3{margin:0 0 10px;font-size:calc(14px * var(--fs))}
+.wr-history nav,.wr-history-meta{display:flex;gap:8px;flex-wrap:wrap}
+.wr-history .cx-btn{min-height:44px;white-space:normal}
+.wr-history-meta{justify-content:space-between}
+.wr-history-meta time{color:var(--text-2)}
+.wr-history .crew-md-doc{padding:4px 0 0;font-size:inherit}
+.wr-history pre{white-space:pre-wrap}
 .wr-drawers{margin-top:12px;display:grid}
 .wr-drawers .cx-btn{justify-content:space-between;white-space:normal;min-height:42px;border:0;border-bottom:1px solid var(--line);border-radius:0;padding:0 2px;text-align:left}
 .wr-drawers .cx-btn span:last-child{color:var(--text-2)}

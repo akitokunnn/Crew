@@ -1470,7 +1470,7 @@
     if (mountedChannel) CrewChannel.changed(live === null ? null : live.filter(change => change.type.startsWith("channel_message.")));
     if (rooms) void refreshRooms();
     // War rooms are not in the snapshot either: the open room takes its own changes and its posts' badges.
-    if (mountedRoom !== null && previous !== null) CrewWarRoom.changed(live === null ? null : live.filter(change => change.type.startsWith("war_room.") || change.type.startsWith("channel_message.")));
+    if (mountedRoom !== null && previous !== null) CrewWarRoom.changed(live);
     if (pendingSettingsHash) { const category = pendingSettingsHash; pendingSettingsHash = false; openSettings(category); }
     refreshUsage();
     if (previous !== null) notifySounds(previous, meta.source === "snapshot" || meta.catchUp, meta.source === "snapshot" ? snapshotGeneration : soundGeneration);

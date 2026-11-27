@@ -81,12 +81,13 @@ function panelHarness(){
   return{root,content};
 }
 
-test("war room advisors render three independent purposes and save through the existing settings envelope",async()=>{
+test("war room default and advisors share the settings section and save independent choices",async()=>{
   const {root,content}=panelHarness(),handlers={},saved=[];
   root.addEventListener=(type,handler)=>{handlers[type]=handler;};
   const picker={tagName:"SELECT",innerHTML:""};
   content.querySelector=()=>picker;
-  const ai={...ui.initialAI({ai:config(),runtimes:catalog}),creative:null,routine:null,difficult:null};
+  const ai={...ui.initialAI({ai:config(),runtimes:catalog}),creative:null,routine:null,difficult:null,
+    war_room:{runtime:"claude",model:null,effort:null,speed:null}};
   ai.default.runtime="claude";
   const snapshot={ai,runtimes:catalog};
   const settings=ui.create({host:root,read:async()=>snapshot,save:async body=>{
@@ -95,17 +96,22 @@ test("war room advisors render three independent purposes and save through the e
   }});
   settings.open();
   for(let i=0;i<12;i++) await Promise.resolve();
-  for(const [key,label] of [["creative","创意"],["routine","常规"],["difficult","疑难"]]){
+  assert.match(content.innerHTML,/data-ai-task="war_room"[\s\S]*?作战室默认载体[\s\S]*?value="claude" selected/);
+  for(const [key,label] of [["creative","创意顾问"],["routine","常规顾问"],["difficult","疑难顾问"]]){
     assert.match(content.innerHTML,new RegExp(`data-ai-task="${key}"[\\s\\S]*?<h3>${label}</h3>`));
     assert.match(content.innerHTML,new RegExp(`data-ai-inherit="${key}" checked`));
   }
   const change=target=>handlers.change({target});
+  change({dataset:{aiKey:"war_room",aiField:"runtime"},value:"codex"});
+  assert.match(content.innerHTML, /data-ai-key="war_room" data-ai-field="model"[\s\S]*?value="native-b"/);
+  change({dataset:{aiKey:"war_room",aiField:"model"},value:"native-b"});
   change({dataset:{aiInherit:"creative"},checked:false});
   change({dataset:{aiKey:"creative",aiField:"runtime"},value:"codex"});
   assert.match(content.innerHTML, /data-ai-key="creative" data-ai-field="model"[\s\S]*?value="native-b"/);
   change({dataset:{aiKey:"creative",aiField:"model"},value:"native-b"});
   await settings.save();
   assert.deepEqual(saved[0].creative,{runtime:"codex",model:"native-b",effort:null,speed:null});
+  assert.deepEqual(saved[0].war_room,{runtime:"codex",model:"native-b",effort:null,speed:null});
   assert.equal(saved[0].routine,null);
   assert.equal(saved[0].difficult,null);
   change({dataset:{aiInherit:"creative"},checked:true});

@@ -6,19 +6,17 @@ const vm = require("node:vm");
 const {test} = require("node:test");
 const tick = async () => { for (let i = 0; i < 20; i += 1) await Promise.resolve(); };
 const plain = value => JSON.parse(JSON.stringify(value));
-const body = (assignment, questions) => `# 切换签名\n\n用统一的 v2。\n\n## 分工\n- [A1] 支付 | ${assignment}\n\n## 等你定\n${questions}\n\n## 完成标准\n- [C1] 全部回归通过\n`;
-const plan1 = {version:1, body:body("整理方案", "- [Q1] 用什么算法 | HMAC\n- [Q2] 何时上线 | 周五"), summary:"第一份", author:"assistant",
-  created_at:"2026-11-28T02:01:00Z", budget_tokens:null};
-const plan2 = {...plan1, version:2, body:body("切换网关", "- [Q1] 用什么算法 | HMAC-SHA256\n- [Q2] 何时上线 | 周五 | 下周一"), summary:"补充网关", created_at:"2026-11-28T02:02:00Z", budget_tokens:500000};
-const plan3 = {...plan2, version:3, body:plan2.body.replace("切换网关", "逐步切换网关\n- [A2] 支付 | 观察错误率"),
-  summary:"分批切换", created_at:"2026-11-28T02:04:00Z"};
+const http = require("./fixtures/war_room_http.json");
+const {plans:[plan3, plan2, plan1]} = http;
+const shiftLines = (plan, from, amount) => plan.entries.map(item => item.line >= from ? {...item, line:item.line + amount} : item);
 const message = (id, speaker_session_id, body, extra = {}) => ({id, speaker_session_id, body, speaker_name:speaker_session_id,
   created_at:"2026-11-28T02:03:00Z", mentions:[], notified:[], reply:null, ...extra});
 const job = (id, kind, status, title) => ({entry_id:id, kind, status, title, owner_session_id:"pay", owner_name:"支付", note:""});
 function room(extra = {}) {
   return {id:3, status:"open", phase:"preparing", draft_version:2, approved_version:null, legacy:false, close_reason:null, title:"签名",
     goal:"统一 v2", lead_session_id:"assistant", lead_name:"工作区助手", budget:null, messages:[message(1,"assistant","先写计划")],
-    decisions:[], consults:[], plans:[plan2, plan1], board:[], events:[], has_more:false, origin:null, read_id:1, latest_id:1, unread:0, open_decisions:0, members:[], summary:null, ...extra};
+    decisions:[], consults:[], plans:[plan2, plan1], board:[], events:[], has_more:false, origin:null, read_id:1, latest_id:1, unread:0, open_decisions:0, members:[], summary:null,
+    executions:[], unread_execution_events:0, lead_working_room_id:null, usage_pending:0, ...extra};
 }
 function element() {
   const classes = new Set();
@@ -30,7 +28,7 @@ function element() {
       remove:name => classes.delete(name), contains:name => classes.has(name)}, querySelectorAll:() => [], querySelector:() => null};
   return node;
 }
-function harness(initial, {mobile = false, reads, mutation, directory = null} = {}) {
+function harness(initial, {mobile = false, reads, mutation, directory = null, httpError} = {}) {
   const calls = [], toasts = [], routes = [], nodes = new Map(), listeners = new Set();
   const state = {project:{name:"A"}, leaders:[{session_id:"pay", name:"支付"}]};
   const node = key => {
@@ -42,11 +40,12 @@ function harness(initial, {mobile = false, reads, mutation, directory = null} = 
     addEventListener:(_, callback) => listeners.add(callback), removeEventListener:(_, callback) => listeners.delete(callback)};
   const sandbox = {document, URL, URLSearchParams, atob, btoa, TextDecoder, location:{pathname:"/", search:""}, matchMedia:() => ({matches:mobile}),
     CrewChat:{renderMarkdown(text){ return sandbox.CrewReportMarkdown.render(text); }}, CrewBrowser:{
-      pageProject:() => ({mode:"workspace", project:"A"}), enableChatLists(){}, chatSendKey:event => event.key === "Enter" && !event.isComposing
+      pageProject:() => ({mode:"workspace", project:"A"}), enableChatLists(){}, chatSendKey:event => event.key === "Enter" && !event.isComposing,
+      postOptions:data => ({body:JSON.stringify(data)})
     }};
   sandbox.window = sandbox;
   vm.createContext(sandbox);
-  for (const file of ["vendor/markdown-it.min.js","report-markdown.js","global-rail.js","channel.js","war-room-plan.js","war-room.js"]) {
+  for (const file of ["vendor/markdown-it.min.js","report-markdown.js","app-data.js","global-rail.js","channel.js","war-room-plan.js","war-room.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, "../../frontend", file), "utf8"), sandbox, {filename:file});
   }
   const W = sandbox.CrewWarRoom;
@@ -56,11 +55,15 @@ function harness(initial, {mobile = false, reads, mutation, directory = null} = 
   node(".wr-pane-dialog").querySelector = () => node("panel close");
   node(".wr-send").form = node("send form");
   let detail = initial;
+  const client = sandbox.CrewAppData.create({origin:"http://localhost", project:"A",
+    fetch:async () => ({ok:false, status:httpError.status, json:async () => httpError.body})});
   const api = async (route, data) => {
     const name = route.split(".").slice(1).join(".").split("?")[0];
-    calls.push({name, data:plain(data ?? null)});
-    if (name === "get") return plain(reads ? await reads(detail) : detail);
-    if (name === "mark_read") return {read_id:data.id};
+    const query = new URL(route, "http://localhost").searchParams;
+    calls.push({name, data:plain(data ?? null), ...(query.has("execution_id") ? {query:Object.fromEntries(query)} : {})});
+    if (name === "get") return plain(reads ? await reads(detail, query) : detail);
+    if (name === "mark_read" && !data.execution_id) return {read_id:data.id};
+    if (httpError) return client.request(route, data);
     if (mutation) return mutation(name, data, value => { detail = value; });
     return {};
   };
@@ -124,28 +127,33 @@ test("筹备页显示当前决定和已定折叠，确认期间看到的推荐�
 
 test("没有待定项时直接批准，连续点击只发一次写请求", async () => {
   let release;
-  const latest = {...plan2, body:body("切换网关", "")};
+  const latest = {...plan2, budget_tokens:null};
+  latest.body = latest.body.replace(/^- \[Q1\].*\n/m, "");
+  latest.entries = shiftLines(plan2, 10, -1).filter(item => item.entry_id !== "Q1");
   const f = harness(room({plans:[latest,plan1]}), {mutation:() => new Promise(resolve => { release = resolve; })});
   await tick();
   f.click("approve",{version:"2"}); f.click("approve",{version:"2"});
   assert.equal(f.node(".wr-confirm").open,false);
-  assert.deepEqual(f.calls.filter(call => call.name === "plan.approve").map(call => call.data.recommendations),[{}]);
-  release({});
+  assert.deepEqual(f.calls.filter(call => call.name === "plan.approve").map(call => call.data),
+    [{room:3, version:2, recommendations:{}, budget_tokens:null}]);
+  f.reload(room({phase:"active", approved_version:2}));
+  release({replayed:true});
   await tick();
+  assert.equal(f.host.dataset.phase, "active");
+  assert.deepEqual(f.toasts, []);
 });
 
 test("版本冲突保留所见版本，不会偷偷批准刷新后的计划；另外三种错误显示具体原因和行号", async () => {
-  for (const [code, detail, expected] of [
-    ["version_conflict", {}, /计划变了/],
-    ["missing_recommendation", {}, /没有推荐值/],
-    ["invalid_criteria", {line:11}, /完成标准没写对（第 11 行）/],
-    ["invalid_plan", {line:5}, /计划书有一处没写对（第 5 行）/]
+  for (const [code, expected] of [
+    ["version_conflict", /计划变了/],
+    ["missing_recommendation", /没有推荐值/],
+    ["invalid_criteria", /完成标准没写对（第 13 行）/],
+    ["invalid_plan", /计划书有一处没写对（第 6 行）/]
   ]) {
-    const f = harness(room(), {mutation:() => { throw Object.assign(Error("服务端原因"), {details:{code, detail}}); }});
+    const f = harness(room(), {httpError:http.errors[code]});
     await tick();
     f.click("approve",{version:"2"});
-    const update = {...plan2, version:3, body:body("改网关", "- [Q1] 用什么算法 | RSA")};
-    f.reload(room({plans:[update, plan2, plan1], draft_version:3}));
+    f.reload(room({plans:[plan3, plan2, plan1], draft_version:3}));
     await tick();
     await f.confirm();
     const attempts = f.calls.filter(call => call.name === "plan.approve");
@@ -221,8 +229,9 @@ test("作战中收到 v3 修订版，对话显示锚点，全文标出新改，�
 
 test("v2 的历史锚点在作战中打开 v3，跳到改过的小节中同 ID 的条目", async () => {
   const moved = {...plan3, body:plan3.body.replace("- [A1] 支付 | 逐步切换网关\n- [A2] 支付 | 观察错误率",
-    "- [A2] 支付 | 观察错误率\n- [A1] 支付 | 逐步切换网关")};
-  const f = harness(room({phase:"active", approved_version:2, draft_version:3, plans:[moved, plan2, plan1]}));
+    "- [A2] 支付 | 观察错误率\n- [A1] 支付 | 逐步切换网关"),
+    entries:plan3.entries.map(item => item.entry_id === "A1" ? {...item, line:7} : item.entry_id === "A2" ? {...item, line:6} : item)};
+  const f = harness(room({phase:"active", approved_version:2, draft_version:3, plans:[plan2, moved, plan1]}));
   await tick();
   const pane = f.node(".wr-pane-content");
   const {blocks:[other, target]} = watchPlan(f, pane, ["entry:A2", "entry:A1"]);
@@ -235,8 +244,9 @@ test("v2 的历史锚点在作战中打开 v3，跳到改过的小节中同 ID �
 
 test("旧正文锚点能跟随段落移动，同序号的另一段不会冒充已删除的段落", async () => {
   const original = {...plan2, body:plan2.body.replace("用统一的 v2。", "核对发布窗口。")};
-  const moved = {...plan3, body:plan3.body.replace("用统一的 v2。", "先看回滚条件。\n\n核对发布窗口。")};
-  const removed = {...moved, version:4, body:moved.body.replace("\n\n核对发布窗口。", ""), created_at:"2026-11-28T02:05:00Z"};
+  const moved = {...plan3, body:plan3.body.replace("用统一的 v2。", "先看回滚条件。\n\n核对发布窗口。"),
+    entries:shiftLines(plan3, 4, 2)};
+  const removed = {...moved, version:4, body:moved.body.replace("\n\n核对发布窗口。", ""), entries:plan3.entries, created_at:"2026-11-28T02:05:00Z"};
   const f = harness(room({draft_version:3, plans:[moved, original, plan1]}));
   await tick();
   const key = '["切换签名","paragraph_open"]:1';
@@ -256,7 +266,8 @@ test("旧正文锚点能跟随段落移动，同序号的另一段不会冒充�
 });
 
 test("历史锚点已删除时打开最新版并提示首次消失的版本，不滚动计划书", async () => {
-  const deleted = {...plan3, body:plan3.body.replace("- [A1] 支付 | 逐步切换网关\n", "")};
+  const deleted = {...plan3, body:plan3.body.replace("- [A1] 支付 | 逐步切换网关\n", ""),
+    entries:shiftLines(plan3, 7, -1).filter(item => item.entry_id !== "A1")};
   const v4 = {...deleted, version:4, created_at:"2026-11-28T02:05:00Z"};
   for (const plans of [[deleted, plan2, plan1], [v4, deleted, plan2, plan1]]) {
     const version = plans[0].version;
@@ -275,8 +286,10 @@ test("历史锚点已删除时打开最新版并提示首次消失的版本，�
 
 test("删条目优先跳到最新版原小节，小节后来删除或当版已删时提示具体版本", async () => {
   const heading = '["等你定","heading_open"]:1';
-  const v3 = {...plan3, body:plan3.body.replace("- [Q2] 何时上线 | 周五 | 下周一\n", "")};
-  const v4 = {...v3, version:4, body:v3.body.replace(/## 等你定\n[^\n]+\n\n/, ""), created_at:"2026-11-28T02:05:00Z"};
+  const v3 = {...plan3, body:plan3.body.replace("- [Q2] 何时上线 | 周五 | 下周一\n", ""),
+    entries:shiftLines(plan3, 12, -1).filter(item => item.entry_id !== "Q2")};
+  const v4 = {...v3, version:4, body:v3.body.replace(/## 等你定\n[^\n]+\n\n/, ""),
+    entries:shiftLines(v3, 11, -3).filter(item => item.entry_id !== "Q1"), created_at:"2026-11-28T02:05:00Z"};
   const f = harness(room({draft_version:3, plans:[v3, plan2, plan1]}), {mobile:true});
   await tick();
   const pane = f.node(".wr-pane-content");
@@ -297,7 +310,7 @@ test("删条目优先跳到最新版原小节，小节后来删除或当版已�
 });
 
 test("没有所属小节的删条目提示当版已删，仍可打开最新版", async () => {
-  const introduced = {...plan2, body:`临时说明\n\n${plan2.body}`};
+  const introduced = {...plan2, body:`临时说明\n\n${plan2.body}`, entries:shiftLines(plan2, 1, 2)};
   const f = harness(room({draft_version:3, plans:[plan3, introduced, plan1]}));
   await tick();
   const pane = f.node(".wr-plan-panel");
@@ -340,10 +353,12 @@ test("作战中战况显示卡住和待定项，成员和内部消息在独立�
   const f = harness(room({phase:"active", approved_version:2, open_decisions:1, decisions:[asked],
     board:[job("A1","assignment","blocked","切换网关")], members:[{session_id:"pay",crew_name:"支付"}],
     messages:[message(1,"assistant","先写计划"),message(2,"pay","内部讨论")],
-    consults:[{question_id:"g", purpose:"creative", runtime:"codex", model:"实际模型", effort:"high", tokens:null,
+    usage_pending:2, consults:[{question_id:"g", purpose:"creative", runtime:"codex", model:"实际模型", effort:"high", tokens:null, usage_status:"pending",
       question:"能否简化？", response:"可以", created_at:"2026-11-28T02:04:00Z"}, {
       question_id:"h", purpose:"routine", runtime:"claude", model:"实际模型二", effort:"low", tokens:0,
-      question:"有没有遗漏？", response:"无", created_at:"2026-11-28T02:04:15Z"}],
+      usage_status:"confirmed", question:"有没有遗漏？", response:"无", created_at:"2026-11-28T02:04:15Z"},
+      {question_id:"i", purpose:"difficult", runtime:"claude", model:null, effort:null, tokens:null, usage_status:"pending",
+      question:"可以上线吗？", response:null, error:"OAuth 登录过期", created_at:"2026-11-28T02:04:16Z"}],
     events:[{kind:"launch_step", detail:{version:2,step:"goal",target:"A1"}}]
   }));
   await tick();
@@ -353,8 +368,57 @@ test("作战中战况显示卡住和待定项，成员和内部消息在独立�
   assert.doesNotMatch(html,/内部讨论/);
   assert.match(html, /创意顾问[\s\S]*Codex · 实际模型 · 强度 high · 用量待确认[\s\S]*能否简化[\s\S]*可以/);
   assert.match(html, /常规顾问[\s\S]*0 tokens/);
+  assert.match(html, /顾问调用失败[\s\S]*OAuth 登录过期/);
+  assert.match(aside, /另有 2 次用量待确认/);
   f.click("internal"); assert.match(f.node(".wr-pane-content").innerHTML, /内部讨论/);
   f.click("members"); assert.match(f.node(".wr-pane-content").innerHTML, /支付/);
+});
+
+test("领头的 mention 决定用户发言回执，其他收件人的状态不冒充领头回执", async () => {
+  const queued = http.queued, [lead] = queued.mentions;
+  const f = harness(room({lead_session_id:lead.session_id, messages:[
+    queued, {...queued, id:20, body:"再问一次", mentions:[{...lead, waiting:"failed"}]},
+    {...queued, id:21, body:"已投递的发言", mentions:[{...lead, delivery:"delivered"}]},
+    {...queued, id:22, body:"有人回了", mentions:[{...lead, delivery:"replied"}]},
+    {...queued, id:23, body:"问别人", mentions:[{...lead, session_id:"other", delivery:"delivered"}]}
+  ]}));
+  await tick();
+  const html = f.node(".wr-timeline").innerHTML;
+  assert.equal((html.match(/待送达/g) || []).length, 2);
+  assert.match(html, /再问一次[\s\S]*待送达 · 上次没送成/);
+  assert.equal((html.match(/已送达/g) || []).length, 1);
+  assert.match(html, /已回复/);
+});
+
+test("分工行按目标展示真实执行的未读数，历史翻页和已读只使用本执行的序号", async () => {
+  const {id, goal_id, read_seq, latest_seq, unread, session_id, round, generation, status} = http.history;
+  const summary = {id, goal_id, read_seq, latest_seq, unread, session_id, round, generation, status};
+  const initial = room({phase:"active", approved_version:2, board:[http.job], executions:[summary], unread_execution_events:unread,
+    lead_working_room_id:3, members:[{session_id, crew_name:"支付", working_room_id:3}]});
+  const f = harness(initial, {mobile:true, reads(detail, query) {
+    if (!query.has("execution_id")) return detail;
+    return {...detail, executions:[query.has("before_seq") ? http.older : http.history]};
+  }, mutation(name, data, setRoom) {
+    assert.equal(name, "mark_read");
+    setRoom({...initial, executions:[{...summary, read_seq:data.seq, unread:0}], unread_execution_events:0});
+    return {room_id:data.room, execution_id:data.execution_id, read_seq:data.seq};
+  }});
+  await tick();
+  assert.match(f.node(".wr-plan-panel").innerHTML, /切换网关[\s\S]*3 条未读/);
+  f.click("history", {execution:id});
+  await tick();
+  const pane = f.node(".wr-pane-content");
+  assert.match(pane.innerHTML, /接口检查通过[\s\S]*回归已完成/);
+  assert.deepEqual(f.calls.filter(call => call.name === "mark_read").map(call => call.data), [{room:3, execution_id:id, seq:latest_seq}]);
+  assert.doesNotMatch(f.node(".wr-plan-panel").innerHTML, /3 条未读/);
+  f.click("history-more");
+  await tick();
+  assert.deepEqual(f.calls.filter(call => call.query).at(-1).query,
+    {id:"3", execution_id:id, limit:"50", before_seq:String(http.history.events[0].seq)});
+  assert.match(pane.innerHTML, /请先验证回滚步骤[\s\S]*接口检查通过/);
+  f.click("hide-panel");
+  f.click("members");
+  assert.equal((pane.innerHTML.match(/作战室中/g) || []).length, 2);
 });
 
 test("各出口发送对应操作，关闭后只读，追加预算提交新的总上限", async () => {
@@ -397,12 +461,12 @@ test("历史可逐个进入，六种结束说法明确且列表本身没有逐�
 });
 
 test("没房时能交给领头开局，重复提交占位时进入既有房", async () => {
-  const f = harness(null,{directory:[],mutation:() => {throw Object.assign(Error("已经有房"),{details:{code:"room_occupied",detail:{room_id:9}}});}});
+  const f = harness(null,{directory:[],httpError:http.errors.room_occupied});
   assert.match(f.node(".wr-directory").innerHTML,/开作战室/);
   f.click("open");
   await f.confirm();
   assert.deepEqual(f.calls[0],{name:"open",data:{title:"签名",goal:"统一",lead:"pay"}});
-  assert.deepEqual(f.routes,[9]);
+  assert.deepEqual(f.routes,[http.room]);
 });
 
 test("作战室入口按列表字段判定，等你定盖过作战中，历史房忽略", () => {

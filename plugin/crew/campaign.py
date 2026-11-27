@@ -6,7 +6,7 @@ Structure is written in one board batch, so the whole opening is one architectur
 """
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from . import board, domains, models, runtimes, usage, war_room
+from . import board, domains, models, runtimes, settings, usage, war_room
 
 NAME_LIMIT, BRIEF_LIMIT, NOTE_LIMIT, OWNS_LIMIT = 20, 4000, 200, 200
 
@@ -94,9 +94,13 @@ def preview(conn, project, plan, home):
             errors.append('%s：名字 %s 重复' % (label, name))
         names.add(name)
         check(label, lambda: board.available_name(conn, project, name))
-        runtime = check(label, lambda: runtimes.validate(item.get('runtime', 'claude')))
-        model = check(label, lambda: models.validate(item.get('model'), runtime=runtime)) if runtime else None
-        effort = check(label, lambda: models.validate_effort(item.get('effort'), runtime=runtime)) if runtime else None
+        selection = {}
+        if 'runtime' not in item and plan.get('room') is not None:
+            selection = check(label, lambda: settings.resolve(conn, 'war_room'))
+        runtime = check(label, lambda: runtimes.validate(item.get('runtime', selection['runtime'] if selection else 'claude'))) if selection is not None else None
+        model = check(label, lambda: models.validate(item.get('model', selection.get('model')), runtime=runtime)) if runtime else None
+        effort = check(label, lambda: models.validate_effort(item.get('effort', selection.get('effort')), runtime=runtime)) if runtime else None
+        speed = check(label, lambda: models.validate_speed(selection.get('speed'), runtime=runtime, model=model)) if runtime else None
         part = item.get('part')
         if part is not None and part not in known:
             errors.append('%s：领域 %s 不存在' % (label, part))
@@ -106,7 +110,7 @@ def preview(conn, project, plan, home):
             owns = None
         else:
             owns = check(label, lambda: _owns(item.get('owns')))
-        leaders.append({'name': name, 'runtime': runtime, 'model': model, 'effort': effort, 'part': part,
+        leaders.append({'name': name, 'runtime': runtime, 'model': model, 'effort': effort, 'speed': speed, 'part': part,
                         'part_name': known.get(part), 'lead': item.get('lead') is True, 'brief': brief, 'owns': owns})
     if len(leaders) > 1:
         # New leaders all work in the workspace root: without a written split one edits another's files.
@@ -152,6 +156,8 @@ def _cost(leaders, room, start, home):
     """What the user agrees to spend: who starts on which carrier and model, and the room's cap with a rough price."""
     carriers = {}
     for leader in leaders:
+        if leader['runtime'] is None:
+            continue
         key = (leader['runtime'], leader['model'] or '默认模型', leader['effort'] or '默认强度')
         carriers[key] = carriers.get(key, 0) + 1
     budget = room.get('budget_tokens') if room else None

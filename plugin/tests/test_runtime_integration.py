@@ -255,16 +255,19 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
     def test_home_settings_save_without_project_does_not_start_ai_or_change_sessions(self):
         original = runtimes.get(self.conn, 's3')
         payload = {'ai': {'default': {'runtime': 'codex', 'model': 'gpt-fixture-default', 'effort': 'high'},
-                          'leader': None, 'member': None, 'digest': None, 'git': None, 'operations': None}}
+                          'leader': None, 'member': None, 'digest': None, 'git': None, 'operations': None,
+                          'war_room': {'runtime': 'codex', 'model': 'gpt-fixture-default', 'effort': 'high', 'speed': None}}}
+        expected = {**payload['ai'], 'default': {**payload['ai']['default'], 'speed': None},
+                    'assistant': None, 'creative': None, 'routine': None, 'difficult': None}
         request = Request(self.server.url + '/api/op/settings.save', json.dumps(payload).encode(), {'X-Crew': '1', 'X-Crew-Request-Id': uuid.uuid4().hex})
         with self.opener.open(request, timeout=5) as response:
             result = json.load(response)
-        self.assertEqual(result['ai'], {**payload['ai'], 'default': {**payload['ai']['default'], 'speed': None}, 'assistant': None})
+        self.assertEqual(result['ai'], expected)
         self.assertEqual(result['home'], str(self.home.resolve()))
         self.assertEqual(runtimes.get(self.conn, 's3'), original)
         self.assertEqual(self.processes, [])
         with self.opener.open(self.server.url + '/api/op/settings.get', timeout=5) as response:
-            self.assertEqual(json.load(response)['ai'], {**payload['ai'], 'default': {**payload['ai']['default'], 'speed': None}, 'assistant': None})
+            self.assertEqual(json.load(response)['ai'], expected)
         self.assertEqual(self.request('/api/op/settings.save', {'ai': {'default': {'runtime': 'codex'}}})[0], 400)
         self.assertEqual(self.request('/api/op/settings.save', {'ai': payload['ai'], 'unknown': True})[0], 400)
 

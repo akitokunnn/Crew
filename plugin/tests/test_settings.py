@@ -80,6 +80,18 @@ class SettingsTests(unittest.TestCase):
             settings.resolve(self.home, 'digest', discovery)
         discovery.assert_called_once_with('codex')
 
+    def test_war_room_choice_round_trip_keeps_its_own_default(self):
+        installed = self.installed('claude', 'codex')
+        global_choice = choice('codex', 'global')
+        self.assertEqual(settings.resolve(self.home, 'war_room', installed), choice('claude'))
+        settings.save(self.home, {'default': global_choice})
+        self.assertEqual(settings.get(self.home)['war_room'], choice('claude'))
+        room_choice = choice('codex', 'room', 'low', 'default')
+        settings.save(self.home, {'default': global_choice, 'war_room': room_choice})
+        self.assertEqual(settings.get(self.home)['war_room'], room_choice)
+        self.assertEqual(settings.resolve(self.home, 'war_room', installed), room_choice)
+        self.assertEqual(settings.resolve(self.home, 'default', installed), global_choice)
+
     def test_operations_only_choice_resolves_without_a_global_default(self):
         settings.save(self.home, {'default': choice(), 'operations': choice('codex')})
         self.assertEqual(settings.resolve(self.home, 'operations', self.installed('codex', 'claude')), choice('codex'))

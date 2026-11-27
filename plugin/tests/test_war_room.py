@@ -174,6 +174,10 @@ class WarRoomOperationTests(ChannelHttpFixture):
         super().setUp()
         board.join(self.conn, "s4", "demo", "web", self.project, None, None, role="leader", now=NOW)
 
+    def test_browser_can_load_the_plan_script(self):
+        with self.opener.open(self.server.url + '/war-room-plan.js', timeout=5) as response:
+            self.assertEqual((response.status, response.headers.get_content_type()), (200, 'text/javascript'))
+
     def test_user_opens_and_posts_over_http(self):
         code, room = self.request('/api/op/war_room.open', {'project': 'demo', 'title': '联调', 'goal': '打通登录',
                                                        'members': ['web'], 'lead': 'lead'})
