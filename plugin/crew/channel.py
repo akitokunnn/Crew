@@ -318,7 +318,7 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
     for target, reason in told:
         notice_id = None
         if target["session_id"] != actor:
-            if actor == board.HUMAN:
+            if actor == board.HUMAN and room_id is None:
                 # The user's own mention is the same explicit wake as typing to that leader directly.
                 messaging.clear_stop(conn, target["session_id"])
             scopes = tokens.main_scopes(conn, target["session_id"])
@@ -330,6 +330,8 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
                 notice_id = conn.execute(
                     "INSERT INTO leader_notices(project,session_id,source,text,created_at,wake) VALUES(?,?,?,?,?,1)",
                     (project_name, target["session_id"], source, text, board._time(now))).lastrowid
+        if notice_id is not None and room_id is not None:
+            conn.execute('UPDATE leader_notices SET room_id=? WHERE id=?', (room_id, notice_id))
         conn.execute("INSERT INTO channel_mentions(message_id,session_id,name,notice_id,await_reply,reason) "
                      "VALUES(?,?,?,?,?,?)", (message_id, target["session_id"], target["crew_name"], notice_id,
                                              int(actor == board.HUMAN and notice_id is not None), reason))
@@ -342,7 +344,7 @@ def user_mentions(conn, notice_ids):
         return {}
     rows = conn.execute(
         "SELECT t.notice_id,m.id,m.body FROM channel_mentions t JOIN channel_messages m ON m.id=t.message_id "
-        "WHERE m.speaker_session_id=? AND t.notice_id IN (%s)" % ",".join("?" * len(notice_ids)),
+        "WHERE m.room_id IS NULL AND m.speaker_session_id=? AND t.notice_id IN (%s)" % ",".join("?" * len(notice_ids)),
         (board.HUMAN, *notice_ids)).fetchall()
     return {row["notice_id"]: {"id": row["id"], "body": row["body"]} for row in rows}
 
@@ -451,7 +453,7 @@ def read(conn, project_name, reader, limit=20, now=None, after=0):
 
 def _carry_pending(conn, session_id, now):
     """Take this leader's undelivered channel notices for its prompt hook, each exactly once."""
-    if conn.execute("SELECT 1 FROM leader_notices WHERE session_id=? AND sent_at IS NULL AND batch_id IS NULL LIMIT 1",
+    if conn.execute("SELECT 1 FROM leader_notices WHERE session_id=? AND room_id IS NULL AND sent_at IS NULL AND batch_id IS NULL LIMIT 1",
                     (session_id,)).fetchone() is None:
         return []
     from . import chat_delivery
@@ -494,10 +496,7 @@ def preview(conn, session_id):
                          ("；要接话用 `channel_post`（参数 `text`，`reply_to` 填发言编号）。"
                           if 'channel.post' in scopes else "。"))
         blocks.append("\n".join(lines))
-    from . import war_room
-    rooms = war_room.blocks(conn, session_id)
-    blocks += [text for text, _, _ in rooms]
-    upto = {"channel": _latest(conn, s["project"]), "rooms": {room: last for _, room, last in rooms}}
+    upto = {"channel": _latest(conn, s["project"]), "rooms": {}}
     return ("\n\n".join(blocks) if blocks else None), upto
 
 

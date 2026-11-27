@@ -13,6 +13,7 @@ from crew import (behavior_prompts, board, domains, mindmap, personal, rules, se
 from crew.ops import confirmations, executor, tokens
 from crew.ops.errors import OpError
 from ops_helpers import ai_call
+from test_war_room_plan import approve_assignments
 from test_campaign_launch import plan
 from test_shell import NOW, PLUGIN, ShellFixture
 
@@ -95,7 +96,8 @@ class WorkspaceAssistantTests(ShellFixture, unittest.TestCase):
         foreign = war_room.start(self.conn, 'other', other, '外区', '目标', ['外组'])
         local = war_room.start(self.conn, 'demo', sid, '本区', '目标', ['lead'])
         fid, rid = foreign['id'], local['id']
-        post = foreign['first_message']['id']
+        foreign = approve_assignments(self.conn, foreign, ['外组'])
+        post = foreign['messages'][0]['id']
         item = war_room.set_item(self.conn, fid, other, title='外区事项')['id']
         domains.apply(self.conn, 'other', [{'op': 'create', 'id': 'other01', 'name': '外区', 'x': 0, 'y': 0}], 0)
         operations = [
@@ -278,32 +280,15 @@ class WorkspaceAssistantTests(ShellFixture, unittest.TestCase):
         admin = personal.ensure_assistant(self.conn, self.home)['session_id']
         board.join(self.conn, 'legacy-l', 'demo', '旧组', self.project, None, None, role='leader')
         board.join(self.conn, 'other-l', 'other', '外组', self.other, None, None, role='leader')
-        rooms = [(lead, project, member, war_room.start(self.conn, project, lead, title, '目标', [member],
-                                                        budget_tokens=100000))
-                 for lead, project, member, title in ((sid, 'demo', 's3', '本区房'), (other, 'other', 'other-l', '外区房'),
-                                                      (admin, 'demo', 'legacy-l', '旧房'))]
-        with self.assertRaises(board.BoardError):
-            war_room.set_budget(self.conn, rooms[0][3]['id'], admin, 200000)
-        for lead, project, member, room in rooms:
+        with self.assertRaises(OpError):
+            war_room.start(self.conn, 'demo', admin, '旧房', '目标', [])
+        for lead, project, member in [(sid, 'demo', 's3'), (other, 'other', 'other-l')]:
+            room = war_room.start(self.conn, project, lead, '房间', '目标', [])
+            room = approve_assignments(self.conn, room, [member])
             card = war_room.decide(self.conn, room['id'], lead, '何时开工')
-            board.answer(self.conn, card['id'], room['title'] + '答复')
-            war_room.task_returned(self.conn, {'project': project, 'leader_session_id': member,
-                                               'title': room['title'] + '任务'}, 'awaiting_acceptance')
-        with mock.patch.object(war_room, 'spent', return_value=120000):
-            self.assertEqual(len(war_room.over_budget(self.conn, NOW)), 3)
-        for lead, project, member, room in rooms:
-            notices = board.pending_notices(self.conn, lead)
-            self.assertEqual(len(notices), 3)
-            self.assertTrue(all(note['project'] == project and room['title'] in note['text'] for note in notices))
-        self.service.chat.deliver_leader_notices(self.conn, {}, NOW)
-        for lead, project, member, room in rooms:
-            self.assertEqual(board.pending_notices(self.conn, lead), [])
-            messages = [e['text'] for e in self.service.chat.history(lead)['events'] if e['type'] == 'message']
-            self.assertEqual(len(messages), 1)
-            self.assertIn(room['title'], messages[0])
-            for other_lead, _, _, other_room in rooms:
-                if other_lead != lead:
-                    self.assertNotIn(other_room['title'], messages[0])
+            board.answer(self.conn, card['id'], '明天')
+            self.assertTrue(all(n['room_id'] == room['id'] and n['project'] == project
+                                for n in board.pending_notices(self.conn, lead)))
 
     def test_approval_rechecks_board_version_and_object_membership(self):
         sid = self.assistant()

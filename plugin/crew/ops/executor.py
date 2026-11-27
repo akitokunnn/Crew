@@ -65,6 +65,13 @@ def _receipt_begin(service, caller, op, request_id, digest, args):
             conn.execute("INSERT INTO op_requests(caller_key,request_id,op,args_hash,status,created_at) "
                          "VALUES(?,?,?,?, 'running', ?)", (caller.key, request_id, op.name, digest, _stamp(service)))
             return None
+        # Room reservation, draft and publication each have a durable domain receipt and no
+        # native side effects before commit. Re-entering the transaction recovers even a lost reply.
+        resumable = op.name in ('war_room.open', 'war_room.plan.update', 'war_room.plan.approve')
+        if (resumable and row['op'] == op.name and row['args_hash'] == digest and row['status'] != 'done'):
+            conn.execute("UPDATE op_requests SET status='running',result=NULL,finished_at=NULL "
+                         "WHERE caller_key=? AND request_id=?", (caller.key, request_id))
+            return None
     if row['op'] != op.name or row['args_hash'] != digest:
         raise OpError('request_id_reused', '同一个 request_id 已用于另一项操作或不同参数',
                       {'request_id': request_id, 'op': row['op']})

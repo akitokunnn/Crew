@@ -919,8 +919,16 @@ def review_acceptance(conn, goal_id, accepted, *, note='', actor=board.HUMAN, ex
         if not notify_rejection:
             return result
         text = rejection_notice(goal, note)
-    board._queue_leader_notice(conn, goal['leader_session_id'], text, 'web', now)
+    queue_task_notice(conn, goal_id, goal['leader_session_id'], text, 'web', now)
     return result
+
+
+def queue_task_notice(conn, goal_id, session_id, text, source, now, *, wake=True):
+    notice = board._queue_leader_notice(conn, session_id, text, source, now, wake=wake)
+    conn.execute('UPDATE leader_notices SET room_id=i.room_id,wake=CASE WHEN r.status=\'closed\' THEN 0 ELSE wake END '
+                 'FROM war_room_items i JOIN war_rooms r ON r.id=i.room_id WHERE i.goal_id=? AND leader_notices.id=?',
+                 (goal_id, notice))
+    return notice
 
 
 def rejection_notice(goal, note):
@@ -1050,17 +1058,16 @@ def finalize_finish(conn, goal_id, *, now=None):
         todo.add_native(conn, leader_session_id, item['title'], '来自任务「%s」：%s' % (goal['title'], item['detail']),
                         '完成上述操作后，在人工待办中标记完成。', operation_key='report:%s:%s' % (report['id'], index), now=now)
     for item in report['data'].get('user_decisions', []):
-        board.ask.__wrapped__(conn, goal['leader_session_id'], '来自任务「%s」：%s\n原因：%s' %
+        decision_id = board.ask.__wrapped__(conn, goal['leader_session_id'], '来自任务「%s」：%s\n原因：%s' %
                   (goal['title'], item['question'], item['why']), item.get('options', []),
                   item.get('recommendation'), blocking=False, now=now)
-    # The leader's general chat does not share the task execution's context; tell it the task has
-    # come back, unless that general chat submitted this delivery itself.
-    if finish['execution_id'] is not None or finish['actor'] != goal['leader_session_id']:
+        conn.execute('INSERT INTO war_room_decisions(decision_id,room_id) SELECT DISTINCT ?,room_id FROM war_room_items '
+                     'WHERE goal_id=?', (decision_id, goal_id))
+    from . import war_room
+    room_owned = war_room.task_returned(conn, goal, finish['outcome'], now=now, report_text=_finish_notice(goal, report))
+    if not room_owned and (finish['execution_id'] is not None or finish['actor'] != goal['leader_session_id']):
         board._queue_leader_notice(conn, goal['leader_session_id'], _finish_notice(goal, report),
                                    'crew', now, wake=report['outcome'] != 'cancelled')
-    if report['outcome'] != 'cancelled':
-        from . import war_room
-        war_room.task_returned(conn, {**goal, 'status': finish['outcome']}, finish['outcome'], now=now)
     conn.execute("UPDATE goal_round_finishes SET status='finalized',finalized_at=? WHERE goal_id=? AND round=?", (board._time(now), goal_id, goal['current_round']))
     touch(conn, goal_id)
     return {'finalized': True, 'already': False, 'goal': result, 'finish': get_finish(conn, goal_id)}
@@ -1232,9 +1239,9 @@ def finalize_transfer(conn, goal_id, *, now=None):
                      (goal['project'], branch, to, goal_id, at))
     conn.execute("UPDATE goal_transfers SET status='finalized',finalized_at=? WHERE id=?", (at, transfer['id']))
     text, wake = _transfer_notice(goal, transfer, giver, status, manual_pause)
-    board._queue_leader_notice(conn, to, text, 'crew', now, wake=wake)
+    queue_task_notice(conn, goal_id, to, text, 'crew', now, wake=wake)
     if transfer['actor'] != giver['session_id']:
-        board._queue_leader_notice(conn, giver['session_id'], '用户把任务「%s」（ID %s）交给了 %s 负责，你和你组里的成员不用再推进它。'
+        queue_task_notice(conn, goal_id, giver['session_id'], '用户把任务「%s」（ID %s）交给了 %s 负责，你和你组里的成员不用再推进它。'
                                    % (goal['title'], goal_id, board.session(conn, to)['crew_name'] or to), 'crew', now, wake=False)
     board._event(conn, 'goal:transfer', goal['project'], transfer['actor'],
                  {'goal_id': goal_id, 'transfer_id': transfer['id'], 'from': giver['session_id'], 'to': to}, now)
