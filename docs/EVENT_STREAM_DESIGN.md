@@ -228,7 +228,7 @@ leader / member 卡片读二十多张表，写入点散在服务、CLI、hook �
 | `where`、`busy`、`running` 的外部进程部分；`candidates` | `refresh_agents` 的结果与上次不同；VS Code 会话列表变化（`_read_vscode`）→ `everywhere('conversations')` |
 | `codex`、`dispatches`（派工回执、转录里观察到的设置） | 用量扫描事务一有新增或更新的行时，同一事务标记所有工作区的 `conversations` |
 | `title`（Claude 转录标题） | 每次重算卡片时读取（有缓存）；只在转录变化、卡片没有其他变化时滞后 |
-| `git_branches` | 每次重算卡片时经 `git_overview.read` 读取（10 秒内复用缓存）。仓库在 Crew 之外被改（终端里提交）没有生产者，随下一次卡片失效更新；Git 页面打开时自己强制重读 |
+| `git_branches` | 重算卡片时只读 `git_view` 缓存（`git_overview.cached`），不跑 Git：缓存按原有规则过期（10 秒复查引用与工作树签名、60 秒复查未提交改动、上次扫描失败）时排一次后台扫描（`web_service/git.py` `_scan_git`，每个工作区一个线程，进行中再来的请求在本次结束后补跑一次），扫描结果与之前不同才经通知器 `mark('conversations', 工作区)`。第一次扫描完成前为 `{"pending": true}`，最近一次扫描失败时为 `{"error": 原因}`（保留到下一次成功）；服务 `start()` 的预热线程 `crew-warm` 为每个已登记工作区读一次快照，扫描与会话日志载入在首个页面请求前开始。仓库在 Crew 之外被改（终端里提交）仍没有生产者，随下一次卡片重算（触发过期扫描）更新；Git 页面打开时自己强制重读 |
 | “最近 24 小时”派工窗口 | 纯时间推移，没有生产者；任务过窗后在下一次卡片失效时移出。运行中任务的“N 分钟”由前端本地计时重绘（第 7 节） |
 
 ### 6.3 后台用量扫描（迁移阶段 2）

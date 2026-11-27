@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -13,7 +14,7 @@ from unittest import mock
 
 from tests.ops_helpers import ai_call
 from crew.ops.errors import OpError
-from crew import board, git_admin, git_view, hooks, messaging, models, runtimes, settings, spawn, store, web
+from crew import board, git_admin, git_overview, git_view, hooks, messaging, models, runtimes, settings, spawn, store, web
 from crew.ops import tokens
 from test_core import CoreCase, NOW
 from test_shell import PLUGIN, ShellFixture
@@ -413,6 +414,20 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         self.thread.start()
         self.addCleanup(self.close_server)
         self.assertTrue(self.server.service.agents_ready.wait(5))
+        # The startup warm-up reads the workspace once; let it finish before a test enables Git or mocks a scan.
+        self.server.service.warm_worker.join(10)
+        self.assertFalse(self.server.service.warm_worker.is_alive())
+
+    def settle_git(self):
+        """Wait for the background branch scans that state reads queued (web_service/git.py)."""
+        for worker in self.server.service._git_scan_workers():
+            worker.join(10)
+            self.assertFalse(worker.is_alive())
+
+    def state(self):
+        code, result = self.request("/api/op/workspace.state?project=demo")
+        self.assertEqual(code, 200, result)
+        return result
 
     def close_server(self):
         self.server.shutdown()
@@ -471,6 +486,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         with mock.patch("crew.git_view.view", return_value=payload) as view, mock.patch("crew.git_view.fetch") as fetch:
             code, result = self.request("/api/op/git.overview?project=demo")
             fetch.assert_not_called()
+            self.settle_git()
         self.assertEqual(code, 200, result)
         self.assertTrue(result["enabled"])
         self.assertEqual({key: result[key] for key in payload}, payload)
@@ -479,9 +495,11 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         self.assertNotIn("stable", result["choices"])
         root = board.project(self.conn, "demo")["root"]
         assistant = board.session(self.conn, config["admin_session_id"])
+        # The page reads the repository itself; the leader cards built beside it only queue a background scan,
+        # which the mocked view() leaves without a cached result.
         self.assertEqual(view.call_args_list, [
             mock.call(root, config, exclude=(assistant["branch"],), force=True),
-            mock.call(root, config, exclude=(assistant["branch"],), force=False)])
+            mock.call(root, config, exclude=(assistant["branch"],))])
 
     def topic_owner_fixture(self):
         self.git("switch", "topic")
@@ -516,15 +534,61 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
     def test_state_includes_git_branches_with_owners_when_enabled(self):
         self.topic_owner_fixture()
         with mock.patch("crew.git_view.view", wraps=git_view.view) as view:
-            code, result = self.request("/api/op/workspace.state?project=demo")
-        self.assertEqual(code, 200, result)
-        data = result["git_branches"]
+            self.assertEqual(self.state()["git_branches"], {"pending": True})
+            self.settle_git()
+            data = self.state()["git_branches"]
         self.assertEqual(data["base"]["name"], "develop")
         self.assertEqual([branch["name"] for branch in data["branches"]], ["topic"])
         self.assertEqual(data["branches"][0]["owners"], [{"session_id": "s3", "name": "lead"}])
         self.assertEqual(data["merged_hidden"], 1)
+        # One unforced background scan; the second read is served from its result.
         view.assert_called_once()
-        self.assertEqual(view.call_args.kwargs["force"], False)
+        self.assertNotIn("force", view.call_args.kwargs)
+
+    def test_first_state_does_not_wait_for_the_branch_scan_and_gets_the_direct_result_after_it(self):
+        self.topic_owner_fixture()
+        started, release = threading.Event(), threading.Event()
+        refs = git_view._refs
+
+        def held(root):
+            started.set()
+            release.wait(10)
+            return refs(root)
+
+        before = self.conn.execute("SELECT COALESCE(MAX(seq),0) FROM change_log").fetchone()[0]
+        with mock.patch("crew.git_view._refs", side_effect=held):
+            began = time.monotonic()
+            self.assertEqual(self.state()["git_branches"], {"pending": True})
+            self.assertTrue(started.wait(5))
+            # The scan is still held inside Git, and another read does not wait for it either.
+            self.assertEqual(self.state()["git_branches"], {"pending": True})
+            self.assertLess(time.monotonic() - began, 5)
+            release.set()
+            self.settle_git()
+        result = self.state()["git_branches"]
+        expected = git_overview.read(self.conn, board.project(self.conn, "demo"), board.git_config(self.conn, "demo"), force=True)
+        self.assertEqual(result, expected)
+        self.assertEqual([branch["owners"] for branch in result["branches"]], [[{"session_id": "s3", "name": "lead"}]])
+        # The finished scan reached the event stream as the workspace's conversations invalidation.
+        query = ("SELECT entity FROM change_log WHERE seq>? AND scope='workspace:demo' "
+                 "AND type='conversations.invalidated'")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and self.conn.execute(query, (before,)).fetchone() is None:
+            time.sleep(.05)
+        self.assertEqual(self.conn.execute(query, (before,)).fetchone()[0], "demo")
+
+    def test_failed_branch_scan_shows_its_reason_until_a_scan_succeeds(self):
+        self.topic_owner_fixture()
+        reason = "fatal: detected dubious ownership in repository at 'C:/fixture'"
+        with mock.patch("crew.git_view._refs", side_effect=git_view.GitError(reason)):
+            self.assertEqual(self.state()["git_branches"], {"pending": True})
+            self.settle_git()
+            self.assertEqual(self.state()["git_branches"], {"error": reason})
+            self.settle_git()
+        # Every read retries a failed scan; the reason stays until one succeeds.
+        self.assertEqual(self.state()["git_branches"], {"error": reason})
+        self.settle_git()
+        self.assertEqual([branch["name"] for branch in self.state()["git_branches"]["branches"]], ["topic"])
 
     def test_state_git_branches_is_none_when_disabled(self):
         with mock.patch("crew.git_overview.read") as read:
@@ -554,8 +618,10 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         for failure in failures:
             with self.subTest(error_type=type(failure).__name__), \
                     mock.patch("crew.git_view.view", side_effect=failure):
-                code, result = self.request("/api/op/workspace.state?project=demo")
-            self.assertEqual(code, 200, result)
+                self.state()
+                self.settle_git()
+                result = self.state()
+                self.settle_git()
             self.assertEqual(result["git_branches"], {"error": str(failure)})
 
     def test_enabled_get_propagates_git_read_error(self):

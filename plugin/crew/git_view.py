@@ -34,8 +34,14 @@ def require_repository(root):
         raise GitError(reason)
 
 
-_lock = threading.RLock()
+# Guards the dictionaries below; Git never runs while it is held, so cached() answers at once.
+_lock = threading.Lock()
+# One scan of a repository at a time, per repository: {root key: Lock}.
+_scan_locks = {}
 _overview_cache = {}
+# Why the latest background scan (refresh) of a repository failed: {root key: (settings, reason)};
+# any successful view() clears it.
+_failures = {}
 _commit_cache = {}
 _last_fetch = {}
 # Open pull requests from the last successful GitHub read (CI poller or explicit fetch); views never call gh.
@@ -285,35 +291,92 @@ def _assemble(overview, statuses, pull_requests):
     return data
 
 
+def _settings(config, exclude):
+    return config["base"], config["integration"], tuple(sorted(exclude))
+
+
+def _scan_lock(key):
+    with _lock:
+        return _scan_locks.setdefault(key, threading.Lock())
+
+
+def _result(root, key, entry):
+    """The page value of a cache entry; the caller holds _lock."""
+    data = _assemble(entry["data"], entry["statuses"], _pull_requests.get(key))
+    data.update(repository=Path(root).name, last_fetch_at=_last_fetch.get(key))
+    return data
+
+
+def _due(entry, settings, now):
+    """Which parts of view()'s scan an unforced read reruns: (graph check, worktree status)."""
+    if entry is None or entry["settings"] != settings:
+        return True, True
+    return now - entry["checked"] >= _FRESH_SECONDS, now - entry["status_checked"] >= _STATUS_SECONDS
+
+
 def view(root, config, exclude=(), force=False):
     """Branches still to merge, test in the integration branch or push, plus worktrees with uncommitted work.
 
     Merged-and-pushed branches with clean (or no) worktrees are only counted. The graph scan reruns when
     refs or worktrees change; unforced reads within _FRESH_SECONDS reuse the last result without running
     Git. Worktree status reruns with the graph scan, on forced reads, or after _STATUS_SECONDS.
+    A failed scan raises and leaves the last result in place; a successful one clears refresh()'s failure.
     """
     key = _root(root)
-    settings = (config["base"], config["integration"], tuple(sorted(exclude)))
-    with _lock:
+    settings = _settings(config, exclude)
+    with _scan_lock(key):
+        with _lock:
+            entry = _overview_cache.get(key)
         now = time.monotonic()
-        cached = _overview_cache.get(key)
-        if force or cached is None or cached["settings"] != settings or now - cached["checked"] >= _FRESH_SECONDS:
+        graph, status = (True, True) if force else _due(entry, settings, now)
+        if graph:
             signature, refs = _refs(root)
             trees = _git(root, "worktree", "list", "--porcelain", "-z").stdout
             signature = hashlib.sha256((signature + trees).encode("utf-8")).hexdigest()
-            if cached is None or cached["settings"] != settings or cached["signature"] != signature:
+            if entry is None or entry["settings"] != settings or entry["signature"] != signature:
                 data = _overview(root, refs, _worktree_paths(trees), settings[0], settings[1], settings[2])
-                cached = {"settings": settings, "signature": signature, "data": data, "statuses": None}
-                _overview_cache[key] = cached
-            cached["checked"] = now
-        if force or cached["statuses"] is None or now - cached["status_checked"] >= _STATUS_SECONDS:
-            overview = cached["data"]
+                entry = {"settings": settings, "signature": signature, "data": data, "statuses": None}
+                status = True
+            entry = {**entry, "checked": now}
+        if status:
+            overview = entry["data"]
             paths = sorted({item["worktree"] for item in [*overview["branches"], overview["base"],
                                                            overview["integration"] or {}] if item.get("worktree")})
-            cached.update(statuses=_statuses(paths), status_checked=now)
-        data = _assemble(cached["data"], cached["statuses"], _pull_requests.get(key))
-        data.update(repository=Path(root).name, last_fetch_at=_last_fetch.get(key))
-        return data
+            entry = {**entry, "statuses": _statuses(paths), "status_checked": now}
+        with _lock:
+            _overview_cache[key] = entry
+            _failures.pop(key, None)
+            return _result(root, key, entry)
+
+
+def cached(root, config, exclude=()):
+    """view()'s last result for these settings without running Git: (data, error, due).
+
+    `data` is None until a scan with these settings has finished; `error` is why the latest scan failed;
+    `due` says an unforced view() would run Git now (the same freshness rules), or that the latest scan
+    failed, which every read retries.
+    """
+    key = _root(root)
+    settings = _settings(config, exclude)
+    with _lock:
+        entry = _overview_cache.get(key)
+        failure = _failures.get(key)
+        error = failure[1] if failure is not None and failure[0] == settings else None
+        if entry is None or entry["settings"] != settings:
+            return None, error, True
+        return _result(root, key, entry), error, error is not None or any(_due(entry, settings, time.monotonic()))
+
+
+def refresh(root, config, exclude=()):
+    """Run an unforced view() for a background reader; True when cached() gives a different answer after it."""
+    before = cached(root, config, exclude)[:2]
+    try:
+        view(root, config, exclude=exclude)
+    except (OSError, GitError, subprocess.TimeoutExpired) as exc:
+        # Nobody waits on this scan: cached() hands the reason to every reader until a scan succeeds.
+        with _lock:
+            _failures[_root(root)] = (_settings(config, exclude), str(exc))
+    return cached(root, config, exclude)[:2] != before
 
 
 def _numstat(output):
@@ -342,21 +405,23 @@ def commit_detail(root, sha):
         raise GitError("提交 SHA 必须是 4 至 64 位十六进制字符")
     key = _root(root)
     with _lock:
-        cached = _commit_cache.get((key, sha.lower()))
-        if cached is not None:
-            return copy.deepcopy(cached)
-        full_sha = _git(root, "rev-parse", "--verify", sha + "^{commit}").stdout.strip()
-        cached = _commit_cache.get((key, full_sha))
-        if cached is not None:
-            return copy.deepcopy(cached)
-        output = _git(root, "show", "--numstat", "--format=", "--find-renames", "--diff-merges=first-parent",
-                      "-z", full_sha).stdout
-        files = _numstat(output)
-        detail = {"sha": full_sha, "files": files, "file_count": len(files),
-                  "additions": sum(item["added"] for item in files if not item["binary"]),
-                  "deletions": sum(item["deleted"] for item in files if not item["binary"])}
+        known = _commit_cache.get((key, sha.lower()))
+    if known is not None:
+        return copy.deepcopy(known)
+    full_sha = _git(root, "rev-parse", "--verify", sha + "^{commit}").stdout.strip()
+    with _lock:
+        known = _commit_cache.get((key, full_sha))
+    if known is not None:
+        return copy.deepcopy(known)
+    output = _git(root, "show", "--numstat", "--format=", "--find-renames", "--diff-merges=first-parent",
+                  "-z", full_sha).stdout
+    files = _numstat(output)
+    detail = {"sha": full_sha, "files": files, "file_count": len(files),
+              "additions": sum(item["added"] for item in files if not item["binary"]),
+              "deletions": sum(item["deleted"] for item in files if not item["binary"])}
+    with _lock:
         _commit_cache[(key, full_sha)] = detail
-        return copy.deepcopy(detail)
+    return copy.deepcopy(detail)
 
 
 def _ci(checks):
@@ -439,7 +504,8 @@ def fetch(root):
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         with _lock:
             return {"ok": False, "output": "", "error": str(exc), "last_fetch_at": _last_fetch.get(key)}
-    with _lock:
+    # A scan still running read the refs before this fetch; drop the cache only after it stored its result.
+    with _scan_lock(key), _lock:
         if result.returncode == 0:
             _last_fetch[key] = datetime.datetime.now(datetime.timezone.utc).isoformat()
             _overview_cache.pop(key, None)

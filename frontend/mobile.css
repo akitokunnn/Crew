@@ -65,6 +65,7 @@ body.m-chat .main{height:100dvh!important}
 .leader-panel-head>h2{font-size:28px!important;font-weight:700!important;letter-spacing:-.01em!important}
 .leader-panel-head>span{font-size:var(--m-fs-meta)!important}
 .leader-panel-channel{margin:0 var(--m-gutter) 10px!important;min-height:52px;padding:0 16px!important;border-radius:var(--m-radius)!important;font-size:16px!important}
+.leader-git-status{margin:0 var(--m-gutter) 10px!important;font-size:var(--m-fs-meta)!important}button.leader-git-status{width:calc(100% - 2 * var(--m-gutter))!important;min-height:40px;border-radius:var(--m-radius)!important}
 .leader-panel-leaders{padding:4px var(--m-gutter) 16px!important;-webkit-overflow-scrolling:touch}
 .leader-row{gap:12px!important;min-height:64px;padding:12px 10px!important;border-radius:13px;background:var(--studio-card);border:1px solid var(--line);margin-bottom:4px}
 .leader-row.active{background:var(--studio-sheet);border-color:color-mix(in srgb,var(--accent) 45%,var(--line-strong));box-shadow:var(--studio-shadow-sm)}

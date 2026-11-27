@@ -1,4 +1,5 @@
 import subprocess
+import threading
 from contextlib import closing
 from pathlib import Path
 
@@ -8,13 +9,56 @@ from .. import session_presence, snapshot_values
 
 class GitMixin:
     def _git_branches(self, conn, project, config):
-        """Branch chips for the leader list; a failed read carries its reason instead of breaking state."""
+        """Branch chips for the leader list from the last scan; never waits for Git.
+
+        A scan that git_view's freshness rules call due runs in the background (_scan_git), and the cards
+        are marked changed when its answer differs. {'pending': True} until the first scan finished;
+        {'error': reason} while the latest scan failed.
+        """
         if config is None or git_view.unavailable_reason(project['root']) is not None:
             return None
+        exclude = git_overview.excluded(conn, config)
+        data, error, due = git_overview.cached(conn, project, config, exclude)
+        if due:
+            self._scan_git(project, config, exclude)
+        if error is not None:
+            return {'error': error}
+        return {'pending': True} if data is None else data
+
+    def _scan_git(self, project, config, exclude):
+        """Queue a branch scan of the workspace; one worker per workspace runs the latest request after the current one."""
+        name = project['name']
+        with self.git_scan_lock:
+            if self.stop.is_set():
+                return
+            self.git_scan_requests[name] = (project, config, exclude)
+            if name in self.git_scan_workers:
+                return
+            worker = self.git_scan_workers[name] = threading.Thread(
+                target=self._run_git_scans, args=(name,), name='crew-git-scan', daemon=True)
+        worker.start()
+
+    def _git_scan_workers(self):
+        with self.git_scan_lock:
+            return list(self.git_scan_workers.values())
+
+    def _run_git_scans(self, name):
         try:
-            return git_overview.read(conn, project, config)
-        except (OSError, git_view.GitError, subprocess.TimeoutExpired) as exc:
-            return {'error': str(exc)}
+            while True:
+                with self.git_scan_lock:
+                    request = self.git_scan_requests.pop(name, None)
+                    if request is None or self.stop.is_set():
+                        del self.git_scan_workers[name]
+                        return
+                project, config, exclude = request
+                if git_view.refresh(project['root'], config, exclude):
+                    self.chat.changes.mark('conversations', name, name)
+        except BaseException:
+            # A program error ends this worker with its traceback; deregistering it lets the next due read start
+            # a new scan instead of showing "computing" until the service restarts.
+            with self.git_scan_lock:
+                self.git_scan_workers.pop(name, None)
+            raise
 
     def git(self, project_name=None):
         with closing(store.connect(self.home)) as conn:
