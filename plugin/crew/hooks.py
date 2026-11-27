@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, branch_claims, channel, git_process, goals, guard, install, messaging, rules, runtimes, store
+from . import board, branch_claims, channel, domains, git_process, goals, guard, install, messaging, rules, runtimes, store
 
 EVENTS = ("session-start", "user-prompt-submit", "stop", "notification", "pre-ask", "post-ask", "session-end", "guard")
 
@@ -187,6 +187,11 @@ def handle(event, data, home, plugin_root, git_provider=git_details, now=None):
                     _, authorization = trust_mode.input_context(conn, data['session_id'])
                     if authorization:
                         lines.append(authorization)
+                    if event == 'session-start':
+                        # Crew's own sessions get this with their inputs (chat_delivery), changes included.
+                        placement = domains.placement(conn, data['session_id'])
+                        if placement:
+                            lines.append(placement)
         if event == "session-start":
             if board.is_archived(conn, data["session_id"]):
                 control = board.session_control(conn, data["session_id"])

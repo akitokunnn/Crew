@@ -33,6 +33,10 @@
 /* 筛选：一行横向滚动的 chip，不换行挤 */
 .nw-filters{flex-wrap:nowrap;gap:8px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;margin:0 calc(-1 * var(--m-gutter)) 4px;padding:2px var(--m-gutter) 8px;font-size:14px}
 .nw-filters::-webkit-scrollbar{display:none}
+/* 还有没露出来的筛选项时，那一侧渐隐，提示可以横滑；滑到头就不再渐隐（data-more 由 notes.js 按滚动位置标） */
+.nw-filters{--fade-start:0px;--fade-end:0px;-webkit-mask-image:linear-gradient(to right,transparent,#000 var(--fade-start),#000 calc(100% - var(--fade-end)),transparent);mask-image:linear-gradient(to right,transparent,#000 var(--fade-start),#000 calc(100% - var(--fade-end)),transparent)}
+.nw-filters[data-more~="start"]{--fade-start:40px}
+.nw-filters[data-more~="end"]{--fade-end:48px}
 .nw-filters>*,.nw-filter-tags>*{flex:none}
 .nw-filter-tags{flex-wrap:nowrap;gap:8px}
 .nw-filters .btn.sm,.nw-filters .nw-tag,.nw-filters .text-link,.nw-viewing{display:inline-flex;align-items:center;min-height:38px;padding:0 14px;border-radius:999px;font-size:14px;white-space:nowrap}

@@ -186,6 +186,15 @@
       + `<select class="nw-narrow-only" data-act="view" aria-label="查看">${Object.entries(viewNames).map(([key, label]) => `<option value="${key}" ${view.view === key ? "selected" : ""}>${label}</option>`).join("")}</select>`
       + (filtered ? `<button type="button" class="btn sm ghost" data-act="clear-filters">清除筛选</button>` : "")
       + (view.view !== "open" ? `<span class="nw-viewing">正在看：${viewNames[view.view]}<button type="button" class="btn sm ghost" data-act="view-open">返回全部想法</button></span>` : "");
+    filterEdges();
+  }
+  // On a phone the filters are one scrolling row; mark which side still hides chips so that side fades.
+  function filterEdges() {
+    const row = $("nw-filters");
+    const more = [];
+    if (row.scrollLeft > 1) more.push("start");
+    if (row.scrollLeft + row.clientWidth < row.scrollWidth - 1) more.push("end");
+    row.dataset.more = more.join(" ");
   }
   function renderSide() {
     // No counts until the notes are read: an empty rail would read as "no ideas".
@@ -529,7 +538,8 @@
   }
   document.addEventListener("pointerdown", event => { if (menu && !menu.node.contains(event.target) && event.target !== menu.button) closeMenu(false); });
   $("nw-main").addEventListener("scroll", () => closeMenu(false));
-  window.addEventListener("resize", () => closeMenu(false));
+  window.addEventListener("resize", () => { closeMenu(false); filterEdges(); });
+  $("nw-filters").addEventListener("scroll", filterEdges, {passive: true});
 
   // ---- note actions -------------------------------------------------------------
   const archive = note => attempt("归档", () => write("archive", {note_id: note.id, expected_version: note.version}), () => toast("已归档。", {label: "撤销", run: () => { void attempt("恢复", () => write("restore", {note_id: note.id, expected_version: byId(note.id).version})); }}));

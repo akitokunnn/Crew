@@ -439,7 +439,7 @@ Web 用 `git.settings.set enabled:false` 停用、CLI 用 `/api/git/disable`：�
 
 | 操作 | 读写 / 风险 | 范围 | HTTP | 助手 |
 | --- | --- | --- | --- | --- |
-| `domains.get` | 读 | H D L | GET `/api/domains` | — |
+| `domains.get` | 读 | H D L（只读本工作区，不接受 `project`；返回节点与 leader 位置，不含布局） | GET `/api/domains` | — |
 | `domains.apply` | 写 | H D A(确认) | POST `/api/domains` | — |
 | `notes.list` | 读 | H D A | GET `/api/personal/notes` | `notes.list` |
 | `note.get` | 读 | H D A | — | `notes.get` |

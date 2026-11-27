@@ -66,6 +66,7 @@ class NativeMixin:
                         self._control_response(current, record["response"])
                     if record["type"] == 'system' and record.get('subtype') == 'compact_boundary' and not record.get('parent_tool_use_id'):
                         current.trust_context = None
+                        current.domain_context = None
                     if record["type"] == "rate_limit_event":
                         try:
                             claude_limits.capture(self.home, record)
