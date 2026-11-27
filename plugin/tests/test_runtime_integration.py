@@ -1,6 +1,7 @@
 """Host integration: temporary Crew data, fake runtimes and ephemeral HTTP only."""
 import tests
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing
 import json
 import os
@@ -383,40 +384,35 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(board.pending_notices(self.conn,'new-chief'),[])
 
     def test_usage_scan_does_not_upgrade_a_stale_snapshot_after_a_service_writer(self):
-        service=self.server.service
-        service.scanned_at=None
-        snapshot=threading.Event();attempted=threading.Event();written=threading.Event()
-        writer_errors=[]
-        def scan(conn,*args,receipts_only=False,writer=None):
-            self.assertFalse(receipts_only)
-            # The scan holds the service write lock around each of its batches (usage.scan).
-            self.assertIs(writer,service.write_lock)
-            # Reproduce SQLite's deferred read -> write hazard. The competing
-            # service writer must wait until this batch releases the lock.
-            with writer:
-                conn.execute('SAVEPOINT timing_scan')
-                conn.execute('SELECT COUNT(*) FROM sessions').fetchone()
-                snapshot.set()
-                if not attempted.wait(3):raise AssertionError('writer never attempted')
-                written.wait(.15)
-                conn.execute('PRAGMA user_version=2')
-                conn.execute('RELEASE timing_scan')
-            return {'inserted': 0, 'updated': 0, 'skipped': 0, 'bad_lines': []}
+        service = self.server.service
+        service.scanned_at = None
+        snapshot = threading.Event()
+        lock_available = Future()
+        backfill = web.usage._backfill_peer_prompts
+
+        def read_then_backfill(conn, files, claude_root, counts):
+            # Run inside the real scan batch, after it has reserved the SQLite writer.
+            conn.execute('SELECT COUNT(*) FROM sessions').fetchone()
+            snapshot.set()
+            self.assertFalse(lock_available.result(timeout=3), 'scan released the service lock inside a batch')
+            return backfill(conn, files, claude_root, counts)
+
         def write():
-            try:
-                if not snapshot.wait(3):raise AssertionError('scan never read')
-                attempted.set()
-                with service.write_lock,closing(store.connect(self.home)) as conn:
-                    conn.execute("UPDATE sessions SET last_prompt='parallel service writer' WHERE session_id='s1'")
-                written.set()
-            except BaseException as exc:writer_errors.append(exc)
-        writer=threading.Thread(target=write)
-        writer.start()
-        try:
-            with mock.patch('crew.web.usage.scan',side_effect=scan):service.scan_usage()
-        finally:writer.join(5)
-        self.assertFalse(writer.is_alive());self.assertEqual(writer_errors,[])
-        self.assertTrue(written.is_set())
+            self.assertTrue(snapshot.wait(3), 'scan never read')
+            acquired = service.write_lock.acquire(blocking=False)
+            if acquired:
+                service.write_lock.release()
+            lock_available.set_result(acquired)
+            with service.write_lock, closing(store.connect(self.home)) as conn:
+                conn.execute("UPDATE sessions SET last_prompt='parallel service writer' WHERE session_id='s1'")
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            writer = pool.submit(write)
+            with mock.patch.object(web.usage, '_backfill_peer_prompts', side_effect=read_then_backfill):
+                service.scan_usage()
+            writer.result(timeout=5)
+        self.assertEqual(self.conn.execute("SELECT last_prompt FROM sessions WHERE session_id='s1'").fetchone()[0],
+                         'parallel service writer')
 
     def test_comments_have_project_scope_and_notify_leader(self):
         code, comment = self.request('/api/op/comment.add', {'session_id': 's1', 'text': '请解释这里的进度'})
