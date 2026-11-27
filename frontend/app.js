@@ -371,7 +371,7 @@
       state.goals.some(goal => goal.leader_session_id === item.session_id &&
       goal.status === "awaiting_acceptance" && !goal.observing)) return {tone:"waiting", label:"等你处理"};
     if (item.working_room_id != null) return {tone:"working", label:"作战室中"};
-    if (work.active) return {tone:"working", label:"推进中", detail:work.label};
+    if (work.active) return {tone:"working", label:work.members > 0 ? `推进中 · ${work.members} 个执行` : "推进中", detail:work.label};
     if (leaderUnread(item)) return {tone:"unread", label:"未读"};
     return {tone:item.status, label:statusText[item.status]};
   }
