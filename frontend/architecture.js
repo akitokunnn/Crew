@@ -31,7 +31,8 @@ const CrewArchitecture = (() => {
   let camera = null, selection = new Set(), undoStack = [], redoStack = [], queue = Promise.resolve(), busy = 0;
   let gesture = null, renaming = null, menu = null, focusRequest = null, spaceDown = false, cached = null, leaderSignature = "";
   let pendingFit = null, resizer = null, pendingDirection = null, shelfOpen = null;
-  let history = null, historyToken = 0, planner = null;
+  let history = null, historyToken = 0, detailToken = 0, planner = null;
+  let domainsPending = false;
   const pointers = new Map(), pending = new Map(), sizes = new Map();
 
   const editable = () => !phone.matches;
@@ -321,14 +322,16 @@ const CrewArchitecture = (() => {
       pending.clear(); pendingDirection = null;
       if (error.status === 409) { undoStack = []; redoStack = []; options.toast("架构图在别处改过了，已重新载入；之前的撤销记录已清空。"); }
       else options.toast(error.message || "保存失败，请重试。");
-      return load(error.status === 409);
-    }).finally(() => { busy--; if (host !== null && board !== null) render(); });
+      const remoteEdit = domainsPending && options.state.domains.version > board.version;
+      domainsPending = false;
+      return load(error.status === 409 || remoteEdit);
+    }).finally(() => { busy--; if (host !== null && board !== null) render(); refreshDomains(); });
     return queue;
   }
   async function send(ops) {
     const result = await options.api("/api/op/domains.apply", {project, base_version:board.version, ops});
     board = result.board; cached = null;
-    if (history !== null && result.version !== null) void loadHistory();
+    if (history !== null && result.version !== null && !domainsPending) void loadHistory();
     return result;
   }
   // The undo batch: each op's opposite in reverse order, from the board before the batch and what the server did.
@@ -589,9 +592,9 @@ const CrewArchitecture = (() => {
   }
   function pointerUp(event) {
     pointers.delete(event.pointerId);
-    if (gesture?.type === "pinch") { if (pointers.size < 2) { gesture = null; saveCamera(); } return; }
+    if (gesture?.type === "pinch") { if (pointers.size < 2) { gesture = null; saveCamera(); refreshDomains(); } return; }
     if (gesture === null || gesture.id !== event.pointerId) return;
-    if (event.type === "pointercancel") { cancelGesture(); return; }
+    if (event.type === "pointercancel") { cancelGesture(); refreshDomains(); return; }
     const done = gesture; gesture = null;
     if (done.type === "pan") {
       if (done.moved) saveCamera();
@@ -605,6 +608,7 @@ const CrewArchitecture = (() => {
     } else if (done.type === "leader") { if (done.moved) finishLeaderDrag(done); else options.openLeader(done.leader); }
     else if (done.type === "wire") finishWire(done);
     else if (done.type === "marquee") { $(".arch-marquee").hidden = true; if (!done.moved && !done.additive && selection.size) { selection.clear(); renderSelection(); } }
+    refreshDomains();
   }
   function cancelGesture() {
     const done = gesture; gesture = null;
@@ -841,7 +845,7 @@ const CrewArchitecture = (() => {
     else if ((event.key === "Delete" || event.key === "Backspace") && editable()) { if (selection.size) { event.preventDefault(); deleteParts([...selection]); } }
     else if (event.key === "F2" && editable()) { if (selection.size === 1) { event.preventDefault(); startRename([...selection][0]); } }
     else if (event.key === "Home" || (k === "f" && !mod)) { event.preventDefault(); fit(k === "f" && selection.size ? [...selection] : shownIds(), k === "f" && selection.size ? 1.2 : 1); }
-    else if (event.key === "Escape") { if (gesture) cancelGesture(); else if (menu) closeMenu(); else if (selection.size) { selection.clear(); renderSelection(); } }
+    else if (event.key === "Escape") { if (gesture) { cancelGesture(); refreshDomains(); } else if (menu) closeMenu(); else if (selection.size) { selection.clear(); renderSelection(); } }
   }
   function keyUp(event) { if (event.key === " ") { spaceDown = false; $(".arch-canvas")?.classList.remove("panning"); } }
   function focusOut(event) { if (event.target.classList?.contains("arch-rename") && renaming !== null) finishRename(true); }
@@ -879,12 +883,12 @@ const CrewArchitecture = (() => {
     renderHistory(); void loadVersion(number);
   }
   async function loadVersion(number) {
-    const name = project;
+    const name = project, token = ++detailToken;
     try {
       const result = await options.api("/api/op/domains.version.get", {project:name, number});
-      if (history === null || history.selected !== number || name !== project) return;
+      if (token !== detailToken || history === null || history.selected !== number || name !== project) return;
       history.detail = result; history.detailError = "";
-    } catch (error) { if (history === null || history.selected !== number) return; history.detail = null; history.detailError = error.message || "读取版本失败"; }
+    } catch (error) { if (token !== detailToken || history === null || history.selected !== number) return; history.detail = null; history.detailError = error.message || "读取版本失败"; }
     renderHistory();
   }
   async function rollback() {
@@ -998,11 +1002,17 @@ const CrewArchitecture = (() => {
     if ((settings.state.domains?.version ?? 0) > board.version) void load(true);
   }
   const signature = state => JSON.stringify((state.leaders || []).map(item => [item.session_id, item.name, item.goal, item.status, item.color, item.avatar_version]));
+  function refreshDomains() {
+    if (!domainsPending || busy || gesture !== null) return;
+    domainsPending = false;
+    // A save may already have applied the announced version. Keep that edit's undo entry.
+    void load(options.state.domains.version > board.version);
+  }
   function update(settings) {
     options = settings;
     if (host === null || board === null) return;
     const remote = settings.state.domains?.version ?? 0;
-    if (remote > board.version && busy === 0 && gesture === null) { void load(true); return; }
+    if (remote > board.version) { domainsPending = true; refreshDomains(); }
     const next = signature(settings.state);
     if (next !== leaderSignature && gesture === null && renaming === null) { leaderSignature = next; cached = null; renderWorld(); }
     renderHead();
@@ -1014,7 +1024,7 @@ const CrewArchitecture = (() => {
       resizer?.disconnect(); resizer = null;
       if (camera !== null && pendingFit === null) saveCamera();
     }
-    gesture = null; pointers.clear(); menu = null; spaceDown = false; renaming = null; host = null; history = null; historyToken++;
+    domainsPending = false; gesture = null; pointers.clear(); menu = null; spaceDown = false; renaming = null; host = null; history = null; historyToken++;
   }
   return {mount, update, unmount};
 })();

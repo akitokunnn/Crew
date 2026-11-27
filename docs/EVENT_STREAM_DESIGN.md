@@ -94,6 +94,7 @@ data: {"reason":"projection","kind":"goal","entity":"g-1","seq":57,"error":"KeyE
 | `domains` | 工作区 | 字段 `domains` | 工作区名 | — | `snapshot_values.domains` |
 | `channel` | 工作区 | 字段组 `channel` | 工作区名 | `unread`、`latest_id`、`digest_id` | `snapshot_values.channel` |
 | `channel_message` | 工作区 | 页面 · 交流区（不在快照里） | 发言 `id`（读取时转回整数） | 一条发言的完整值，与 `/api/channel` 列出的相同（含 `mentions` / `notified` 的投递状态）；清理边界之前或已不存在 → `removed` | `snapshot_values.channel_message` → `channel.listed_message` |
+| `workspace_activity` | 全局 | 页面 · 无项目首页 | 工作区名 | `{project}`。首页收到事件或重拿快照后重取 `workspace.activity`。请求期间或 10 秒节流期内收到的失效合并补取一次 | `snapshot_values.workspace_activity` |
 | `sound_settings` | global | 字段组 `sounds` | `sounds` | `preferences`、`revision`、`catalog`、`missing` | `snapshot_values.sound_settings` |
 | `limits` | global | 字段组（快照顶层） | `limits` | `limits`、`usage_scanned_at`、`usage_error` | 后台用量扫描**带值记录**（6.3），读取直接解码 |
 | `conversations` | 工作区 | 字段组（快照顶层） | 工作区名 | `leaders`、`members`、`attention`、`native_approvals`、`git_assistant`、`git_branches`、`candidates` | 服务 `_conversation_cards`（快照同用） |

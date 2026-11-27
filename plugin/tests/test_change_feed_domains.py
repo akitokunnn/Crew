@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from crew import (board, change_feed, channel, chat_delivery, decision_briefs, decision_flow, domains, event_sounds,
-                  goal_work, goals, settings, store, web, workspace_settings)
+                  goal_work, goals, settings, store, todo, web, workspace_settings)
 from crew.web_service.snapshot import CONVERSATION_FIELDS
 from tests.test_runtimes import RuntimeFixture
 from test_shell import PLUGIN
@@ -54,7 +54,8 @@ class DomainFeedFixture(RuntimeFixture):
             return self.service.change_value(conn, kind, scope_project, entity, project)
         found = change_feed.read(self.conn, change_feed.scopes(project), self.seq, build)
         self.seq = change_feed.latest_seq(self.conn)
-        return found
+        # Workspace assertions below compare the projected cards. The entry-page marker is tested separately.
+        return [change for change in found if change['type'] != 'workspace_activity.updated' or project is None]
 
     def kinds(self, changes, cards=False):
         """(type, entity) of each change; the workspace cards that tasks and decisions also change only when asked."""
@@ -96,6 +97,35 @@ class DomainFeedFixture(RuntimeFixture):
 
 
 class MechanismTests(DomainFeedFixture):
+    def test_activity_writes_reach_the_global_only_subscriber(self):
+        def assert_activity():
+            [change] = self.changes(None)
+            self.assertEqual((change['type'], change['entity'], change['data']),
+                             ('workspace_activity.updated', 'demo', {'project': 'demo'}))
+
+        decision = board.ask(self.conn, 'member-id', '继续？')
+        assert_activity()
+        board.answer(self.conn, decision, '继续')
+        assert_activity()
+        board.deliver(self.conn, 'member-id')
+        assert_activity()
+        item = todo.add(self.conn, 'member-id', '连接', '插入设备', '已连接')
+        assert_activity()
+        todo.resolve(self.conn, 'demo', item['id'], 'done')
+        assert_activity()
+        self.conn.execute("UPDATE sessions SET status='working' WHERE session_id='chief-id'")
+        assert_activity()
+        channel.post(self.conn, 'demo', 'chief-id', '通知')
+        assert_activity()
+        channel.mark_read(self.conn, 'demo', board.HUMAN)
+        assert_activity()
+        goal = goals.create(self.conn, 'demo', 'chief-id', '目标', '做完', ['完成'])
+        assert_activity()
+        execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='claude')
+        assert_activity()
+        goals.mark_read(self.conn, execution['id'], 3)
+        assert_activity()
+
     def test_marks_outside_a_board_transaction_and_unknown_kinds_or_scopes_are_refused(self):
         # Only board.transaction (and the workspace import) opens the bookkeeping a mark needs.
         with self.assertRaisesRegex(RuntimeError, 'board.transaction'):

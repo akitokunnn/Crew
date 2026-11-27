@@ -58,6 +58,9 @@ _WORKSPACE = {
 # Global kinds fed by a table: the notification channels list their latest delivery receipts, and a finished
 # round is a delivery the pages may sound for.
 _GLOBAL = {'notification_messages': 'notification', 'goal_round_finishes': 'sound_events'}
+# Tables written directly by hooks and services that also feed workspace_activity.snapshot.
+_ACTIVITY = {'sessions', 'groups', 'session_controls', 'git_management', 'read_cursors',
+             'goal_executions', 'goal_execution_bindings', 'attention_resolutions'}
 # Structural changes: (table, operation, condition or None).
 _STRUCTURAL = [
     ('sessions', 'UPDATE', "NEW.crew_name IS NOT OLD.crew_name OR NEW.group_name IS NOT OLD.group_name "
@@ -84,9 +87,10 @@ def _rows(operation):
 
 def _trigger(name, table, operation, kind, condition=None):
     source = ' UNION '.join(_WORKSPACE[table].format(row=row) for row in _rows(operation))
+    scope = "'global'" if kind == 'workspace_activity' else "'workspace:'||p"
     return ('CREATE TRIGGER %s AFTER %s ON %s%s BEGIN INSERT INTO change_log(at,scope,type,entity,data) '
-            "SELECT %s,'workspace:'||p,'%s.invalidated',p,NULL FROM (%s) WHERE p IS NOT NULL; END"
-            % (name, operation, table, '' if condition is None else ' WHEN ' + condition, _AT, kind, source))
+            "SELECT %s,%s,'%s.invalidated',p,NULL FROM (%s) WHERE p IS NOT NULL; END"
+            % (name, operation, table, '' if condition is None else ' WHEN ' + condition, _AT, scope, kind, source))
 
 
 def statements():
@@ -96,6 +100,9 @@ def statements():
         for operation in ('INSERT', 'UPDATE', 'DELETE'):
             name = 'feed_cards_%s_%s' % (table, operation.lower())
             result[name] = _trigger(name, table, operation, 'conversations')
+            if table in _ACTIVITY:
+                name = 'feed_activity_%s_%s' % (table, operation.lower())
+                result[name] = _trigger(name, table, operation, 'workspace_activity')
     for table, operation, condition in _STRUCTURAL:
         name = 'feed_reset_%s_%s' % (table, operation.lower())
         result[name] = _trigger(name, table, operation, 'snapshot', condition)

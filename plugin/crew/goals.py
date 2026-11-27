@@ -158,7 +158,9 @@ def _expected(goal, version):
 
 def touch(conn, goal_id):
     """Mark the task card changed; board.transaction records its final value before commit."""
-    change_feed.touch(conn, 'goal', _row(conn, goal_id)['project'], goal_id)
+    project = _row(conn, goal_id)['project']
+    change_feed.touch(conn, 'goal', project, goal_id)
+    change_feed.touch(conn, 'workspace_activity', None, project)
 
 
 def _touch(conn, goal_id, now):
@@ -529,12 +531,14 @@ def get_execution(conn, execution_id):
 
 @atomic
 def mark_read(conn, execution_id, read_seq, *, now=None):
-    get_execution(conn, execution_id)
+    execution = get_execution(conn, execution_id)
     if type(read_seq) is not int or read_seq < 0:
         raise board.BoardError('已读位置必须为非负整数')
     conn.execute('INSERT INTO goal_execution_reads VALUES(?,?,?) ON CONFLICT(execution_id) '
                  'DO UPDATE SET read_seq=MAX(read_seq,excluded.read_seq),updated_at=excluded.updated_at',
                  (execution_id, read_seq, board._time(now)))
+    if read_seq > execution['read_seq']:
+        change_feed.touch(conn, 'workspace_activity', None, _row(conn, execution['goal_id'])['project'])
     return get_execution(conn, execution_id)
 
 

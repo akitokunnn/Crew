@@ -46,9 +46,12 @@ class ManagedFeedTests(ShellFixture, unittest.TestCase):
         before = self.seq
         self.service.chat.journal('s3').emit('message', id='m1', role='user', text='你好', source='human')
         self.assertEqual(self.recorded(), [('workspace:demo', 'conversations.invalidated', 'demo'),
+                                           ('global', 'workspace_activity.invalidated', 'demo'),
                                            ('global', 'sound_events.invalidated', 'sound_events')])
         state = plain(self.service.state('demo'))
-        cards, sounds = self.read(before)
+        cards, activity, sounds = self.read(before)
+        self.assertEqual(activity['data'], {'project': 'demo'})
+        self.assertIn(activity, self.read(before, viewer=None))
         self.assertEqual(cards['data'], {key: state[key] for key in CONVERSATION_FIELDS})
         self.assertEqual(sounds['data'], {'events': state['sounds']['events']})
         [leader] = cards['data']['leaders']

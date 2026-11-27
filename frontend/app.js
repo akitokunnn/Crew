@@ -1412,7 +1412,14 @@
     state = next;
     CrewSound.observe(state.sounds, state.now);
     nativeApprovals?.sync(state); CrewActivity.sync(state); applyTheme(); renderSettings();
-    if (project === null) { $("app").className = "workspace-entry"; $("leader-panel").hidden = true; $("right-panel").hidden = true; renderEntrySidebar(); replace($("main"), CrewWorkspaceEntry.render(state, {esc, ic, display: projectDisplay})); document.title = "工作区 · Crew"; if (pendingSettingsHash) { pendingSettingsHash = false; history.replaceState(null, "", `${location.pathname}${location.search}`); openSettings("ai"); } return; }
+    if (project === null) {
+      $("app").className = "workspace-entry"; $("leader-panel").hidden = true; $("right-panel").hidden = true; renderEntrySidebar();
+      const activityChanged = meta.source === "snapshot" || meta.changes.some(change => change.type === "workspace_activity.updated");
+      replace($("main"), CrewWorkspaceEntry.render(state, {esc, ic, display: projectDisplay}, activityChanged));
+      document.title = "工作区 · Crew";
+      if (pendingSettingsHash) { pendingSettingsHash = false; history.replaceState(null, "", `${location.pathname}${location.search}`); openSettings("ai"); }
+      return;
+    }
     try { localStorage.setItem("crew.mobile.project", project); } catch {}
     if (previous === null) readRoute();
     if (readOnlyId !== null && !state.members.some(item => item.session_id === readOnlyId)) { navigate("all"); toast("该会话已不在下属列表，已返回工作台"); }

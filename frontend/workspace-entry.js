@@ -1,6 +1,5 @@
 "use strict";
-// Workspace entry page ("/" without a project). Rendered by app.js on every state poll;
-// the returned HTML must be a pure function of state and this module's cached activity.
+// Workspace entry page ("/" without a project). Activity is fetched separately from the snapshot.
 (() => {
   const THROTTLE_MS = 10000;
   const INBOX_LIMIT = 6;
@@ -12,14 +11,22 @@
   const BADGES = [["approvals", "approval"], ["decisions", "decision"], ["acceptance", "acceptance"], ["todos", "todo"], ["unread", "reply", "未读"]];
   const cache = {key:null, projects:null, error:null, at:0, inflight:false};
   let last = null;
+  let pending = false, timer = null;
 
   const waitingCount = counts => counts.decisions + counts.todos + counts.approvals + counts.acceptance;
   const projectHref = name => `/?project=${encodeURIComponent(name)}`;
 
-  function refresh(names) {
-    if (names.length === 0 || document.hidden || cache.inflight) return;
-    const key = JSON.stringify(names);
-    if (key === cache.key && Date.now() - cache.at < THROTTLE_MS) return;
+  function refresh() {
+    if (last === null || document.hidden || cache.inflight) return;
+    const {names, key} = last;
+    if (names.length === 0) return;
+    const remaining = THROTTLE_MS - (Date.now() - cache.at);
+    if (key === cache.key && remaining > 0) {
+      if (pending && timer === null) timer = setTimeout(() => { timer = null; refresh(); }, remaining);
+      return;
+    }
+    if (timer !== null) { clearTimeout(timer); timer = null; }
+    pending = false;
     cache.inflight = true;
     const query = new URLSearchParams(names.map(name => ["project", name]));
     fetch(`/api/op/workspace.activity?${query}`, {headers:{"X-Crew":"1"}})
@@ -30,11 +37,13 @@
       })
       .then(body => { cache.projects = new Map(body.projects.map(item => [item.project, item])); cache.error = null; },
         error => { cache.error = error.message; })
-      .finally(() => { cache.key = key; cache.at = Date.now(); cache.inflight = false; repaint(); });
+      .finally(() => {
+        cache.key = key; cache.at = Date.now(); cache.inflight = false; repaint();
+        if (pending || key !== last.key) refresh();
+      });
   }
 
-  // Shows fresh activity right away instead of waiting for the next state poll. Mirrors app.js
-  // replace(): same dataset.render bookkeeping, keyboard focus kept on the same entry.
+  // Mirrors app.js replace(): same dataset.render bookkeeping, keyboard focus kept on the same entry.
   function repaint() {
     if (last === null || !document.getElementById("app").classList.contains("workspace-entry")) return;
     const main = document.getElementById("main");
@@ -124,9 +133,12 @@
     return `<div class="entry">${head}${failure}<div class="entry-body">${inbox(entries, loaded, state.themes, helpers)}<section class="entry-workspaces" aria-labelledby="entry-workspaces-title"><div class="entry-section-head"><h2 id="entry-workspaces-title">全部工作区</h2><span class="entry-count">${entries.length}</span></div><ul class="entry-cards">${entries.map(entry => card(entry, state.themes, helpers)).join("")}</ul></section></div></div>`;
   }
 
-  function render(state, helpers) {
-    last = {state, helpers};
-    refresh(state.projects.map(item => item.name));
+  document.addEventListener("visibilitychange", () => { if (pending) refresh(); });
+  function render(state, helpers, activityChanged) {
+    const names = state.projects.map(item => item.name);
+    last = {state, helpers, names, key:JSON.stringify(names)};
+    if (activityChanged) pending = true;
+    refresh();
     return view(state, helpers);
   }
   window.CrewWorkspaceEntry = {render};

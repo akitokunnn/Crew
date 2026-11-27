@@ -67,7 +67,7 @@ def _mark_delivered(conn, link, version):
     conn.execute('UPDATE goal_links SET delivered_version=? WHERE kind=? AND item_id=? AND execution_id=?',
                  (version,link['kind'],link['item_id'],link['execution_id']))
     if link['kind'] == 'decision':
-        conn.execute('UPDATE decisions SET delivered_at=? WHERE id=?',(board._time(None),link['item_id']))
+        board.mark_answer_delivered(conn, link['item_id'], None)
     else:
         # The open action lists its links, delivered version included.
         todo.touch(conn, goals.get(conn, link['goal_id'])['project'], link['item_id'])

@@ -33,6 +33,11 @@ def workspace(conn, project_name, _):
     return {key: row[key] for key in WORKSPACE_FIELDS}
 
 
+def workspace_activity(conn, _, name):
+    """The entry page reads the counts separately, once its throttle allows."""
+    return {'project': name}
+
+
 def ai(conn, _, __):
     return settings.load(conn)
 
@@ -57,6 +62,7 @@ def touch_decision(conn, decision_id):
     """A decision changed: its card, and the task cards that show it as their pending decision."""
     row = conn.execute('SELECT project FROM decisions WHERE id=?', (decision_id,)).fetchone()
     change_feed.touch(conn, 'decision', row['project'], decision_id)
+    change_feed.touch(conn, 'workspace_activity', None, row['project'])
     for link in conn.execute("SELECT goal_id FROM goal_links WHERE kind='decision' AND item_id=?", (decision_id,)):
         goals.touch(conn, link['goal_id'])
 

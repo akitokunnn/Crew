@@ -830,6 +830,11 @@ def handoffs(conn, session_id):
                   cleanup_boundary(conn, s["project"])["handoff_after"], session_id))
 
 
+def mark_answer_delivered(conn, decision_id, now):
+    row = conn.execute("UPDATE decisions SET delivered_at=? WHERE id=? RETURNING project", (_time(now), decision_id)).fetchone()
+    change_feed.touch(conn, 'workspace_activity', None, row['project'])
+
+
 def _deliver(conn, session_id, include_answers, now):
     if is_archived(conn, session_id):
         return {"answers": [], "handoffs": []}
@@ -837,7 +842,7 @@ def _deliver(conn, session_id, include_answers, now):
                    "AND NOT EXISTS(SELECT 1 FROM goal_links l WHERE l.kind='decision' AND l.item_id=decisions.id) ORDER BY id", (session_id,)) if include_answers else []
     pending = handoffs(conn, session_id)
     for d in answers:
-        conn.execute("UPDATE decisions SET delivered_at=? WHERE id=?", (_time(now), d["id"]))
+        mark_answer_delivered(conn, d["id"], now)
     for h in pending:
         conn.execute("INSERT INTO handoff_deliveries VALUES(?,?,?)", (h["id"], session_id, _time(now)))
     return {"answers": answers, "handoffs": pending}

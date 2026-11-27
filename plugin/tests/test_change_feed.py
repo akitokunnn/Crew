@@ -145,8 +145,8 @@ class WriteTests(FeedFixture):
             with board.transaction(self.conn):
                 for number in range(20):
                     self.conn.execute('UPDATE sessions SET status_note=? WHERE session_id=?', (str(number), 'chief-id'))
-        self.assertEqual(change_feed.latest_seq(self.conn), 52)
-        self.assertEqual(change_feed.pruned_through(self.conn), 42)
+        self.assertEqual(change_feed.latest_seq(self.conn), 72)
+        self.assertEqual(change_feed.pruned_through(self.conn), 62)
 
 
 class CardTriggerTests(FeedFixture):
@@ -154,8 +154,9 @@ class CardTriggerTests(FeedFixture):
         self.conn.execute("UPDATE sessions SET status='working' WHERE session_id='chief-id'")
         self.conn.execute("INSERT INTO session_options(session_id,model,set_at) VALUES('member-id','m','t')")
         self.conn.execute("INSERT INTO read_cursors(session_id,seq,updated_at) VALUES('nobody',3,'t')")
-        self.assertEqual([(row['scope'], row['type'], row['entity']) for row in rows(self.conn)],
-                         [('workspace:demo', 'conversations.invalidated', 'demo')] * 2)
+        self.assertCountEqual([(row['scope'], row['type'], row['entity']) for row in rows(self.conn)],
+                              [('workspace:demo', 'conversations.invalidated', 'demo')] * 2
+                              + [('global', 'workspace_activity.invalidated', 'demo')])
 
     def test_a_person_renamed_regrouped_or_closed_asks_every_page_for_a_new_snapshot(self):
         self.conn.execute("UPDATE sessions SET crew_name='builder-2' WHERE session_id='member-id'")
@@ -165,7 +166,8 @@ class CardTriggerTests(FeedFixture):
         self.assertEqual(caught.exception.reason, 'reset')
         seq = change_feed.latest_seq(self.conn)
         self.conn.execute("UPDATE sessions SET status='idle' WHERE session_id='member-id'")
-        self.assertEqual([row['type'] for row in rows(self.conn, seq)], ['conversations.invalidated'])
+        self.assertCountEqual([row['type'] for row in rows(self.conn, seq)],
+                              ['conversations.invalidated', 'workspace_activity.invalidated'])
 
     def test_delivery_receipts_invalidate_the_global_notification_field(self):
         self.conn.execute("INSERT INTO notification_messages(item_id,project,leader_session_id,kind,created_at,content,status) "
@@ -236,7 +238,7 @@ class TodoReadTests(FeedFixture):
         # The cleanup boundary also resets the channel's unread count.
         self.assertEqual(sorted((change['type'], change['entity']) for change in removed),
                          sorted([('todo.removed', str(first['id'])), ('todo.removed', str(second['id'])),
-                                 ('channel.updated', 'demo')]))
+                                 ('channel.updated', 'demo'), ('workspace_activity.updated', 'demo')]))
 
 
 class ReadTests(FeedFixture):
@@ -258,7 +260,8 @@ class ReadTests(FeedFixture):
         added = self.add()
         resolved = todo.resolve(self.conn, 'demo', added['id'], 'done')
         [gone] = of('todo', changes(self.conn))
-        self.assertEqual((gone['type'], gone['seq']), ('todo.removed', change_feed.latest_seq(self.conn)))
+        self.assertEqual((gone['type'], gone['seq']), ('todo.removed', max(
+            row['seq'] for row in rows(self.conn) if row['type'] == 'todo.invalidated')))
         todo.undo(self.conn, 'demo', added['id'], resolved['before'], resolved['version'])
         [back] = of('todo', changes(self.conn))
         self.assertEqual((back['type'], back['data']), ('todo.updated', todo.list(self.conn, 'demo')[0]))

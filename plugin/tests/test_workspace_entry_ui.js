@@ -15,17 +15,54 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 function load() {
   const calls = [];
   const main = {dataset:{}, innerHTML:"", contains:() => false, querySelectorAll:() => []};
-  const ctx = vm.createContext({URLSearchParams, setTimeout, calls, main, now:0});
+  const timers = new Map(), listeners = new Map();
+  const ctx = vm.createContext({URLSearchParams, calls, main, now:0,
+    setTimeout(fn, ms) { timers.set(fn, ctx.now + ms); return fn; }, clearTimeout(fn) { timers.delete(fn); }});
   ctx.window = ctx;
-  ctx.document = {hidden:false, activeElement:null, getElementById:id => id === "main" ? main : {classList:{contains:name => name === "workspace-entry"}}};
+  ctx.document = {hidden:false, activeElement:null, addEventListener:(event, fn) => listeners.set(event, fn),
+    getElementById:id => id === "main" ? main : {classList:{contains:name => name === "workspace-entry"}}};
   ctx.fetch = (url, init) => new Promise((resolve, reject) => calls.push({url, init, resolve, reject}));
   vm.runInContext("Date.now = () => now;", ctx);
   vm.runInContext(fs.readFileSync(path.join(web, "themes.js"), "utf8"), ctx);
   vm.runInContext(fs.readFileSync(path.join(web, "workspace-entry.js"), "utf8"), ctx);
-  const render = snapshot => ctx.CrewWorkspaceEntry.render(snapshot, helpers);
+  const render = (snapshot, changed) => ctx.CrewWorkspaceEntry.render(snapshot, helpers, changed);
+  const advance = now => {
+    ctx.now = now;
+    for (const [fn, due] of timers) if (due <= now) { timers.delete(fn); fn(); }
+  };
   const answer = async (body, ok = true) => { calls.at(-1).resolve({ok, status:ok ? 200 : 500, json:async () => body}); await flush(); await flush(); };
-  return {ctx, calls, main, render, answer};
+  return {ctx, calls, main, render, answer, advance, listeners};
 }
+
+test("activity invalidations during a request and its throttle share one trailing fetch", async () => {
+  const entry = load(), home = state("a");
+  entry.render(home);
+  entry.render(home, true);
+  await entry.answer({projects:[]});
+  entry.advance(6000);
+  entry.render(home, true);
+  entry.advance(9999);
+  assert.equal(entry.calls.length, 1);
+  entry.advance(10000);
+  assert.equal(entry.calls.length, 2);
+  await entry.answer({projects:[{project:"a", counts:{...zero, todos:1}, items:[], unknown:false}]});
+  assert.match(entry.main.innerHTML, /1 件等你处理/);
+  entry.advance(30000);
+  assert.equal(entry.calls.length, 2);
+});
+
+test("a hidden page keeps a throttled invalidation until visible", async () => {
+  const entry = load(), home = state("a");
+  entry.render(home);
+  await entry.answer({projects:[]});
+  entry.render(home, true);
+  entry.ctx.document.hidden = true;
+  entry.advance(10000);
+  assert.equal(entry.calls.length, 1);
+  entry.ctx.document.hidden = false;
+  entry.listeners.get("visibilitychange")();
+  assert.equal(entry.calls.length, 2);
+});
 
 test("links keep the desktop tab-guard contract: project cards carry no hash, assistant and notes carry no query", async () => {
   const entry = load();

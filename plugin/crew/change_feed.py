@@ -42,7 +42,7 @@ _WORKSPACE = 'workspace:'
 KINDS = {
     'todo': 'workspace', 'project': 'global', 'workspace': 'workspace', 'ai': 'global',
     'decision': 'workspace', 'goal': 'workspace', 'domains': 'workspace', 'channel': 'workspace',
-    'channel_message': 'workspace', 'war_room': 'workspace',
+    'channel_message': 'workspace', 'war_room': 'workspace', 'workspace_activity': 'global',
     'sound_settings': 'global', 'limits': 'global',
     'conversations': 'workspace', 'channel_digest': 'workspace', 'sound_events': 'global',
     'runtimes': 'global', 'notification': 'global', 'scanner': 'global',
@@ -55,6 +55,7 @@ KINDS = {
 BUILDERS = {
     'todo': 'todo:change_value',
     'project': 'snapshot_values:project',
+    'workspace_activity': 'snapshot_values:workspace_activity',
     'workspace': 'snapshot_values:workspace',
     'ai': 'snapshot_values:ai',
     'decision': 'snapshot_values:decision',
@@ -131,6 +132,8 @@ def touch(conn, kind, project, entity):
     marks.setdefault((kind, project, str(entity)), None)
     if kind in DERIVED:
         marks.setdefault((DERIVED[kind], project, project), None)
+    if kind in ('conversations', 'channel'):
+        marks.setdefault(('workspace_activity', None, project), None)
 
 
 def flush(conn):

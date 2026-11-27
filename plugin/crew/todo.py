@@ -86,6 +86,7 @@ def change_value(conn, project_name, todo_id):
 
 def touch(conn, project_name, todo_id):
     change_feed.touch(conn, 'todo', project_name, todo_id)
+    change_feed.touch(conn, 'workspace_activity', None, project_name)
 
 
 def list(conn, project_name=None, all=False):
