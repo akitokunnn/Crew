@@ -438,7 +438,10 @@ CREATE TABLE IF NOT EXISTS war_rooms (
     status              TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
     summary             TEXT,
     created_at          TEXT NOT NULL,
-    closed_at           TEXT
+    closed_at           TEXT,
+    budget_tokens       INTEGER,                    -- NULL: no cap; else the members' tokens this room may spend
+    budget_base         TEXT NOT NULL DEFAULT '{}', -- Codex rollout totals when each member joined (counted from there)
+    paused_at           TEXT                        -- the cap was reached; members stopped until the user goes on
 );
 CREATE INDEX IF NOT EXISTS war_rooms_project ON war_rooms (project, status);
 CREATE TABLE IF NOT EXISTS war_room_members (

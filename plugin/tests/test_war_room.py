@@ -186,6 +186,18 @@ class WarRoomOperationTests(ChannelHttpFixture):
         code, detail = self.request('/api/op/war_room.get', project='demo', id=room['id'])
         self.assertEqual((code, len(detail['messages'])), (200, 2))
 
+    def test_the_host_stops_the_members_of_a_room_over_its_cap(self):
+        from crew import messaging
+        service = self.server.service
+        room = war_room.start(self.conn, 'demo', board.HUMAN, '联调', '打通登录', ['web'], lead='lead',
+                              budget_tokens=10_000, now=NOW)
+        self.conn.execute("INSERT INTO claude_requests(request_key,session_id,ts,model,input_tokens,output_tokens) "
+                          "VALUES('r','s4',?,'m',12000,0)", (NOW,))
+        service.chat._pause_over_budget(self.conn, NOW)
+        self.assertTrue(messaging.stopped(self.conn, 's4'))
+        self.assertTrue(messaging.stopped(self.conn, 's3'))
+        self.assertIsNotNone(war_room.get(self.conn, room['id'])['budget']['paused_at'])
+
     def test_a_leader_acts_as_itself_and_cannot_reach_another_workspace(self):
         leader = Caller('leader', session_id='s3', project='demo')
         grants = frozenset({'war_room.open', 'war_room.item', 'war_room.get'})
@@ -267,3 +279,80 @@ class LiveUpdateTests(WarRoomFixture):
         [post] = [item for item in changes(self.conn, before) if item["type"] == "channel_message.updated"]
         self.assertEqual((post["entity"], post["data"]["room_id"], post["data"]["mentions"][0]["delivery"]),
                          (str(first["id"]), room["id"], "delivered"))
+
+
+class AssistantLeadTests(WarRoomFixture):
+    """A campaign room the global assistant leads: it speaks as itself and is told when named or answered."""
+
+    def setUp(self):
+        super().setUp()
+        from crew import personal
+        self.assistant = personal.ensure_assistant(self.conn, self.home)["session_id"]
+
+    def test_the_assistant_leads_without_a_member_seat_and_speaks_as_itself(self):
+        room = war_room.start(self.conn, "demo", self.assistant, "开局", "两位 leader 跑通首个里程碑", ["alpha", "beta"],
+                              now=NOW)
+        self.assertEqual((room["lead_session_id"], room["lead_name"]), (self.assistant, "助手"))
+        self.assertEqual([m["crew_name"] for m in room["members"]], ["alpha", "beta"])
+        [first] = self.room_posts(room)
+        self.assertEqual((first["speaker_name"], [m["name"] for m in first["mentions"]]), ("助手", ["alpha", "beta"]))
+        self.assertEqual(self.main()[-1]["speaker_name"], "助手")
+
+    def test_leaders_reach_the_assistant_by_name_or_by_answering_it(self):
+        room = war_room.start(self.conn, "demo", self.assistant, "开局", "跑通首个里程碑", ["alpha", "beta"], now=NOW)
+        first = self.room_posts(room)[0]
+        asked = self.post("@助手 契约里的超时写多少？", actor="a", reply_to=first["id"])
+        self.assertEqual([(m["name"], m["delivery"]) for m in asked["mentions"]], [("助手", "queued")])
+        answer = war_room.say(self.conn, room["id"], self.assistant, "写 3 秒", reply_to=asked["id"], now=NOW)
+        self.post("好的", actor="a", reply_to=answer["id"])
+        notes = [row["text"] for row in self.conn.execute(
+            "SELECT text FROM leader_notices WHERE session_id=? ORDER BY id", (self.assistant,))]
+        self.assertEqual(len(notes), 2)
+        self.assertIn("「alpha」点名你", notes[0])
+        self.assertIn("回复了你的作战室发言 #%d" % answer["id"], notes[1])
+        self.assertIn("war_room.post", notes[1])
+
+
+class BudgetTests(WarRoomFixture):
+    """A room's token cap: reaching it pauses the room until the user raises it."""
+
+    def spend(self, sid, tokens, ts=NOW):
+        self.conn.execute("INSERT INTO claude_requests(request_key,session_id,ts,model,input_tokens,cache_write_tokens,"
+                          "cache_read_tokens,output_tokens) VALUES(?,?,?,?,?,?,?,?)",
+                          ("req-%s-%d-%s" % (sid, tokens, ts), sid, ts, "claude-haiku-5-5", tokens, 0, 10 ** 9, 0))
+
+    def test_reaching_the_cap_pauses_once_and_raising_it_lets_the_members_go(self):
+        from crew import messaging
+        room = self.open_room(members=("beta",), budget_tokens=50_000)
+        self.spend("b", 30_000, ts="2026-11-27T07:00:00.000Z")  # before the room opened: not counted
+        self.spend("b", 30_000)
+        self.assertEqual(war_room.get(self.conn, room["id"])["budget"], {"tokens": 50_000, "spent": 30_000, "paused_at": None})
+        self.assertEqual(war_room.over_budget(self.conn, now=NOW), [])
+        self.spend("a", 25_000)
+        [(paused, stopped)] = war_room.over_budget(self.conn, now=NOW)
+        self.assertEqual((paused, sorted(stopped)), (room["id"], ["a", "b"]))
+        self.assertEqual(war_room.over_budget(self.conn, now=NOW), [])
+        detail = war_room.get(self.conn, room["id"])
+        self.assertEqual(detail["budget"]["paused_at"], NOW)
+        self.assertIn("预算到了", detail["messages"][-1]["body"])
+        self.conn.execute("INSERT INTO session_stop_gates(session_id,stopped_at,stopped_by) VALUES('b',?,?)", (NOW, board.HUMAN))
+        with self.assertRaisesRegex(board.BoardError, "只能由用户"):
+            war_room.set_budget(self.conn, room["id"], "a", 200_000, now=NOW)
+        with self.assertRaisesRegex(board.BoardError, "要大于已用"):
+            war_room.set_budget(self.conn, room["id"], board.HUMAN, 50_000, now=NOW)
+        resumed = war_room.set_budget(self.conn, room["id"], board.HUMAN, 200_000, now=NOW)
+        self.assertEqual((resumed["budget"]["paused_at"], resumed["budget"]["tokens"]), (None, 200_000))
+        self.assertFalse(messaging.stopped(self.conn, "b"))
+        self.assertIn("用户确认继续", resumed["messages"][-1]["body"])
+
+    def test_codex_usage_counts_only_what_grew_after_joining(self):
+        self.conn.execute("INSERT INTO session_runtime_bindings(session_id,runtime,native_id,updated_at) VALUES('b','codex','thread-b',?)", (NOW,))
+        self.conn.execute("INSERT INTO codex_sessions(rollout_id,path,input_tokens,cached_input_tokens,output_tokens) "
+                          "VALUES('thread-b','x',90000,40000,10000)")
+        room = self.open_room(members=("beta",), budget_tokens=100_000)
+        self.conn.execute("UPDATE codex_sessions SET input_tokens=120000,output_tokens=15000 WHERE rollout_id='thread-b'")
+        self.assertEqual(war_room.get(self.conn, room["id"])["budget"]["spent"], 35_000)
+
+    def test_the_cap_has_sensible_bounds(self):
+        with self.assertRaisesRegex(board.BoardError, "预算上限"):
+            self.open_room(budget_tokens=10)
