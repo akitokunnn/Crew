@@ -32,7 +32,8 @@
     lock:'<rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>',
     archive:'<rect x="4" y="5" width="16" height="4" rx="1"/><path d="M5.5 9v9a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V9M10 13h4"/>',
     returned:'<path d="M9 14 4.5 9.5 9 5"/><path d="M4.5 9.5H14a5.5 5.5 0 0 1 0 11h-2"/>',
-    alert:'<path d="M12 4 21 19.5H3z"/><path d="M12 10v4.5"/><path d="M12 17h.01" stroke-width="2.4"/>'
+    alert:'<path d="M12 4 21 19.5H3z"/><path d="M12 10v4.5"/><path d="M12 17h.01" stroke-width="2.4"/>',
+    gauge:'<path d="M4.5 16.5a7.5 7.5 0 1 1 15 0"/><path d="m12 16.5 3.5-4.5"/><path d="M4.5 19.5h15"/>'
   };
   const icon = (name, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${PATHS[name]}</svg>`;
   const STATUS = {doing:"进行中", blocked:"阻塞", todo:"待办", done:"完成"}, ORDER = ["doing", "blocked", "todo", "done"];
@@ -51,6 +52,14 @@
   const current = ctx => active === ctx;
   const atBottom = ctx => ctx.scroll.scrollHeight - ctx.scroll.scrollTop - ctx.scroll.clientHeight < 48;
   const who = (ctx, id, name, size) => id === "user" ? `<span class="av round cx-av-user" style="--s:${size}px" aria-hidden="true">${esc(name.slice(0, 1))}</span>` : ctx.avatar(name, size, true);
+  const tokens = n => n >= 1e8 ? `${+(n / 1e8).toFixed(2)} 亿` : n >= 1e4 ? `${+(n / 1e4).toFixed(1)} 万` : String(n);
+  // 预算：null（没设）或 {s:"ok"|"near"|"paused", pct}；≥80% 为接近上限。
+  function budgetState(room) {
+    const b = room.budget;
+    if (b === null) return null;
+    const pct = Math.round(b.spent / b.tokens * 100);
+    return {...b, pct, s:b.paused_at ? "paused" : pct >= 80 ? "near" : "ok"};
+  }
   const chip = (s, text = STATUS[s]) => `<span class="wr-chip" data-s="${s}">${icon(s, "xs")}${esc(text)}</span>`;
 
   /* ------------------------------ 派生 ------------------------------ */
@@ -123,12 +132,15 @@
       const text = [d.added.length ? `邀请 ${bold(d.added)} 加入` : "", d.removed.length ? `移出 ${bold(d.removed)}` : ""].filter(Boolean).join("，");
       return {s:"event", ic:"invite", label:"成员变化", text:`<span>${text}</span>`, plain:text.replace(/<[^>]+>/g, ""), go:""};
     }
+    if (e.kind === "budget") return d.paused
+      ? {s:"paused", ic:"pause", label:"预算暂停", bare:true, text:`<span>预算到了，已暂停（已用 ${tokens(d.spent)} / 上限 ${tokens(d.budget)} tokens）</span>`, plain:"预算到了，已暂停", go:""}
+      : {s:"resumed", ic:"gauge", label:"追加预算", bare:true, text:`<span>用户追加预算到 ${tokens(d.budget)} tokens，继续</span>`, plain:"用户追加预算，继续", go:""};
     if (e.kind === "opened") return {s:"event", ic:"room", label:"开房", text:`<span>开了作战室，成员 ${bold(d.members.filter(name => name !== e.actor_name))}</span>`, plain:"开了作战室", go:""};
     return {s:"event", ic:"finish", label:"收尾", text:`<span>收尾了作战室：${esc(d.summary)}</span>`, plain:"收尾了作战室", go:""};
   }
   function nodeHTML(ctx, e) {
     const p = eventParts(ctx, e);
-    return `<div class="wr-node" data-s="${p.s}" role="note" aria-label="${p.label}"><span class="wr-node-ic">${icon(p.ic, "sm")}</span><span class="wr-node-txt">${who(ctx, e.actor, e.actor_name, 18)}<strong>${esc(e.actor_name)}</strong>${p.text}</span>`
+    return `<div class="wr-node" data-s="${p.s}" role="note" aria-label="${p.label}"><span class="wr-node-ic">${icon(p.ic, "sm")}</span><span class="wr-node-txt">${p.bare ? "" : `${who(ctx, e.actor, e.actor_name, 18)}<strong>${esc(e.actor_name)}</strong>`}${p.text}</span>`
       + `<time datetime="${esc(e.at)}" title="${esc(K.time(e.at))}">${esc(K.clock(e.at))}</time>${p.go}</div>`;
   }
   function foldHTML(ctx, events) {
@@ -172,8 +184,17 @@
     const older = room.has_more ? `<div class="cx-divider"><span>只显示最近 ${room.messages.length} 条发言</span></div>` : "";
     return originHTML(ctx) + older + (rows || '<div class="cx-empty">还没有发言</div>');
   }
+  function pausedHTML(ctx) {
+    const b = budgetState(ctx.room);
+    return b === null || b.s !== "paused" ? "" : `<div class="wr-paused" role="status">${icon("pause")}<div><strong>预算到了，作战室已暂停，成员已停下</strong>`
+      + `<small>已用 ${tokens(b.spent)} / 上限 ${tokens(b.tokens)} tokens · ${esc(K.clock(b.paused_at))} 暂停${closed(ctx) ? " · 作战室已收尾" : "；追加后成员接着推进"}</small></div>`
+      + `${closed(ctx) ? "" : `<button type="button" class="cx-btn cx-primary" data-wr="budget">${icon("gauge", "sm")}追加预算并继续</button>`}</div>`;
+  }
   function pinHTML(ctx) {
     const room = ctx.room, by = room.events.find(e => e.kind === "closed");
+    return pausedHTML(ctx) + (closed(ctx) ? summaryHTML(ctx, room, by) : "");
+  }
+  function summaryHTML(ctx, room, by) {
     return `<div class="wr-summary">${icon("finish")}<div><strong>收尾结论</strong><p>${esc(room.summary)}</p><small>${by ? `${who(ctx, by.actor, by.actor_name, 14)}${esc(by.actor_name)} ` : ""}收尾于 ${esc(K.clock(room.closed_at))} · 用时 ${lasted(room.created_at, room.closed_at)} · 成员已收到留档通知，回到原岗</small></div></div>`;
   }
 
@@ -221,7 +242,8 @@
     const c = counts(ctx.room), pending = ctx.room.open_decisions;
     const bits = closed(ctx) ? `<span class="wr-pb-rest">${c.done} 项完成 · ${ctx.room.decisions.length} 张拍板卡</span>`
       : `${c.blocked ? chip("blocked", `${c.blocked} 阻塞`) : ""}${pending ? `<span class="wr-dc-state" data-s="pending">${icon("hourglass", "xs")}${pending} 待你拍板</span>` : ""}<span class="wr-pb-rest">${c.doing} 进行中 · ${c.todo} 待办</span>`;
-    return `<span class="wr-pb-ic">${icon("board", "sm")}</span><span class="wr-pb-txt"><strong>目标与状态板</strong>${bits}</span><span class="wr-pb-more">展开${icon("chev", "xs")}</span>`;
+    const b = budgetState(ctx.room), money = b && b.s !== "ok" ? `<span class="wr-budget-tag" data-s="${b.s}">${icon(b.s === "paused" ? "pause" : "gauge", "xs")}${b.s === "paused" ? "预算已暂停" : `预算 ${b.pct}%`}</span>` : "";
+    return `<span class="wr-pb-ic">${icon("board", "sm")}</span><span class="wr-pb-txt"><strong>目标与状态板</strong>${money}${bits}</span><span class="wr-pb-more">展开${icon("chev", "xs")}</span>`;
   }
 
   /* ------------------------------ 右面板 ------------------------------ */
@@ -229,6 +251,16 @@
     if (x.status !== "blocked") return x.note ? esc(x.note) : "";
     const at = since(room, x.id);
     return `阻塞${x.note ? `：${esc(x.note)}` : ""}${at ? ` · 已 ${minutes(at)} 分钟` : ""}`;
+  }
+  function budgetHTML(ctx) {
+    const b = budgetState(ctx.room);
+    if (b === null) return "";
+    const tag = b.s === "paused" ? `${icon("pause", "xs")}已暂停` : b.s === "near" ? `${icon("alert", "xs")}接近上限 · ${b.pct}%` : `已用 ${b.pct}%`;
+    const act = b.s === "paused" || closed(ctx) ? "" : `<button type="button" class="wr-sec-act" data-wr="budget">${icon("plus", "xs")}追加</button>`;
+    return `<section class="wr-sec"><h2>${icon("gauge", "xs")}预算${act}</h2><div class="wr-budget" data-s="${b.s}">`
+      + `<div class="wr-budget-row"><span>已用 <b>${tokens(b.spent)}</b> / ${tokens(b.tokens)} tokens</span><span class="wr-budget-tag" data-s="${b.s}">${tag}</span></div>`
+      + `<div class="wr-budget-track" role="progressbar" aria-label="预算用量" aria-valuemin="0" aria-valuemax="${b.tokens}" aria-valuenow="${Math.min(b.spent, b.tokens)}" aria-valuetext="${esc(`已用 ${tokens(b.spent)} / ${tokens(b.tokens)} tokens`)}"><i style="width:${Math.min(100, b.pct)}%"></i></div>`
+      + `<small>${closed(ctx) ? "作战室已收尾，只读保留" : b.s === "paused" ? "成员已停下，追加预算后继续" : "成员合计用量；到上限会暂停成员，等你追加"}</small></div></section>`;
   }
   function asideHTML(ctx) {
     const room = ctx.room, done = closed(ctx), version = contractVersion(room), contract = room.contract;
@@ -253,6 +285,7 @@
       + `<button type="button" class="wr-work-go" data-wr-chat="${esc(m.id)}" aria-label="${esc(`打开 ${m.name} 的私聊`)}">${icon("chat", "xs")}私聊</button></li>`).join("");
     return `<div class="wr-aside-head"><span class="wr-grab" aria-hidden="true"></span><div><strong>目标与状态板</strong><button type="button" class="cx-icon-btn" data-wr-aside-close aria-label="关闭">${icon("x")}</button></div></div>`
       + `<section class="wr-sec"><h2>${icon("target", "xs")}目标</h2><p class="wr-goal">${esc(room.goal)}</p></section>`
+      + budgetHTML(ctx)
       + `<section class="wr-sec"><h2>${icon("board", "xs")}任务状态板 <span class="cx-count">${room.board.length}</span>${done ? "" : `<button type="button" class="wr-sec-act" data-wr="add-item">${icon("plus", "xs")}加一项</button>`}</h2>${groups}</section>`
       + `<section class="wr-sec" id="wr-contract"><h2>${icon("contract", "xs")}接口契约${version ? ` <span class="cx-count">第 ${version} 版</span>` : ""}</h2><div class="wr-contract${ctx.contractOpen || !contract.text ? "" : " is-clamped"}"><div class="wr-contract-meta">${meta}${done ? "" : `<button type="button" class="wr-sec-act" data-wr="edit-contract">${icon("edit", "xs")}${contract.text ? "编辑" : "写契约"}</button>`}</div>${code}</div></section>`
       + `<section class="wr-sec"><h2>${icon("gavel", "xs")}拍板卡 <span class="cx-count">${room.decisions.length}</span></h2>${dl ? `<ul class="wr-dlist">${dl}</ul>` : `<p class="wr-empty">还没有拍板卡。几个组的分歧要你定时，牵头 ${esc(room.lead_name)} 会汇成一张发给你</p>`}</section>`
@@ -352,8 +385,9 @@
   }
   function renderFeed(ctx, position = "keep") {
     const scroll = ctx.scroll, follow = atBottom(ctx), top = scroll.scrollTop;
-    ctx.pin.hidden = !closed(ctx);
-    put(ctx.pin, closed(ctx) ? pinHTML(ctx) : "");
+    const pin = pinHTML(ctx);
+    ctx.pin.hidden = pin === "";
+    put(ctx.pin, pin);
     put(ctx.inner, timelineHTML(ctx));
     const unread = position === "unread" && ctx.inner.querySelector(".cx-unread");
     if (unread) scroll.scrollTop = unread.offsetTop - 6;
@@ -463,6 +497,14 @@
       + '<p class="wr-dialog-error" role="alert"></p><div class="wr-dialog-acts"><button type="button" class="cx-btn" data-wr-dialog-cancel>取消</button>'
       + `<button type="submit" class="cx-btn cx-primary">${icon("check", "sm")}保存契约</button></div></form>`;
   }
+  function budgetDialogHTML(ctx) {
+    const b = ctx.room.budget, floor = Math.max(10000, b.spent + 1), value = Math.max(b.tokens * 2, floor);
+    return `<form class="wr-dialog" data-wr-form="budget" role="dialog" aria-modal="true" aria-labelledby="wr-dialog-title"><h2 id="wr-dialog-title">${icon("gauge")}追加预算并继续</h2>`
+      + `<p>已用 <b>${tokens(b.spent)}</b> / 原上限 ${tokens(b.tokens)} tokens。新上限要大于已用、不少于 1 万；${b.paused_at ? "保存后作战室继续，停下的成员接着推进。" : "到了新上限才会暂停。"}</p>`
+      + field("新上限（tokens）", `<input name="budget" type="number" inputmode="numeric" required min="${floor}" step="1" value="${value}"><output class="wr-budget-out" aria-live="polite">= ${tokens(value)} tokens</output>`)
+      + '<p class="wr-dialog-error" role="alert"></p><div class="wr-dialog-acts"><button type="button" class="cx-btn" data-wr-dialog-cancel>取消</button>'
+      + `<button type="submit" class="cx-btn cx-primary">${icon("check", "sm")}${b.paused_at ? "追加并继续" : "保存上限"}</button></div></form>`;
+  }
   async function submitDialog(ctx, form) {
     const kind = form.dataset.wrForm, error = form.querySelector(".wr-dialog-error"), v = name => form.elements[name].value.trim();
     const base = {project:project(ctx), room:ctx.id};
@@ -472,6 +514,12 @@
       if (kind === "close") await ctx.api("/api/op/war_room.close", {...base, summary:v("summary")});
       if (kind === "item") await ctx.api("/api/op/war_room.item", {...base, ...(form.dataset.id ? {id:Number(form.dataset.id)} : {}), title:v("title"), status:v("status"), note:v("note"), ...(v("owner") ? {owner:v("owner")} : {})});
       if (kind === "contract") await ctx.api("/api/op/war_room.contract", {...base, text:form.elements.text.value, expected_updated_at:form.dataset.base || null});
+      if (kind === "budget") {
+        const n = Number(v("budget")), spent = ctx.room.budget.spent;
+        if (!Number.isInteger(n) || n <= spent || n < 10000) throw Error(`新上限要是整数，大于已用 ${tokens(spent)}，且不少于 1 万 tokens`);
+        await ctx.api("/api/op/war_room.budget", {...base, budget_tokens:n});
+        form.dataset.done = `预算上限已改为 ${tokens(n)} tokens${ctx.room.budget.paused_at ? "，作战室继续，成员接着推进" : ""}`;
+      }
     } catch (err) {
       if (err.status === 409) { await load(ctx); form.dataset.base = ctx.room.contract.updated_at || ""; error.textContent = `${err.message}。已读到最新版（右侧可看），你的改动还在框里；再点保存会用它整份替换。`; }
       else error.textContent = err.message;
@@ -479,7 +527,7 @@
       return;
     }
     closeDialog(ctx);
-    ctx.toast({close:"已收尾：交流区出现收尾公告，成员收到留档通知", item:"状态板已更新", contract:"契约已更新"}[kind]);
+    ctx.toast({close:"已收尾：交流区出现收尾公告，成员收到留档通知", item:"状态板已更新", contract:"契约已更新", budget:form.dataset.done}[kind]);
     ctx.onChanged(); load(ctx);
   }
   function inviteMenu(ctx) {
@@ -555,6 +603,7 @@
         if (a === "close") openDialog(ctx, closeDialogHTML(ctx), "textarea");
         if (a === "add-item") openDialog(ctx, itemDialogHTML(ctx, null), "input");
         if (a === "edit-contract") openDialog(ctx, contractDialogHTML(ctx), "textarea");
+        if (a === "budget") openDialog(ctx, budgetDialogHTML(ctx), "input");
       }]];
     host.onclick = event => {
       if (ctx.menuFor !== null && !event.target.closest(".wr-menu, [data-wr=invite], [data-wr=more]")) closeMenu(ctx);
@@ -582,6 +631,7 @@
     document.addEventListener("keydown", ctx.keys);
     document.addEventListener("visibilitychange", ctx.visibility);
     ctx.scroll.onscroll = () => { if (ctx.popFor !== null && !ctx.pop.classList.contains("is-sheet")) hidePop(ctx); if (ctx.room) markRead(ctx); };
+    host.oninput = event => { if (event.target.name === "budget") event.target.nextElementSibling.textContent = `= ${tokens(Number(event.target.value) || 0)} tokens`; };
     ctx.input.oninput = () => { ctx.version += 1; resize(ctx); ctx.send.disabled = ctx.sending || ctx.input.value.trim() === ""; };
     ctx.input.oncompositionstart = () => { ctx.composing = true; };
     ctx.input.oncompositionend = () => { ctx.composing = false; };

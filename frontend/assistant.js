@@ -40,15 +40,63 @@
   // High-risk operations an AI asked for wait here until the user confirms or rejects them.
   const ROLE_LABELS={assistant:"助手",leader:" leader ",execution:"任务执行",git_admin:" Git 助手"};
   function argumentLine(args){return Object.entries(args||{}).filter(([key])=>key!=="request_id").map(([key,value])=>`${key}: ${typeof value==="string"?value:JSON.stringify(value)}`).join("，");}
+  const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+  const tokens=n=>n>=1e8?`${+(n/1e8).toFixed(2)} 亿`:n>=1e4?`${+(n/1e4).toFixed(1)} 万`:String(n);
+  const RUNTIMES={claude:"Claude",codex:"Codex"};
+  const runtime=value=>`<span class="ac-rt" data-rt="${esc(value)}">${RUNTIMES[value]||"未知载体"}</span>`;
+  // An opening plan and a war-room budget raise are shown from what they will do, read once per request: the plan
+  // through campaign.preview (read-only), the room through war_room.get.
+  const extras=new Map();let shown=null;
+  function lookup(item){
+    if(!extras.has(item.id)){
+      const {request_id,board_version,...plan}=item.args,project=item.args.project||item.project;
+      const read=item.op==="campaign.launch"?api("/api/op/campaign.preview",{...plan,project}).then(preview=>({preview}))
+        :api(`/api/op/war_room.get?${new URLSearchParams({id:item.args.room,project,limit:1})}`).then(room=>({room}));
+      extras.set(item.id,read.catch(failure=>({failure:failure.message})));
+    }
+    return extras.get(item.id);
+  }
+  function costHTML(cost){
+    if(!cost)return '<section class="ac-cost" aria-label="会花什么"><h4>会花什么</h4><p class="ac-cost-note">费用预览没读到，列不出要启动的模型和预算。</p></section>';
+    const e=cost.estimate,carriers=cost.carriers.map(c=>`<li>${runtime(c.runtime)}<span>${esc(c.model)} · ${esc(c.effort)}</span><b>× ${c.count}</b></li>`).join("");
+    const budget=!cost.start?"这次不开作战室":cost.budget_tokens?`<b>${tokens(cost.budget_tokens)} tokens</b>，到了暂停等你确认`:"作战室不设上限";
+    const estimate=!cost.start||!cost.budget_tokens?"":e?`约 <b>$${e.low_usd} – $${e.high_usd}</b><small>按 ${e.priced_models.map(esc).join("、")} 的价格估，预算用完时的范围</small>`:"没有价格表，无法估算金额";
+    return `<section class="ac-cost" aria-label="会花什么"><h4>会花什么</h4><p class="ac-cost-note">${esc(cost.note)}</p>${cost.start?"":'<p class="ac-flag">只建架构图，不启动模型</p>'}`
+      +`<dl class="ac-facts"><dt>新建 leader</dt><dd><b>${cost.new_leaders} 位</b></dd><dt>载体 / 模型</dt><dd><ul class="ac-carriers">${carriers}</ul></dd><dt>作战室预算</dt><dd>${budget}</dd>${estimate?`<dt>估算金额</dt><dd>${estimate}</dd>`:""}</dl></section>`;
+  }
+  function campaignHTML(item,{preview,failure}){
+    const args=item.args,plan=preview||{parts:args.parts||[],leaders:args.leaders||[],goals:args.goals||[],room:args.room||null,cost:null,errors:[]};
+    const problems=failure?[`没能读取开局预览：${failure}`]:plan.errors;
+    const alert=problems.length?`<div class="ac-problems" role="alert"><strong>${failure?"预览没读到，下面按 AI 提交的原始方案显示":`方案还有 ${problems.length} 处问题`}</strong><ul>${problems.map(text=>`<li>${esc(text)}</li>`).join("")}</ul><small>仍可点“确认执行”，后端会再校验；有问题会拒绝执行并告诉发起的 AI。</small></div>`:"";
+    const open=matchMedia("(min-width:761px)").matches?" open":"",names=new Map(plan.leaders.map(l=>[l.part,l.part_name]).concat(plan.parts.map(p=>[p.ref,p.name])));
+    const sec=(title,count,body)=>`<details class="ac-sec"${open}><summary>${title}<span class="ac-count">${count}</span></summary>${body}</details>`;
+    const parts=plan.parts.length?sec("新领域",plan.parts.length,`<ul class="ac-list">${plan.parts.map(p=>`<li><div class="ac-row"><b>${esc(p.name)}</b><small>${p.parent==null?"顶层":`挂在 ${esc(names.get(p.parent)||`已有领域 ${p.parent}`)} 下`}</small></div></li>`).join("")}</ul>`):"";
+    const leaders=sec("新 leader",plan.leaders.length,`<ul class="ac-list">${plan.leaders.map(l=>`<li><div class="ac-row"><b>${esc(l.name)}</b>${runtime(l.runtime||"claude")}<span class="ac-model">${esc(l.model||"默认模型")}${l.effort?` · ${esc(l.effort)}`:""}</span>${l.lead?'<span class="ac-tag">负责</span>':""}<small>${l.part==null?"不放进领域":`放进 ${esc(l.part_name||names.get(l.part)||l.part)}`}</small></div><details class="ac-brief"><summary>${esc(l.brief)}</summary></details></li>`).join("")}</ul>`);
+    const goals=plan.goals.length?sec("首批任务",plan.goals.length,`<ul class="ac-list">${plan.goals.map(g=>{const checks=Array.isArray(g.acceptance)?g.acceptance:[];return `<li><details class="ac-goal"><summary><b>${esc(g.title)}</b><small>${esc(g.leader)} 负责 · 验收标准 ${checks.length} 条</small></summary><p>${esc(g.request)}</p><ol>${checks.map(text=>`<li>${esc(text)}</li>`).join("")}</ol></details></li>`;}).join("")}</ul>`):"";
+    const room=plan.room&&plan.cost?.start!==false?sec("作战室",1,`<dl class="ac-facts"><dt>标题</dt><dd><b>${esc(plan.room.title)}</b></dd><dt>目标</dt><dd>${esc(plan.room.goal)}</dd><dt>牵头</dt><dd>${esc((ROLE_LABELS[item.role]||item.role).trim())}牵头，新建的 ${plan.leaders.length} 位 leader 都是成员</dd></dl>`):"";
+    return alert+costHTML(plan.cost)+`<div class="ac-build"><h4>建什么</h4>${parts}${leaders}${goals}${room}</div>`;
+  }
+  function budgetHTML(item,{room,failure}){
+    const b=room?.budget;
+    return `<dl class="ac-facts"><dt>作战室</dt><dd>#${esc(item.args.room)}${room?` 《${esc(room.title)}》${room.status==="closed"?" · 已收尾":""}`:""}</dd>`
+      +(b?`<dt>已用 / 原上限</dt><dd>${tokens(b.spent)} / ${tokens(b.tokens)} tokens${b.paused_at?'<span class="ac-tag stop">已暂停</span>':""}</dd>`:room?"<dt>原上限</dt><dd>没设预算</dd>":"")
+      +`<dt>新上限</dt><dd><b>${tokens(item.args.budget_tokens)} tokens</b></dd></dl>${failure?`<p class="ac-quiet">作战室详情没读到：${esc(failure)}</p>`:""}`;
+  }
+  const SPECIAL={"campaign.launch":["开局方案",campaignHTML],"war_room.budget":["追加作战室预算",budgetHTML]};
   function confirmations(requests){
+    const key=requests.map(item=>item.id).join();if(key===shown)return;shown=key;
+    for(const id of extras.keys())if(!requests.some(item=>item.id===id))extras.delete(id);
     const node=$("assistant-confirmations");node.replaceChildren();node.hidden=!requests.length;
     if(!requests.length)return;
     const heading=document.createElement("h2");heading.textContent=`等你确认（${requests.length}）`;node.append(heading);
     for(const item of requests){
-      const card=document.createElement("article");card.className="assistant-confirmation";
-      const title=document.createElement("strong");title.textContent=item.summary;
-      const meta=document.createElement("p");meta.textContent=`由${ROLE_LABELS[item.role]||item.role}发起${item.project?` · 工作区 ${item.project}`:""}`;
-      const detail=document.createElement("p");detail.className="assistant-confirmation-args";detail.textContent=argumentLine(item.args)||"无参数";
+      const special=SPECIAL[item.op],card=document.createElement("article");card.className=`assistant-confirmation${special?" assistant-confirmation-rich":""}`;
+      const title=document.createElement("strong");title.textContent=special?special[0]:item.summary;
+      const meta=document.createElement("p");meta.textContent=`由${ROLE_LABELS[item.role]||item.role}发起${item.project?` · 工作区 ${item.project}`:""}`;card.append(title,meta);
+      if(item.op==="campaign.launch"&&item.args.note){const note=document.createElement("p");note.className="ac-note";note.textContent=`方案说明：${item.args.note}`;card.append(note);}
+      const detail=document.createElement(special?"div":"p");detail.className=special?"ac-detail":"assistant-confirmation-args";
+      if(special){detail.innerHTML='<p class="ac-quiet">正在读取…</p>';void lookup(item).then(result=>{detail.innerHTML=special[1](item,result);});}
+      else detail.textContent=argumentLine(item.args)||"无参数";
       const actions=document.createElement("div");actions.className="assistant-confirmation-actions";
       for(const [label,approve,kind] of [["确认执行",true,"btn primary"],["拒绝",false,"btn ghost"]]){
         const button=document.createElement("button");button.className=kind;button.textContent=label;
@@ -56,10 +104,10 @@
           try{const result=await api("/api/op/interaction.resolve",{id:item.id,approve});
             toast(result.status==="approved"?"已确认并执行":result.status==="rejected"?"已拒绝":`执行失败：${result.error}`);}
           catch(failure){toast(failure.message);}
-          await loadConfirmations();};
+          shown=null;await loadConfirmations();};
         actions.append(button);
       }
-      card.append(title,meta,detail,actions);node.append(card);
+      card.append(detail,actions);node.append(card);
     }
   }
   async function loadConfirmations(){try{confirmations((await api("/api/op/interaction.list",{})).requests);}catch(failure){toast(`确认请求读取失败：${failure.message}`);}}

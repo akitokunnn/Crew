@@ -1,0 +1,129 @@
+"use strict";
+// The assistant page's "等你确认" panel shows an opening plan (campaign.launch) as a card read from campaign.preview,
+// and a war-room budget raise (war_room.budget) with the room's spend; other requests keep the plain argument line.
+const {test} = require("node:test");
+const assert = require("node:assert/strict");
+const vm = require("node:vm"), fs = require("node:fs"), path = require("node:path");
+const web = file => fs.readFileSync(path.join(__dirname, "../../frontend", file), "utf8");
+const settle = async () => { for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve)); };
+
+function element(tag) {
+  const node = {tag, hidden: false, className: "", textContent: "", innerHTML: "", disabled: false, onclick: null, dataset: {}, children: [],
+    append(...items) { node.children.push(...items); }, replaceChildren(...items) { node.children = items; },
+    addEventListener() {}, querySelectorAll: selector => node.children.filter(child => child.tag === selector)};
+  return node;
+}
+function assistantPage(requests, {preview, room, failPreview = false, wide = true}) {
+  const nodes = new Map(), calls = [];
+  const sandbox = {URLSearchParams, URL, Date, JSON, Promise, console,
+    matchMedia: query => ({matches: query === "(min-width:761px)" ? wide : false, addEventListener() {}}),
+    localStorage: {getItem: () => null},
+    location: {hash: "", pathname: "/assistant.html", search: "", href: "http://127.0.0.1/assistant.html"},
+    history: {replaceState() {}}, setTimeout: () => 0, clearTimeout() {}, addEventListener() {},
+    document: {documentElement: {dataset: {}}, addEventListener() {}, createElement: element, createTextNode: text => ({text}),
+      getElementById: id => { if (!nodes.has(id)) nodes.set(id, element("div")); return nodes.get(id); }},
+    fetch: async (url, options) => {
+      const body = options.body === undefined ? undefined : JSON.parse(options.body);
+      calls.push({url, body});
+      if (url === "/api/op/campaign.preview" && failPreview) return {ok: false, status: 409, json: async () => ({error: "工作区不存在"})};
+      const value = url === "/api/op/assistant.state" ? {assistant: {session_id: "assistant"}, projects: [], todos: [], goals: [], sounds: {}, now: "now"}
+        : url === "/api/op/interaction.list" ? {requests}
+        : url === "/api/op/campaign.preview" ? preview
+        : url.startsWith("/api/op/war_room.get?") ? room
+        : url === "/api/op/interaction.resolve" ? {status: "approved"} : {};
+      return {ok: true, status: 200, json: async () => value};
+    },
+    CrewSound: {observe() {}}, CrewPersonalNotes: {create: () => ({open() {}})},
+    CrewChat: {initFiles() {}, unmount() {}, update() {}, mount() {}, setNote() {}, prefill: () => true}};
+  sandbox.window = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(web("browser-utils.js"), sandbox);
+  vm.runInContext(web("assistant.js"), sandbox);
+  const panel = () => nodes.get("assistant-confirmations");
+  return {calls, panel, cards: () => panel().children.filter(child => child.tag === "article")};
+}
+const detail = card => card.children.find(child => child.className === "ac-detail");
+const text = card => card.children.map(child => child.textContent).join("\n");
+
+const plan = {project: "fitness", note: "健身打卡开局：后端、App 两条线并行", start: true, board_version: 4, request_id: "r-1",
+  parts: [{ref: "backend01", name: "后端", parent: null}, {ref: "api0001", name: "接口", parent: "backend01"}],
+  leaders: [{name: "后端", runtime: "claude", model: "opus", effort: "high", part: "backend01", lead: true, brief: "负责打卡接口与数据表，<b>先</b>定接口"},
+    {name: "App", runtime: "codex", model: "gpt-6", effort: null, part: null, brief: "做 App 打卡页"}],
+  goals: [{leader: "后端", title: "打卡接口 v1", request: "实现打卡与查询接口", acceptance: ["有接口文档", "有单测"]}],
+  room: {title: "开局", goal: "两周内跑通打卡", budget_tokens: 200000}};
+const preview = (extra = {}) => ({project: "fitness", ok: true, errors: [], board_version: 4,
+  parts: plan.parts, goals: plan.goals, room: plan.room, start: true,
+  leaders: [{...plan.leaders[0], part_name: "后端"}, {...plan.leaders[1], lead: false, part_name: null}],
+  cost: {start: true, new_leaders: 2, budget_tokens: 200000,
+    carriers: [{runtime: "claude", model: "opus", effort: "high", count: 1}, {runtime: "codex", model: "gpt-6", effort: "默认强度", count: 1}],
+    estimate: {low_usd: 0.6, high_usd: 15, priced_models: ["opus"]},
+    note: "确认后立即启动 2 位 leader 并开始首批任务；作战室预算到了会暂停等你确认。"}, ...extra});
+const launch = {id: "c1", op: "campaign.launch", role: "assistant", project: "fitness", summary: "执行开局方案", args: plan};
+
+test("an opening plan becomes a card read from campaign.preview: cost first, then parts, leaders, first tasks and the room", async () => {
+  const page = assistantPage([launch], {preview: preview()});
+  await settle();
+  const previews = page.calls.filter(call => call.url === "/api/op/campaign.preview");
+  assert.equal(previews.length, 1);
+  const {board_version, request_id, ...sent} = plan;
+  assert.deepEqual(previews[0].body, sent, "the plan with its project, without the launch-only board version");
+  const [card] = page.cards(), html = detail(card).innerHTML;
+  assert.match(text(card), /^开局方案\n由助手发起 · 工作区 fitness\n方案说明：健身打卡开局：后端、App 两条线并行/);
+  assert(!html.includes("ac-problems"));
+  const cost = html.slice(html.indexOf('class="ac-cost"'), html.indexOf('class="ac-build"'));
+  assert(html.indexOf('class="ac-cost"') < html.indexOf('class="ac-build"'), "what it costs comes before what it builds");
+  assert(cost.includes("确认后立即启动 2 位 leader") && cost.includes("<b>2 位</b>"));
+  assert(cost.includes('<span class="ac-rt" data-rt="claude">Claude</span><span>opus · high</span><b>× 1</b>'));
+  assert(cost.includes('<span class="ac-rt" data-rt="codex">Codex</span><span>gpt-6 · 默认强度</span><b>× 1</b>'));
+  assert(cost.includes("<b>20 万 tokens</b>") && cost.includes("<b>$0.6 – $15</b>") && cost.includes("按 opus 的价格估"));
+  assert(!cost.includes("只建架构图") && !cost.includes("<details"), "the cost part never folds");
+  assert(html.includes("<b>接口</b><small>挂在 后端 下</small>") && html.includes("<b>后端</b><small>顶层</small>"));
+  assert(html.includes('<span class="ac-tag">负责</span><small>放进 后端</small>') && html.includes("<small>不放进领域</small>"));
+  assert(html.includes("&lt;b&gt;先&lt;/b&gt;") && !html.includes("<b>先</b>"), "plan text is escaped");
+  assert(html.includes("<b>打卡接口 v1</b><small>后端 负责 · 验收标准 2 条</small>") && html.includes("<li>有单测</li>"));
+  assert(html.includes("<b>开局</b>") && html.includes("两周内跑通打卡") && html.includes("助手牵头，新建的 2 位 leader 都是成员"));
+  assert(html.includes('<details class="ac-sec" open>'), "sections start open on a wide screen");
+  await settle();
+  assert.equal(page.calls.filter(call => call.url === "/api/op/campaign.preview").length, 1);
+});
+
+test("problems in the plan, a structure-only plan, no price table, and a failed preview are all spelled out", async () => {
+  const errors = ["第 2 位 leader：名字 App 重复", "作战室：至少要两位新 leader 一起推进"];
+  const bad = assistantPage([launch], {preview: preview({ok: false, errors, cost: {...preview().cost, estimate: null}}), wide: false});
+  await settle();
+  const html = detail(bad.cards()[0]).innerHTML;
+  assert(html.indexOf("ac-problems") < html.indexOf("ac-cost"));
+  assert(html.includes("方案还有 2 处问题") && html.includes("<li>第 2 位 leader：名字 App 重复</li>") && html.includes("仍可点“确认执行”，后端会再校验"));
+  assert(html.includes("没有价格表，无法估算金额"));
+  assert(html.includes('<details class="ac-sec">') && !html.includes('<details class="ac-sec" open>'), "phones start folded");
+  assert(!bad.cards()[0].children.find(child => child.className === "assistant-confirmation-actions").children[0].disabled);
+
+  const quiet = {...preview().cost, start: false, note: "确认后只建架构图，不启动模型，leader 与首批任务留到之后再开。"};
+  const structure = assistantPage([launch], {preview: preview({start: false, cost: quiet})});
+  await settle();
+  const only = detail(structure.cards()[0]).innerHTML;
+  assert(only.includes("只建架构图，不启动模型") && only.includes("这次不开作战室") && !only.includes("估算金额") && !only.includes(">作战室<span"));
+
+  const failed = assistantPage([launch], {failPreview: true});
+  await settle();
+  const raw = detail(failed.cards()[0]).innerHTML;
+  assert(raw.includes("预览没读到，下面按 AI 提交的原始方案显示") && raw.includes("没能读取开局预览：工作区不存在"));
+  assert(raw.includes("费用预览没读到") && raw.includes("<b>打卡接口 v1</b>"));
+});
+
+test("a budget raise shows the room's title, spend and old cap next to the new cap; other requests keep the argument line", async () => {
+  const raise = {id: "b1", op: "war_room.budget", role: "assistant", project: "fitness", summary: "设置或追加作战室预算", args: {project: "fitness", room: 3, budget_tokens: 400000}};
+  const other = {id: "o1", op: "leader.retire", role: "assistant", project: "fitness", summary: "退役 leader", args: {name: "后端", request_id: "x"}};
+  const page = assistantPage([raise, other], {room: {id: 3, title: "签名 v2", status: "open", budget: {tokens: 200000, spent: 203500, paused_at: "2026-11-27T10:00:00"}}});
+  await settle();
+  const get = page.calls.find(call => call.url.startsWith("/api/op/war_room.get?"));
+  assert.equal(get.url, "/api/op/war_room.get?id=3&project=fitness&limit=1");
+  const [card, plain] = page.cards(), html = detail(card).innerHTML;
+  assert.match(text(card), /^追加作战室预算\n由助手发起 · 工作区 fitness/);
+  assert(html.includes("#3 《签名 v2》") && html.includes("20.4 万 / 20 万 tokens") && html.includes("已暂停") && html.includes("<b>40 万 tokens</b>"));
+  assert.equal(plain.children[2].textContent, "name: 后端");
+  assert.equal(plain.children[2].className, "assistant-confirmation-args");
+  const [confirm] = card.children.find(child => child.className === "assistant-confirmation-actions").children;
+  await confirm.onclick(); await settle();
+  assert.deepEqual(page.calls.find(call => call.url === "/api/op/interaction.resolve").body, {id: "b1", approve: true});
+});
