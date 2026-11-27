@@ -51,6 +51,7 @@
     if(!extras.has(item.id)){
       const {request_id,board_version,...plan}=item.args,project=item.args.project||item.project;
       const read=item.op==="campaign.launch"?api("/api/op/campaign.preview",{...plan,project}).then(preview=>({preview}))
+        :RESTRUCTURE.has(item.op)?api("/api/op/domains.restructure.preview",{project,changes:planChanges(item)}).then(preview=>({preview}))
         :api(`/api/op/war_room.get?${new URLSearchParams({id:item.args.room,project,limit:1})}`).then(room=>({room}));
       extras.set(item.id,read.catch(failure=>({failure:failure.message})));
     }
@@ -82,7 +83,29 @@
       +(b?`<dt>已用 / 原上限</dt><dd>${tokens(b.spent)} / ${tokens(b.tokens)} tokens${b.paused_at?'<span class="ac-tag stop">已暂停</span>':""}</dd>`:room?"<dt>原上限</dt><dd>没设预算</dd>":"")
       +`<dt>新上限</dt><dd><b>${tokens(item.args.budget_tokens)} tokens</b></dd></dl>${failure?`<p class="ac-quiet">作战室详情没读到：${esc(failure)}</p>`:""}`;
   }
-  const SPECIAL={"campaign.launch":["开局方案",campaignHTML],"war_room.budget":["追加作战室预算",budgetHTML]};
+  // A restructure (or a one-change merge / retire) is shown as the board's own before / after, its effects on leaders and
+  // tasks, and whether it wakes anyone; the preview is read again now, so a plan gone stale already says so here.
+  const RESTRUCTURE=new Set(["domains.restructure.apply","leader.merge","leader.retire"]);
+  function planChanges(item){
+    const a=item.args;
+    return item.op==="domains.restructure.apply"?a.changes:[{type:item.op,leader:a.leader,[item.op==="leader.merge"?"into":"successor"]:item.op==="leader.merge"?a.into:a.successor}];
+  }
+  function restructureHTML(item,{preview,failure}){
+    if(failure)return `<div class="ac-problems" role="alert"><strong>没能读取重整预览</strong><ul><li>${esc(failure)}</li></ul><small>仍可点“确认执行”，后端会再校验。</small></div>`;
+    if(!preview.ok)return `<div class="ac-problems" role="alert"><strong>方案现在执行不了（${preview.errors.length} 处问题）</strong><ul>${preview.errors.map(e=>`<li>${esc(e.message||e)}</li>`).join("")}</ul><small>多半是预览之后情况变了；可以拒绝，让助手按新情况重新预览。</small></div>`;
+    const R=window.CrewRestructure,handoffs=item.op==="domains.restructure.apply"?item.args.handoffs||[]:item.args.handoff?[item.args.handoff]:[];
+    const wakes=handoffs.filter(h=>h.wake).length+preview.goals.filter(g=>g.wakes).length;
+    const effects=preview.leaders.length?`<ul class="ac-list">${preview.leaders.map(l=>`<li><div class="ac-row"><b>${esc(l.name)}</b><small>${esc(l.effects.join("；"))}</small></div></li>`).join("")}</ul>`:"";
+    const goals=preview.goals.length?`<ul class="ac-list">${preview.goals.map(g=>`<li><div class="ac-row"><span class="ac-tag">${g.action==="cancel"?"作废":"改派"}</span><b>${esc(g.title)}</b><small>${esc(g.leader.name)} 负责${g.to?` → ${esc(g.to.name)}`:""}</small></div></li>`).join("")}</ul>`:"";
+    return `<section class="ac-cost" aria-label="会动什么"><h4>会动什么</h4><p class="ac-cost-note">${esc(R.diffSummary(preview.diff)||"没有结构变化")}${preview.archived.length?` · 归档 ${preview.archived.map(a=>esc(a.name)).join("、")}（原会话保留）`:""}</p>`
+      +`<p class="ac-flag">${wakes?`执行后会唤醒 ${wakes} 处，可能产生用量`:"执行不会启动任何模型"}；存成一个架构图版本，可以回滚</p></section>`
+      +`<div class="ac-build"><h4>改前 / 改后</h4>${R.compare(preview.before,preview.after,{beforeTitle:"改前 · 现在"})}`
+      +(effects?`<details class="ac-sec" open><summary>受影响的 leader<span class="ac-count">${preview.leaders.length}</span></summary>${effects}</details>`:"")
+      +(goals?`<details class="ac-sec" open><summary>任务<span class="ac-count">${preview.goals.length}</span></summary>${goals}</details>`:"")
+      +(handoffs.length?`<p class="ac-quiet">交接稿 ${handoffs.length} 份已随请求附上（${handoffs.map(h=>Array.from(h.text||"").length+" 字").join("、")}）。</p>`:"")+"</div>";
+  }
+  const SPECIAL={"campaign.launch":["开局方案",campaignHTML],"war_room.budget":["追加作战室预算",budgetHTML],
+    "domains.restructure.apply":["架构重整",restructureHTML],"leader.merge":["合并 leader",restructureHTML],"leader.retire":["退役 leader",restructureHTML]};
   function confirmations(requests){
     const key=requests.map(item=>item.id).join();if(key===shown)return;shown=key;
     for(const id of extras.keys())if(!requests.some(item=>item.id===id))extras.delete(id);
@@ -93,7 +116,7 @@
       const special=SPECIAL[item.op],card=document.createElement("article");card.className=`assistant-confirmation${special?" assistant-confirmation-rich":""}`;
       const title=document.createElement("strong");title.textContent=special?special[0]:item.summary;
       const meta=document.createElement("p");meta.textContent=`由${ROLE_LABELS[item.role]||item.role}发起${item.project?` · 工作区 ${item.project}`:""}`;card.append(title,meta);
-      if(item.op==="campaign.launch"&&item.args.note){const note=document.createElement("p");note.className="ac-note";note.textContent=`方案说明：${item.args.note}`;card.append(note);}
+      if((item.op==="campaign.launch"||item.op==="domains.restructure.apply")&&item.args.note){const note=document.createElement("p");note.className="ac-note";note.textContent=`方案说明：${item.args.note}`;card.append(note);}
       const detail=document.createElement(special?"div":"p");detail.className=special?"ac-detail":"assistant-confirmation-args";
       if(special){detail.innerHTML='<p class="ac-quiet">正在读取…</p>';void lookup(item).then(result=>{detail.innerHTML=special[1](item,result);});}
       else detail.textContent=argumentLine(item.args)||"无参数";

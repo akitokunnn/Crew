@@ -13,7 +13,7 @@ function element(tag) {
     addEventListener() {}, querySelectorAll: selector => node.children.filter(child => child.tag === selector)};
   return node;
 }
-function assistantPage(requests, {preview, room, failPreview = false, wide = true}) {
+function assistantPage(requests, {preview, room, restructure, failPreview = false, wide = true}) {
   const nodes = new Map(), calls = [];
   const sandbox = {URLSearchParams, URL, Date, JSON, Promise, console,
     matchMedia: query => ({matches: query === "(min-width:761px)" ? wide : false, addEventListener() {}}),
@@ -29,6 +29,7 @@ function assistantPage(requests, {preview, room, failPreview = false, wide = tru
       const value = url === "/api/op/assistant.state" ? {assistant: {session_id: "assistant"}, projects: [], todos: [], goals: [], sounds: {}, now: "now"}
         : url === "/api/op/interaction.list" ? {requests}
         : url === "/api/op/campaign.preview" ? preview
+        : url === "/api/op/domains.restructure.preview" ? restructure
         : url.startsWith("/api/op/war_room.get?") ? room
         : url === "/api/op/interaction.resolve" ? {status: "approved"} : {};
       return {ok: true, status: 200, json: async () => value};
@@ -38,6 +39,7 @@ function assistantPage(requests, {preview, room, failPreview = false, wide = tru
   sandbox.window = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(web("browser-utils.js"), sandbox);
+  vm.runInContext(web("restructure-ui.js"), sandbox);
   vm.runInContext(web("assistant.js"), sandbox);
   const panel = () => nodes.get("assistant-confirmations");
   return {calls, panel, cards: () => panel().children.filter(child => child.tag === "article")};
@@ -113,7 +115,7 @@ test("problems in the plan, a structure-only plan, no price table, and a failed 
 
 test("a budget raise shows the room's title, spend and old cap next to the new cap; other requests keep the argument line", async () => {
   const raise = {id: "b1", op: "war_room.budget", role: "assistant", project: "fitness", summary: "设置或追加作战室预算", args: {project: "fitness", room: 3, budget_tokens: 400000}};
-  const other = {id: "o1", op: "leader.retire", role: "assistant", project: "fitness", summary: "退役 leader", args: {name: "后端", request_id: "x"}};
+  const other = {id: "o1", op: "session.delete", role: "assistant", project: "fitness", summary: "删除会话", args: {name: "后端", request_id: "x"}};
   const page = assistantPage([raise, other], {room: {id: 3, title: "签名 v2", status: "open", budget: {tokens: 200000, spent: 203500, paused_at: "2026-11-27T10:00:00"}}});
   await settle();
   const get = page.calls.find(call => call.url.startsWith("/api/op/war_room.get?"));
@@ -126,4 +128,31 @@ test("a budget raise shows the room's title, spend and old cap next to the new c
   const [confirm] = card.children.find(child => child.className === "assistant-confirmation-actions").children;
   await confirm.onclick(); await settle();
   assert.deepEqual(page.calls.find(call => call.url === "/api/op/interaction.resolve").body, {id: "b1", approve: true});
+});
+
+test("a leader merge is shown as the board's before / after, its effects and wakes, read again from the preview", async () => {
+  const before = {direction: "TB", parts: [{id: "be0001", parent_id: null, name: "后端接口"}, {id: "fe0001", parent_id: null, name: "前端页面"}],
+    leaders: [{session_id: "be", domain_id: "be0001", lead: true, name: "后端"}, {session_id: "fe", domain_id: "fe0001", lead: true, name: "前端"}]};
+  const after = {...before, leaders: [before.leaders[0]]};
+  const restructure = {ok: true, errors: [], before, after,
+    diff: {parts: {added: [], removed: [], renamed: [], moved: []}, leaders: {placed: [], moved: [], unplaced: [{session_id: "fe"}], lead_on: [], lead_off: [{session_id: "fe"}]}},
+    leaders: [{name: "前端", effects: ["并入「后端」"]}, {name: "<后端>", effects: ["接手「前端」的交接稿"]}],
+    goals: [{action: "transfer", title: "静态页", leader: {name: "前端"}, to: {name: "后端"}, wakes: false}],
+    archived: [{name: "前端", role: "leader"}]};
+  const merge = {id: "m1", op: "leader.merge", role: "assistant", project: "shop", summary: "合并",
+    args: {project: "shop", leader: "fe", into: "be", board_version: 1, revision: "r", handoff: {text: "交接", wake: false}}};
+  const page = assistantPage([merge], {restructure});
+  await settle();
+  const [card] = page.cards();
+  const asked = page.calls.find(call => call.url === "/api/op/domains.restructure.preview");
+  assert.deepEqual(JSON.parse(JSON.stringify(asked.body)), {project: "shop", changes: [{type: "leader.merge", leader: "fe", into: "be"}]});
+  const html = detail(card).innerHTML;
+  assert(html.indexOf("会动什么") < html.indexOf("改前 / 改后"));
+  assert(html.includes("归档 前端（原会话保留）"));
+  assert(html.includes("执行不会启动任何模型"));
+  assert(html.includes("&lt;后端&gt;"));
+  assert(html.includes("改派") && html.includes("前端 负责 → 后端"));
+  const stale = assistantPage([{...merge, id: "m2"}], {restructure: {ok: false, errors: [{message: "本轮已提交交付、等待收尾"}]}});
+  await settle();
+  assert(detail(stale.cards()[0]).innerHTML.includes("方案现在执行不了（1 处问题）"));
 });
