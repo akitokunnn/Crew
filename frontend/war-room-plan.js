@@ -60,29 +60,34 @@
     return {html, blocks};
   }
 
-  function changes(previous, next) {
+  function compare(previous, next) {
     const remaining = new Map(previous.blocks.map(block => [block.key, block]));
+    const positions = new Map();
     const same = new Set();
     for (const block of next.blocks) {
       const match = block.stable ? remaining.get(block.key) :
         [...remaining.values()].find(old => !old.stable && old.group === block.group && old.text === block.text);
       if (!match || match.text !== block.text) continue;
       remaining.delete(match.key);
+      positions.set(match.key, block.key);
       same.add(block.key);
     }
     const result = [];
     for (const block of next.blocks) {
       if (same.has(block.key)) continue;
       const old = remaining.get(block.key) ?? (!block.stable && [...remaining.values()].find(item => !item.stable && item.group === block.group));
-      if (old) remaining.delete(old.key);
+      if (old) {
+        remaining.delete(old.key);
+        positions.set(old.key, block.key);
+      }
       result.push({...block, type:old ? "改" : "新"});
     }
     const keys = new Set(next.blocks.map(block => block.key));
     for (const old of remaining.values()) {
       result.push({...old, key:keys.has(old.heading) ? old.heading : null, type:"删"});
     }
-    return result;
+    return {changes:result, positions};
   }
 
-  window.CrewWarRoomPlan = {decisions, pending, approval, document, changes};
+  window.CrewWarRoomPlan = {decisions, pending, approval, document, compare};
 })();

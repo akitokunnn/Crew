@@ -114,6 +114,7 @@
   .wr-pane-dialog .wr-panel-head>h2{font-size:calc(13px * var(--fs))}
   .wr-plan-action{padding-bottom:max(10px,env(safe-area-inset-bottom));justify-content:stretch}
   .wr-plan-action>.cx-btn{width:100%;min-height:44px}
+  .wr-pane-dialog:has(.wr-plan-action) .wr-pane-toast .toast{bottom:calc(66px + max(10px,env(safe-area-inset-bottom)))}
   .wr-main-head{padding:7px 10px;gap:6px}
   .wr-main-head>.cx-btn,.wr-main-head .cx-btn,.wr-pane-title .cx-btn,.wr-question .cx-btn,.wr-drawers .cx-btn,.wr-revision .cx-btn{min-height:40px}
   .wr-main-head .wr-heading{flex-basis:110px}

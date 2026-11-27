@@ -10,6 +10,8 @@ const body = (assignment, questions) => `# 切换签名\n\n用统一的 v2。\n\
 const plan1 = {version:1, body:body("整理方案", "- [Q1] 用什么算法 | HMAC\n- [Q2] 何时上线 | 周五"), summary:"第一份", author:"assistant",
   created_at:"2026-11-28T02:01:00Z", budget_tokens:null};
 const plan2 = {...plan1, version:2, body:body("切换网关", "- [Q1] 用什么算法 | HMAC-SHA256\n- [Q2] 何时上线 | 周五 | 下周一"), summary:"补充网关", created_at:"2026-11-28T02:02:00Z", budget_tokens:500000};
+const plan3 = {...plan2, version:3, body:plan2.body.replace("切换网关", "逐步切换网关\n- [A2] 支付 | 观察错误率"),
+  summary:"分批切换", created_at:"2026-11-28T02:04:00Z"};
 const message = (id, speaker_session_id, body, extra = {}) => ({id, speaker_session_id, body, speaker_name:speaker_session_id,
   created_at:"2026-11-28T02:03:00Z", mentions:[], notified:[], reply:null, ...extra});
 const job = (id, kind, status, title) => ({entry_id:id, kind, status, title, owner_session_id:"pay", owner_name:"支付", note:""});
@@ -22,6 +24,7 @@ function element() {
   const classes = new Set();
   const node = {innerHTML:"", textContent:"", disabled:false, hidden:false, open:false, value:"", dataset:{}, scrollHeight:100, clientHeight:100, scrollTop:0,
     focus(){ this.focused = true; }, scrollIntoView(){ this.scrolled = true; }, showModal(){ this.open = true; }, close(){ this.open = false; this.onclose?.(); },
+    replaceChildren(){ this.innerHTML = ""; },
     hasAttribute(name){ return name === "data-mark" && Object.hasOwn(this.dataset, "mark"); },
     classList:{toggle(name, active){ active ? classes.add(name) : classes.delete(name); }, add:name => classes.add(name),
       remove:name => classes.delete(name), contains:name => classes.has(name)}, querySelectorAll:() => [], querySelector:() => null};
@@ -68,6 +71,20 @@ function harness(initial, {mobile = false, reads, mutation, directory = null} = 
   const confirm = async () => { form.onsubmit({preventDefault(){}}); await tick(); };
   return {W, P:sandbox.CrewWarRoomPlan, rail:sandbox.CrewGlobalRail, calls, node, host, toasts, routes, listeners, click, send, confirm,
     reload(value) { detail = value; W.changed([{type:"war_room.updated", entity:"3"}]); }};
+}
+
+function watchPlan(f, panel, keys) {
+  const blocks = keys.map(key => {
+    const block = element();
+    block.dataset.wrBlock = key;
+    return block;
+  });
+  const scroll = element();
+  scroll.scrollTop = 120;
+  const document = {querySelectorAll:() => blocks};
+  panel.querySelector = selector => selector === ".wr-plan-document" ? document : selector === ".wr-panel-scroll" ? scroll : null;
+  f.host.querySelectorAll = selector => selector === ".wr-plan-document [data-wr-block]" ? blocks : [];
+  return {blocks, scroll};
 }
 
 test("筹备页显示当前决定和已定折叠，确认期间看到的推荐值、预算和版本保持绑定", async () => {
@@ -172,6 +189,136 @@ test("版本卡定位相邻稿的变动，引用发送成功以后才淡出；�
   assert.deepEqual(f.calls.filter(call => call.name === "post")[1].data,
     {room:3, body:"关于 Q1：用领头的推荐", to:["assistant"]});
   assert.match(f.node(".wr-timeline").innerHTML, /关于 Q1：用领头的推荐/);
+});
+
+test("作战中收到 v3 修订版，对话显示锚点，全文标出新改，发言成功后淡出", async () => {
+  const revised = room({phase:"active", approved_version:2, draft_version:3, plans:[plan3, plan2, plan1]});
+  const f = harness(room({phase:"active", approved_version:2}), {mutation(name, data, setRoom) {
+    assert.equal(name, "post");
+    const post = message(2, "user", data.body, {created_at:"2026-11-28T02:05:00Z"});
+    setRoom({...revised, messages:[...revised.messages, post]});
+    return {message:post};
+  }});
+  await tick();
+  f.reload(revised);
+  await tick();
+  assert.match(f.node(".wr-timeline").innerHTML, /v2 → v3[\s\S]*data-block="entry:A1"><span>改<\/span>[\s\S]*data-block="entry:A2"><span>新<\/span>/);
+  const pane = f.node(".wr-pane-content");
+  const {blocks} = watchPlan(f, pane, ["entry:A1", "entry:A2"]);
+  f.click("full");
+  assert.match(pane.innerHTML, /作战计划书 <span>v3/);
+  assert.match(pane.innerHTML, /逐步切换网关[\s\S]*观察错误率/);
+  assert.match(pane.innerHTML, /敲定修订/);
+  assert.deepEqual(blocks.map(block => block.dataset.mark), ["改", "新"]);
+  assert(blocks.every(block => !block.classList.contains("wr-mark-faded")));
+  f.click("hide-panel");
+  f.node("textarea").value = "收到这版";
+  await f.send();
+  f.click("full");
+  assert(blocks.every(block => block.classList.contains("wr-mark-faded")));
+  assert.match(f.node(".wr-timeline").innerHTML, /v2 → v3/);
+});
+
+test("v2 的历史锚点在作战中打开 v3，跳到改过的小节中同 ID 的条目", async () => {
+  const moved = {...plan3, body:plan3.body.replace("- [A1] 支付 | 逐步切换网关\n- [A2] 支付 | 观察错误率",
+    "- [A2] 支付 | 观察错误率\n- [A1] 支付 | 逐步切换网关")};
+  const f = harness(room({phase:"active", approved_version:2, draft_version:3, plans:[moved, plan2, plan1]}));
+  await tick();
+  const pane = f.node(".wr-pane-content");
+  const {blocks:[other, target]} = watchPlan(f, pane, ["entry:A2", "entry:A1"]);
+  f.click("jump", {version:"2", block:"entry:A1"});
+  assert.equal(f.node(".wr-pane-dialog").open, true);
+  assert.match(pane.innerHTML, /作战计划书 <span>v3[\s\S]*观察错误率[\s\S]*逐步切换网关/);
+  assert(target.scrolled && target.classList.contains("wr-flash"));
+  assert.equal(other.scrolled, undefined);
+});
+
+test("旧正文锚点能跟随段落移动，同序号的另一段不会冒充已删除的段落", async () => {
+  const original = {...plan2, body:plan2.body.replace("用统一的 v2。", "核对发布窗口。")};
+  const moved = {...plan3, body:plan3.body.replace("用统一的 v2。", "先看回滚条件。\n\n核对发布窗口。")};
+  const removed = {...moved, version:4, body:moved.body.replace("\n\n核对发布窗口。", ""), created_at:"2026-11-28T02:05:00Z"};
+  const f = harness(room({draft_version:3, plans:[moved, original, plan1]}));
+  await tick();
+  const key = '["切换签名","paragraph_open"]:1';
+  const pane = f.node(".wr-plan-panel");
+  const {blocks:[other, target]} = watchPlan(f, pane, [key, '["切换签名","paragraph_open"]:2']);
+  assert.match(f.node(".wr-timeline").innerHTML, /v1 → v2[\s\S]*改<\/span> 核对发布窗口。/);
+  f.click("jump", {version:"2", block:key});
+  assert.equal(other.scrolled, undefined);
+  assert(target.scrolled && target.classList.contains("wr-flash"));
+
+  f.reload(room({draft_version:4, plans:[removed, moved, original, plan1]}));
+  await tick();
+  f.click("jump", {version:"2", block:key});
+  assert.match(pane.innerHTML, /作战计划书 <span>v4/);
+  assert.deepEqual(f.toasts, ["这一段在 v4 已删除"]);
+  assert.equal(other.scrolled, undefined);
+});
+
+test("历史锚点已删除时打开最新版并提示首次消失的版本，不滚动计划书", async () => {
+  const deleted = {...plan3, body:plan3.body.replace("- [A1] 支付 | 逐步切换网关\n", "")};
+  const v4 = {...deleted, version:4, created_at:"2026-11-28T02:05:00Z"};
+  for (const plans of [[deleted, plan2, plan1], [v4, deleted, plan2, plan1]]) {
+    const version = plans[0].version;
+    const f = harness(room({draft_version:version, plans}));
+    await tick();
+    const pane = f.node(".wr-plan-panel");
+    const {blocks:[remaining], scroll} = watchPlan(f, pane, ["entry:A2"]);
+    f.click("jump", {version:"2", block:"entry:A1"});
+    assert.match(pane.innerHTML, new RegExp(`作战计划书 <span>v${version}`));
+    assert.deepEqual(f.toasts, ["这一段在 v3 已删除"]);
+    assert.equal(scroll.scrollTop, 120);
+    assert.equal(remaining.scrolled, undefined);
+    assert(!remaining.classList.contains("wr-flash"));
+  }
+});
+
+test("删条目优先跳到最新版原小节，小节后来删除或当版已删时提示具体版本", async () => {
+  const heading = '["等你定","heading_open"]:1';
+  const v3 = {...plan3, body:plan3.body.replace("- [Q2] 何时上线 | 周五 | 下周一\n", "")};
+  const v4 = {...v3, version:4, body:v3.body.replace(/## 等你定\n[^\n]+\n\n/, ""), created_at:"2026-11-28T02:05:00Z"};
+  const f = harness(room({draft_version:3, plans:[v3, plan2, plan1]}), {mobile:true});
+  await tick();
+  const pane = f.node(".wr-pane-content");
+  const {blocks:[section]} = watchPlan(f, pane, [heading]);
+  assert.match(f.node(".wr-timeline").innerHTML, /data-block="[^"]*等你定[^"]*"><span>删<\/span> Q2/);
+  f.click("jump", {version:"3", block:heading});
+  assert(section.scrolled && section.classList.contains("wr-flash"));
+  f.click("hide-panel");
+  f.reload(room({draft_version:4, plans:[v4, v3, plan2, plan1]}));
+  await tick();
+  const {blocks:[remaining], scroll} = watchPlan(f, pane, ["entry:A2"]);
+  f.click("jump", {version:"3", block:heading});
+  f.click("hide-panel");
+  f.click("jump", {version:"4", block:heading});
+  assert.deepEqual(f.toasts, ["这一段在 v4 已删除", "这一段在 v4 已删除"]);
+  assert.equal(scroll.scrollTop, 120);
+  assert.equal(remaining.scrolled, undefined);
+});
+
+test("没有所属小节的删条目提示当版已删，仍可打开最新版", async () => {
+  const introduced = {...plan2, body:`临时说明\n\n${plan2.body}`};
+  const f = harness(room({draft_version:3, plans:[plan3, introduced, plan1]}));
+  await tick();
+  const pane = f.node(".wr-plan-panel");
+  const {scroll} = watchPlan(f, pane, ["entry:A1"]);
+  assert.match(f.node(".wr-timeline").innerHTML, /data-version="3" data-block=""><span>删<\/span> 临时说明/);
+  f.click("jump", {version:"3", block:""});
+  assert.match(pane.innerHTML, /作战计划书 <span>v3/);
+  assert.deepEqual(f.toasts, ["这一段在 v3 已删除"]);
+  assert.equal(scroll.scrollTop, 120);
+});
+
+test("没有条目的历史锚点卡仍用「看这一版」打开当时的计划书", async () => {
+  const unchanged = {...plan1, version:2, created_at:plan2.created_at};
+  const f = harness(room({phase:"active", draft_version:3, plans:[plan3, unchanged, plan1]}));
+  await tick();
+  assert.match(f.node(".wr-timeline").innerHTML, /data-version="2">看这一版/);
+  f.click("jump", {version:"2"});
+  const pane = f.node(".wr-pane-content").innerHTML;
+  assert.match(pane, /作战计划书 <span>v2[\s\S]*整理方案/);
+  assert.doesNotMatch(pane, /逐步切换网关/);
+  assert.deepEqual(f.toasts, []);
 });
 
 test("手机摘要打开同一份计划并在单内敲定，正常发言和回复都发给领头会话", async () => {
