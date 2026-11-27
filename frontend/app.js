@@ -29,7 +29,8 @@
   let allTab = "overview", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0, usageScannedAt = null;
   let cardId = null, cardReturn = null, rightOpen = false, dialogReturn = null;
   let theme = "system", leadersOpen = true, presenceOpen = false, presenceFailure = null, workspaceSwitcherOpen = false;
-  let pendingSettingsHash = location.hash === "#settings";
+  // "#settings" opens settings; "#settings=backend" (the 系统管理员 page's 运维 link in a browser) opens that category.
+  let pendingSettingsHash = location.hash === "#settings" ? "ai" : location.hash === "#settings=backend" ? "backend" : false;
   // 手机宽度下 Leader 栏是覆盖在内容上的抽屉：每次打开默认收起，选完即收，不改宽屏的记忆。
   const narrowLayout = () => window.matchMedia("(max-width:760px)").matches;
   let soundGeneration = 0;
@@ -1425,7 +1426,7 @@
       const activityChanged = meta.source === "snapshot" || meta.changes.some(change => change.type === "workspace_activity.updated");
       replace($("main"), CrewWorkspaceEntry.render(state, {esc, ic, display: projectDisplay}, activityChanged));
       document.title = "工作区 · Crew";
-      if (pendingSettingsHash) { pendingSettingsHash = false; history.replaceState(null, "", `${location.pathname}${location.search}`); openSettings("ai"); }
+      if (pendingSettingsHash) { const category = pendingSettingsHash; pendingSettingsHash = false; history.replaceState(null, "", `${location.pathname}${location.search}`); openSettings(category); }
       return;
     }
     try { localStorage.setItem("crew.mobile.project", project); } catch {}
@@ -1439,7 +1440,7 @@
     if (mountedChannel) { CrewChannel.changed(live === null ? null : live.filter(change => change.type.startsWith("channel_message."))); if (rooms) CrewChannel.roomsChanged(); }
     // War rooms are not in the snapshot either: the open room takes its own changes and its posts' badges.
     if (mountedRoom !== null) CrewWarRoom.changed(live === null ? null : live.filter(change => change.type.startsWith("war_room.") || change.type.startsWith("channel_message.")));
-    if (pendingSettingsHash) { pendingSettingsHash = false; openSettings("ai"); }
+    if (pendingSettingsHash) { const category = pendingSettingsHash; pendingSettingsHash = false; openSettings(category); }
     refreshUsage();
     if (previous !== null) notifySounds(previous, meta.source === "snapshot" || meta.catchUp, meta.source === "snapshot" ? snapshotGeneration : soundGeneration);
   }

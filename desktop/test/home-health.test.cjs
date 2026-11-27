@@ -20,11 +20,33 @@ test('administrator reads one global snapshot and never restarts a live backend'
   assert.equal(h.nodes.get('admin-incidents').children[0].textContent,'尚无异常记录。');assert.equal([...h.timers.values()][0].ms,5000);
 });
 
-test('administrator exposes the maintenance conversation and configuration entry',()=>{
-  const opened=[],h=harness({});
-  h.sandbox.window.CrewHomeSettings={show:category=>opened.push(category)};
-  h.nodes.get('admin-conversation').click();
-  assert.deepEqual(opened,['backend']);
+test('系统管理员 opens the administrator conversation; its operations page carries the chat and repair panels',async()=>{
+  const opened=[],mounted=[],selected=[],settings=[];
+  const h=harness({adminStatus:async()=>healthy(),adminCheck:async()=>healthy(),adminRestart:async()=>({ok:true}),openAdministrator:async()=>{opened.push('ai');},
+    adminChatSnapshot:async()=>({messages:[]}),adminChatSend:async()=>({}),adminChatInterrupt:async()=>({}),adminConfigGet:async()=>({}),adminConfigSave:async()=>({})});
+  h.sandbox.window.CrewHomeSettings={loadUI:async()=>{settings.push('load');},show:category=>settings.push(category),hide(){}};
+  h.sandbox.window.CrewOperations={create:options=>{assert.equal(JSON.stringify(options.sections),'["chat","config"]');assert.equal(options.toolbar,false);
+    return{mount:host=>{mounted.push(host);return()=>mounted.push('released');},select:tab=>selected.push(tab)};}};
+  assert.equal(h.nodes.get('nav-admin').hidden,false);
+  h.nodes.get('nav-admin').click();await tick();h.nodes.get('admin-open-ai').click();await tick();
+  assert.deepEqual(opened,['ai','ai']);assert.equal(h.nodes.get('admin-page').hidden,true,'the entry opens the AI tab, not the health page');
+  h.ui.show();await tick();
+  assert.equal(h.nodes.get('admin-tabs').hidden,false);assert.equal(h.nodes.get('admin-status-panel').hidden,false);
+  h.nodes.get('admin-tab-chat').click();await tick();await tick();
+  assert.equal(h.nodes.get('admin-ops-panel').textContent,'');assert.deepEqual(settings,['load']);assert.deepEqual(mounted,[h.nodes.get('admin-ops-panel')]);assert.deepEqual(selected,['chat']);
+  assert.equal(h.nodes.get('admin-status-panel').hidden,true);assert.equal(h.nodes.get('admin-ops-panel').hidden,false);
+  h.nodes.get('admin-tab-config').click();await tick();assert.deepEqual(selected,['chat','config']);assert.equal(mounted.length,1);
+  h.nodes.get('admin-tab-status').click();await tick();assert.equal(mounted.at(-1),'released');assert.equal(h.nodes.get('admin-ops-panel').hidden,true);
+  h.nodes.get('admin-brain').click();assert.deepEqual(settings,['load','ai']);
+});
+
+test('a backend that cannot start sends 系统管理员 to the operations page with the reason',async()=>{
+  const h=harness({adminStatus:async()=>({...healthy(),state:'failed',startup_error:'Python 版本过低'}),adminCheck:async()=>healthy(),adminRestart:async()=>({ok:true})});
+  h.ui.show({reason:'offline'});await tick();
+  assert.equal(h.nodes.get('admin-page').hidden,false);assert.equal(h.nodes.get('admin-offline').hidden,false);
+  assert.match(h.nodes.get('admin-offline').textContent,/系统管理员对话暂时打不开/);assert.match(h.nodes.get('admin-error').textContent,/Python 版本过低/);
+  // Without an operations bridge (older desktop) the tab strip stays hidden and only the status shows.
+  assert.equal(h.nodes.get('admin-tabs').hidden,true);
 });
 
 test('safe recovery needs an explicit click and refreshes actual state after the receipt',async()=>{
@@ -47,10 +69,10 @@ test('polling stops when the panel, native home view, or document is hidden and 
   h.document.visibilityState='hidden';h.listeners.get('visibilitychange')();assert.equal(h.timers.size,0);h.ui.hide();h.document.visibilityState='visible';h.listeners.get('visibilitychange')();await tick();assert.equal(reads,2);assert.equal(h.timers.size,0);
 });
 
-test('incident messages are rendered as text, and unsupported older bridges hide the entry',async()=>{
+test('incident messages are rendered as text, and unsupported older bridges keep the entry without a health page',async()=>{
   const h=harness({adminStatus:async()=>healthy({incidents:[{at:'2026-10-24T07:01:00Z',level:'error',message:'<script>bad</script>'}]}),adminCheck:async()=>healthy(),adminRestart:async()=>({ok:true})});h.ui.show();await tick();
   assert.equal(h.nodes.get('admin-incidents').children[0].children[1].textContent,'<script>bad</script>');
-  const old=harness({});assert.equal(old.nodes.get('nav-admin').hidden,true);old.ui.show();assert.equal(old.nodes.get('admin-page').hidden,true);
+  const old=harness({});assert.equal(old.nodes.get('nav-admin').hidden,false);old.ui.show();assert.equal(old.nodes.get('admin-page').hidden,true);
 });
 
 test('check acknowledgement is followed by a snapshot and never claims a newer completed check',async()=>{

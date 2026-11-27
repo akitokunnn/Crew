@@ -177,6 +177,8 @@ function openCreate() { $('error').hidden = true; $('create-panel').hidden = fal
 function resetCreate() {
   $('create-form').reset(); remoteParent = null; $('location').textContent = '尚未选择文件夹'; $('location').removeAttribute('title');
 }
+// Why the operations page was opened (offline: the administrator AI could not open).
+let adminReason = null;
 async function flushHomeActions() {
   if (!homeReady || busy || dispatching) return;
   dispatching = true;
@@ -185,7 +187,7 @@ async function flushHomeActions() {
       const next = homeActions.shift();
       if (next === 'settings') { void window.CrewHomeSettings?.show(); continue; }
       window.CrewHomeSettings?.hide();
-      if (next === 'admin') { window.CrewHomeHealth?.show(); continue; }
+      if (next === 'admin') { window.CrewHomeHealth?.show({reason:adminReason}); adminReason = null; continue; }
       window.CrewHomeHealth?.hide();
       if (next === 'tools') { window.CrewHomeTools?.show(); continue; }
       window.CrewHomeTools?.hide();
@@ -200,7 +202,7 @@ if (typeof window.crewDesktop.onAction === 'function') window.crewDesktop.onActi
   if (!['new', 'open', 'home', 'tools', 'admin', 'settings'].includes(message?.action)) return;
   if (message.action === 'settings') { void window.CrewHomeSettings?.show(); return; }
   window.CrewHomeSettings?.hide();
-  if (message.action === 'admin') { window.CrewHomeHealth?.show(); return; }
+  if (message.action === 'admin') { window.CrewHomeHealth?.show({reason:message.reason || null}); return; }
   homeActions.push(message.action); void flushHomeActions();
 });
 // The system administrator must remain reachable even while the workspace bootstrap is pending.
@@ -218,7 +220,7 @@ $('create-form').addEventListener('submit', event => { event.preventDefault(); a
   await openWorkspace(project.name, true);
 }); });
 $('refresh').addEventListener('click', () => action(refresh));
-// Shortcut into “设置 → 后台与运维 → 连接与目录”: add a LAN host here, or preview switching back from one.
+// Shortcut into “设置 → 后台与连接 → 连接与目录”: add a LAN host here, or preview switching back from one.
 $('connection-switch').addEventListener('click', () => { void window.CrewHomeSettings.show('backend', {launch:remote ? 'local' : 'pair'}); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('create-panel').hidden && !busy) closeCreate(); });
 // First-run guide: its last step hands over to the same open / create flows as the menu and tray.
@@ -237,6 +239,7 @@ async function finishStartup(state) {
   await window.crewDesktop.ready({ projects: state.projects.length, nodeAvailable: typeof require !== 'undefined',
     bridgeMethods: Object.keys(window.crewDesktop), title: document.title });
   if (['new', 'open', 'tools', 'admin', 'settings'].includes(state.pendingAction)) homeActions.unshift(state.pendingAction);
+  if (state.pendingAction === 'admin') adminReason = state.pendingReason || null;
   homeReady = true;
   if (state.pendingAction === 'workspace-settings') await openWorkspaceSettings(state.pendingWorkspace);
   await flushHomeActions();
