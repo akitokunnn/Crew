@@ -47,7 +47,7 @@ class Plan:
     # ---- lookups --------------------------------------------------------------------------------------------------
     def session(self, session_id):
         if session_id not in self._sessions:
-            row = self.conn.execute('SELECT * FROM sessions WHERE session_id=?', (session_id,)).fetchone()
+            row = self.conn.execute('SELECT * FROM sessions WHERE session_id=? AND project=?', (session_id, self.project)).fetchone()
             self._sessions[session_id] = dict(row) if row is not None else None
         return self._sessions[session_id]
 
@@ -564,13 +564,13 @@ def apply(service, conn, project, request, now):
     with manager.lock:
         with board.transaction(conn):
             if request['board_version'] != domains.version(conn, project):
-                raise board.Conflict('预览之后架构图又被改动过，请重新预览')
+                raise board.VersionConflict('预览之后架构图又被改动过，请重新预览')
             plan = Plan(conn, project, manager)
             plan.run(request['changes'])
             if plan.errors:
                 raise board.BoardError('方案还有 %d 处问题：%s' % (len(plan.errors), plan.errors[0]['message']))
             if request['revision'] != plan.revision():
-                raise board.Conflict('预览之后相关 leader 或任务有变化，请重新预览')
+                raise board.VersionConflict('预览之后相关 leader 或任务有变化，请重新预览')
             texts = _handoff_texts(plan, request['handoffs'])
             if domain_versions.diff(plan.before, plan.after())['count'] == 0 and not (
                     plan.goal_actions or plan.retired or plan.splits):

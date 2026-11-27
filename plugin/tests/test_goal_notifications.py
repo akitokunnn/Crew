@@ -57,7 +57,7 @@ class GoalNotificationTests(GoalFixture):
         self.inbox.tick();self.assertEqual(self.client.sent,[])
         self.push();self.assertEqual(len(self.client.sent),1)
         text=self.client.sent[0]['text']
-        for part in ('【完成】demo·chief：',target['title'],'待你验收','直接回复这里，全局助手会处理。'):
+        for part in ('【完成】demo·chief：',target['title'],'待你验收','直接回复这里，系统管理员会处理。'):
             self.assertIn(part,text)
         self.assertNotIn('localhost',text);self.assertNotIn('127.0.0.1',text);self.assertNotIn('/api/op/goal.report.view',text)
         key='goal-report:'+report['id']

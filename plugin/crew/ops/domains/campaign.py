@@ -61,7 +61,7 @@ def _preview(ctx, args):
 
 
 def _launch(ctx, args):
-    actor = ctx.caller.session_id if ctx.caller.role == 'assistant' else board.HUMAN
+    actor = ctx.caller.session_id if ctx.caller.role in ('assistant', 'workspace_assistant') else board.HUMAN
     return campaign.launch(ctx.service, ctx.conn, ctx.project, _plan(args), args.get('board_version'), actor, ctx.now)
 
 
@@ -69,13 +69,13 @@ register(Operation(
     name='campaign.preview', summary='预览开局方案：要建的领域、leader（载体与模型）、首批任务、作战室预算与费用估算',
     description='开局先预览：有 errors 就按提示改方案再预览；把 cost（新建几位 leader、各用什么载体和模型、首批任务、'
                 '作战室预算与估算金额）讲给用户，用户同意后带预览给出的 board_version 调 campaign.launch。',
-    access='read', risk='normal', scopes=HBD, target='own_project', lock='read', project='none', admission='none',
+    access='read', risk='normal', scopes=HBD | {'workspace_assistant'}, target='own_project', lock='read', project='none', admission='none',
     handler=_preview, params=_schema(), query_get=False))
 register(Operation(
     name='campaign.launch', summary='执行开局方案：一次建好架构图、leader、首批任务与助手牵头的作战室',
     description='必须先用 campaign.preview 预览并讲清费用；AI 调用会请用户在界面确认一次，确认前架构图变了会失败，需重新预览。'
                 'start=true 时立即启动新 leader 并开始首批任务，再开作战室由助手牵头；start=false 只建架构图。',
-    access='write', risk='high', scopes=HBD, target='own_project', lock='project', project='body',
+    access='write', risk='high', scopes=HBD | {'workspace_assistant'}, target='own_project', lock='project', project='body',
     admission='model_work', handler=_launch, emits=('campaign.launch',),
     params=_schema({'board_version': {'type': 'integer', 'minimum': 0, 'description': '预览给出的 board_version'}},
                    required=('note', 'leaders', 'start', 'board_version'))))

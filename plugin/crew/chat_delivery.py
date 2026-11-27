@@ -90,8 +90,8 @@ class DeliveryMixin:
         domain_context = getattr(current, 'domain_context', None)
         if text.strip() != '/compact':
             with closing(store.connect(self.home)) as handoff_conn:
-                assistant = personal.is_assistant(handoff_conn, logical)
-                git_revision, git_context = ((None, None) if assistant else
+                admin = personal.is_admin(handoff_conn, logical)
+                git_revision, git_context = ((None, None) if admin else
                     git_admin.input_context(handoff_conn, logical, git_revision, self.plugin_root))
                 domain_context, placement = domains.input_context(handoff_conn, logical, domain_context)
                 if current.execution is None:
@@ -105,13 +105,13 @@ class DeliveryMixin:
                     summary = self.goal_controller.general_context(handoff_conn, session_id)
                     if summary:
                         text = summary + '\n\n' + text
-                    if getattr(current, 'runtime', 'claude') == 'codex' and not assistant:
+                    if getattr(current, 'runtime', 'claude') == 'codex' and not admin:
                         # Claude leaders get this through the prompt hook; Codex has no hook. The cursor
                         # moves only once this input is accepted, so a rejected turn sees the posts again.
                         posts, channel_upto = channel.preview(handoff_conn, logical)
                         if posts:
                             text = posts + '\n\n' + text
-                    if assistant and source in ('human', 'qq', 'lark'):
+                    if source in ('human', 'qq', 'lark') and personal.can_lead_as_assistant(handoff_conn, logical):
                         text = ('【Crew 本轮原始用户消息标识：%s。写入动作必须绑定此 message_id；'
                                 '不改变用户原话的授权范围。】\n\n' % identity) + text
             if git_context:
@@ -264,7 +264,9 @@ class DeliveryMixin:
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='personal_assistant'").fetchone() else "")
         leaders = [dict(row) for row in conn.execute(
             "SELECT DISTINCT s.* FROM sessions s JOIN leader_notices n ON n.session_id=s.session_id "
-            "WHERE n.sent_at IS NULL AND n.wake=1 AND s.status!='closed' AND (s.role='leader'" + assistant + ")")]
+            "WHERE n.sent_at IS NULL AND n.wake=1 AND s.status!='closed' AND (s.role='leader'" + assistant +
+            " OR s.session_id IN (SELECT a.session_id FROM workspace_assistants a LEFT JOIN project_settings p "
+            "ON p.project=a.project WHERE p.removed_at IS NULL))")]
         for leader in leaders:
             sid = leader['session_id']
             batch = journal = None

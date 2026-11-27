@@ -15,6 +15,7 @@ Behaviour: docs/ASSISTANT_CAMPAIGN_DESIGN.md §3–§5. Registration (docs/OPERA
   confirmed later than the board changed fails with a conflict instead of running on a stale picture.
 """
 from ... import board, domain_versions, domains, restructure
+from ..errors import OpError
 from ..registry import Operation, register
 from ._common import HBD
 
@@ -45,10 +46,10 @@ def _schema(required, **properties):
     return {'type': 'object', 'additionalProperties': False, 'required': list(required), 'properties': properties}
 
 
-def _register(name, summary, handler, *, access, params, description, risk='normal', admission='none'):
+def _register(name, summary, handler, *, access, params, description, risk='normal', admission='none', scopes=HBD):
     read = access == 'read'
     register(Operation(
-        name=name, summary=summary, description=description, access=access, risk=risk, scopes=HBD, target='any',
+        name=name, summary=summary, description=description, access=access, risk=risk, scopes=scopes, target='any',
         lock='read' if read else 'project', project='none' if read else 'body', admission=admission,
         handler=handler, params=params, emits=() if read else (name,)))
 
@@ -81,7 +82,11 @@ def _handover(kind, other):
     """A one-change plan: merge a leader into another, or retire one (with or without a successor)."""
     def handler(ctx, args):
         def name(session_id):
-            return '「%s」' % (board.session(ctx.conn, session_id)['crew_name'] or session_id)
+            row = ctx.conn.execute('SELECT crew_name FROM sessions WHERE session_id=? AND project=?',
+                                   (session_id, ctx.project)).fetchone()
+            if row is None:
+                raise OpError('not_visible', '本工作区没有该 leader')
+            return '「%s」' % (row['crew_name'] or session_id)
         if kind == 'leader.merge':
             note = '合并 leader%s → %s' % (name(args['leader']), name(args['into']))
         else:
@@ -110,11 +115,11 @@ _register('domains.rollback', '把架构图回滚到某个版本', _rollback, ac
           description='只恢复结构（part 与 leader 位置），不删除、归档或恢复任何会话；回滚本身生成一个新版本。'
                       '先用 domains.version.get 看差异并拿到 board_version；AI 调用会请用户在界面确认后才执行。')
 _register('domains.restructure.preview', '预览架构重整方案（开局 / 重整先预览，再请用户确认执行）', _preview,
-          access='read', params=_schema(['project', 'changes'], project=PROJECT, changes=CHANGES),
+          scopes=HBD | {'workspace_assistant'}, access='read', params=_schema(['project', 'changes'], project=PROJECT, changes=CHANGES),
           description='只读，可反复调：改前 / 改后对照、受影响的 leader、作废或改派的任务、将归档的会话、交接稿草稿、'
                       '预计要启动的新 leader；有错误时逐条列出，按错误改方案再预览。空白工作区开局用 part.create 起盘。'
                       '把预览结果讲给用户，用户同意后再带预览给出的 board_version 与 revision 调 domains.restructure.apply。')
-_register('domains.restructure.apply', '执行预览过的架构重整方案', _apply, access='write', risk='high',
+_register('domains.restructure.apply', '执行预览过的架构重整方案', _apply, scopes=HBD | {'workspace_assistant'}, access='write', risk='high',
           admission='model_work',
           params=_schema(['project', 'changes', 'note', 'board_version', 'revision', 'handoffs'], project=PROJECT,
                          changes=CHANGES, note=NOTE, board_version=BOARD_VERSION, revision=REVISION,
@@ -123,7 +128,7 @@ _register('domains.restructure.apply', '执行预览过的架构重整方案', _
                       '接手人，并生成一个架构图版本。不启动新 leader；拆分出的新 leader 在结果的 to_start 里，'
                       '需另行确认费用后用 leader.create 启动。必须先用 domains.restructure.preview 预览；'
                       'AI 调用会请用户在界面确认，确认前架构图或相关任务变了会执行失败，需重新预览。')
-_register('leader.merge', '把一位 leader 合并到另一位', _handover('leader.merge', 'into'), access='write', risk='high',
+_register('leader.merge', '把一位 leader 合并到另一位', _handover('leader.merge', 'into'), scopes=HBD | {'workspace_assistant'}, access='write', risk='high',
           admission='model_work',
           params=_schema(['project', 'leader', 'into', 'handoff', 'board_version', 'revision'], project=PROJECT,
                          leader=SESSION, into=SESSION, handoff=HANDOFF, board_version=BOARD_VERSION,
@@ -131,7 +136,7 @@ _register('leader.merge', '把一位 leader 合并到另一位', _handover('lead
           description='只含一条 leader.merge 的重整方案：未结束的任务改派给接手人，交接稿投给它，原 leader 与组员归档保留。'
                       '先用 domains.restructure.preview 预览这一条变更，拿到交接稿草稿、board_version 与 revision；'
                       'AI 调用会请用户在界面确认后才执行。')
-_register('leader.retire', '让一位 leader 退役', _handover('leader.retire', 'successor'), access='write', risk='high',
+_register('leader.retire', '让一位 leader 退役', _handover('leader.retire', 'successor'), scopes=HBD | {'workspace_assistant'}, access='write', risk='high',
           admission='model_work',
           params=_schema(['project', 'leader', 'successor', 'handoff', 'board_version', 'revision'], project=PROJECT,
                          leader=SESSION, successor={**SESSION, 'type': ['string', 'null'],

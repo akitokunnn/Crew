@@ -62,10 +62,11 @@ class PersonalNativeTests(unittest.TestCase):
         event = next(event for event in manager.history(assistant['session_id'])['events'] if event['type'] == 'message')
         self.assertEqual(event['text'], '记下我想做一个健身应用')
         with closing(store.connect(self.home)) as conn:
+            board.init_project(conn, 'fitness', self.home.parent)
             ai_call(self.service, conn, assistant['session_id'], 'note.capture',
-                    {'data': {'text': '想做一个健身应用'}}, message_id='user-1', runtime='codex')
-            self.assertEqual(personal.list_notes(conn)[0]['text'], '想做一个健身应用')
-            self.assertEqual(personal.projects(conn), [])
+                    {'project': 'fitness', 'data': {'text': '想做一个健身应用'}}, message_id='user-1', runtime='codex')
+            self.assertEqual(personal.list_notes(conn, project='fitness')[0]['text'], '想做一个健身应用')
+            self.assertIsNone(board.session(conn, assistant['session_id'])['project'])
             with self.assertRaises(OpError):
                 ai_call(self.service, conn, assistant['session_id'], 'execution.spawn',
                         {'name': 'child', 'task': '绕开 leader'}, runtime='codex')
@@ -89,6 +90,76 @@ class PersonalNativeTests(unittest.TestCase):
         journal = manager.history(assistant['session_id'])
         self.assertEqual(next(item['text'] for item in journal['events'] if item['type'] == 'message'), '你好')
         self.assertEqual(process.options['cwd'], assistant['cwd'])
+
+    def test_workspace_first_send_in_both_carriers(self):
+        from crew import channel, git_admin, workspace_assistant
+        from crew.ops import executor
+        for runtime in ('claude', 'codex'):
+            root = self.home.parent / runtime
+            root.mkdir()
+            with closing(store.connect(self.home)) as conn:
+                board.init_project(conn, runtime, root)
+                opened = workspace_assistant.ensure(conn, self.home, runtime)
+                self.assertFalse(opened['configured'])
+                settings.save(conn, {'assistant': {'runtime': runtime, 'model': None, 'effort': None},
+                                     'default': {'runtime': None, 'model': None, 'effort': None}})
+            sid = opened['session_id']
+            clients = []
+
+            def factory(**kwargs):
+                clients.append(FakeClient(**kwargs))
+                return clients[-1]
+
+            with (mock.patch('crew.codex_runtime._ObservedClient', side_effect=factory),
+                  mock.patch('crew.settings.shutil.which', return_value='fake-carrier'),
+                  mock.patch('crew.chat.claude_executable', return_value='fake-claude'),
+                  mock.patch('crew.ops.launch.endpoint', return_value=('http://127.0.0.1:1/mcp', 'core')),
+                  mock.patch.object(git_admin, 'input_context', wraps=git_admin.input_context) as git,
+                  mock.patch.object(channel, 'preview', wraps=channel.preview) as preview):
+                sent = executor.human_call(self.service, 'chat.send', {'session_id': sid, 'text': '本区进展',
+                                           'message_id': 'workspace-user-' + runtime}, project=runtime)
+                self.assertTrue(sent['accepted'])
+                self.assertEqual(git.call_args.args[1], sid)
+                if runtime == 'claude':
+                    proc = self.service.chat.processes[sid].process
+                    self.assertEqual(Path(proc.options['cwd']), root)
+                    self.assertIn('本工作区的助手', ' '.join(proc.command))
+                    self.assertIn('--mcp-config', proc.command)
+                    body = proc.stdin.getvalue()
+                else:
+                    client = clients[0]
+                    start = next(params for name, params in client.calls if name == 'thread/start')
+                    self.assertEqual(Path(start['cwd']), root)
+                    self.assertIn('本工作区的助手', start['developerInstructions'])
+                    self.assertIn('crew', start['config']['mcp_servers'])
+                    body = json.dumps(next(params for name, params in client.calls if name == 'turn/start'))
+                    self.assertEqual(preview.call_args.args[1], sid)
+                    client.finish()
+                self.assertIn('workspace-user-' + runtime, body)
+                with closing(store.connect(self.home)) as conn:
+                    grants = conn.execute('SELECT role,project,runtime FROM mcp_tokens WHERE session_id=?', (sid,))
+                    self.assertEqual([tuple(row) for row in grants], [('workspace_assistant', runtime, runtime)])
+                    settings.save(conn, {'default': {'runtime': None, 'model': None, 'effort': None}, 'assistant': None})
+
+    def test_admin_saved_codex_thread_resumes_after_workspace_assistants_open(self):
+        from crew import workspace_assistant
+        assistant = self.assistant('codex')
+        sid = assistant['session_id']
+        manager = self.manager()
+        with closing(store.connect(self.home)) as conn:
+            root = self.home.parent / 'registered'
+            root.mkdir()
+            board.init_project(conn, 'work', root)
+            workspace_assistant.ensure(conn, self.home, 'work')
+            runtimes.set(conn, sid, 'codex', 'admin-existing-thread')
+        manager.journal(sid).message('old-user', '旧问题')
+        with mock.patch('crew.codex_runtime._ObservedClient', side_effect=FakeClient):
+            manager.send(assistant, '继续', identity='new-user')
+        client = manager.processes[sid].client
+        resumed = next(params for name, params in client.calls if name == 'thread/resume')
+        self.assertEqual(resumed['threadId'], 'admin-existing-thread')
+        self.assertTrue(any(e.get('id') == 'old-user' for e in manager.history(sid)['events']))
+        client.finish()
 
     def test_regular_codex_member_cannot_use_global_assistant_tool(self):
         self.assistant('codex')
@@ -194,11 +265,12 @@ class PersonalNativeTests(unittest.TestCase):
         self.service.chat.journal(sid).message('u', '请记下想法')
         with closing(store.connect(self.home)) as conn:
             self.assertEqual(ai_call(self.service, conn, sid, 'workspace.state')['projects'], [])
-            args = {'data': {'text': '想法'}}
+            board.init_project(conn, 'fitness', self.home.parent)
+            args = {'project': 'fitness', 'data': {'text': '想法'}}
             with self.assertRaises((OpError, board.BoardError)):
                 ai_call(self.service, conn, sid, 'note.capture', args, message_id='missing')
             ai_call(self.service, conn, sid, 'note.capture', args, message_id='u', request_id='r')
-            self.assertEqual([n['text'] for n in personal.list_notes(conn)], ['想法'])
+            self.assertEqual([n['text'] for n in personal.list_notes(conn, project='fitness')], ['想法'])
 
     def test_api_open_and_state_do_not_resolve_or_launch_native(self):
         with mock.patch('crew.settings.shutil.which', side_effect=AssertionError('opening must not discover CLI')):

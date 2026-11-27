@@ -55,7 +55,7 @@ route('settings.save', '保存全局设置', 'POST', '/api/settings', admin.post
                   'model': _field(['string', 'null'], '载体提供的模型 ID，null 跟随默认模型', minLength=1, maxLength=300),
                   'effort': _field(['string', 'null'], '模型支持的推理强度，null 跟随默认设置', minLength=1, maxLength=100),
                   'speed': _field(['string', 'null'], 'Codex 速度档位，null 跟随默认设置', minLength=1, maxLength=100),
-              }, ['runtime', 'model', 'effort'], description='全局助手的载体和模型配置，空值表示继承全局默认', kind=['object', 'null'], open_fields=False),
+              }, ['runtime', 'model', 'effort'], description='系统管理员的载体和模型配置，空值表示继承全局默认', kind=['object', 'null'], open_fields=False),
               'digest': _object({
                   'runtime': _field(['string', 'null'], '使用的 AI 载体，null 跟随默认设置', enum=['claude', 'codex', None]),
                   'model': _field(['string', 'null'], '载体提供的模型 ID，null 跟随默认模型', minLength=1, maxLength=300),
@@ -73,7 +73,7 @@ route('settings.save', '保存全局设置', 'POST', '/api/settings', admin.post
                   'model': _field(['string', 'null'], '载体提供的模型 ID，null 跟随默认模型', minLength=1, maxLength=300),
                   'effort': _field(['string', 'null'], '模型支持的推理强度，null 跟随默认设置', minLength=1, maxLength=100),
                   'speed': _field(['string', 'null'], 'Codex 速度档位，null 跟随默认设置', minLength=1, maxLength=100),
-              }, ['runtime', 'model', 'effort'], description='运维助手的载体和模型配置，空值表示继承全局默认', kind=['object', 'null'], open_fields=False),
+              }, ['runtime', 'model', 'effort'], description='系统管理员 · 运维的载体和模型配置，空值表示继承全局默认', kind=['object', 'null'], open_fields=False),
           }, ['default'], description='完整的 AI 默认配置，ai、execution、sounds 至少提供一项', open_fields=False),
           'execution': _object({
               'codex': _field('string', 'Codex 执行权限模式', enum=['read-only', 'workspace-write', 'danger-full-access']),
@@ -83,7 +83,7 @@ route('settings.save', '保存全局设置', 'POST', '/api/settings', admin.post
               'muted': _field('boolean', '是否全局静音'),
               'volume': _field('number', '音量比例，范围 0 到 1', minimum=0, maximum=1),
               'leader': _field('string', 'leader 事件使用的内置或自定义音效 ID，off 为关闭', minLength=1),
-              'assistant': _field('string', '全局助手事件使用的内置或自定义音效 ID，off 为关闭', minLength=1),
+              'assistant': _field('string', '系统管理员事件使用的内置或自定义音效 ID，off 为关闭', minLength=1),
               'delivery': _field('string', '任务交付事件使用的内置或自定义音效 ID，off 为关闭', minLength=1),
           }, ['muted', 'volume', 'leader', 'assistant', 'delivery'], description='完整的提示音设置，ai、execution、sounds 至少提供一项', open_fields=False),
       }))
@@ -277,19 +277,19 @@ route('admin.connection.prepare', '准备切换连接方式', 'POST', '/api/admi
       params=_object({
           'instance_id': _field('string', '当前运行的 Crew 后台实例 ID', minLength=1),
       }, ['instance_id']))
-route('ops_chat.get', '读取运维对话', 'GET', '/api/admin/chat', admin.get_admin_chat, access='host', scopes=H,
+route('ops_chat.get', '读取系统管理员 · 运维', 'GET', '/api/admin/chat', admin.get_admin_chat, access='host', scopes=H,
       params=_object({}, description='无参数'))
-route('ops_chat.send', '给运维对话发消息', 'POST', '/api/admin/chat/send', admin.post_admin_chat_send, access='host', scopes=H,
+route('ops_chat.send', '给系统管理员 · 运维发消息', 'POST', '/api/admin/chat/send', admin.post_admin_chat_send, access='host', scopes=H,
       params=_object({
-          'text': _field('string', '要发送给运维助手的问题，1 到 8000 字', minLength=1, maxLength=8000),
+          'text': _field('string', '要发送给系统管理员 · 运维的问题，1 到 8000 字', minLength=1, maxLength=8000),
           'message_id': _field('string', '用于去重的客户端消息 ID，最多 120 字', minLength=1, maxLength=120),
       }, ['text', 'message_id']))
-route('ops_chat.interrupt', '打断运维对话', 'POST', '/api/admin/chat/interrupt', admin.post_admin_chat_interrupt,
+route('ops_chat.interrupt', '打断系统管理员 · 运维', 'POST', '/api/admin/chat/interrupt', admin.post_admin_chat_interrupt,
       access='host', scopes=H,
       params=_object({}, description='无参数'))
-route('ops_config.get', '读取运维对话配置', 'GET', '/api/admin/config', admin.get_admin_config, access='host', scopes=H,
+route('ops_config.get', '读取系统管理员 · 运维配置', 'GET', '/api/admin/config', admin.get_admin_config, access='host', scopes=H,
       params=_object({}, description='无参数'))
-route('ops_config.save', '保存运维对话配置', 'POST', '/api/admin/config', admin.post_admin_config, access='host', scopes=H,
+route('ops_config.save', '保存系统管理员 · 运维配置', 'POST', '/api/admin/config', admin.post_admin_config, access='host', scopes=H,
       params=_object({
           'enabled': _field('boolean', '是否启用后台运维修复'),
           'repository': _field('string', 'Crew 源码仓库目录，启用时必须为绝对路径'),

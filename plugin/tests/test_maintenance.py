@@ -387,6 +387,22 @@ class WorkspaceCleanupTests(MaintenanceFixture, unittest.TestCase):
     def cleanup(self, preview):
         return self.ok('/api/op/maintenance.cleanup.run?project=demo', {'project': 'demo', 'preview_id': preview['preview_id'], 'confirm': True})
 
+    def test_workspace_assistant_stopped_and_kept_in_cleanup(self):
+        from crew import workspace_assistant
+        sid = workspace_assistant.ensure(self.conn, self.home, 'demo')['session_id']
+        self.ok('/api/op/chat.send?project=demo', {'session_id': sid, 'text': '保留的对话'})
+        preview = self.cleanup_preview()
+        self.assertEqual(preview['workspace_assistant']['session_id'], sid)
+        self.assertIn('身份、历史、想法和导图保留', preview['workspace_assistant']['summary'])
+        job = self.settled(self.cleanup(preview)['id'], kind='workspace_cleanup')
+        self.assertEqual(job['status'], 'completed', job)
+        targets = {i['target'] for i in job['items'] if i['target'].startswith('session:')}
+        self.assertEqual(targets, {'session:' + p['session_id'] for p in preview['people'] if p['managed'] or p['running']})
+        self.assertIn('session:' + sid, targets)
+        self.assertFalse(board.is_archived(self.conn, sid))
+        self.assertFalse(self.server.service.chat.running(sid))
+        self.assertTrue(any(e.get('text') == '保留的对话' for e in self.server.service.chat.history(sid)['events']))
+
     def test_cleanup_archives_old_work_and_a_new_same_name_leader_inherits_nothing(self):
         data = self.populate()
         preview = self.cleanup_preview()

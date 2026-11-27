@@ -34,7 +34,7 @@ KINDS = {
 }
 
 
-EVENT_LABELS = {'leader': 'leader 回复完成', 'assistant': '全局助手回复完成', 'delivery': '任务交付'}
+EVENT_LABELS = {'leader': 'leader 回复完成', 'assistant': '系统管理员回复完成', 'delivery': '任务交付'}
 CUSTOM_LIMIT, CUSTOM_BYTES = 20, 1024 * 1024
 MEDIA = {'wav': 'audio/wav', 'mp3': 'audio/mpeg', 'ogg': 'audio/ogg'}
 _CUSTOM_ID = re.compile(r'custom:([0-9a-f]{12})')
@@ -260,6 +260,9 @@ def events(conn, project, history, journal):
         'AND x.requirement_version=e.requirement_version)' + scope, params))
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='personal_assistant'").fetchone():
         scopes.extend((row[0], 'assistant') for row in conn.execute('SELECT session_id FROM personal_assistant'))
+    scopes.extend((row[0], 'assistant') for row in conn.execute(
+        'SELECT a.session_id FROM workspace_assistants a JOIN sessions s ON s.session_id=a.session_id '
+        'LEFT JOIN project_settings p ON p.project=a.project WHERE p.removed_at IS NULL' + scope, params))
     deliveries = list(conn.execute(
         'SELECT f.goal_id,f.report_id,f.execution_id,f.finalized_at FROM goal_round_finishes f '
         'JOIN goals g ON g.id=f.goal_id WHERE f.round=g.current_round '

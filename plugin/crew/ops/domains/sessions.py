@@ -256,7 +256,7 @@ route('chat.send', '给会话发消息', 'POST', '/api/chat/send', sessions.post
               'media_type': _field('string', '图片 MIME 类型', enum=['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
               'data': _field('string', '图片的 base64 文本，解码后不超过 5 MiB', maxLength=6990508),
           }, ['media_type', 'data'], description='随消息发送的一张图片'), maxItems=5),
-          'note_id': _field(['string', 'null'], '关联的想法 ID，仅普通全局助手对话支持'),
+          'note_id': _field(['string', 'null'], '关联的想法 ID，用于系统管理员或本工作区助手的普通对话'),
           'reading': _object({
               'kind': _field('string', '阅读内容类别', enum=['report', 'document', 'file']),
               'goal_id': _field('string', '报告所属任务 ID，report 时必填', minLength=1),

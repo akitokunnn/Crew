@@ -157,14 +157,16 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
             raise board.BoardError("回复要和原发言在同一个地方：原发言 #%d 不在这个作战室" % reply_to)
     from . import personal
     # The global assistant speaks as itself (it leads campaign war rooms), never as the user.
-    assistant = actor != board.HUMAN and personal.is_assistant(conn, actor)
+    assistant = actor != board.HUMAN and personal.can_lead_as_assistant(conn, actor)
     room = lead = None
     if room_id is not None:
         from . import war_room
         room = war_room.open_room(conn, room_id, project_name)
         # A room the assistant leads can name it and tell it about replies to its posts.
         lead = conn.execute("SELECT * FROM sessions WHERE session_id=?", (room["lead_session_id"],)).fetchone()
-        lead = dict(lead) if lead is not None and personal.is_assistant(conn, lead["session_id"]) else None
+        lead = dict(lead) if lead is not None and personal.can_lead_as_assistant(conn, lead["session_id"]) else None
+        if assistant and not personal.leads_room(conn, room, actor):
+            raise board.BoardError("助手只能在自己牵头的作战室发言")
         if actor != board.HUMAN and not assistant and not war_room.is_member(conn, room_id, actor):
             raise board.BoardError("你不是作战室《%s》的成员；有事在交流区说，或请牵头邀请你" % room["title"])
     if type(detail) is not bool:

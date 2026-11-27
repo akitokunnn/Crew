@@ -11,7 +11,7 @@ import copy
 from .. import registry
 
 EXCLUDED_PREFIXES = ('admin.', 'ops_chat.', 'ops_config.', 'connections.', 'remote_access.', 'storage.', 'data.',
-                     'sounds.', 'interaction.', 'assistant.')
+                     'sounds.', 'interaction.', 'assistant.', 'unassigned.')
 EXCLUDED = frozenset(('workspace.add_existing', 'workspace.create_folder', 'workspace.host_folders', 'files.open',
                       'files.reveal', 'goal.report.folder', 'approval.resolve'))
 IDENTITY_FIELDS = ('caller_session_id', 'caller_execution_id', 'actor_session_id', 'execution_id', 'session_id_of_caller')

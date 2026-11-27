@@ -93,6 +93,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_message    TEXT,                  -- first 300 chars of the last assistant message
     ended_at        TEXT
 );
+CREATE TABLE IF NOT EXISTS workspace_assistants (
+ project TEXT PRIMARY KEY REFERENCES projects(name),
+ session_id TEXT NOT NULL UNIQUE REFERENCES sessions(session_id),
+ created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS sessions_project ON sessions (project, crew_name);
 
 -- Crew identity stays stable while each execution tool has its own native id.
@@ -1205,4 +1211,92 @@ CREATE TABLE IF NOT EXISTS interaction_requests (
  created_at TEXT NOT NULL,
  decided_at TEXT,
  UNIQUE (caller_key, request_id)
+);
+
+-- BEGIN workspace_notes_v1
+CREATE TABLE IF NOT EXISTS schema_migrations(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS personal_assistant (singleton INTEGER PRIMARY KEY CHECK(singleton=1), session_id TEXT NOT NULL UNIQUE REFERENCES sessions(session_id));
+
+CREATE TABLE IF NOT EXISTS personal_notes (id TEXT PRIMARY KEY, project TEXT REFERENCES projects(name), original_text TEXT NOT NULL, text TEXT NOT NULL, tags_json TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','archived')), version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, source_json TEXT NOT NULL DEFAULT '{}', title TEXT, pinned_at TEXT, snoozed_until TEXT, merged_into TEXT, stage TEXT NOT NULL DEFAULT 'new' CHECK(stage IN ('new','discussed','promoted')), last_discussed_at TEXT, reviewed_at TEXT, summary_json TEXT NOT NULL DEFAULT '[]');
+
+CREATE TABLE IF NOT EXISTS personal_note_discussions (note_id TEXT NOT NULL REFERENCES personal_notes(id), session_id TEXT NOT NULL REFERENCES sessions(session_id), message_id TEXT NOT NULL, seq INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(session_id, message_id));
+
+CREATE INDEX IF NOT EXISTS personal_note_discussions_note ON personal_note_discussions(note_id, created_at);
+
+CREATE TABLE IF NOT EXISTS personal_note_requests (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response_json TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS personal_note_leaders (note_id TEXT PRIMARY KEY REFERENCES personal_notes(id), project TEXT NOT NULL REFERENCES projects(name), request_id TEXT NOT NULL UNIQUE, source_json TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','completed','unknown')), session_id TEXT REFERENCES sessions(session_id), error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS personal_action_receipts (request_id TEXT PRIMARY KEY, action TEXT NOT NULL, fingerprint TEXT NOT NULL, instruction_json TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','completed','failed','unknown')), response_json TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+
+CREATE INDEX IF NOT EXISTS personal_action_fingerprint ON personal_action_receipts(fingerprint);
+
+CREATE TABLE IF NOT EXISTS personal_mindmap_nodes (id TEXT PRIMARY KEY, parent_id TEXT REFERENCES personal_mindmap_nodes(id), note_id TEXT UNIQUE REFERENCES personal_notes(id), label TEXT, sort_order INTEGER NOT NULL, collapsed INTEGER NOT NULL DEFAULT 0 CHECK(collapsed IN (0,1)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, project TEXT REFERENCES projects(name), CHECK((note_id IS NULL) <> (label IS NULL)));
+
+CREATE TABLE IF NOT EXISTS personal_mindmap_links (node_id TEXT NOT NULL REFERENCES personal_mindmap_nodes(id), project TEXT NOT NULL REFERENCES projects(name), domain_id TEXT NOT NULL, converted_at TEXT NOT NULL, PRIMARY KEY(node_id, project));
+
+CREATE TABLE IF NOT EXISTS workspace_note_tags (
+    project TEXT NOT NULL REFERENCES projects(name),
+    name TEXT NOT NULL,
+    color TEXT NOT NULL CHECK(color IN ('c0','c1','c2','c3','c4','c5','c6','c7','c8','c9')),
+    pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
+    sort_order INTEGER NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(project,name)
+);
+
+CREATE TABLE IF NOT EXISTS unassigned_note_tags (
+    name TEXT PRIMARY KEY,
+    color TEXT NOT NULL CHECK(color IN ('c0','c1','c2','c3','c4','c5','c6','c7','c8','c9')),
+    pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
+    sort_order INTEGER NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspace_mindmaps (
+    project TEXT PRIMARY KEY NOT NULL REFERENCES projects(name),
+    version INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS unassigned_pool (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    version INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS workspace_mindmap_parent ON personal_mindmap_nodes(project,parent_id,sort_order);
+
+CREATE TRIGGER IF NOT EXISTS mindmap_scope_insert BEFORE INSERT ON personal_mindmap_nodes
+WHEN (NEW.parent_id IS NOT NULL AND NEW.project IS NOT
+         (SELECT project FROM personal_mindmap_nodes WHERE id=NEW.parent_id))
+  OR (NEW.note_id IS NOT NULL AND NEW.project IS NOT
+         (SELECT project FROM personal_notes WHERE id=NEW.note_id))
+  OR EXISTS (SELECT 1 FROM personal_mindmap_nodes WHERE parent_id=NEW.id AND project IS NOT NEW.project)
+BEGIN SELECT RAISE(ABORT, 'mindmap project mismatch'); END;
+
+CREATE TRIGGER IF NOT EXISTS mindmap_scope_update BEFORE UPDATE OF project,parent_id,note_id ON personal_mindmap_nodes
+WHEN (NEW.parent_id IS NOT NULL AND NEW.project IS NOT
+         (SELECT project FROM personal_mindmap_nodes WHERE id=NEW.parent_id))
+  OR (NEW.note_id IS NOT NULL AND NEW.project IS NOT
+         (SELECT project FROM personal_notes WHERE id=NEW.note_id))
+  OR EXISTS (SELECT 1 FROM personal_mindmap_nodes WHERE parent_id=NEW.id AND project IS NOT NEW.project)
+BEGIN SELECT RAISE(ABORT, 'mindmap project mismatch'); END;
+
+CREATE TRIGGER IF NOT EXISTS mindmap_note_scope BEFORE UPDATE OF project ON personal_notes
+WHEN EXISTS (SELECT 1 FROM personal_mindmap_nodes WHERE note_id=NEW.id AND project IS NOT NEW.project)
+BEGIN SELECT RAISE(ABORT, 'mindmap note project mismatch'); END;
+-- END workspace_notes_v1
+
+-- Imported discussions whose original chat/message did not travel. No local jump or grant.
+CREATE TABLE IF NOT EXISTS imported_note_discussion_history (
+    id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL REFERENCES personal_notes(id),
+    source_kind TEXT NOT NULL CHECK(source_kind IN ('workspace','administrator','external')),
+    created_at TEXT NOT NULL
 );
