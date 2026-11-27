@@ -182,7 +182,9 @@ STATIC.update({'/logo.svg': ('logo.svg', 'image/svg+xml'),
                '/fonts/HarmonyOS_Sans_SC_Medium.woff2': ('fonts/HarmonyOS_Sans_SC_Medium.woff2', 'font/woff2')})
 STATIC_CACHED = {'/logo.svg', '/fonts/HarmonyOS_Sans_SC_Regular.woff2', '/fonts/HarmonyOS_Sans_SC_Medium.woff2'}
 STATIC.update({'/goal-ui.js': ('goal-ui.js', 'text/javascript; charset=utf-8'),
-               '/goal-ui.css': ('goal-ui.css', 'text/css; charset=utf-8')})
+               '/goal-ui.css': ('goal-ui.css', 'text/css; charset=utf-8'),
+               '/report-markdown.js': ('report-markdown.js', 'text/javascript; charset=utf-8'),
+               '/report-markdown.css': ('report-markdown.css', 'text/css; charset=utf-8')})
 STATIC.update({f'/{name}.{ext}': (f'{name}.{ext}', 'text/javascript; charset=utf-8' if ext == 'js' else 'text/css; charset=utf-8') for name in ('personal-notes-ui', 'behavior-prompts-ui') for ext in ('js', 'css')})
 STATIC['/goal-versions-ui.js'] = ('goal-versions-ui.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/skill-picker.js': ('skill-picker.js', 'text/javascript; charset=utf-8'),
@@ -321,7 +323,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
-    def send_file_content(self, content, media_type, *, interactive_report=False):
+    def send_file_content(self, content, media_type, *, report_format=None):
         # SVG must remain an image even when the resource URL is opened directly.
         if isinstance(content, dict):
             content = json.dumps(content, ensure_ascii=False).encode("utf-8")
@@ -329,7 +331,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", media_type)
         self.send_header("Content-Length", str(len(content)))
         self.send_header("Cache-Control", "no-store")
-        if interactive_report:
+        if report_format == 'markdown':
+            from .report_documents import MARKDOWN_POLICY
+            policy = 'sandbox allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox; ' + MARKDOWN_POLICY
+        elif report_format == 'html':
             from .report_documents import VIEWER_POLICY
             policy = 'sandbox allow-scripts; ' + VIEWER_POLICY
         else:

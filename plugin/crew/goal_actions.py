@@ -3,7 +3,7 @@ from contextlib import closing
 import hashlib
 import json
 
-from . import behavior_prompts, board, codex_client, goal_artifacts, goal_context, goal_mode, goal_reports, goal_work, goals, store
+from . import behavior_prompts, board, codex_client, goal_artifacts, goal_context, goal_mode, goal_reports, goal_work, goals, report_documents, store
 
 READ_ACTIONS = frozenset(('status', 'report-template', 'report.get', 'report.preview', 'context.inspect', 'context.retrieve', 'work.list')) | goal_artifacts.READ_ACTIONS
 GOAL_ACTIONS = frozenset(('status', 'create', 'start', 'pause', 'resume', 'cancel', 'reopen',
@@ -24,7 +24,6 @@ def report_template(conn, goal_id):
         'goal_id': goal_id, 'round': goal['current_round'], 'requirement_version': goal['requirement_version'],
         'outcome': 'awaiting_acceptance',
         'summary': '',
-        'document_html': '',
         'acceptance': [
             {'criterion_id': item['id'], 'criterion': item['title'], 'status': 'unverified', 'evidence': []}
             for item in goal['requirements']['acceptance']
@@ -33,7 +32,7 @@ def report_template(conn, goal_id):
             'outcome': 'awaiting_acceptance 交给用户验收；failed 或 cancelled 用于如实结束。',
             'acceptance': '覆盖全部标准。passed / failed 写 evidence [{label, reference}]，说明如何验证及在哪复查。',
             'unresolved': '有 unverified / simulated 时，用字符串数组说明验证边界。',
-            'document_html': '自包含 HTML，最多 512 KiB。Crew CLI 可用 finish --html-file <报告.html>。',
+            'document': '用 goal.finish 提交时，纯文字优先填 report.document_md，需要独立排版或交互图表时填 report.document_html（自包含 HTML）。二选一，最多 512 KiB。',
             'folder': '有交付文件时填写所在目录（相对工作区或绝对路径）。',
             'user_test': '需要用户实测时填写 [{step, expected}]。',
             'human_input': '可选 user_todos [{title, detail}]、user_decisions [{question, options, recommendation, why}]。',
@@ -242,26 +241,32 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
         if goal is None:
             raise board.BoardError('此操作必须指定目标')
         if action == 'report.preview':
-            if set(data) - {'goal_id', 'project', 'document_html', 'report_id', 'viewport'}:
+            sources = (*report_documents.BODY_FIELDS, 'report_id')
+            if set(data) - {'goal_id', 'project', 'viewport', *sources}:
                 raise board.BoardError('报告预览仅接受目标、报告正文或报告 ID 与视口，不接受路径、URL 或执行命令')
             if execution and execution['goal_id'] != goal_id:
                 raise board.BoardError('报告预览必须属于当前执行目标')
-            if ('document_html' in data) == ('report_id' in data):
-                raise board.BoardError('报告预览必须且只能提供 document_html 或 report_id 其中一项')
-            document = data.get('document_html')
-            report_id = data.get('report_id')
-            if report_id is not None:
+            selected = [key for key in sources if key in data]
+            if len(selected) != 1:
+                raise board.BoardError('报告预览必须且只能提供 document_md、document_html 或 report_id 其中一项')
+            field = selected[0]
+            report_id = None
+            if field == 'report_id':
+                report_id = data[field]
                 if not isinstance(report_id, str) or not report_id:
                     raise board.BoardError('报告预览 report_id 必须为非空报告 ID')
                 report = goals.get_report(conn, report_id)
                 if report['goal_id'] != goal_id:
                     raise board.BoardError('报告不属于当前任务')
-                document = report['data'].get('document_html')
+                field = 'document_md' if report['document_format'] == 'markdown' else 'document_html'
+                document = report['data'].get(field)
+            else:
+                document = data[field]
             host = _host(controller)
             previews = getattr(getattr(host, 'manager', None), 'report_previews', None)
             if previews is None:
                 raise board.BoardError('当前 Crew 宿主不支持报告预览；尚未截图')
-            return previews.capture(document, viewport=data.get('viewport', 'desktop'), title=goal['title'],
+            return previews.capture(document, field=field, viewport=data.get('viewport', 'desktop'), title=goal['title'],
                                     goal_id=goal_id, report_id=report_id, actor_session_id=actor_session_id)
         if action in goal_artifacts.ACTIONS:
             return goal_artifacts.dispatch(conn, home, goal_id, action, data, actor=actor_session_id, execution_id=execution_id)

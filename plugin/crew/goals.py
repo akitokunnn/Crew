@@ -684,17 +684,21 @@ def validate_report(conn, goal_id, data):
         if item['recommendation'] and item['recommendation'] not in item['options']:
             raise board.BoardError('user_decisions.recommendation 必须是 options 之一')
     result['user_decisions'] = entries
-    if 'document_html' in result:
-        document = _text(result['document_html'], 'document_html 自包含 HTML 正文', required=False,
-                         limit=report_documents.MAX_HTML)
-        if len(document.encode('utf-8')) > report_documents.MAX_HTML:
-            raise board.BoardError('document_html 自包含 HTML 正文超过 512 KiB')
+    final = outcome in ('awaiting_acceptance', 'completed')
+    field = report_documents.body_field(result, required=final)
+    if field is not None:
+        if field == 'document_md' and outcome == 'progress':
+            raise board.BoardError('Markdown 报告正文请用 goal.finish 提交')
+        document = _text(result[field], field + ' 报告正文', required=final or field == 'document_md',
+                         limit=report_documents.MAX_DOCUMENT)
+        if len(document.encode('utf-8')) > report_documents.MAX_DOCUMENT:
+            raise board.BoardError(field + ' 报告正文超过 512 KiB')
+    result['document_format'] = 'markdown' if field == 'document_md' else 'html'
     for key in ('delivered', 'unresolved', 'artifacts', 'tradeoffs'):
         result[key] = _strings(result.get(key, []), key)
     result['follow_up'] = _text(result.get('follow_up', ''), '后续修改入口', required=False)
     if 'folder' in result:
         result['folder'] = _text(result['folder'], 'folder 交付文件夹', required=False, limit=1000).strip()
-    final = outcome in ('awaiting_acceptance', 'completed')
     entries, standards = result.get('acceptance', []), {item['id']: item['title'] for item in req['acceptance']}
     if not isinstance(entries, builtins.list) or final and len(entries) != len(standards):
         raise board.BoardError('acceptance 必须为对象数组；awaiting_acceptance/completed 必须逐项对应全部原始验收标准')
@@ -727,8 +731,6 @@ def validate_report(conn, goal_id, data):
     if outcome == 'completed' and (any(item['status'] != 'passed' for item in entries)
                                    or not any(item['kind'] == 'actual' for item in examples)):
         raise board.BoardError('未验证、模拟或仅示意 example 不能宣称目标达标')
-    if final and not result.get('document_html', '').strip():
-        raise board.BoardError('最终交付需要 HTML 正文 document_html（CLI 用 finish --html-file）')
     if final and any(item['status'] in ('unverified', 'simulated') for item in entries) and not result['unresolved']:
         raise board.BoardError('有未验证或模拟验证的标准时，unresolved 必须写明没覆盖的边界')
     investment = result.get('investment', {})
@@ -755,6 +757,10 @@ def validate_report(conn, goal_id, data):
 
 def render_report(conn, goal_id, data):
     data, goal = validate_report(conn, goal_id, data), _row(conn, goal_id)
+    if report_documents.document_format(data) == 'markdown':
+        return report_documents.render_markdown(goal['title'], data['document_md'], report_documents.verification(data))
+    if data.get('document_html', '').strip():
+        return report_documents.render(goal['title'], data['document_html'], report_documents.verification(data))
     esc = lambda value: html.escape(str(value), quote=True)
     labels = {'passed': '通过', 'failed': '失败', 'unverified': '未验证', 'simulated': '模拟验证'}
     counts = {key: sum(item['status'] == key for item in data['acceptance']) for key in labels}
@@ -785,8 +791,6 @@ def render_report(conn, goal_id, data):
                      esc(_json(investment['usage']) if investment.get('usage') is not None else '未知，未估作零用量或费用'),
                      listing([item['role'] + '：' + str(item.get('contribution', '未记录')) for item in investment.get('roles', [])]),
                      esc(investment.get('note', '')), esc(data['follow_up'])))
-    if data.get('document_html', '').strip():
-        return report_documents.render(goal['title'], data['document_html'], report_documents.verification(data))
     return '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'"><title>%s</title><style>body{font:16px/1.7 system-ui,sans-serif;max-width:960px;margin:40px auto;padding:0 24px;color:#292929;background:#fafafa}h2{margin-top:32px}svg{width:100%%;max-width:600px}table{border-collapse:collapse;width:100%%}th,td{border:1px solid #ddd;text-align:left;vertical-align:top;padding:10px;white-space:pre-wrap;overflow-wrap:anywhere}th{width:140px}p,li{white-space:pre-wrap;overflow-wrap:anywhere}</style><body>%s</body></html>' % (esc(goal['title']), ''.join(sections))
 
 
@@ -832,6 +836,7 @@ def get_report(conn, report_id):
     value = dict(row)
     value['data'] = json.loads(value.pop('data_json'))
     value['data']['requirement_version'] = row['requirement_version']
+    value['document_format'] = report_documents.document_format(value['data'])
     goal = _row(conn, value['goal_id'])
     latest = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND round=? ORDER BY version DESC LIMIT 1',
                           (value['goal_id'], goal['current_round'])).fetchone()

@@ -861,7 +861,7 @@ else {
       // The host already forbids report preview workers for LAN devices; only this computer's backend gets one.
       if (!remoteMode && !backend.startupError) {
         reportPreviews = new ReportPreviewClient({base:backend.url, request:core.request,
-          renderer:new ReportPreviewRenderer({BrowserWindow})});
+          renderer:new ReportPreviewRenderer({BrowserWindow, base:backend.url})});
         try { await startupStep(reportPreviews.start()); }
         catch (error) { console.error('Crew 报告预览不可用：', error.message); }
       }

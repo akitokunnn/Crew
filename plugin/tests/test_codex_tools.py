@@ -444,6 +444,7 @@ class CodexToolsTests(unittest.TestCase):
         self.assertEqual(report['type'], 'object')
         self.assertEqual(report['required'], ['outcome', 'summary', 'acceptance'])
         self.assertEqual(report['properties']['document_html']['maxLength'], 512 * 1024)
+        self.assertEqual(report['properties']['document_md']['maxLength'], 512 * 1024)
         self.assertEqual(report['properties']['acceptance']['items']['required'], ['criterion_id', 'status'])
         self.assertIn('不是 JSON 字符串', report['description'])
         # Codex once wrote the words 工作区根目录 as the folder; the field says what a path looks like.

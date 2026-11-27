@@ -1644,6 +1644,10 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         goal = self.goal()
         document = '<style>h1{color:green}</style><h1>按任务组织的报告</h1><script>window.chartReady=true</script>'
         saved = goals.save_report(self.conn, goal['id'], {**self.report(), 'document_html': document})
+        # Simulate a row from before the format marker was added. Old reports allowed extra keys.
+        legacy = {key: value for key, value in saved['data'].items() if key != 'document_format'}
+        legacy['document_md'] = 'An unused field in an old record'
+        self.conn.execute('UPDATE goal_reports SET data_json=? WHERE id=?', (json.dumps(legacy), saved['id']))
         path = '/api/op/goal.report.view?' + urlencode({'project':'demo','goal_id':goal['id'],'report_id':saved['id']})
         code, content, headers = self.request(path, raw=True)
         self.assertEqual(code, 200)
@@ -1652,8 +1656,31 @@ class GoalHttpTests(ShellFixture, unittest.TestCase):
         self.assertNotIn('allow-same-origin', headers['Content-Security-Policy'])
         self.assertIn("default-src 'none'", headers['Content-Security-Policy'])
         self.assertIn("form-action 'none'", headers['Content-Security-Policy'])
+        self.assertIn("font-src data:", headers['Content-Security-Policy'])
+        self.assertEqual(goals.get_report(self.conn, saved['id'])['document_format'], 'html')
         self.assertEqual(goals.get_report(self.conn, saved['id'])['data']['document_html'], document)
         self.assertEqual(self.processes, [])
+
+    def test_markdown_route_uses_the_saved_format_and_its_own_policy(self):
+        goal = self.goal()
+        data = self.report()
+        del data['document_html']
+        source = '# 检查结果\n\n</template><script>window.ran=true</script>'
+        saved = goals.save_report(self.conn, goal['id'], {**data, 'document_md': source})
+        path = '/api/op/goal.report.view?' + urlencode({'project':'demo','goal_id':goal['id'],'report_id':saved['id']})
+        code, content, headers = self.request(path, raw=True)
+        self.assertEqual(code, 200)
+        self.assertEqual(content.decode('utf-8'), saved['html'])
+        self.assertIn("font-src 'self'", headers['Content-Security-Policy'])
+        self.assertIn(b'/report-markdown.css', content)
+        self.assertIn(b'&lt;/template&gt;&lt;script&gt;', content)
+        self.assertNotIn(b'<script>window.ran', content)
+        code, metadata, _ = self.request(path + '&format=json')
+        self.assertEqual(code, 200)
+        self.assertEqual(metadata['document_format'], 'markdown')
+        self.assertEqual(metadata['data']['document_md'], source)
+        detail = self.request('/api/op/goal.get?project=demo&id=' + goal['id'])[1]
+        self.assertEqual(detail['reports'][0]['document_format'], 'markdown')
 
     def test_resume_paused_pending_finish_completes_saved_report_without_another_model_turn(self):
         goal = self.goal()

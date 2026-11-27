@@ -40,9 +40,12 @@ class ReportDocumentTests(GoalFixture):
 
     def test_document_validation_does_not_replace_real_acceptance(self):
         goal = self.goal()
-        for document in (None, {}, 'a' * (report_documents.MAX_HTML + 1), '中' * (report_documents.MAX_HTML // 3 + 1)):
-            with self.subTest(document_type=type(document)), self.assertRaises(board.BoardError):
-                goals.save_report(self.conn, goal['id'], {**self.report(), 'document_html': document})
+        for field in ('document_md', 'document_html'):
+            for document in (None, {}, 'a' * (report_documents.MAX_DOCUMENT + 1), '中' * (report_documents.MAX_DOCUMENT // 3 + 1)):
+                with self.subTest(field=field, document_type=type(document)), self.assertRaises(board.BoardError):
+                    data = self.report()
+                    del data['document_html']
+                    goals.save_report(self.conn, goal['id'], {**data, field: document})
         data = {**self.report(), 'document_html': '<h1>全部成功</h1>'}
         data['acceptance'][0]['status'] = 'unverified'
         with self.assertRaisesRegex(board.BoardError, '不能宣称目标达标'):
@@ -55,3 +58,6 @@ class ReportDocumentTests(GoalFixture):
         previous = goals.render_report(self.conn, goal['id'], self.report('failed'))
         self.assertEqual(goals.render_report(self.conn, goal['id'], {**self.report('failed'), 'document_html': ''}), previous)
         self.assertNotIn('<iframe', previous)
+        saved = goals.save_report(self.conn, goal['id'], self.report('failed') | {'document_html': ''})
+        self.assertEqual(goals.get_report(self.conn, saved['id'])['document_format'], 'html')
+        self.assertEqual(goals.get_report(self.conn, saved['id'])['html'], previous)

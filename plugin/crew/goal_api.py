@@ -2,7 +2,7 @@
 import json
 from urllib.parse import urlencode
 
-from . import behavior_prompts, board, codex_client, documents, goal_context, goal_work, goals
+from . import behavior_prompts, board, codex_client, documents, goal_context, goal_work, goals, report_documents
 
 ACCEPTANCE_STATUSES = ('passed', 'failed', 'unverified', 'simulated')
 
@@ -14,6 +14,7 @@ def report_entry(project, value, row, root):
     return {'id': row['id'], 'round': row['round'], 'requirement_version': row['requirement_version'], 'version': row['version'],
             'outcome': row['outcome'], 'status': row['outcome'], 'created_at': row['created_at'], 'title': value['title'],
             'summary': data['summary'], 'acceptance_counts': {key: statuses.count(key) for key in ACCEPTANCE_STATUSES},
+            'document_format': report_documents.document_format(data),
             'publication': data.get('publication'),
             'unresolved': data['unresolved'], 'folder': goals.report_folder(root, data),
             'current': row['round'] == value['current_round'] and row['version'] == value['latest_report_version'],
