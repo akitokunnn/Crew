@@ -18,6 +18,7 @@ class WorkersMixin:
     # Started by start(); web.py's __init__ starts the other worker handles the same way.
     usage_worker = None
     change_worker = None
+    warm_worker = None
 
     def _poll_changes(self, closed):
         """Record what producers outside the database marked (change_feed.Notifier).
@@ -185,9 +186,21 @@ class WorkersMixin:
                         self.archive_session(conn, sid, now=now)
                         board.record_event(conn, "vscode:archived", session["project"], sid, {}, now=now)
 
+    def _warm_snapshots(self):
+        """Read every registered workspace's snapshot once after startup, through the same code a page uses:
+        the conversations' journals are parsed and the Git branch scans start before the first page asks."""
+        with closing(store.connect(self.home)) as conn:
+            names = [project['name'] for project in board.projects(conn)]
+        for name in names:
+            if self.stop.is_set():
+                return
+            self.state(name)
+
     def start(self):
         # The first page shows the estimates saved by earlier scans while the first background scan catches up.
         self.prime_usage()
+        self.warm_worker = threading.Thread(target=self._warm_snapshots, name="crew-warm", daemon=True)
+        self.warm_worker.start()
         # Set once the agents worker finished a pass: startup recovery is done and the usage scan may start.
         self.agents_passed = threading.Event()
         self.worker = threading.Thread(target=self._poll_agents, args=(self.agents_passed,), name="crew-agents", daemon=True)
@@ -218,6 +231,10 @@ class WorkersMixin:
             actions.append(self.notice_worker.join)
         if self.ci_worker is not None:
             actions.append(self.ci_worker.join)
+        if self.warm_worker is not None:
+            actions.append(self.warm_worker.join)
+        # A branch scan ends within Git's own timeouts; none starts once `stop` is set.
+        actions.append(lambda: [worker.join() for worker in self._git_scan_workers()])
         actions.extend([self.chat.close, self.maintenance.close])
         if self.worker is not None:
             actions.append(lambda: self.worker.join(timeout=1))

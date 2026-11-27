@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest import mock
 from tests.fixture_cleanup import cleanup_directory
@@ -50,7 +51,8 @@ class GitViewTests(unittest.TestCase):
         self.worktree = Path(self.temp.name) / "ahead-worktree"
         self.git("worktree", "add", str(self.worktree), "ahead")
         self.config = {"base": "develop", "integration": None}
-        for cache in (git_view._overview_cache, git_view._commit_cache, git_view._last_fetch, git_view._pull_requests):
+        for cache in (git_view._overview_cache, git_view._failures, git_view._commit_cache, git_view._last_fetch,
+                      git_view._pull_requests):
             cache.clear()
 
     def git(self, *args):
@@ -396,6 +398,73 @@ class GitViewTests(unittest.TestCase):
             data = self.view()
         branch = next(item for item in data["branches"] if item["name"] == "ahead")
         self.assertEqual(branch["worktree"], str(moved).replace("\\", "/"))
+
+    def test_cached_runs_no_git_and_is_due_exactly_when_view_would_run_it(self):
+        with mock.patch.object(git_view, "_git") as run:
+            self.assertEqual(git_view.cached(self.root, self.config), (None, None, True))
+            run.assert_not_called()
+        with mock.patch.object(git_view.time, "monotonic", return_value=100):
+            expected = self.view()
+        for now, due in ((109.9, False), (110, True)):
+            with self.subTest(now=now), mock.patch.object(git_view.time, "monotonic", return_value=now), \
+                    mock.patch.object(git_view, "_run") as run:
+                self.assertEqual(git_view.cached(self.root, self.config), (expected, None, due))
+                run.assert_not_called()
+        # Signatures checked again at 110 start a new ten-second window.
+        with mock.patch.object(git_view.time, "monotonic", return_value=110):
+            self.view()
+        for now, due in ((119.9, False), (159.9, True), (160, True)):
+            with self.subTest(now=now), mock.patch.object(git_view.time, "monotonic", return_value=now):
+                self.assertEqual(git_view.cached(self.root, self.config)[2], due)
+        with mock.patch.object(git_view.time, "monotonic", return_value=161):
+            self.view()
+        with mock.patch.object(git_view.time, "monotonic", return_value=161):
+            self.assertFalse(git_view.cached(self.root, self.config)[2])
+            # Other settings have no result of their own yet.
+            self.assertEqual(git_view.cached(self.root, self.config, exclude=("ahead",)), (None, None, True))
+
+    def test_cached_answers_while_a_scan_runs_in_git(self):
+        expected = self.view()
+        self.git("branch", "new-work", self.ahead)
+        started, release, done = threading.Event(), threading.Event(), threading.Event()
+        refs = git_view._refs
+
+        def held(root):
+            started.set()
+            release.wait(10)
+            return refs(root)
+
+        with mock.patch.object(git_view, "_refs", side_effect=held):
+            worker = threading.Thread(target=lambda: (self.view(force=True), done.set()))
+            worker.start()
+            self.assertTrue(started.wait(5))
+            self.assertEqual(git_view.cached(self.root, self.config)[:2], (expected, None))
+            release.set()
+            worker.join(10)
+        self.assertTrue(done.is_set())
+        self.assertIn("new-work", {item["name"] for item in git_view.cached(self.root, self.config)[0]["branches"]})
+
+    def test_refresh_reports_only_changed_answers_and_keeps_failures_until_a_scan_succeeds(self):
+        with mock.patch.object(git_view.time, "monotonic", return_value=100):
+            self.assertTrue(git_view.refresh(self.root, self.config))
+            data = git_view.cached(self.root, self.config)[0]
+        with mock.patch.object(git_view.time, "monotonic", return_value=170):
+            self.assertFalse(git_view.refresh(self.root, self.config))
+        reason = "fatal: detected dubious ownership in repository"
+        with mock.patch.object(git_view.time, "monotonic", return_value=240), \
+                mock.patch.object(git_view, "_refs", side_effect=git_view.GitError(reason)):
+            self.assertTrue(git_view.refresh(self.root, self.config))
+            # The last branches stay cached beside the reason; a failed scan is retried by every read.
+            self.assertEqual(git_view.cached(self.root, self.config), (data, reason, True))
+            self.assertFalse(git_view.refresh(self.root, self.config))
+            with self.assertRaisesRegex(git_view.GitError, "dubious ownership"):
+                self.view()
+        self.git("branch", "new-work", self.ahead)
+        with mock.patch.object(git_view.time, "monotonic", return_value=241):
+            self.assertTrue(git_view.refresh(self.root, self.config))
+            fresh, error, due = git_view.cached(self.root, self.config)
+        self.assertEqual((error, due), (None, False))
+        self.assertIn("new-work", {item["name"] for item in fresh["branches"]})
 
     def test_commit_detail_numstat_binary_cache_and_merge_first_parent(self):
         self.write("shared.txt", "develop\nextra\n")

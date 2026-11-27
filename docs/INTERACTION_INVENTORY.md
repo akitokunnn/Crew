@@ -119,6 +119,7 @@
 | `leader.active-goal` | 点运行中的任务徽记 → 转到归属 Leader 的任务范围 | `frontend/app.js:1558` | `data-act=active-goal`、`data-goal-id` | 无 | 手动 · 1280×800 · 点 Leader 与成员各自的运行任务 |
 | `leader.team-work` | 团队有实际工作时查看 Leader 行 → 工作标记与成员状态同步 | `frontend/app.js:328`、`frontend/app.js:403` | `groupAvatar`、`groupWorkLabel` | `plugin/tests/test_working_overview_ui.js::the sidebar leader row summarises group work, keeps its group during member chats and marks leader autonomy on both carriers` | 手动 · 1280×800 · 团队有实际工作时查看 Leader 行，核对工作标记与成员状态同步 |
 | `leader.branch-badge` | Leader 有关联分支 → 列表行显示 Git 分支信息 | `frontend/app.js:313`、`frontend/app.js:328` | `leaderBranches` | 无 | 手动 · 1280×800 · Leader 有关联分支，核对列表行显示 Git 分支信息 |
+| `leader.branch-status` | 分支胶囊的后台 Git 扫描未完成或失败 → Leader 列表上方显示“分支信息计算中…”或“分支信息读取失败：原因”，失败行点开 Git 页；扫描完成后经事件流自动换成胶囊 | `frontend/app.js:343`、`frontend/app.js:445` | `.leader-git-status`、`state.git_branches.pending`、`state.git_branches.error` | `plugin/tests/test_runtime_ui.js::the leader list says while branch chips are computed and shows why their scan failed`；`plugin/tests/test_git_management.py::test_first_state_does_not_wait_for_the_branch_scan_and_gets_the_direct_result_after_it`、`::test_failed_branch_scan_shows_its_reason_until_a_scan_succeeds` | 手动 · 1280×800 与 375px · 在大仓库工作区冷启动后打开，核对先显示计算中、随后出现胶囊；浅色与深色各看一遍 |
 | `leader.group-tree` | 菜单点查看会话结构 → 打开该部门聊天和右侧结构 | `frontend/app.js:1544` | `data-act=group-tree` | 无 | 手动 · 1280×800 · 菜单点查看会话结构，核对打开该部门聊天和右侧结构 |
 | `leader.session-menu-button` | 点聊天头部省略号 → 打开当前会话操作菜单 | `frontend/app.js:744`、`frontend/app.js:1528` | `data-act=session-menu`、`#menu` | 无 | 手动 · 1280×800 · 点聊天头部省略号，核对打开当前会话操作菜单 |
 | `leader.session-prompts` | 点行为配置与使用记录 → 打开该会话配置 | `frontend/app.js:986`、`frontend/app.js:1508` | `data-category=prompts`、`data-prompt-session` | 无 | 手动 · 1280×800 · 点行为配置与使用记录，核对打开该会话配置 |
@@ -1007,7 +1008,7 @@
 | --- | ---: | ---: |
 | 工作台、工作区动态与状态刷新 | 22 | 13 |
 | 常驻左栏与工作区切换 | 20 | 16 |
-| Leader 侧栏、团队与会话治理 | 58 | 31 |
+| Leader 侧栏、团队与会话治理 | 59 | 31 |
 | 对话、状态和会话结构 | 41 | 17 |
 | 输入框和技能 | 23 | 17 |
 | 任务执行、交付与验收 | 42 | 14 |
@@ -1042,7 +1043,7 @@
 | 应用、源码与工具更新 | 15 | 6 |
 | 桌面系统管理员 | 5 | 0 |
 | 手机、窄屏与无障碍显示 | 44 | 43 |
-| **合计** | **797** | **479** |
+| **合计** | **798** | **479** |
 
 ### 拆分中最容易丢失的 15 条
 

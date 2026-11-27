@@ -612,3 +612,15 @@ test("Git rail attention comes from state before any Git snapshot is read",()=>{
   ui.renderSidebar();assert.match(nodes.get("sidebar").innerHTML,/class="rail-git"[\s\S]*?class="rail-badge">7<\/span>/);assert.doesNotMatch(nodes.get("sidebar").innerHTML,/>99<\/span>/);
   state.git_assistant=null;ui.renderSidebar();assert.doesNotMatch(nodes.get("sidebar").innerHTML,/class="rail-badge"/);
 });
+test("the leader list says while branch chips are computed and shows why their scan failed",()=>{
+  const state=fixture();Object.assign(state,{project:{name:"fixture"},leaders:[],members:[],todos:[],decisions:[],git_assistant:null,git_branches:{pending:true},channel:{unread:0},notification:{channels:[],error:null,away:false},limits:{claude:{seven_day:null},codex:null}});
+  const {ui,nodes}=harness(state);nodes.set("sidebar",{innerHTML:"",dataset:{},contains:()=>false,querySelectorAll:()=>[]});ui.services({});
+  const panel=()=>nodes.get("leader-panel").innerHTML;
+  ui.renderSidebar();
+  assert.match(panel(),/<\/button><p class="leader-git-status" role="status"><span class="spin" aria-hidden="true"><\/span><span>分支信息计算中…<\/span><\/p><div class="leader-panel-leaders">/);
+  state.git_branches={error:"fatal: detected dubious ownership in repository at 'C:/repo'\nTo add an exception for this directory, call:"};ui.renderSidebar();
+  assert.match(panel(),/<button type="button" class="leader-git-status error" data-act="view" data-view="git" title="分支信息读取失败：fatal: detected dubious ownership in repository at &#39;C:\/repo&#39;\nTo add an exception for this directory, call:\n点击打开 Git 页"><span>分支信息读取失败：fatal: detected dubious ownership in repository at &#39;C:\/repo&#39;<\/span><span aria-hidden="true">›<\/span><\/button>/);
+  for (const value of [{base:{name:"develop"},integration:null,branches:[]},null]) {
+    state.git_branches=value;ui.renderSidebar();assert.doesNotMatch(panel(),/leader-git-status/);
+  }
+});

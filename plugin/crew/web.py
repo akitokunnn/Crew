@@ -113,6 +113,9 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
         self.notice_worker = None
         self.git_ci = git_ci.Poller(self.home, self.write_lock)
         self.ci_worker = None
+        # Background branch scans for the leader cards (web_service/git.py): latest request and worker per workspace.
+        self.git_scan_lock = threading.Lock()
+        self.git_scan_requests, self.git_scan_workers = {}, {}
         self.connections = connections.Manager(self, notification_client, lock_status, notification_batch_seconds)
         self.inbox = self.connections.inboxes['qq']
         # Marks maintenance left unfinished by a previous service as interrupted; nothing is re-sent.

@@ -310,7 +310,8 @@ class DigestExitLifecycleTests(unittest.TestCase):
             connections=SimpleNamespace(close=lambda: actions.append('connections')),
             notice_worker=SimpleNamespace(join=lambda: self.assertEqual(actions[0], 'digest-stop')),
             ci_worker=None, chat=SimpleNamespace(lock=threading.RLock(), close=lambda: actions.append('chat')),
-            maintenance=SimpleNamespace(close=lambda: actions.append('maintenance')), worker=None, usage_worker=None, change_worker=None)
+            maintenance=SimpleNamespace(close=lambda: actions.append('maintenance')), worker=None, usage_worker=None, change_worker=None,
+            warm_worker=None, _git_scan_workers=lambda: [])
         web.Service.close(service)
         self.assertTrue(service.stop.is_set())
         self.assertEqual(actions, ['digest-stop', 'remote', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
@@ -366,7 +367,8 @@ class DigestExitLifecycleTests(unittest.TestCase):
             storage_cleanup=SimpleNamespace(close=lambda: actions.append('storage')),
             connections=SimpleNamespace(close=lambda: actions.append('connections')),
             notice_worker=None, ci_worker=None, chat=SimpleNamespace(lock=threading.RLock(), close=lambda: actions.append('chat')),
-            maintenance=SimpleNamespace(close=lambda: actions.append('maintenance')), worker=None, usage_worker=None, change_worker=None)
+            maintenance=SimpleNamespace(close=lambda: actions.append('maintenance')), worker=None, usage_worker=None, change_worker=None,
+            warm_worker=None, _git_scan_workers=lambda: [])
         with mock.patch('crew.web.traceback.print_exc') as logged:
             with self.assertRaises(OSError) as raised:
                 web.Service.close(service)
