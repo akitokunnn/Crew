@@ -19,7 +19,7 @@ import sqlite3
 import tempfile
 import uuid
 
-TRANSFORM_VERSION = 'crew-v1-to-v2/3'
+TRANSFORM_VERSION = 'crew-v1-to-v2/4'
 NAMESPACE = uuid.UUID('11182da6-0b1e-5817-a488-4715fd5d599e')
 PRIVATE_TABLES = {'ai_settings', 'ai_task_settings', 'execution_settings', 'sound_settings', 'usage_files', 'trust_schema_migrations',
                   'notification_inbound', 'lark_notification_inbound', 'personal_assistant',

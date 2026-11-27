@@ -14,8 +14,9 @@ import uuid
 from .objects import ObjectInfo, ObjectStore, canonical_uuid
 
 
-SCHEMA_VERSION = 5
-SCHEMA_UPGRADES = ((3, 'features.sql'), (4, 'report_versions.sql'), (5, 'workspace_notes.sql'))
+SCHEMA_VERSION = 6
+SCHEMA_UPGRADES = ((3, 'features.sql'), (4, 'report_versions.sql'), (5, 'workspace_notes.sql'),
+                   (6, 'canvas_positions.sql'))
 APPLICATION_ID = 0x43525732  # CRW2
 BUSY_TIMEOUT_MS = 5000
 

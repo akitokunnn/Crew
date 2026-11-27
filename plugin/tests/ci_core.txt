@@ -99,3 +99,4 @@ test_leader_trust_cli
 test_trust_mode
 test_workspace_settings
 test_workspace_execution
+test_war_room_plan
