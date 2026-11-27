@@ -89,7 +89,13 @@ def _source(actor):
 def _gate(conn, room, actor, lead_only=False):
     """The user (and the global assistant acting for the user) may do anything; a leader must be a member,
     and the lead for lead-only actions."""
-    if actor == board.HUMAN or personal.is_assistant(conn, actor):
+    if actor == board.HUMAN:
+        return
+    if personal.is_assistant(conn, actor):
+        # The assistant acts in a room on its own only where it leads (a campaign the user confirmed).
+        if room['lead_session_id'] != actor:
+            raise board.BoardError('作战室《%s》由「%s」牵头；助手只在自己牵头的作战室里直接操作'
+                                   % (room['title'], _name(conn, room['lead_session_id'])))
         return
     if lead_only and actor != room['lead_session_id']:
         raise board.BoardError('只有牵头 leader「%s」能这样做' % _name(conn, room['lead_session_id']))

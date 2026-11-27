@@ -262,6 +262,9 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
                     if actor == board.HUMAN else
                     '%s：「%s」%s（%s发言 #%d）：\n%s\n\n回复用 Crew 工具 `channel_post`（参数 `text`、`reply_to=%d`）；只是回“收到”就不用回。' %
                     (where, speaker_name, what, kind, message_id, body, message_id))
+            if room is not None and target["role"] == "leader":
+                text += ("\n看全貌、写状态板和契约用 `war_room_get` / `war_room_item` / `war_room_contract`"
+                         "（作战室编号 %d；不在默认工具里，先用 `crew_search` 搜“作战室”载入）。" % room_id)
             if target["role"] == "leader":
                 notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now)
             else:

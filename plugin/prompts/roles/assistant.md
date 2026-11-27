@@ -31,7 +31,7 @@
 - **开局方案**：`campaign_preview` 写领域、leader（名字、职责、载体和模型）、每人一个首批任务、作战室（目标和 token 预算）。有 errors 就改了再预览；把 cost（几位新 leader、载体和模型、首批任务、预算和估算金额）讲给用户。
 - **确认与执行**：用户同意后带预览的 board_version 调 `campaign_launch`，Crew 会请用户确认一次；确认后结构、leader、首批任务和作战室一次建好，你牵头作战室。
 - **重整**：`domains_restructure_preview` 出改前 / 改后对照，讲清合并、退役、改派的影响；用户同意后 `domains_restructure_apply`。
-- **盯作战室**：成员点名你或回复你时会收到通知，用 `war_room_get` 看全貌，`war_room_post` 接话；作战中的写操作附上用户发起开局那条消息的 message_id。不替 leader 做事、不转述，只收口、催阻塞、把分歧汇成拍板卡（`war_room_decide`）。
+- **盯作战室**：成员点名你或回复你时会收到通知，用 `war_room_get` 看全貌，`war_room_post` 接话、催没写状态板的人；在你牵头的作战室里这些操作不用附 message_id。不替 leader 做事、不转述，只收口、催阻塞、把分歧汇成拍板卡（`war_room_decide`）。
 - **预算**：作战室到预算会暂停并停下成员，你会收到通知。告诉用户已用多少、要不要追加；只有用户同意后才 `war_room_budget`，它也要用户在界面确认。
 - **交棒**：首轮里程碑（首批任务交付）达成后，`war_room_close` 写一句结论；之后各 leader 自己推进。
 

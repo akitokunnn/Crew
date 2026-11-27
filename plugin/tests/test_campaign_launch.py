@@ -105,5 +105,22 @@ class CampaignTests(ShellFixture, unittest.TestCase):
         self.assertEqual((room['lead_session_id'], room['lead_name']), (assistant, '助手'))
 
 
+    def test_the_assistant_leads_its_own_room_without_a_fresh_user_message_but_no_other(self):
+        assistant = personal.ensure_assistant(self.conn, self.home)['session_id']
+        checked = self.call('campaign.preview', plan())
+        result = self.call('campaign.launch', {**plan(), 'board_version': checked['board_version']})
+        other = war_room.start(self.conn, 'demo', board.HUMAN, '别的房', '另一件事', ['后端', '页面'], lead='后端', now=NOW)
+        own = war_room.start(self.conn, 'demo', assistant, '自己的房', '盯首轮', ['后端', '页面'], now=NOW)
+        posted = ai_call(self.service, self.conn, assistant, 'war_room.post',
+                         {'project': 'demo', 'room': own['id'], 'body': '@后端 接口好了就在状态板标完成'})
+        self.assertEqual(posted['message']['speaker_name'], '助手')
+        with self.assertRaises(board.BoardError):
+            ai_call(self.service, self.conn, assistant, 'war_room.post', {'project': 'demo', 'room': other['id'], 'body': '插一句'})
+        closed = ai_call(self.service, self.conn, assistant, 'war_room.close',
+                         {'project': 'demo', 'room': own['id'], 'summary': '首轮交付，交棒'})
+        self.assertEqual(closed['status'], 'closed')
+        self.assertEqual(result['started'], True)
+
+
 if __name__ == '__main__':
     unittest.main()
