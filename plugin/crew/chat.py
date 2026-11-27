@@ -215,7 +215,7 @@ class Manager(StatusMixin, NativeMixin, DeliveryMixin, MaintenanceMixin,
                                    resume=native_resume, maintenance=maintenance)
             self.processes[session_id] = current
             self.changes.session(session_id)
-            return spawn.command(session_id, session["crew_name"], session["role"], runtime="codex", **options)
+            return current.process.args
         exe = claude_executable()
         if native_id not in (None,session_id):
             raise board.BoardError('Claude 原生身份与 Crew 身份不一致，不能恢复错误会话')

@@ -4,7 +4,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from . import change_triggers, themes
+from . import change_triggers, native_origins, themes
 from .workspace_notes_migration import migrate as _migrate_workspace_notes
 
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
@@ -44,6 +44,7 @@ def connect(home):
         _migrate_project_themes(conn)
         _migrate_workspace_notes(conn, notes)
         _migrate_mindmap_positions(conn)
+        native_origins.migrate(conn)
         change_triggers.install(conn)
     except BaseException:
         conn.close()

@@ -883,6 +883,14 @@ CREATE TABLE IF NOT EXISTS goal_execution_bindings (
  model TEXT, effort TEXT, updated_at TEXT NOT NULL, speed TEXT,
  PRIMARY KEY(execution_id,runtime), UNIQUE(runtime,native_id)
 );
+-- The identity belongs to the native history, including after a carrier switch.
+CREATE TABLE IF NOT EXISTS native_binding_origins (
+ runtime TEXT NOT NULL CHECK(runtime IN ('claude','codex')),
+ native_id TEXT NOT NULL,
+ origin TEXT NOT NULL CHECK(origin IN ('crew_created','user_adopted')),
+ archive_confirmed INTEGER NOT NULL DEFAULT 0 CHECK(archive_confirmed IN (0,1)),
+ PRIMARY KEY(runtime,native_id)
+);
 CREATE TABLE IF NOT EXISTS goal_reports (
  id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, round INTEGER NOT NULL,
  requirement_version INTEGER NOT NULL, version INTEGER NOT NULL,

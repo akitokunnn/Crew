@@ -5,7 +5,7 @@ import threading
 import traceback
 from contextlib import closing
 
-from .. import board, change_feed, messaging, runtimes, store, vscode_sessions
+from .. import board, change_feed, codex_visibility, messaging, runtimes, store, vscode_sessions
 
 # Marks of state outside the database are recorded at most once a second; the last one always is.
 CHANGE_SECONDS = 1.0
@@ -102,6 +102,10 @@ class WorkersMixin:
                                               runtime=None if error is None else 'codex')
                     # Journal times are wall-clock, so idle time is measured on the same clock.
                     self.chat.reclaim_idle()
+                    with self.chat.work(background=True) as admitted:
+                        if admitted:
+                            with closing(store.connect(self.home)) as conn:
+                                codex_visibility.reconcile_stopped(self.chat, conn)
                 except (sqlite3.Error, OSError, subprocess.SubprocessError):
                     # A temporary failure in another task sharing this worker must
                     # not permanently disable agent discovery and VS Code scans.

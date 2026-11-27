@@ -5,7 +5,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from crew import board, models, runtimes, session_library, session_ops
+from crew import board, goals, models, native_origins, personal, runtimes, session_library, session_ops, workspace_assistant
 import test_vscode_service as fixtures
 from test_vscode_service import identity, NOW
 
@@ -100,12 +100,26 @@ class SessionLibraryTests(unittest.TestCase):
             session_library.adopt(self.service, self.conn, 'alpha', 'codex:' + native, 'native-member', 'lead', NOW)
         self.assertEqual(len(board.pending_notices(self.conn, identity(1))), 1)
         self.service.chat.process_factory.assert_not_called()
+        # Simulate upgrading the old DB after a carrier switch. A matching request
+        # digest still proves the external key; a changed digest does not.
+        runtimes.set(self.conn, sid, 'claude', sid)
+        for digest_matches in (True, False):
+            self.conn.execute('DELETE FROM native_binding_origins')
+            self.conn.execute("DELETE FROM schema_migrations WHERE name='native_binding_origins_v1'")
+            if not digest_matches:
+                self.conn.execute("UPDATE op_requests SET args_hash='unrelated'")
+            native_origins.migrate(self.conn)
+            native_origins.migrate(self.conn)
+            records = [tuple(row) for row in self.conn.execute('SELECT runtime,native_id,origin FROM native_binding_origins')]
+            self.assertEqual(records, [('codex', native, 'user_adopted')] if digest_matches else [])
 
     def test_claude_join_reuses_existing_metadata_and_notices(self):
         native = identity(1); self.record(native)
         self.register(identity(2), 'lead', role='leader')
         self.refresh()
         session_library.adopt(self.service, self.conn, 'alpha', 'claude:' + native, 'old-work', 'lead', NOW)
+        self.assertEqual(tuple(self.conn.execute('SELECT runtime,native_id,origin FROM native_binding_origins').fetchone()),
+                         ('claude', native, 'user_adopted'))
         self.assertEqual(board.session(self.conn, native)['group_name'], 'lead')
         self.assertEqual(len(board.pending_notices(self.conn, identity(2))), 1)
 
@@ -157,3 +171,37 @@ class SessionLibraryTests(unittest.TestCase):
                 session_library.adopt(self.service, self.conn, 'alpha', 'codex:' + native, 'member', 'lead', NOW)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0], 1)
         self.assertFalse(board.pending_notices(self.conn, identity(1)))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM native_binding_origins').fetchone()[0], 0)
+
+    def test_global_admin_and_room_memberships_survive_workspace_filters(self):
+        admin = personal.ensure_assistant(self.conn, self.home)['session_id']
+        local = workspace_assistant.ensure(self.conn, self.home, 'alpha')['session_id']
+        self.register(identity(1), 'lead', role='leader')
+        room = self.conn.execute("INSERT INTO war_rooms(project,title,goal,lead_session_id,status,created_at) "
+                                 "VALUES('alpha','声音','检查',?,'closed',?)", (identity(1), NOW)).lastrowid
+        self.conn.execute('INSERT INTO war_room_members VALUES(?,?,?,?)', (room, local, NOW, NOW))
+        board.init_project(self.conn, 'beta', self.root)
+        for project, scope in [('alpha', 'project'), ('beta', 'project'), ('beta', 'all')]:
+            rows = session_library.listing(self.service, self.conn, project, scope)['items']
+            found = [r for r in rows if r['session_id'] == admin]
+            self.assertEqual([(r['category'], r['project'], r['adoptable'], r['war_rooms']) for r in found],
+                             [('system_admin', None, False, [])])
+            if project == 'alpha' or scope == 'all':
+                assistant = next(r for r in rows if r['session_id'] == local)
+                self.assertEqual((assistant['category'], assistant['war_rooms']),
+                                 ('workspace_assistant', [{'id': room, 'title': '声音'}]))
+
+    def test_execution_history_cannot_be_listed_or_adopted_with_an_external_key(self):
+        self.register(identity(1), 'lead', role='leader')
+        goal = goals.create(self.conn, 'alpha', identity(1), 'Inspect', 'Request', ['Done'])
+        for runtime in ('codex', 'claude'):
+            native = self.codex()[0] if runtime == 'codex' else identity(33)
+            if runtime == 'claude':
+                self.record(native)
+                self.refresh()
+            execution = goals.create_execution(self.conn, goal['id'], identity(1), runtime=runtime)
+            goals.bind_native(self.conn, execution['id'], runtime, native)
+            goals.set_execution_status(self.conn, execution['id'], 'completed')
+            self.assertFalse(any(r['native_id'] == native for r in self.rows()))
+            with self.assertRaises(board.BoardError):
+                session_library.adopt(self.service, self.conn, 'alpha', runtime + ':' + native, 'extra', 'lead', NOW)

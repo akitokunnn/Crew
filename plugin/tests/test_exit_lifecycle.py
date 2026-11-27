@@ -87,6 +87,7 @@ class ExitLifecycleTests(unittest.TestCase):
                 stop_reason=None, _closing=False, _approvals=mock.Mock(), _turn_ready=threading.Condition(lock),
                 _settings=threading.Condition(lock), pending_compact=False, client=client,
                 execution={'id': identity, 'session_id': role} if scoped else None,
+                home=self.home, _archive_lock=threading.Lock(), _crew_created=True,
                 _native_archived=False, _archive_on_close=True, thread_id='native-' + identity, reader_done=threading.Event(),
                 _lease=SimpleNamespace(release=mock.Mock()), _status=journal.set_status)
             current.close = MethodType(codex_runtime.CodexRunning.close, current)

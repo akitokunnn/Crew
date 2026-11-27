@@ -8,7 +8,7 @@ import os
 import uuid
 from pathlib import Path
 
-from . import board, hooks, models, runtimes, store, vscode_sessions, workspace_assistant
+from . import board, hooks, models, native_origins, runtimes, store, vscode_sessions, workspace_assistant
 
 
 def _time(value):
@@ -32,6 +32,11 @@ def entries(service, conn, project, *, scope='project'):
     selected = projects if scope == 'all' else {project: projects[project]}
     registered = {r['session_id']: dict(r) for r in conn.execute('SELECT * FROM sessions')}
     assistants = {r[0] for r in conn.execute('SELECT session_id FROM workspace_assistants')}
+    admins = {r[0] for r in conn.execute('SELECT session_id FROM personal_assistant')}
+    rooms = {}
+    for row in conn.execute('SELECT m.session_id,r.id,r.title FROM war_room_members m '
+                            'JOIN war_rooms r ON r.id=m.room_id ORDER BY r.id'):
+        rooms.setdefault(row['session_id'], []).append({'id': row['id'], 'title': row['title']})
     bindings = {}
     for sid in registered:
         mapping = runtimes.get(conn, sid)
@@ -40,9 +45,10 @@ def entries(service, conn, project, *, scope='project'):
     # Old native bindings and goal executions belong to the existing identity,
     # not to a second adoptable person.
     reserved = {(r['runtime'], r['native_id']) for r in conn.execute(
-        'SELECT runtime,native_id FROM session_runtime_bindings WHERE native_id IS NOT NULL')}
-    reserved.update((r['runtime'], r['native_id']) for r in conn.execute(
-        'SELECT runtime,native_id FROM goal_execution_bindings WHERE native_id IS NOT NULL'))
+        'SELECT runtime,native_id FROM session_runtime_bindings WHERE native_id IS NOT NULL '
+        "UNION SELECT runtime,native_id FROM native_binding_origins WHERE origin='crew_created'")}
+    executions = {(r['runtime'], r['native_id']) for r in conn.execute(
+        'SELECT runtime,native_id FROM goal_execution_bindings WHERE native_id IS NOT NULL')}
     with service.agents_lock:
         live = board.live_sessions(service.agents) if service.agents_error is None else {}
         snapshots = {name: list(service.vscode_sessions.get(name, [])) for name in selected}
@@ -52,6 +58,8 @@ def entries(service, conn, project, *, scope='project'):
 
     def add(runtime, native_id, title, cwd, active, *, owner=None, source=None, path=None,
             archived=False, background=False, model=None, effort=None, identity=None):
+        if (runtime, native_id) in executions:
+            return
         sid = identity or bindings.get((runtime, native_id))
         person = registered.get(sid)
         if person:
@@ -62,7 +70,8 @@ def entries(service, conn, project, *, scope='project'):
         else:
             located = board.project_for_path(conn, cwd) if cwd else None
             owner = located['name'] if located else owner
-        if owner not in selected or not cwd:
+        admin = sid in admins and owner is None
+        if (not admin and owner not in selected) or not cwd:
             return
         if person and (person['status'] == 'closed' or board.is_archived(conn, sid)):
             archived = True
@@ -73,19 +82,19 @@ def entries(service, conn, project, *, scope='project'):
         # Codex's persisted transcript cannot prove whether another app has an
         # active process. Do not turn "not observed by Crew" into "offline".
         observed = running or runtime == 'claude'
-        category = ('workspace_assistant' if sid in assistants else
+        category = ('system_admin' if admin else 'workspace_assistant' if sid in assistants else
                     'archived' if archived else 'background' if background and not person else
-                    'team' if person and person['crew_name'] and
+                    'team' if person and
                     (person['role'] == 'leader' or person['group_name']) else
-                    'ungrouped' if person and person['crew_name'] else 'available')
-        root = projects[owner]['root']
+                    'ungrouped' if person else 'available')
         item = {'key': key, 'session_id': sid, 'native_id': native_id, 'runtime': runtime,
-                'project': owner, 'project_name': projects[owner].get('display_name') or owner,
+                'project': owner, 'project_name': None if admin else projects[owner].get('display_name') or owner,
+                'war_rooms': rooms.get(sid, []),
                 'title': title or (person and (person['task'] or person['last_prompt'])) or '未命名会话',
                 'name': person['crew_name'] if person else None,
                 'group': person['group_name'] if person else None,
                 'role': person['role'] if person else None, 'category': category,
-                'cwd': cwd, 'rel_dir': _relative(cwd, root),
+                'cwd': cwd, 'rel_dir': None if admin else _relative(cwd, projects[owner]['root']),
                 'last_active': active or (person and person['last_event_at']),
                 'running': running if observed else None, 'source': 'Crew' if person else source,
                 'adoptable': category in ('available', 'ungrouped') and Path(cwd).is_dir(),
@@ -112,7 +121,7 @@ def entries(service, conn, project, *, scope='project'):
             source='Codex', path=row['path'], background=row['source'] not in ('cli', 'vscode', 'app-server', 'desktop'),
             model=row['model'], effort=row['effort'])
     for sid, person in registered.items():
-        if person['project'] not in selected or 'crew:' + sid in result:
+        if (person['project'] not in selected and sid not in admins) or 'crew:' + sid in result:
             continue
         mapping = runtimes.get(conn, sid)
         add(mapping['runtime'], mapping['native_id'], person['task'] or person['last_prompt'] or person['crew_name'],
@@ -203,11 +212,14 @@ def adopt(service, conn, project, key, name, group, now):
         return service.adopt(conn, project, candidate, name, group, now)
     sid = item['session_id'] or str(uuid.uuid4())
     with board.transaction(conn):
+        if item['session_id'] and item['native_id']:
+            runtimes.check_native_owner(conn, 'codex', item['native_id'], session_id=sid)
         if item['session_id'] is None:
             board.available_name(conn, project, name)
             worktree, branch = hooks.git_details(item['cwd'])
             board.register_session.__wrapped__(conn, sid, project, item['cwd'], worktree, branch, now=now)
             runtimes.set.__wrapped__(conn, sid, 'codex', item['native_id'], now=now)
+            native_origins.record(conn, 'codex', item['native_id'], 'user_adopted')
             models.set(conn, sid, item['model'], item['effort'], runtime='codex', now=now)
         candidate = {'session_id': sid, 'crew_name': name if item['session_id'] is None else item['name'], 'cwd': item['cwd']}
         if item['session_id'] is None:
