@@ -150,3 +150,10 @@ H = 本机界面，B / D = 远程浏览器 / 远程桌面（与 `domains.apply` 
 
 - 助手页面的确认请求目前按通用格式显示操作名与参数；还没有在确认卡里嵌 `CrewRestructure` 面板（或版本差异）——需在 `assistant.html` 加载 `restructure-ui.js` / `.css`，对 `domains.restructure.apply`、`leader.merge` / `retire`、`domains.rollback` 的确认请求用面板展示改前 / 改后。
 - 作战室主题：预算上限与首轮暂停；交接稿投递如需改走作战室消息，由作战室在 `chat_delivery` 侧接。
+
+## 10. 助手作战流程（阶段四第 2 条，已实现）
+
+- **开局一次确认**：`campaign.preview`（只读）校验方案并给出 `cost`：新建 leader 数、载体 / 模型 / 强度分布、首批任务、作战室预算与按 `prices.json` 估算的金额区间（未缓存输入单价到输出单价）；`campaign.launch`（`high`，AI 调用请用户确认一次）先建 leader（`chat.start`，任务书 = 职责），再把新领域、归属与负责人写成**一个**架构图版本（回滚一步回到开局前），然后派首批任务并立即开始、开助手牵头的作战室（带预算）。`start=false` 只建领域，不启动模型，leader 与任务原样返回留待之后。
+- **确认卡**：助手页“等你确认”对 `campaign.launch` 先读一次预览，最醒目处写“会花什么”，再分区列“建什么”；`war_room.budget` 显示作战室已用 / 原上限 / 新上限。
+- **守则**：`plugin/prompts/roles/assistant.md` “开局与重整（作战）”一节：探底 → 方案 → 确认 → 执行 → 交棒，盯作战室、预算暂停时只等用户决定。
+- **重整**沿用 §4–§5 的 `domains.restructure.preview / apply`（`leader.merge` / `retire`）；确认卡里嵌 `CrewRestructure` 面板仍按 §9 待接线。
