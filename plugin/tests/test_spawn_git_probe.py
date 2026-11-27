@@ -49,7 +49,7 @@ class SpawnGitProbeTests(RuntimeFixture):
         with mock.patch.object(spawn.subprocess,'run',side_effect=failed):
             with self.assertRaisesRegex(board.BoardError,'仓库读取失败'):self.plan()
         with mock.patch.object(spawn.subprocess,'run',return_value=subprocess.CompletedProcess([],1)):
-            with self.assertRaisesRegex(board.BoardError,'Temp/wt'):self.plan()
+            with self.assertRaisesRegex(board.BoardError,r'\.gitignore.*Temp/wt/'):self.plan()
 
     @unittest.skipUnless(sys.platform=='win32','Windows inherited descendant handles regression')
     def test_hung_parent_and_descendant_cannot_extend_the_probe_timeout(self):

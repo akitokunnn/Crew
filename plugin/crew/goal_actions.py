@@ -212,7 +212,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
         if action == 'create':
             leader_id = data.get('leader_session_id') or data.get('leader') or (actor_session_id if actor and actor['role'] == 'leader' else None)
             if not leader_id:
-                raise board.BoardError('创建目标必须指定主责 leader')
+                raise board.BoardError('创建目标必须指定主责 leader：leader_session_id 填该 leader 的会话 ID')
             leader = _person(conn, project, leader_id)
             missing = [key for key in ('title', 'request', 'acceptance') if key not in data]
             if missing:

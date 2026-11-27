@@ -14,6 +14,7 @@ from unittest import mock
 from tests.ops_helpers import ai_call
 from crew.ops.errors import OpError
 from crew import board, git_admin, git_view, hooks, messaging, models, runtimes, settings, spawn, store, web
+from crew.ops import tokens
 from test_core import CoreCase, NOW
 from test_shell import PLUGIN, ShellFixture
 from tests.fixture_carriers import install_lookup
@@ -74,7 +75,7 @@ class GitOperationTests(CoreCase):
                  "commit", "--allow-empty", "-m", "fixture")
         for name in ("develop", "dev", "master", "topic"):
             self.git("branch", name)
-        self.plans = []
+        self.plans, self.launch_roles, self.native_failure = [], [], None
         self.transcripts = self.base / 'claude-projects'
         self.transcripts.mkdir()
         self.service = web.Service(self.home, PLUGIN, cwd=self.root, agents_provider=lambda: [],
@@ -88,7 +89,7 @@ class GitOperationTests(CoreCase):
     def agent(self, operation, args=None, sid='s1'):
         return ai_call(self.service, self.conn, sid, operation, args)
 
-    def launcher(self, conn, project_name, name, task, **options):
+    def launcher(self, conn, project_name, name, task, _registered=None, **options):
         plan = spawn.prepare(conn, self.home, self.fake_plugin, project_name, name, task, **options)
         self.plans.append(plan)
         spec = plan["spec"]
@@ -99,6 +100,12 @@ class GitOperationTests(CoreCase):
                                    name=name, role=spec["role"], group_name=spec["group"], spawn_id=spec["id"], now=NOW)
             runtimes.set(conn, plan['session_id'], spec['runtime'], plan['session_id'] if spec['runtime'] == 'claude' else None)
             models.set(conn, plan["session_id"], spec["model"], spec["effort"], now=NOW, speed=spec["speed"])
+            if _registered is not None:
+                _registered(plan["session_id"])
+            # The native starts here: its MCP token takes the role the board shows at this moment.
+            self.launch_roles.append(tokens.role_of(conn, plan["session_id"]))
+            if self.native_failure is not None:
+                raise self.native_failure
 
         result = spawn._execute(conn, plan, register)
         return {**result, "session_id": plan["session_id"]}
@@ -214,6 +221,19 @@ class GitOperationTests(CoreCase):
         self.assertEqual(self.plans[0]['spec']['model'], 'gpt-fixture-purpose')
         self.assertEqual(self.plans[0]['spec']['effort'], 'high')
         self.assertIsNone(settings.load(self.conn)['default']['model'])
+
+    def test_administrator_starts_with_its_git_role(self):
+        # Real Haiku run (2026-11-27): the first Git assistant could not find git_request_resolve or
+        # git_policy_set, because its token was issued as a leader before the board named it administrator.
+        administrator = self.enable()
+        self.assertEqual(self.launch_roles, ['git_admin'])
+        self.assertEqual(tokens.role_of(self.conn, administrator), 'git_admin')
+
+    def test_native_start_failure_after_registration_does_not_mark_git_enabled(self):
+        self.native_failure = OSError('fixture native failure')
+        with self.assertRaisesRegex((OpError, board.BoardError, ValueError, OSError), 'fixture native failure'):
+            self.configure()
+        self.assertIsNone(board.git_config(self.conn, "demo"))
 
     def test_start_failure_does_not_mark_git_enabled(self):
         with mock.patch.object(self, "launcher", side_effect=OSError("fixture launch failure")):

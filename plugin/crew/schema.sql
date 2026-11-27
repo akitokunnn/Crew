@@ -1174,6 +1174,15 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
 );
 CREATE INDEX IF NOT EXISTS mcp_tokens_session ON mcp_tokens(session_id, revoked_at);
 
+-- Tools a Claude conversation found with crew_search (execution_id '' = its general conversation).
+-- Kept per conversation, not per token, so a resumed native still lists them after a restart.
+CREATE TABLE IF NOT EXISTS mcp_loaded_tools (
+ session_id TEXT NOT NULL,
+ execution_id TEXT NOT NULL,
+ op TEXT NOT NULL,
+ PRIMARY KEY (session_id, execution_id, op)
+);
+
 -- User confirmations of high-risk operations an AI asked for (OPERATIONS_REGISTRY_DESIGN §5.6).
 CREATE TABLE IF NOT EXISTS interaction_requests (
  id TEXT PRIMARY KEY,

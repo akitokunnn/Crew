@@ -135,12 +135,21 @@ def enable(conn, home, plugin_root, project_name, launcher, base=None, integrati
     task = behavior_prompts.text(conn, 'git_task', project=project_name, values={
         'policy_command': 'Crew 工具 `git_policy_set`（参数 `text` 填规则正文）',
         'requests_command': '`git_requests_list` 查看，再用 `git_request_resolve`'})
-    result = launcher(conn, project_name, "Git 助手", task, group="git", role="leader",
-                      new_worktree="crew/git-admin-" + uuid.uuid4().hex[:8], base=base, now=now,
-                      model=selected['model'], effort=selected['effort'], agent="crew:git", runtime=runtime,
-                      speed=selected['speed'])
-    return board.enable_git(conn, project_name, base, integration, now=now,
-                            admin_session_id=result["session_id"])
+    # The native's MCP token takes its role from this row when it starts, so the board names the
+    # administrator as soon as the session exists; a start that fails leaves Git disabled.
+    started = False
+    try:
+        launcher(conn, project_name, "Git 助手", task, group="git", role="leader",
+                 new_worktree="crew/git-admin-" + uuid.uuid4().hex[:8], base=base, now=now,
+                 model=selected['model'], effort=selected['effort'], agent="crew:git", runtime=runtime,
+                 speed=selected['speed'],
+                 _registered=lambda session_id: board.enable_git(conn, project_name, base, integration, now=now,
+                                                                 admin_session_id=session_id))
+        started = True
+    finally:
+        if not started:
+            conn.execute("DELETE FROM git_management WHERE project=?", (project_name,))
+    return board.git_config(conn, project_name)
 
 
 @board.atomic

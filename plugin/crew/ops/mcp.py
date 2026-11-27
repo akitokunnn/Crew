@@ -5,24 +5,22 @@ POST /mcp only; no standalone SSE stream (GET returns 405) and no
 
 Exposure (design §5.2, user ruling 7): a session lists its role's core tools
 plus ``crew_search``. Claude Code honours ``tools/list_changed`` mid-session,
-so a search loads the matching tools into that token's list. Codex fixes its
+so a search loads the matching tools into that conversation's list; the list is kept per Crew session
+(and task execution), so a resumed native still has the tools it found before its restart. Codex fixes its
 tool list when the connection opens, so Codex sessions get ``crew_call`` and
 search results tell them to call ``crew_call(op=...)``. Both paths run the
 same executor; ``crew_call`` is not a side door.
 """
 from contextlib import closing
 import json
-import threading
 import traceback
 
-from .. import board, guard
+from .. import board, guard, store
 from . import executor, launch, registry, search, tokens
 from .errors import OpError
 
 PROTOCOL = '2025-06-18'
 SEARCH, CALL = 'crew_search', 'crew_call'
-_loaded = {}
-_loaded_lock = threading.Lock()
 
 
 def _envelope_props(op, caller):
@@ -62,13 +60,17 @@ def available(caller, grants):
             if name in grants and caller.role in op.scopes}
 
 
-def visible(caller, grants, exposure='core'):
+def loaded(conn, caller):
+    """Operations this conversation found with crew_search, across native restarts."""
+    return {row[0] for row in conn.execute('SELECT op FROM mcp_loaded_tools WHERE session_id=? AND execution_id=?',
+                                           (caller.session_id, caller.execution_id or ''))}
+
+
+def visible(caller, grants, exposure='core', found=frozenset()):
     ops = available(caller, grants)
     if exposure == 'all':
         return ops
-    with _loaded_lock:
-        loaded = _loaded.get(caller.token_hash, set())
-    return {name: op for name, op in ops.items() if caller.role in op.core_for or name in loaded}
+    return {name: op for name, op in ops.items() if caller.role in op.core_for or name in found}
 
 
 def _search_tool():
@@ -95,8 +97,8 @@ def _call_tool():
                             'idempotentHint': False, 'openWorldHint': False}}
 
 
-def list_tools(caller, grants, exposure='core'):
-    tools = [tool(op, caller) for op in sorted(visible(caller, grants, exposure).values(), key=lambda op: op.name)]
+def list_tools(caller, grants, exposure='core', found=frozenset()):
+    tools = [tool(op, caller) for op in sorted(visible(caller, grants, exposure, found).values(), key=lambda op: op.name)]
     tools.append(_search_tool())
     if caller.runtime == 'codex' and exposure == 'core':
         tools.append(_call_tool())
@@ -124,11 +126,12 @@ def call_tool(service, caller, grants, name, arguments, exposure='core'):
         hits = search.search(ops.values(), arguments.get('query', ''), arguments.get('domain'), caller, exposure)
         changed = False
         if caller.runtime != 'codex' and exposure == 'core':
-            with _loaded_lock:
-                loaded = _loaded.setdefault(caller.token_hash, set())
-                fresh = {hit['op'] for hit in hits} - loaded - {n for n, op in ops.items() if caller.role in op.core_for}
-                loaded |= fresh
-                changed = bool(fresh)
+            with closing(store.connect(service.home)) as conn:
+                fresh = ({hit['op'] for hit in hits} - loaded(conn, caller)
+                         - {n for n, op in ops.items() if caller.role in op.core_for})
+                conn.executemany('INSERT OR IGNORE INTO mcp_loaded_tools(session_id,execution_id,op) VALUES(?,?,?)',
+                                 [(caller.session_id, caller.execution_id or '', name) for name in sorted(fresh)])
+            changed = bool(fresh)
         return _text_result({'results': hits}), changed
     if name == CALL and caller.runtime == 'codex' and exposure == 'core':
         op = ops.get(arguments.get('op'))
@@ -189,11 +192,6 @@ def _preview_result(service, caller, value):
     return result
 
 
-def forget(token_hash):
-    with _loaded_lock:
-        _loaded.pop(token_hash, None)
-
-
 def handle(handler, service, payload):
     """Serve one POST /mcp; the caller already checked the request is local."""
     auth = handler.headers.get('Authorization', '')
@@ -202,6 +200,7 @@ def handle(handler, service, payload):
     try:
         with closing(guard.readonly(service.home)) as conn:
             caller, grants = tokens.caller(conn, auth[len('Bearer '):].strip())
+            found = loaded(conn, caller)
     except OpError as exc:
         return handler._send(401, {'error': str(exc)})
     if not launch.live(caller):
@@ -223,7 +222,7 @@ def handle(handler, service, payload):
     if method == 'ping':
         return _rpc(handler, ident, {})
     if method == 'tools/list':
-        return _rpc(handler, ident, {'tools': list_tools(caller, grants, service.mcp_exposure)})
+        return _rpc(handler, ident, {'tools': list_tools(caller, grants, service.mcp_exposure, found)})
     if method == 'tools/call':
         result, changed = call_tool(service, caller, grants, params.get('name'), params.get('arguments') or {},
                                     service.mcp_exposure)

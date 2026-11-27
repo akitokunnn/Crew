@@ -174,7 +174,7 @@ class Operation:
 | git_admin | `session_whoami`、`git_requests_list`、`git_branches_list`、`git_policy_get`、`git_request_resolve`、`message_send`、`crew_search` |
 | Codex 会话（基线模式）额外 | `crew_call` |
 
-**基线模式（用户裁决 7，施工默认）**：`tools/list` = 核心工具 ∩ 有效权限 + 该会话已加载的工具。CC 会话：`crew_search` 命中项加入该令牌的“已加载集”并随响应发 `list_changed`。Codex 会话：已加载集不变，`crew_search` 结果写明“用 `crew_call` 调用，`op` 填 `<操作名>`”并附完整 `params`；`crew_call` 与直接调用同名工具走完全相同的鉴权、参数校验（按 `op` 的 schema 校验 `args`）、确认与幂等，不是后门。载体类型在签发令牌时记录（`runtime` 字段），不从 `clientInfo` 猜。
+**基线模式（用户裁决 7，施工默认）**：`tools/list` = 核心工具 ∩ 有效权限 + 该会话已加载的工具。CC 会话：`crew_search` 命中项加入该会话（任务执行按执行区分）的“已加载集”并随响应发 `list_changed`；已加载集存于 `mcp_loaded_tools`，不随令牌轮换清空——原生进程或后台重启后恢复的会话会按历史直接调用这些工具（2026-11-27 真实模型实测：按令牌清空时，恢复的助手调用已找到的 `goal_create` 被 Claude Code 拒绝后直接放弃）。Codex 会话：已加载集不变，`crew_search` 结果写明“用 `crew_call` 调用，`op` 填 `<操作名>`”并附完整 `params`；`crew_call` 与直接调用同名工具走完全相同的鉴权、参数校验（按 `op` 的 schema 校验 `args`）、确认与幂等，不是后门。载体类型在签发令牌时记录（`runtime` 字段），不从 `clientInfo` 猜。
 
 **候选模式（权限即工具集）**：`tools/list` = 有效权限内全部操作 + `crew_search`（只读用法指南，不加载）。Codex 照 t3code 注册两个服务名：`crew`（全部工具，走 Codex 的延迟加载，`disabled_tools` = 核心工具）与 `crew_core`（`enabled_tools` = 核心工具，`omit_tools_from = ["deferred"]` 直出），写法见 t3code `CodexAdapterV2.ts:1747–1761`；这三个键尚未在本机 Codex 0.172 上实测。
 

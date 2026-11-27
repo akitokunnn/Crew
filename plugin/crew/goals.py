@@ -480,13 +480,20 @@ def continue_task(conn, goal_id, text, *, actor=board.HUMAN, discussion_executio
                   source={'type': 'task-continuation', 'message_id': response['message_id'] if response else None}, now=now)
     from . import goal_work
     goal_work.carry_forward(conn, goal_id, goal['requirement_version'], actor=actor)
-    if response:
-        receipt = {'text': text, 'acceptance': acceptance, 'constraints': constraints,
-                   'expected_version': expected_version, 'requirement_version': value['requirement_version']}
+    # The change is the task's work now: the discussion that asked for it, or (for the user's own
+    # continuation such as 需修改) any discussion of this round still open, continues as that work.
+    promoted = [discussion_execution_id] if response else [row['execution_id'] for row in conn.execute(
+        'SELECT d.execution_id FROM goal_discussion_executions d JOIN goal_executions e ON e.id=d.execution_id '
+        "WHERE e.goal_id=? AND e.round=? AND d.promoted_at IS NULL AND e.status NOT IN ('completed','failed','cancelled')",
+        (goal_id, goal['current_round']))]
+    receipt = {'text': text, 'acceptance': acceptance, 'constraints': constraints,
+               'expected_version': expected_version, 'requirement_version': value['requirement_version']}
+    for execution_id in promoted:
         conn.execute('UPDATE goal_discussion_executions SET promoted_at=?,promotion_json=? WHERE execution_id=?',
-                     (at, _json(receipt), discussion_execution_id))
+                     (at, _json(receipt), execution_id))
         conn.execute('UPDATE goal_executions SET requirement_version=?,updated_at=? WHERE id=?',
-                     (value['requirement_version'], at, discussion_execution_id))
+                     (value['requirement_version'], at, execution_id))
+    if response:
         value = transition(conn, goal_id, 'running', actor=actor, now=now)
     return value
 

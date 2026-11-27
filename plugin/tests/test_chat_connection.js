@@ -718,6 +718,18 @@ test("a busy turn has one progress row and swaps send for the icon stop until a 
   h.update("worker",{busy:false});h.flushFrames();assert.equal(progress().length,0);assert.equal(stop.hidden,true);assert.equal(send.hidden,false);h.chat.unmount();
 });
 
+test("a compaction the carrier refused shows its reason where the compaction was asked",async()=>{
+  // Real Haiku run (2026-11-27): Claude answered /compact with "Not enough messages to compact." and no boundary.
+  const h=harness();
+  const api=async url=>url==="/api/op/chat.read"?{read_seq:4}:{...history(),events:[{seq:1,type:"compact_request",id:"c1"},
+    {seq:2,type:"assistant",id:"s1",content:[{type:"text",text:"Not enough messages to compact."}]},
+    {seq:3,type:"compact_cancelled",reason:"Not enough messages to compact. <b>"},{seq:4,type:"turn_result",status:"completed",success:true}]};
+  const target=h.mount("member",api);await tick();h.flushFrames();
+  const html=rendered(target).join("");
+  assert.match(html,/context-divider compact-cancelled[^>]*>压缩未完成：Not enough messages to compact\. &lt;b&gt;</);
+  h.chat.unmount();
+});
+
 test("a member page can show one task execution record and talk to that task",async()=>{
   const h=harness(),calls=[],toasts=[];let routed=0;
   const api=async(url,data)=>{calls.push([url,data]);if(url==="/api/op/chat.send")return {accepted:true,goal_id:"goal-a",execution_id:"exec-a"};if(url==="/api/op/chat.read")return {read_seq:data.seq};

@@ -113,7 +113,7 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
             raise board.BoardError("worktree \u76ee\u5f55\u5fc5\u987b\u5728\u9879\u76ee root \u4e0b")
         ignored = _check_ignore(root)
         if ignored.returncode == 1:
-            raise board.BoardError("\u8bf7\u5148\u8ba9 git \u5ffd\u7565 Temp/wt")
+            raise board.BoardError("\u8bf7\u5148\u8ba9 git \u5ffd\u7565 Temp/wt/\uff1a\u5728\u4ed3\u5e93\u7684 .gitignore\uff08\u6216 .git/info/exclude\uff09\u52a0\u4e00\u884c Temp/wt/ \u540e\u91cd\u8bd5\uff1b\u5c1a\u672a\u521b\u5efa\u5de5\u4f5c\u533a")
         if ignored.returncode != 0:
             raise board.BoardError("git check-ignore \u5931\u8d25: " + ignored.stderr.strip())
         if directory.exists():
