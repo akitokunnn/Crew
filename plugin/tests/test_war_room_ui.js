@@ -399,7 +399,7 @@ test("作战中战况显示卡住和待定项，成员和内部消息在独立�
       question:"能否简化？", response:"可以", created_at:"2026-11-28T02:04:00Z"}, {
       question_id:"h", purpose:"routine", runtime:"claude", model:"实际模型二", effort:"low", tokens:0,
       usage_status:"confirmed", question:"有没有遗漏？", response:"无", created_at:"2026-11-28T02:04:15Z"},
-      {question_id:"i", purpose:"difficult", runtime:"claude", model:null, effort:null, tokens:null, usage_status:"pending",
+      {question_id:"i", purpose:"difficult", runtime:"claude", model:null, effort:"载体默认", native_model:"claude-haiku-5-5", tokens:null, usage_status:"pending",
       question:"可以上线吗？", response:null, error:"OAuth 登录过期", created_at:"2026-11-28T02:04:16Z"}],
     events:[{kind:"launch_step", detail:{version:2,step:"goal",target:"A1"}}]
   }));
@@ -410,7 +410,7 @@ test("作战中战况显示卡住和待定项，成员和内部消息在独立�
   assert.doesNotMatch(html,/内部讨论/);
   assert.match(html, /创意顾问<\/strong><span>用量待确认<\/span><small[^>]*>Codex · 实际模型 · 强度 high<\/small>[\s\S]*能否简化[\s\S]*可以/);
   assert.match(html, /常规顾问[\s\S]*0 tokens/);
-  assert.match(html, /顾问调用失败[\s\S]*OAuth 登录过期/);
+  assert.match(html, /疑难顾问[\s\S]*Claude Code · 默认模型 · 强度 载体默认 · 实际 claude-haiku-5-5[\s\S]*顾问调用失败[\s\S]*OAuth 登录过期/);
   assert.match(aside, /另有 2 次用量待确认/);
   assert.match(html, /等你定[\s\S]*去拍板/);
   f.click("internal"); assert.match(f.node(".wr-pane-content").innerHTML, /内部讨论/);

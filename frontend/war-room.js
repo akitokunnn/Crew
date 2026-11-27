@@ -106,7 +106,7 @@
     const runtime = ({claude:"Claude Code", codex:"Codex"})[card.runtime] ?? card.runtime;
     const response = card.error ? `<p class="wr-error">${esc(card.error)}</p>` : card.response === null ?
       "<p>正在等答复</p>" : `<div class="crew-md-doc">${CrewReportMarkdown.render(card.response)}</div>`;
-    const details = [runtime, card.model, card.effort && `强度 ${card.effort}`].filter(Boolean).join(" · ");
+    const details = [runtime, card.model ?? "默认模型", `强度 ${card.effort}`, card.native_model && card.native_model !== card.model && `实际 ${card.native_model}`].filter(Boolean).join(" · ");
     return `<details class="wr-note wr-consult" data-wr-card="consult-${esc(card.question_id)}"><summary><strong>${purposes[card.purpose]}顾问</strong><span>${esc(usage)}</span><small title="${esc(details)}">${esc(details)}</small></summary>
       <div class="wr-consult-body"><h3>问题</h3><div class="crew-md-doc">${CrewReportMarkdown.render(card.question)}</div><h3>${card.error ? "顾问调用失败" : "答复"}</h3>${response}</div></details>`;
   }
