@@ -1019,6 +1019,7 @@ a.btn{color:inherit;text-decoration:none}
 .leader-unread-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--accent)}
 .rail-dot{position:absolute;right:2px;top:2px;width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px var(--rail-bg,var(--surface));pointer-events:none}
 .rail-war-room[data-war-room-state="empty"]{color:var(--text-3)}
+.rail-war-room[data-war-room-state="preparing"]{color:var(--text)}
 .rail-war-room[data-war-room-state="active"]{color:var(--accent-text)}
 .rail-war-room[data-war-room-state="waiting"] .rail-dot{background:var(--warn)}
 [data-room-waiting] .m-dot{background:var(--warn)}

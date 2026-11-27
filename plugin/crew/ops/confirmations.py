@@ -8,6 +8,7 @@ permission table, runs the operation for it, and tells it the outcome.
 """
 from contextlib import closing
 import json
+import re
 import threading
 import traceback
 import uuid
@@ -45,6 +46,18 @@ def view(row):
     return value
 
 
+def pending_view(row):
+    value = view(row)
+    op = registry.get(value['op'])
+    schema = op.schema_for(Caller(value['role'])) if op else {}
+    descriptions = {key: field.get('description', '') for key, field in schema.get('properties', {}).items()}
+    value['arg_labels'] = {
+        key: description for key, description in descriptions.items()
+        if key in value['args'] and re.search(r'[\u3400-\u9fff]', description)
+    }
+    return value
+
+
 def request(service, caller, op, args, request_id, digest, now):
     """Record (or find again) the confirmation an AI call needs; the operation does not run."""
     with closing(store.connect(service.home)) as conn, board.transaction(conn):
@@ -74,7 +87,7 @@ def request(service, caller, op, args, request_id, digest, now):
 def pending(service, project=None):
     condition = ' AND project=?' if project is not None else ''
     with closing(store.connect(service.home)) as conn:
-        return {'requests': [view(row) for row in conn.execute(
+        return {'requests': [pending_view(row) for row in conn.execute(
             "SELECT * FROM interaction_requests WHERE status='pending'" + condition + " ORDER BY created_at, id",
             (project,) if project is not None else ())]}
 

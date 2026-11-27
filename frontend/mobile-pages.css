@@ -344,7 +344,7 @@ body:has(>.nw-menu)::after{content:"";position:fixed;inset:0;z-index:69;backgrou
 .cs-notification-routing label{min-width:0}
 .cs-notification-routing .cs-button{width:100%}
 .co-chat-status,.st-legend,.st-category-copy .st-category-meta{font-size:12px}
-.sl-body{padding-bottom:calc(var(--m-bottom) + 20px)}
+.sl-body{padding-bottom:calc(var(--m-bottom) + 16px)}
 .crew-settings .sl-body{padding-block-start:4px;padding-inline:0}
 .sl-toolbar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .sl-toolbar label{font-size:14px}

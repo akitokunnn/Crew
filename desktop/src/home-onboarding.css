@@ -79,7 +79,7 @@
   .ob-foot-alert{margin-inline:18px}
 }
 @media(max-width:620px){
-  .onboarding{--ob-height:calc(100vh - 16px - var(--crew-desktop-chrome-height,0px));width:calc(100vw - 16px);border-radius:12px}
+  .onboarding{--ob-height:calc(100vh - 16px - var(--crew-desktop-chrome-height,0px));width:calc(100vw - 16px);max-height:var(--ob-height);border-radius:12px}
   .ob-brand span,.ob-step:not([aria-current=step]) span{display:none}
   .ob-step{min-width:42px}
   .ob-features,.ob-runtimes{grid-template-columns:minmax(0,1fr);gap:8px}
@@ -88,5 +88,4 @@
   .ob-foot .button,.ob-skip,.ob-appearance>.ob-link,.ob-choice button{min-height:40px}
   .ob-appearance{flex:1 0 100%}
   .ob-foot:has(>[data-ob-act="start"])>.ob-appearance{padding-bottom:8px;margin-bottom:4px;border-bottom:1px solid var(--line)}
-  .ob-foot-space{display:none}
 }

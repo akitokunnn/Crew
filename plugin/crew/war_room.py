@@ -88,12 +88,13 @@ def _source(actor):
     return 'web' if actor == board.HUMAN else 'crew'
 
 
-def claim_main_mentions(conn, notice_id=None):
-    """Route a new mention, or recover unclaimed mentions that predate main-session delivery."""
+def claim_main_notices(conn, notice_id=None):
+    """Route room mentions and decision answers to the lead's main session when needed."""
     query = """
         UPDATE leader_notices AS n SET batch_id='room:'||room_id||':notice:'||id
         WHERE n.sent_at IS NULL AND n.wake=1 AND n.batch_id IS NULL AND n.room_id IS NOT NULL
-          AND EXISTS (SELECT 1 FROM channel_mentions m WHERE m.notice_id=n.id AND m.reason='mention')
+          AND (EXISTS (SELECT 1 FROM channel_mentions m WHERE m.notice_id=n.id AND m.reason='mention')
+               OR EXISTS (SELECT 1 FROM war_room_decisions d WHERE d.answer_notice_id=n.id))
           AND NOT EXISTS (SELECT 1 FROM war_room_delivery d WHERE d.notice_id=n.id)
           AND EXISTS (
               SELECT 1 FROM war_rooms r WHERE r.id=n.room_id AND r.lead_session_id=n.session_id
@@ -288,7 +289,6 @@ def set_contract(conn, room_id, actor, text, expected_updated_at=None, now=None)
 def decide(conn, room_id, actor, question, options=(), recommendation=None, now=None):
     """The lead gathers the room's open question into one decision card for the user."""
     room = open_room(conn, room_id)
-    require_active(room)
     _gate(conn, room, actor, lead_only=True)
     question = _text(question, '拍板问题', 300)
     decision_id = board.ask.__wrapped__(conn, room['lead_session_id'], question,
@@ -311,6 +311,14 @@ def decision_answered(conn, decision_id, text, now=None):
                                  "SELECT id,project,lead_session_id,'crew',?,?,status='open' FROM war_rooms WHERE id=?",
                                  (notice, board._time(now), room['id'])).lastrowid
         conn.execute('UPDATE war_room_decisions SET answer_notice_id=? WHERE decision_id=?', (notice_id,decision_id))
+        claim_main_notices(conn, notice_id)
+
+
+def mark_decision_answer_delivered(conn, notice_id, now):
+    answered = conn.execute('SELECT decision_id FROM war_room_decisions WHERE answer_notice_id=?',
+                            (notice_id,)).fetchone()
+    if answered:
+        board.mark_answer_delivered(conn, answered[0], now)
 
 
 TASK_WORDS = {'queued': '未开始', 'running': '执行中', 'pausing': '暂停中', 'paused': '已暂停', 'waiting_user': '等用户答复',

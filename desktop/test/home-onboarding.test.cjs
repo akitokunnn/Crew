@@ -35,6 +35,8 @@ test('understanding Crew comes before the engine check and the three opening cho
   for (const feature of ['Leader', '思维导图 / 架构图', '作战室']) assert(intro.includes('<h3>' + feature + '</h3>'));
   assert.match(intro, /开始配置/);
   const engine = guide.markup(state({step:1, readiness:[ready('claude',{error:'<b>超时</b>'}),ready('codex')]}));
+  assert.match(engine, /<strong>Claude Code<\/strong>/);
+  assert.match(engine, /<strong>Codex<\/strong>/);
   assert.match(engine, /&lt;b&gt;超时&lt;\/b&gt;/);
   assert.match(engine, /value="codex" checked/);
   assert.doesNotMatch(engine, /模型|速度|思考强度/);

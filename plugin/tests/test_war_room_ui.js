@@ -100,7 +100,9 @@ test("筹备页显示当前决定和已定折叠，确认期间看到的推荐�
   await tick();
   const aside = f.node(".wr-plan-panel");
   assert.match(aside.innerHTML, /作战计划书 <span>v2/);
-  assert.match(aside.innerHTML, /Q1[\s\S]*领头建议 HMAC-SHA256[\s\S]*引用回答/);
+  assert.match(aside.innerHTML, /领头建议 HMAC-SHA256[\s\S]*data-entry="Q1"/);
+  assert.match(aside.innerHTML, /支付 · 切换网关/);
+  assert.doesNotMatch(aside.innerHTML, /\[A1\]|\[Q1\]|<strong>Q1<\/strong>/);
   assert.match(aside.innerHTML, /✓ 已定 \(1\)/);
   assert.match(aside.innerHTML, /何时上线 · 下周一/);
   f.click("compare");
@@ -133,6 +135,7 @@ test("没有待定项时直接批准，连续点击只发一次写请求", async
   latest.entries = shiftLines(plan2, 10, -1).filter(item => item.entry_id !== "Q1");
   const f = harness(room({plans:[latest,plan1]}), {mutation:() => new Promise(resolve => { release = resolve; })});
   await tick();
+  assert.match(f.node(".wr-plan-panel").innerHTML, /等你定<\/h2>\s*<p class="wr-no-decisions">暂无需要你拍板的事<\/p>/);
   f.click("approve",{version:"2"}); f.click("approve",{version:"2"});
   assert.equal(f.node(".wr-confirm").open,false);
   assert.deepEqual(f.calls.filter(call => call.name === "plan.approve").map(call => call.data),
@@ -296,7 +299,7 @@ test("删条目优先跳到最新版原小节，小节后来删除或当版已�
   await tick();
   const pane = f.node(".wr-pane-content");
   const {blocks:[section]} = watchPlan(f, pane, [heading]);
-  assert.match(f.node(".wr-timeline").innerHTML, /data-block="[^"]*等你定[^"]*"><span>删<\/span> Q2/);
+  assert.match(f.node(".wr-timeline").innerHTML, /data-block="[^"]*等你定[^"]*"><span>删<\/span> 何时上线/);
   f.click("jump", {version:"3", block:heading});
   assert(section.scrolled && section.classList.contains("wr-flash"));
   f.click("hide-panel");

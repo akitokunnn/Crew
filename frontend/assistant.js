@@ -76,7 +76,10 @@
   }
   // High-risk operations an AI asked for wait here until the user confirms or rejects them.
   const ROLE_LABELS={assistant:"系统管理员",workspace_assistant:"助手",leader:" leader ",execution:"任务执行",git_admin:" Git 助手"};
-  function argumentLine(args){return Object.entries(args||{}).filter(([key])=>key!=="request_id").map(([key,value])=>`${key}: ${typeof value==="string"?value:JSON.stringify(value)}`).join("，");}
+  function argumentLine({args,arg_labels:labels}){
+    return Object.entries(args).filter(([key])=>key!=="request_id").map(([key,value])=>
+      `${Object.hasOwn(labels,key)?labels[key]:key}：${typeof value==="string"?value:JSON.stringify(value)}`).join("，");
+  }
   const esc=value=>String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const tokens=n=>n>=1e8?`${+(n/1e8).toFixed(2)} 亿`:n>=1e4?`${+(n/1e4).toFixed(1)} 万`:String(n);
   const RUNTIMES={claude:"Claude",codex:"Codex"};
@@ -172,7 +175,7 @@
       if((item.op==="campaign.launch"||item.op==="domains.restructure.apply")&&item.args.note){const note=document.createElement("p");note.className="ac-note";note.textContent=`方案说明：${item.args.note}`;card.append(note);}
       const detail=document.createElement(special?"div":"p");detail.className=special?"ac-detail":"assistant-confirmation-args";
       if(special){detail.innerHTML='<p class="ac-quiet">正在读取…</p>';void lookup(item).then(result=>{detail.innerHTML=special[1](item,result);});}
-      else detail.textContent=argumentLine(item.args)||"无参数";
+      else detail.textContent=argumentLine(item)||"无参数";
       const actions=document.createElement("div");actions.className="assistant-confirmation-actions";
       for(const [label,approve,kind] of [["确认执行",true,"btn primary"],["拒绝",false,"btn ghost"]]){
         const button=document.createElement("button");button.type="button";button.className=kind;button.textContent=label;button.disabled=resolving.has(item.id);

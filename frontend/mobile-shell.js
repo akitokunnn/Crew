@@ -130,7 +130,11 @@
     if (waitingForRoom !== more.hasAttribute("data-room-waiting")) more.toggleAttribute("data-room-waiting", waitingForRoom);
     const roomState = sheet.querySelector("[data-m-room-state]");
     const roomLabel = room?.getAttribute("aria-label").split(" · ")[1] ?? "";
-    if (roomState && roomState.textContent !== roomLabel) roomState.textContent = roomLabel;
+    if (roomState) {
+      const state = room?.dataset.warRoomState ?? "";
+      if (roomState.dataset.state !== state) roomState.dataset.state = state;
+      if (roomState.textContent !== roomLabel) roomState.textContent = roomLabel;
+    }
     count("git", gitCount); count("channel", channelUnread);
     const theme = rail?.querySelector('[data-act="theme"]')?.getAttribute("title")?.split("·")[1]?.trim();
     const themeLabel = sheet.querySelector("[data-m-theme]"); if (themeLabel && theme && themeLabel.textContent !== theme) themeLabel.textContent = theme;

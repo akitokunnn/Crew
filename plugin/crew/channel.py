@@ -336,7 +336,7 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
                      "VALUES(?,?,?,?,?,?)", (message_id, target["session_id"], target["crew_name"], notice_id,
                                              int(actor == board.HUMAN and notice_id is not None), reason))
         if room is not None and target['session_id'] == room['lead_session_id'] and reason == 'mention' and notice_id is not None:
-            war_room.claim_main_mentions(conn, notice_id)
+            war_room.claim_main_notices(conn, notice_id)
     return _message(conn, conn.execute("SELECT * FROM channel_messages WHERE id=?", (message_id,)).fetchone())
 
 

@@ -116,9 +116,7 @@ def deliver(manager, conn, live, now):
                          (now, notice['id']))
             conn.execute('UPDATE war_room_delivery SET execution_id=? WHERE notice_id=?',
                          (result['execution_id'], notice['id']))
-            answered = conn.execute('SELECT decision_id FROM war_room_decisions WHERE answer_notice_id=?',(notice['id'],)).fetchone()
-            if answered:
-                board.mark_answer_delivered(conn, answered[0], now)
+            war_room.mark_decision_answer_delivered(conn, notice['id'], now)
             war_room.mark_seen(conn, room['id'], sid, prior['upto'], now)
 
 

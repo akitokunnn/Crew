@@ -54,6 +54,8 @@ body.m-chat .main{height:100dvh!important}
 .m-sheet-item svg{flex:none;width:22px;height:22px;fill:none;stroke:var(--text-2);stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .m-sheet-item>span{flex:1;min-width:0}
 .m-sheet-item>small{color:var(--text-3);font-size:var(--m-fs-meta)}
+.m-sheet-item>[data-m-room-state][data-state="preparing"]{color:var(--text)}
+.m-sheet-item>[data-m-room-state][data-state="waiting"]{color:var(--dl-st-fg);font-weight:600}
 .m-sheet-item .m-count{min-width:20px;height:20px;padding:0 6px;box-sizing:border-box;border-radius:10px;background:var(--warn);color:var(--on-accent);font-size:12px;font-weight:700;line-height:20px;text-align:center}
 [data-access-local-controls="false"] .m-sheet-item[data-local-control]{display:none}
 

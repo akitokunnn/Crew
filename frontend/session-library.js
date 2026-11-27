@@ -144,8 +144,7 @@
         return `<button class="${filters.category === key ? "on" : ""}" data-sl="category" data-category="${key}" aria-pressed="${filters.category === key}">${label}${count}</button>`;
       }).join("");
       const history = filters.category === "task_history";
-      const adminFilters = history ? {category:"system_admin",runtime:"all",status:"all",query:""} : {...filters,category:"system_admin"};
-      const admins = items.filter(item => item.category === "system_admin" && matches(item,adminFilters));
+      const admins = items.filter(item => item.category === "system_admin" && matches(item,filters));
       const results = items.filter(item => item.category !== "system_admin" && matches(item,filters));
       const adminSection = admins.length ? `<section class="sl-group" aria-label="系统管理员"><h2>系统管理员</h2>${admins.map(renderRow).join("")}</section>` : "";
       find(".sl-results").innerHTML = adminSection + (history ? renderTasks() : renderSessions(results, admins));

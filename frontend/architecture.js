@@ -253,7 +253,7 @@ const CrewArchitecture = (() => {
     const dy = b.top < r.top + margin ? r.top + margin - b.top : b.bottom > r.bottom - 64 ? r.bottom - 64 - b.bottom : 0;
     if (dx || dy) setCamera({...camera, x:camera.x + dx, y:camera.y + dy}, true);
   }
-  function bounds(ids) {
+  function bounds(ids, firstOnly) {
     const m = model(); let box = null;
     const cards = (ids ?? shownIds()).map(id => [posOf(m, id), sizeOf(m, id)]);
     if (ids === null) {
@@ -261,24 +261,31 @@ const CrewArchitecture = (() => {
         cards.push([m.independent.get(el.dataset.independent), {w:el.offsetWidth, h:el.offsetHeight}]);
       }
     }
-    for (const [p, size] of cards) {
+    for (const [p, size] of firstOnly ? cards.slice(0, 1) : cards) {
       box = box === null ? {x0:p.x, y0:p.y, x1:p.x + size.w, y1:p.y + size.h}
         : {x0:Math.min(box.x0, p.x), y0:Math.min(box.y0, p.y), x1:Math.max(box.x1, p.x + size.w), y1:Math.max(box.y1, p.y + size.h)};
     }
     return box;
   }
   const shownIds = () => [...host.querySelectorAll(".arch-part")].map(node => node.dataset.part);
-  function fit(ids = null, maxZoom = 1) {
-    const r = canvasRect(), box = bounds(ids), pad = r.width < 500 ? 24 : 56;
+  function fit(ids = null, maxZoom = 1, reading = false) {
+    const r = canvasRect(), box = bounds(ids, reading), pad = r.width < 500 ? 24 : 56;
     // Not laid out yet (the page is still appearing): fit once the canvas has a size.
-    if (r.width === 0 || r.height === 0) { pendingFit = [ids, maxZoom]; return; }
+    if (r.width === 0 || r.height === 0) { pendingFit = [ids, maxZoom, reading]; return; }
     pendingFit = null;
     if (box === null) { camera = {x:r.width / 2 - PART_W / 2, y:Math.max(80, r.height / 3), z:1}; applyCamera(); return; }
     // Keep clear of the first-use banner, hint and zoom bar.
     const banner = $(".arch-empty");
     const top = banner && !banner.hidden ? banner.offsetTop + banner.offsetHeight + 16 : pad, bottom = pad + 24;
-    setCamera(CrewCanvas.fit(r, box, {left:pad, top, right:pad, bottom}, clampZoom, maxZoom), true);
+    const fitted = CrewCanvas.fit(r, box, {left:pad, top, right:pad, bottom},
+      reading ? z => Math.max(.6, clampZoom(z)) : clampZoom, maxZoom);
+    if (reading) {
+      fitted.x = Math.max(fitted.x, pad - box.x0 * fitted.z);
+      fitted.y = Math.max(fitted.y, top - box.y0 * fitted.z);
+    }
+    setCamera(fitted, true);
   }
+  const fitInitial = () => fit(null, 1, phone.matches);
   function flash(node) { if (!node) return; node.classList.remove("flash"); void node.offsetWidth; node.classList.add("flash"); }
   // From the chat path or the right panel: show the leader's part (or the nearest shown one above it) and flash both.
   function applyFocus() {
@@ -316,7 +323,7 @@ const CrewArchitecture = (() => {
     if (host === null) return;
     const first = camera === null;
     render();
-    if (first && board !== null) { camera = loadCamera(); if (camera === null) { camera = {x:0, y:0, z:1}; fit(); } applyCamera(); }
+    if (first && board !== null) { camera = loadCamera(); if (camera === null) { camera = {x:0, y:0, z:1}; fitInitial(); } applyCamera(); }
     applyFocus();
     if (history !== null) void loadHistory();
   }
@@ -834,7 +841,7 @@ const CrewArchitecture = (() => {
     if (!editable()) { selection.clear(); renaming = null; }
     render();
     const saved = loadCamera();
-    if (saved) { camera = saved; applyCamera(); } else fit();
+    if (saved) { camera = saved; applyCamera(); } else fitInitial();
   }
 
   // ---- version history ------------------------------------------------------------------------------------------
@@ -982,7 +989,7 @@ const CrewArchitecture = (() => {
     phone.addEventListener("change", viewportChange);
     leaderSignature = signature(settings.state);
     if (board === null) { render(); void load(); return; }
-    render(); if (camera === null) fit(); applyCamera(); applyFocus();
+    render(); if (camera === null) fitInitial(); applyCamera(); applyFocus();
     if ((settings.state.domains?.version ?? 0) > board.version) void load(true);
   }
   const signature = state => JSON.stringify((state.leaders || []).map(item => [item.session_id, item.name, item.goal, item.status, item.color, item.avatar_version]));

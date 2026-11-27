@@ -77,6 +77,9 @@ html.crew-desktop-shell body {
 .crew-desktop-inactive #crew-desktop-titlebar {color:var(--cd-text-3);}
 .crew-desktop-inactive #crew-desktop-titlebar .crew-chrome-brand {color:var(--cd-text-2);}
 .crew-desktop-inactive #crew-desktop-titlebar .crew-chrome-brand svg {color:inherit;}
+@media (prefers-color-scheme: dark) and (max-width:760px) {
+  #crew-desktop-titlebar .crew-chrome-back:disabled {opacity:1;color:inherit;}
+}
 
 /* Tab strip: one band with the title bar; the active tab is a small floating sheet. */
 #crew-desktop-content {

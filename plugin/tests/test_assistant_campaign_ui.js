@@ -66,7 +66,8 @@ const preview = (extra = {}) => ({project: "fitness", ok: true, errors: [], boar
     estimate: {low_usd: 0.6, high_usd: 15, priced_models: ["opus"]},
     note: "确认后立即启动 2 位 leader 并开始首批任务；作战室预算到了会暂停等你确认。"}, ...extra});
 const launch = {id: "c1", op: "campaign.launch", role: "assistant", project: "fitness", summary: "执行开局方案", args: plan};
-const plainRequest = id => ({id, op: "session.delete", role: "assistant", project: "fitness", summary: "删除会话", args: {name: "后端"}});
+const plainRequest = id => ({id, op: "session.delete", role: "assistant", project: "fitness", summary: "删除会话",
+  args: {name: "后端"}, arg_labels: {name: "会话名称"}});
 
 test("a new request opens once, stays dismissed after reload, and a later request opens again", async () => {
   const storage = new Map(), pending = [plainRequest("first")];
@@ -177,7 +178,7 @@ test("problems in the plan, a structure-only plan, no price table, and a failed 
 
 test("a budget raise shows the room's title, spend and old cap next to the new cap; other requests keep the argument line", async () => {
   const raise = {id: "b1", op: "war_room.budget", role: "assistant", project: "fitness", summary: "设置或追加作战室预算", args: {project: "fitness", room: 3, budget_tokens: 400000}};
-  const other = {id: "o1", op: "session.delete", role: "assistant", project: "fitness", summary: "删除会话", args: {name: "后端", request_id: "x"}};
+  const other = {...plainRequest("o1"), args: {name: "后端", legacy: "旧值", request_id: "x"}};
   const page = assistantPage([raise, other], {room: {id: 3, title: "签名 v2", status: "open", budget: {tokens: 200000, spent: 203500, paused_at: "2026-11-27T10:00:00"}}});
   await settle();
   const get = page.calls.find(call => call.url.startsWith("/api/op/war_room.get?"));
@@ -185,7 +186,7 @@ test("a budget raise shows the room's title, spend and old cap next to the new c
   const [card, plain] = page.cards(), html = detail(card).innerHTML;
   assert.match(text(card), /^追加作战室预算\n由系统管理员发起 · 工作区 fitness/);
   assert(html.includes("#3 《签名 v2》") && html.includes("20.4 万 / 20 万 tokens") && html.includes("已暂停") && html.includes("<b>40 万 tokens</b>"));
-  assert.equal(plain.children[2].textContent, "name: 后端");
+  assert.equal(plain.children[2].textContent, "会话名称：后端，legacy：旧值");
   assert.equal(plain.children[2].className, "assistant-confirmation-args");
   const [confirm] = card.children.find(child => child.className === "assistant-confirmation-actions").children;
   await confirm.onclick(); await settle();

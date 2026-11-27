@@ -271,7 +271,7 @@ class DeliveryMixin:
         while that list is unknown; such a leader is never resumed here, its prompt hook delivers instead.
         """
         self._pause_over_budget(conn, now)
-        war_room.claim_main_mentions(conn)
+        war_room.claim_main_notices(conn)
         # The global assistant gets notices too when it leads a campaign war room.
         assistant = (" OR s.session_id IN (SELECT session_id FROM personal_assistant)" if conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='personal_assistant'").fetchone() else "")
@@ -331,6 +331,7 @@ class DeliveryMixin:
                         for notice_id in batch['notice_ids']:
                             board.mark_notice_sent.__wrapped__(conn, notice_id, now=now)
                         if 'room_id' in batch:
+                            war_room.mark_decision_answer_delivered(conn, batch['notice_ids'][0], now)
                             mention = conn.execute('SELECT message_id FROM channel_mentions WHERE notice_id=?',
                                                    (batch['notice_ids'][0],)).fetchone()
                             if mention:

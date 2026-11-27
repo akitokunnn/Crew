@@ -155,7 +155,7 @@
     const heading = inDialog ? "" : `<h2>作战计划书 <span>v${plan.version}</span></h2>`;
     return `${heading || tools ? `<header class="wr-panel-head">${heading}${tools ? `<div>${tools}</div>` : ""}</header>` : ""}
       <div class="wr-panel-scroll">
-        ${questions.length ? `<section class="wr-plan-decisions"><h3>等你定 <span>${questions.length}</span></h3>${questions.map(q => `<div class="wr-question"><strong>${esc(q.entry_id)}</strong><div>${esc(q.title)}</div><small>${q.recommendation ? `领头建议 ${esc(q.recommendation)}` : "还没有推荐值"}</small>${action("reference", "引用回答", `data-entry="${esc(q.entry_id)}"`)}</div>`).join("")}</section>` : ""}
+        ${questions.length ? `<section class="wr-plan-decisions"><h3>等你定 <span>${questions.length}</span></h3>${questions.map(q => `<div class="wr-question"><div>${esc(q.title)}</div><small>${q.recommendation ? `领头建议 ${esc(q.recommendation)}` : "还没有推荐值"}</small>${action("reference", "引用回答", `data-entry="${esc(q.entry_id)}"`)}</div>`).join("")}</section>` : ""}
         ${closedDecisions.length ? `<details class="wr-plan-decided" data-wr-card="decided"><summary>✓ 已定 (${closedDecisions.length})</summary><ul>${closedDecisions.map(item => `<li>${esc(item.title)}${item.answer ? ` · ${esc(item.answer)}` : ""}</li>`).join("")}</ul></details>` : ""}
         ${ctx.compare && previous ? `<section class="wr-compare"><strong>v${previous.version} → v${plan.version}</strong><ul>${changes.map(change => `<li>${change.type} · ${esc(change.label)}</li>`).join("") || "<li>正文没有改动</li>"}</ul><details data-wr-card="previous-${previous.version}"><summary>展开上一版全文</summary><article class="crew-md-doc">${planData(ctx, previous).html}</article></details></section>` : ""}
         <article class="crew-md-doc wr-plan-document">${budget ? `<p class="wr-plan-budget" data-wr-block="budget">${budget}</p>` : ""}${planData(ctx, plan).html}</article></div>
@@ -230,7 +230,7 @@
       preparing(room) ? action("cancel", "撤销筹备") : "") + action("stop", "叫停");
     const label = open ? (preparing(room) ? "筹备中" : "作战中") : ending[room.close_reason];
     return `<a class="cx-btn wr-back" href="${roomLink(0)}" data-wr-route="0">‹ 作战室</a><div class="wr-heading"><h1>${esc(room.title)}</h1><p>${esc(room.goal)} · 领头 ${esc(room.lead_name)}</p></div>
-      <span class="wr-phase" data-state="${open ? CrewGlobalRail.roomState([room]) : "closed"}">${esc(label)}</span><div class="wr-room-actions">${actions}</div>`;
+      <span class="wr-phase" data-state="${open ? room.phase : "closed"}">${esc(label)}</span><div class="wr-room-actions">${actions}</div>`;
   }
 
   function membersHTML(ctx) {

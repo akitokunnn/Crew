@@ -107,6 +107,8 @@ class AssistantHttpTests(ShellFixture, unittest.TestCase):
             code, value, _ = self.request('/api/op/interaction.list' + suffix)
             self.assertEqual(code, 200, value)
             self.assertEqual([x['id'] for x in value['requests']], ids)
+            for card in value['requests']:
+                self.assertEqual(card['arg_labels']['project'], '本工作区名，可省略')
         code, refused, _ = self.request('/api/op/interaction.resolve', {'project': 'other', 'id': rid, 'approve': True})
         self.assertEqual((code, refused['error_code']), (404, 'not_visible'))
         workspace_settings.remove(self.conn, 'demo', 0)

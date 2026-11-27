@@ -84,6 +84,45 @@ class PlanTests(DeliveryFixture):
         reply = war_room.say(self.conn, room, sid, '范围已确认', reply_to=post['id'])
         self.assertEqual((mention()['delivery'], mention()['reply_id'], reply['room_id']), ('replied', reply['id'], room))
 
+    def test_preparing_leads_decision_answer_wakes_main_once_after_failed_receipt(self):
+        sid = workspace_assistant.ensure(self.conn, self.home, 'demo')['session_id']
+        room = war_room.start(self.conn, 'demo', board.HUMAN, '筹备', '验证', lead=sid)['id']
+        manager = chat.Manager(self.home, self.base, lambda: [])
+        self.addCleanup(manager.close)
+        with mock.patch.object(manager, 'send', return_value={'accepted': True}):
+            manager.deliver_leader_notices(self.conn, set(), NOW)
+        with self.assertRaises(board.BoardError):
+            war_room.decide(self.conn, room, 'b', '其他人不能发卡')
+        card = war_room.decide(self.conn, room, sid, '是否附上备用说明？')
+        with mock.patch.object(war_room, 'claim_main_notices', side_effect=ValueError('inject')):
+            with self.assertRaises(ValueError):
+                board.answer(self.conn, card['id'], '附上')
+        self.assertEqual(war_room.get(self.conn, room)['decisions'][0]['status'], 'open')
+        board.answer(self.conn, card['id'], '附上')
+        with self.assertRaises(board.BoardError):
+            board.answer(self.conn, card['id'], '重复提交')
+        [notice] = [n for n in self.notices(sid) if n['sent_at'] is None]
+        self.assertEqual((notice['room_id'], notice['wake']), (room, 1))
+        # Also recover answers already queued by the previous version.
+        self.conn.execute('UPDATE leader_notices SET batch_id=NULL WHERE id=?', (notice['id'],))
+        with mock.patch.object(manager, 'send', side_effect=OSError('inject')) as send:
+            manager.deliver_leader_notices(self.conn, set(), NOW)
+            target, body = send.call_args.args
+            identity = send.call_args.kwargs['identity']
+            self.assertEqual((target['session_id'], send.call_args.kwargs['room_id']), (sid, room))
+            self.assertIn('问题：是否附上备用说明？\n答复：附上', body)
+        def delivery():
+            return self.conn.execute('SELECT delivered_at FROM decisions WHERE id=?', (card['id'],)).fetchone()[0]
+        self.assertIsNone(delivery())
+        with mock.patch.object(manager, 'send', return_value={'accepted': True}) as send:
+            manager.deliver_leader_notices(self.conn, set(), NOW)
+            manager.deliver_leader_notices(self.conn, set(), NOW)
+            send.assert_called_once()
+            self.assertEqual(send.call_args.kwargs['identity'], identity)
+        self.assertEqual(delivery(), NOW)
+        self.assertFalse(self.conn.execute('SELECT 1 FROM war_room_delivery WHERE notice_id=?', (notice['id'],)).fetchone())
+        self.assertFalse(any(e['type'] in ('leader_notice_batch', 'error') for e in manager.history(sid)['events']))
+
     def test_main_room_turn_hidden_and_next_private_turn_visible(self):
         manager = chat.Manager(self.home, self.base, lambda: [])
         self.addCleanup(manager.close)
@@ -118,6 +157,28 @@ class PlanTests(DeliveryFixture):
         self.assertIsNotNone(rows[0]['batch_id'])
         self.assertIsNone(rows[0]['sent_at'])
         self.assertEqual(tuple(rows[1]), (second['id'], None, NOW, exe['id']))
+
+    def test_active_leads_decision_answer_keeps_its_bound_execution(self):
+        room = war_room.start(self.conn, 'demo', 'a', '作战', '验证')
+        approve_assignments(self.conn, room, ['alpha'])
+        goal_id = self.conn.execute("SELECT goal_id FROM war_room_items WHERE kind='assignment'").fetchone()[0]
+        execution = goals.create_execution(self.conn, goal_id, 'a', runtime='claude')
+        manager = mock.Mock()
+        manager.maintenance_held.return_value = manager.busy.return_value = False
+        manager.goal_controller.approvals.return_value = []
+        manager.goal_controller.current.return_value = execution
+        manager.goal_controller.send.return_value = {'accepted': True, 'execution_id': execution['id']}
+        war_room_work.deliver(manager, self.conn, set(), NOW)
+        manager.goal_controller.send.reset_mock()
+        card = war_room.decide(self.conn, room['id'], 'a', '现在发布？')
+        board.answer(self.conn, card['id'], '发布')
+        war_room.claim_main_notices(self.conn)
+        self.assertFalse(board.pending_notices(self.conn, 'a', main_session=True))
+        war_room_work.deliver(manager, self.conn, set(), NOW)
+        manager.goal_controller.send.assert_called_once()
+        self.assertEqual(manager.goal_controller.send.call_args.args[:2], (goal_id, 'a'))
+        self.assertIn('答复：发布', manager.goal_controller.send.call_args.args[2])
+        self.assertEqual(self.conn.execute('SELECT delivered_at FROM decisions WHERE id=?', (card['id'],)).fetchone()[0], NOW)
 
     def open(self):
         return war_room.start(self.conn, 'demo', 'a', '测试', '校验一个文件', now=NOW)['id']

@@ -52,7 +52,7 @@
 .assistant-confirmation .assistant-confirmation-args{color:var(--text-3)}
 .assistant-confirmation-actions{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
 @media(min-width:761px){.assistant-confirmation{background:var(--studio-card)}}
-@media(max-width:760px){.assistant-main>.head .assistant-confirmation-trigger,.assistant-confirmation-dialog .btn{min-height:40px}.assistant-confirmation-actions .btn{flex:1}}
+@media(max-width:760px){.assistant-main>.head .assistant-confirmation-trigger,.assistant-confirmation-dialog .btn{min-height:40px}.assistant-confirmation-actions .btn{flex:1;justify-content:center;text-align:center}}
 
 /* Rich confirmation cards: an opening plan (campaign.launch) and a war-room budget raise, rendered from what they do. */
 .assistant-confirmation-rich{gap:6px}

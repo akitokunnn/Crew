@@ -2,6 +2,7 @@
 (() => {
   const decisions = plan => plan.entries.filter(item => item.kind === "decision");
   const pending = plan => decisions(plan).filter(item => !item.answer);
+  const entryLabel = entry => entry.kind === "assignment" ? `${entry.owner} · ${entry.title}` : entry.title;
 
   function approval(room, plan) {
     return {room:room.id, version:plan.version, budget_tokens:plan.budget_tokens,
@@ -13,14 +14,26 @@
     const byLine = new Map(entries.map(item => [item.line, item]));
     const blocks = [];
     let section = "", heading = null;
+    let emptyDecisions = -1;
+    const hasPending = pending({entries}).length > 0;
     const counts = new Map();
-    const html = CrewReportMarkdown.render(body, tokens => {
+    const display = lines.map((line, index) => {
+      const entry = byLine.get(index + 1);
+      if (!entry) return line;
+      const label = entry.kind === "decision"
+        ? [entry.title, entry.recommendation, entry.answer].filter(Boolean).join(" · ") : entryLabel(entry);
+      return line.replace(/^(\s*- )\[[\w-]+\]\s+.*$/, (_, prefix) => prefix + label);
+    }).join("\n");
+    const html = CrewReportMarkdown.render(display, tokens => {
       tokens.forEach((token, index) => {
         if (!token.map || token.hidden) return;
         const [start, end] = token.map;
         const entry = byLine.get(start + 1);
         const isHeading = token.type === "heading_open" && token.level === 0;
-        if (isHeading) section = tokens[index + 1].content;
+        if (isHeading) {
+          section = tokens[index + 1].content;
+          if (token.tag === "h2" && section === "等你定" && !hasPending) emptyDecisions = index + 3;
+        }
         const isEntry = entry && token.type === "list_item_open";
         const ordinary = token.level === 0 && !["bullet_list_open", "ordered_list_open"].includes(token.type);
         if (!ordinary && !isEntry && token.type !== "list_item_open") return;
@@ -31,9 +44,12 @@
         if (isHeading) heading = key;
         const text = lines.slice(start, end).join("\n").trim();
         blocks.push({key, group, heading, line:start + 1, end, text,
-          stable:Boolean(isEntry || isHeading), label:isEntry ? `${entry.entry_id} · ${entry.title}` :
+          stable:Boolean(isEntry || isHeading), label:isEntry ? entryLabel(entry) :
             isHeading ? section : (text.split("\n")[0].slice(0, 48) || section)});
         token.attrSet("data-wr-block", key);
+      });
+      if (emptyDecisions !== -1) tokens.splice(emptyDecisions, 0, {
+        type:"html_block", content:'<p class="wr-no-decisions">暂无需要你拍板的事</p>'
       });
     });
     return {html, blocks};
