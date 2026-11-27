@@ -235,7 +235,7 @@ async function openAdministrator() {
 async function openProject(name, destination = '') {
   if (!liveWindow()) return false;
   const target = window;
-  if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
+  if(new URL(backend.url).port==='0')throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员 · 运维');
   let project=(await core.projects(backend.url)).find(item=>item.name===name);
   if (!liveWindow(target)) return false;
   if(!project&&name.startsWith('storage:')){
@@ -495,7 +495,7 @@ async function visualEvidence(target, evidence) {
 
 handle('desktop:bootstrap', async () => {
   const target = window;
-  if(new URL(backend.url).port==='0'||backend.remote&&backend.startupError)throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员');
+  if(new URL(backend.url).port==='0'||backend.remote&&backend.startupError)throw new Error(backend.startupError||'后台尚未连接，请查看系统管理员 · 运维');
   const projects = await core.projects(backend.url), action = pendingAction, workspace = pendingWorkspace, reason = pendingReason; pendingAction = null; pendingWorkspace = null; pendingReason = null;
   if (!liveWindow(target)) return null;
   for(const project of projects)tabs.updateProject(project);

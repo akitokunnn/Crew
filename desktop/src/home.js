@@ -107,7 +107,7 @@ async function refresh() {
     // Never leave the list on "reading": the reason is shown above it and on the system administrator page.
     const empty = document.createElement('p'); empty.className = 'empty';
     const heading = document.createElement('strong'); heading.textContent = '后台未连接，暂时读不到工作区';
-    empty.append(heading, document.createTextNode('原因见上方提示；处理后点击「刷新」，或到「系统管理员」查看后台状态。'));
+    empty.append(heading, document.createTextNode('原因见上方提示；处理后点击「刷新」，或到「系统管理员 · 运维」查看后台状态。'));
     $('projects').replaceChildren(empty);
     throw error;
   } finally { $('projects').setAttribute('aria-busy', 'false'); }
