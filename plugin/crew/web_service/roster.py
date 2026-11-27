@@ -1,7 +1,7 @@
 import datetime as dt
 import os
 
-from .. import board, hooks, runtimes, session_ops
+from .. import board, hooks, native_origins, runtimes, session_ops
 
 
 class RosterMixin:
@@ -68,6 +68,12 @@ class RosterMixin:
 
     def adopt(self, conn, project_name, candidate, name, group_name, now):
         with board.transaction(conn):
+            sid = candidate['session_id']
+            mapping = runtimes.get(conn, sid)
+            if mapping['native_id']:
+                runtimes.check_native_owner(conn, **mapping, session_id=sid)
+            if not conn.execute('SELECT 1 FROM sessions WHERE session_id=?', (sid,)).fetchone():
+                native_origins.record(conn, 'claude', sid, 'user_adopted')
             return self._adopt(conn, project_name, candidate, name, group_name, now)
 
     def _adopt(self, conn, project_name, candidate, name, group_name, now):

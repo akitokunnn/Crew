@@ -28,7 +28,7 @@ class FakeCodex:
         with closing(store.connect(home)) as conn:
             self.behavior_prompt_hash = behavior_prompts.manifest_hash(
                 behavior_prompts.for_session(conn, session['session_id'], plugin_root=plugin_root))
-        self.process = mock.Mock(pid=8123)
+        self.process = mock.Mock(pid=8123, args=['fixture-app-server', '--session-source', 'mcp'])
         self.process.poll.return_value = None
         self.journal, self.applied = journal, dict(options)
         self.context, self.pending_compact = None, False
@@ -91,6 +91,10 @@ class ManagedRuntimeTests(ShellFixture, unittest.TestCase):
             result = self.manager.start(self.conn, 'demo', 'codex-chief', '验证独立目标', role='leader', runtime='codex')
         sid = result['session_id']
         current = self.manager.processes[sid]
+        self.assertEqual(result['command'], current.process.args)
+        self.assertEqual(json.loads(self.conn.execute(
+            "SELECT detail FROM events WHERE kind='spawn' ORDER BY id DESC LIMIT 1").fetchone()[0])['command'],
+            current.process.args)
         self.assertEqual(runtimes.get(self.conn, sid)['runtime'], 'codex')
         self.assertEqual(current.calls[0], ('send', '验证独立目标'))
         self.manager.set_options(self.conn, sid, {'model': 'codex-available-model', 'effort': 'high'})
