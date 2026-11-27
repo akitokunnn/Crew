@@ -6,7 +6,7 @@ from unittest import mock
 
 import test_vscode_service as fixtures
 from test_vscode_service import identity, NOW
-from crew import board, channel, codex_events, goals, runtimes, session_ops, store, workspace_activity
+from crew import board, channel, codex_events, goals, runtimes, session_ops, store, war_room, war_room_plan, workspace_activity
 
 
 class WorkspaceActivityTests(unittest.TestCase):
@@ -16,6 +16,35 @@ class WorkspaceActivityTests(unittest.TestCase):
 
     def snapshot(self):
         return workspace_activity.snapshot(self.service, self.conn, 'alpha')
+
+    def test_war_room_snapshot_follows_the_current_plan_and_room_lifecycle(self):
+        sid = identity(1)
+        self.register(sid, 'leader', role='leader')
+        self.assertEqual(self.snapshot()['war_rooms'], [])
+        budget = 100_000
+        room = war_room.start(self.conn, 'alpha', sid, '发布演练', '核对版本', budget_tokens=budget)
+        room_id = room['id']
+        plan = '## 分工\n## 等你定\n%s## 完成标准\n- [ready] 核对通过'
+
+        def status(expected):
+            self.assertEqual(self.snapshot()['war_rooms'], [{'title': '发布演练', 'status': expected}])
+
+        status('running')
+        war_room_plan.update(self.conn, room_id, sid, 0, plan % '', '首稿', budget)
+        status('awaiting_decision')  # A preparing plan can await approval without specific questions.
+        war_room_plan.approve(self.conn, room_id, board.HUMAN, 1, {}, budget)
+        status('running')
+        question = '- [method] 怎么核对 | 自动'
+        war_room_plan.update(self.conn, room_id, sid, 1, plan % (question + '\n'), '提问', budget)
+        status('awaiting_decision')
+        war_room_plan.approve(self.conn, room_id, board.HUMAN, 2, {'method': '自动'}, budget)
+        status('running')  # Approval answers the recommendation without rewriting the draft.
+        war_room_plan.update(self.conn, room_id, sid, 2, plan % (question + ' | 已确定\n'), '已答复', budget)
+        status('running')
+        self.conn.execute('UPDATE war_rooms SET paused_at=? WHERE id=?', (NOW, room_id))
+        status('awaiting_decision')
+        war_room.close(self.conn, room_id, board.HUMAN, reason='user_stop')
+        self.assertEqual(self.snapshot()['war_rooms'], [])
 
     def test_reading_status_does_not_scan_launch_or_mark_messages_read(self):
         self.register(identity(1), 'leader', role='leader')

@@ -7,7 +7,10 @@ vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../../frontend/goal-ui.j
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../../frontend/workspace-start.js"),"utf8"), {window});
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../../frontend/workspace-home.js"),"utf8"), {window});
 const ui = window.CrewWorkspaceHome;
-const data = patch => ({name:"健身打卡",project:"fitness",git_assistant:null,leaders:[],members:[],goals:[],todos:[],decisions:[],...patch});
+const data = patch => {
+  const snapshot = {name:"健身打卡",project:"fitness",git_assistant:null,leaders:[],members:[],goals:[],todos:[],decisions:[],errors:[],unread:0,...patch};
+  return {...snapshot,statuses:new Map(snapshot.leaders.map(person=>[person.session_id,{tone:person.status,label:"空闲"}]))};
+};
 const render = snapshot => ui.render(snapshot, {settingsIcon:"<svg></svg>",decisionCards:items=>items.map(item=>`decision:${item.id}`).join(";"),taskCards: items => items.map(item=>`task:${item.id}`).join(";"),todoCards:items=>items.map(item=>`todo:${item.id}`).join(";")});
 
 test("home badge shares review, decision and TODO entries and ignores resolved work",()=>{

@@ -125,5 +125,16 @@ def snapshot(service, conn, project):
     visible_items = items[:5]
     preview_errors = [item for item in items if item['kind'] == 'error'][:2]
     visible_items.extend(item for item in preview_errors if item not in visible_items)
+    war_rooms = board._rows(conn, """
+        SELECT r.title, CASE WHEN r.paused_at IS NOT NULL
+            OR (r.phase='preparing' AND p.version IS NOT NULL AND r.approved_version IS NULL)
+            OR (p.approval IS NULL AND EXISTS (
+                SELECT 1 FROM json_each(p.entries_json) AS entry
+                WHERE json_extract(entry.value, '$.kind')='decision'
+                  AND json_extract(entry.value, '$.answer') IS NULL
+            )) THEN 'awaiting_decision' ELSE 'running' END AS status
+        FROM war_rooms r LEFT JOIN war_room_plans p ON p.room_id=r.id AND p.version=r.draft_version
+        WHERE r.project=? AND r.status='open' ORDER BY r.id DESC
+        """, (project,))
     return {'project': project, 'counts': counts, 'items': visible_items, 'unknown': unknown,
-            'updated_at': service.now().isoformat(timespec='seconds')}
+            'war_rooms': war_rooms, 'updated_at': service.now().isoformat(timespec='seconds')}

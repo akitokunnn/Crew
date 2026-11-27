@@ -41,7 +41,7 @@
     let request = 0, previewRequest = 0, loadedAt = 0, draft = {name:"",group:""}, dirty = false;
     root.innerHTML = `<header class="head big"><div><div class="title">会话库</div><div class="sub">找到已有工作，看清内容，再决定交给谁继续。</div></div><button class="btn" data-sl="refresh">刷新</button></header><div class="sl-body"><div class="sl-toolbar"><label class="sl-search"><span class="sl-search-label">搜索会话</span><input type="search" data-sl-field="query" placeholder="标题、名字、目录或会话 ID" autocomplete="off"></label><label>范围<select data-sl-field="scope"><option value="project">当前工作区</option><option value="all">全部工作区</option></select></label><label data-sl-session-filter>载体<select data-sl-field="runtime"><option value="all">全部载体</option><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label><label data-sl-session-filter>状态<select data-sl-field="status"><option value="all">全部状态</option><option value="running">正在运行</option><option value="ungrouped">未分组</option></select></label></div><nav class="sl-categories" aria-label="会话分类"></nav><p class="sl-scope"></p><p class="sl-error" role="alert" hidden></p><p class="sl-warning" role="status" hidden></p><div class="sl-layout"><div class="sl-results" aria-live="polite"></div><aside class="sl-preview" aria-label="会话预览" hidden></aside></div></div>`;
     const find = selector => root.querySelector(selector);
-    const when = value => value ? new Date(value).toLocaleString("zh-CN", {month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "时间未知";
+    const when = value => new Date(value).toLocaleString("zh-CN", {month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"});
     function notices() {
       for (const [selector,text] of [[".sl-error",error],[".sl-warning",warning]]) { const node = find(selector); node.hidden = !text; node.textContent = text; }
       find('[data-sl="refresh"]').disabled = loading || taskLoading || busy;
@@ -53,8 +53,12 @@
     }
     function renderRow(item) {
       const rooms = roomNames(item);
-      return `<article class="sl-row ${selected === item.key ? "selected" : ""}"><button class="sl-row-main" data-sl="preview" data-key="${esc(item.key)}" aria-pressed="${selected === item.key}"><span class="sl-row-title">${esc(item.name || item.title)}</span>${item.name && item.name !== item.title ? `<span class="sl-description">${esc(item.title)}</span>` : ""}<span class="sl-row-tags"><span class="sl-carrier">${runtimeName(item)}</span><span>${categoryName(item)}</span><span class="${item.running === true && item.category !== "archived" ? "sl-running" : ""}">${status(item)}</span>${item.group ? `<span>归 ${esc(item.group)}</span>` : ""}</span>
-        <span class="sl-location" title="${esc(item.cwd)}">${item.category === "system_admin" ? "所有工作区" : `${scope === "all" ? esc(item.project_name) + " · " : ""}${item.rel_dir === "." ? "主目录" : esc(item.rel_dir)}`}</span><span class="sl-rooms">作战室 · ${esc(rooms || "无")}</span><time>${esc(when(item.last_active))}</time></button><button class="btn ghost sl-row-preview" data-sl="preview" data-key="${esc(item.key)}">预览</button></article>`;
+      const location = item.category === "system_admin" ? "所有工作区"
+        : `${scope === "all" ? item.project_name + " · " : ""}${item.rel_dir === "." ? "主目录" : item.rel_dir}`;
+      const metadata = `${location}${item.last_active ? ` · ${when(item.last_active)}` : ""}${rooms ? ` · 作战室 · ${rooms}` : ""}`;
+      const description = item.name && item.name !== item.title ? `<span class="sl-description"> · ${esc(item.title)}</span>` : "";
+      return `<article class="sl-row ${selected === item.key ? "selected" : ""}"><button class="sl-row-main" data-sl="preview" data-key="${esc(item.key)}" aria-pressed="${selected === item.key}"><span class="sl-row-title">${esc(item.name || item.title)}${description}</span><span class="sl-row-tags"><span class="sl-carrier">${runtimeName(item)}</span><span>${categoryName(item)}</span><span class="${item.running === true && item.category !== "archived" ? "sl-running" : ""}">${status(item)}</span>${item.group ? `<span class="sl-row-group">归 ${esc(item.group)}</span>` : ""}</span>
+        <span class="sl-location" title="${esc(metadata)}">${esc(metadata)}</span></button><button class="btn ghost sl-row-preview" data-sl="preview" data-key="${esc(item.key)}">预览</button></article>`;
     }
     function renderSessions(results, admins) {
       if (filters.category === "system_admin" && admins.length) return "";

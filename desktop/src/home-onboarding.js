@@ -59,7 +59,7 @@
       <button type="button" class="button secondary" data-ob-act="open-existing">打开已有文件夹</button><button type="button" class="button secondary" data-ob-act="new-folder">新建空白文件夹</button></div>
       ${folder ? `<p class="ob-folder-location"><b>${folder.kind === 'new' ? '保存到' : '已选'}</b> ${esc(folder.directory)}</p>` : ''}
       ${folder?.kind === 'new' ? `<label class="ob-folder-name">文件夹名称<input type="text" data-ob-field="folder-name" maxlength="100" value="${esc(state.folderName)}" ${folder.project ? 'readonly' : ''}></label>` : ''}</div>
-      <h3 class="ob-start-title">进去后先做什么？</h3><div class="ob-choices">${paths.map(path => `<article class="ob-choice" data-start="${path.id}"><div>${text(path)}</div><button type="button" class="button ${path.recommended ? '' : 'secondary'}" data-ob-act="start" data-start="${path.id}" aria-label="${path.title}，进入工作区" ${enabled ? '' : 'disabled'}>进入</button></article>`).join('')}</div>`;
+      <h3 class="ob-start-title">进去后先做什么？${folder ? '' : '<small>先选一个文件夹</small>'}</h3><div class="ob-choices">${paths.map(path => `<article class="ob-choice" data-start="${path.id}"><div>${text(path)}</div><button type="button" class="button ${enabled && path.recommended ? '' : 'secondary'}" data-ob-act="start" data-start="${path.id}" aria-label="${path.title}，进入工作区" ${enabled ? '' : 'disabled'}>进入</button></article>`).join('')}</div>`;
   }
   function markup(state) {
     const [title, lead] = STEPS[state.step];

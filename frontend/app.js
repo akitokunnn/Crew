@@ -1382,7 +1382,51 @@
   function startWorkspace(choice) {
     if (choice === "leader") openModalLeader();
     else if (choice === "mindmap") location.href = pageHref("notes", project) + "#start=mindmap";
-    else if (choice === "war-room") toast("作战室筹备入口尚未开放。");
+    else if (choice === "war-room") openWarRoomStart();
+  }
+  function openWarRoomStart() {
+    dialogReturn = focusDescriptor(document.activeElement);
+    const backdrop = $("backdrop");
+    backdrop.innerHTML = `<form class="modal wh-war-start" role="dialog" aria-modal="true" aria-labelledby="war-start-title"><div class="field"><h3 id="war-start-title"><label for="war-start-goal">这次想一起搞定什么？</label></h3><textarea id="war-start-goal" name="goal" rows="4" required aria-describedby="war-start-help"></textarea></div><p class="d" id="war-start-help">工作区助手会先和你把计划书谈清楚，你敲定后才开工。</p><p class="error-line" role="alert"></p><div class="acts"><button type="button" class="btn ghost" data-act="modal-close">取消</button><button type="submit" class="btn primary" disabled>开始筹备</button></div></form>`;
+    backdrop.classList.add("show");
+    const form = backdrop.querySelector("form"), input = form.elements.goal;
+    const submit = form.querySelector('[type="submit"]'), errorLine = form.querySelector(".error-line");
+    const workspace = state.project.name;
+    let attempt = null;
+    input.addEventListener("input", () => { submit.disabled = !input.value.trim(); });
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      const goal = input.value.trim();
+      if (!goal || form.dataset.saving === "true") return;
+      if (attempt === null || attempt.goal !== goal) attempt = {goal, id:window.CrewBrowser.requestId()};
+      const title = Array.from(goal.split(/\r?\n/, 1)[0].trim()).slice(0, 30).join("");
+      form.dataset.saving = "true";
+      submit.disabled = true;
+      input.readOnly = true;
+      errorLine.textContent = "";
+      let id;
+      try {
+        const assistant = await api("/api/op/assistant.open", {});
+        const room = await api("/api/op/war_room.open", {project:workspace, lead:assistant.session_id, title, goal, request_id:attempt.id});
+        id = room.id;
+      } catch (error) {
+        if (error.details?.code === "room_occupied") {
+          id = error.details.detail.room_id;
+          toast("这个工作区已经有一个作战室，先带你过去");
+        } else {
+          errorLine.textContent = error.message;
+          return;
+        }
+      } finally {
+        delete form.dataset.saving;
+        submit.disabled = false;
+        input.readOnly = false;
+      }
+      closeBackdrop();
+      roomId = id;
+      navigate("war-room");
+    });
+    input.focus();
   }
   function applyWorkspaceStart() {
     const choice = new URLSearchParams(location.hash.slice(1)).get("start");

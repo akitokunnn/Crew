@@ -2,7 +2,7 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),{EventEmitter}=require('node:events');
 const {presentation}=require('../src/workspace-activity.cjs');
 const {ActivityPreview}=require('../src/activity-preview.cjs');
-const snapshot=extra=>({counts:{working:0,working_leaders:0,decisions:0,todos:0,approvals:0,waiting:0,acceptance:0,attention:0,chat_unread:0,channel_unread:0,errors:0,...extra},items:[],updated_at:new Date().toISOString()});
+const snapshot=extra=>({counts:{working:0,working_leaders:0,decisions:0,todos:0,approvals:0,waiting:0,acceptance:0,attention:0,chat_unread:0,channel_unread:0,errors:0,...extra},items:[],war_rooms:[],unknown:false,updated_at:new Date().toISOString()});
 test('the avatar ring and one right marker are independent; the right marker uses error, attention, unread, freshness order',()=>{
  for (const [counts, marker, working, markerCount] of [
   [{},null,false,0], [{working:1},null,true,0], [{chat_unread:1},'unread',false,0],
@@ -29,11 +29,27 @@ test('the preview keeps four rows, names error reasons, and splits both unread s
  value.war_rooms=[{title:'交付演练',status:'running'},{title:'接口评审',status:'awaiting_decision'}];
  const view=presentation(value);
  assert.deepEqual(view.rows.map(row=>row.label),['等你处理','执行异常','正在推进','未读']);
- assert.deepEqual(view.rows[0].detail,['拍板 1 · 权限确认 1 · 等你定 1','权限确认命令','选方案']);
+ assert.deepEqual(view.rows[0].detail,['拍板 1 · 权限确认 1 · 等你定 1','接口评审 · 作战室等你定','权限确认命令']);
  assert.deepEqual(view.rows[1].detail,['视觉 · 执行超时']);
- assert.deepEqual(view.rows[2].detail,['2 位 Leader 在推进','另有 1 个会话在推进','交付演练 · 作战室中','接口评审 · 等你定']);
+ assert.deepEqual(view.rows[2].detail,['2 位 Leader 在推进','另有 1 个会话在推进','交付演练 · 作战室中']);
  assert.deepEqual(view.rows[3].detail,['对话 4 条 · 交流区 6 条']);
  assert(!presentation(snapshot()).rows.some(row=>row.detail.some(line=>line.includes('作战室'))));
+});
+test('the room alone can drive the tab and preview, while loading has unknown counts',()=>{
+ const value=snapshot();
+ value.war_rooms=[{title:'发布演练',status:'running'}];
+ const running=presentation(value);
+ assert.equal(running.working,true);
+ assert.deepEqual(running.rows[2],{label:'正在推进',count:1,detail:['发布演练 · 作战室中']});
+ value.war_rooms=[{title:'发布演练',status:'awaiting_decision'}];
+ const pending=presentation(value);
+ assert.equal(pending.working,false);
+ assert.equal(pending.marker,'attention');
+ assert.equal(pending.markerCount,1);
+ assert.deepEqual(pending.rows[2].detail,[]);
+ assert.deepEqual(pending.rows[0].detail,['等你定 1','发布演练 · 作战室等你定']);
+ assert.deepEqual(presentation(null).rows.map(row=>row.count),[null,null,null,null]);
+ assert.deepEqual(presentation(snapshot()).rows.map(row=>row.count),[0,0,0,0]);
 });
 function fixture(){
  const wc=new EventEmitter();wc.mainFrame={};wc.messages=[];wc.send=(...v)=>wc.messages.push(v);wc.close=()=>wc.closed=true;wc.setWindowOpenHandler=handler=>wc.popup=handler;wc.loadFile=async()=>{};
