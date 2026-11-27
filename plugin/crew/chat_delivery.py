@@ -258,9 +258,13 @@ class DeliveryMixin:
         ``live`` holds the Claude sessions the agents list shows running in another process, or is None
         while that list is unknown; such a leader is never resumed here, its prompt hook delivers instead.
         """
+        self._pause_over_budget(conn, now)
+        # The global assistant gets notices too when it leads a campaign war room.
+        assistant = (" OR s.session_id IN (SELECT session_id FROM personal_assistant)" if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='personal_assistant'").fetchone() else "")
         leaders = [dict(row) for row in conn.execute(
             "SELECT DISTINCT s.* FROM sessions s JOIN leader_notices n ON n.session_id=s.session_id "
-            "WHERE n.sent_at IS NULL AND n.wake=1 AND s.role='leader' AND s.status!='closed'")]
+            "WHERE n.sent_at IS NULL AND n.wake=1 AND s.status!='closed' AND (s.role='leader'" + assistant + ")")]
         for leader in leaders:
             sid = leader['session_id']
             batch = journal = None
@@ -309,6 +313,22 @@ class DeliveryMixin:
                         continue
                     journal.emit('error', notice_batch=batch['id'], text=text)
                 board.record_event(conn, 'leader:notice_error', leader['project'], sid, {'error': detail}, now=now)
+
+    def _pause_over_budget(self, conn, now):
+        """A war room that reached its token cap pauses: its members stop like the user's stop button (at most every
+        30 seconds, since usage is scanned in the background anyway)."""
+        from . import war_room
+        moment = store.parse_iso(now).timestamp()
+        if moment - getattr(self, '_budget_checked', 0) < 30:
+            return
+        self._budget_checked = moment
+        for room_id, member_ids in war_room.over_budget(conn, now):
+            for sid in member_ids:
+                try:
+                    self.stop_identity(sid)
+                except (board.BoardError, codex_client.CodexError, OSError) as exc:
+                    board.record_event(conn, 'war_room:budget_stop_error', None, sid,
+                                       {'room': room_id, 'error': '%s: %s' % (type(exc).__name__, exc)}, now=now)
 
     def _notice_batch(self, conn, journal, pending):
         """The batch to write now: the one already claimed, or a new claim recorded before the journal entry."""

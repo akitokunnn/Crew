@@ -32,7 +32,8 @@ def _schemas(required=(), **properties):
 
 
 def _actor(ctx):
-    if ctx.caller.role == 'leader':
+    # The global assistant acts for the user but speaks as itself: it leads campaign rooms.
+    if ctx.caller.role in ('leader', 'assistant'):
         return ctx.caller.session_id
     if ctx.caller.is_ai and not ctx.as_user:
         raise OpError('forbidden', '作战室只给 leader 和用户用')
@@ -65,14 +66,19 @@ def _in_project(ctx, conn, room_id):
     return room_id
 
 
-def op(name, summary, run, *, access, schemas, description=''):
+def op(name, summary, run, *, access, schemas, description='', risk='normal', scopes=PEOPLE, assistant='normal'):
+    """``assistant`` is the global assistant's risk: ``normal`` for leading its own campaign room (no fresh user
+    message behind each post), ``confirm`` where it acts on the user's word, None to leave it to assistant_cover."""
     lock, project = ('read', 'none') if access == 'read' else ('project', 'body')
     params, ai_params = schemas
 
     def handler(ctx, args):
         return run(ctx, ctx.conn, _actor(ctx), _args(ctx, args))
-    return register(Operation(
-        name=name, summary=summary, description=description, access=access, risk='normal', scopes=frozenset(PEOPLE),
+    if assistant is not None:
+        scopes = scopes | {'assistant'}
+        risk = assistant if risk == 'normal' else risk
+    return register(Operation(assistant_as_user=assistant is not None, assistant_params=params if assistant else None,
+        name=name, summary=summary, description=description, access=access, risk=risk, scopes=frozenset(scopes),
         target='own_project', lock=lock, project=project, admission='none', handler=handler, params=params,
         ai_params=ai_params, query_get=access == 'read', emits=(name,) if access != 'read' else ()))
 
@@ -90,7 +96,8 @@ def _get(ctx, conn, actor, values):
 
 def _start(ctx, conn, actor, values):
     return war_room.start(conn, ctx.project, actor, values.get('title'), values.get('goal'), values.get('members', []),
-                          from_message=values.get('from_message'), lead=values.get('lead'), now=ctx.now)
+                          from_message=values.get('from_message'), lead=values.get('lead'),
+                          budget_tokens=values.get('budget_tokens'), now=ctx.now)
 
 
 def _members(ctx, conn, actor, values):
@@ -126,6 +133,11 @@ def _close(ctx, conn, actor, values):
                           now=ctx.now)
 
 
+def _budget(ctx, conn, actor, values):
+    return war_room.set_budget(conn, _in_project(ctx, conn, _room_id(values.get('room'))), actor,
+                               values.get('budget_tokens'), now=ctx.now)
+
+
 def _read(ctx, conn, actor, values):
     return war_room.mark_read(conn, _in_project(ctx, conn, _room_id(values.get('room'))), actor,
                               values.get('id'), now=ctx.now)
@@ -136,11 +148,12 @@ op('war_room.get', '读取作战室全貌：成员、状态板、契约、拍板
    schemas=_schemas(['id'], id=ROOM,
                     limit={'type': 'integer', 'minimum': 1, 'maximum': 200, 'description': '最多返回几条发言，默认 50'},
                     before={'type': 'integer', 'minimum': 1, 'description': '只读这条房内发言之前的，用于往前翻'}))
-op('war_room.open', '开作战室：几位 leader 为同一个目标持续协作', _start, access='write',
+op('war_room.open', '开作战室：几位 leader 为同一个目标持续协作', _start, access='write', assistant='confirm',
    schemas=_schemas(['title', 'goal', 'members'], title=_text('作战室标题', war_room.TITLE_LIMIT),
                     goal=_text('要一起达成的目标', war_room.GOAL_LIMIT), members=NAMES,
                     from_message={'type': 'integer', 'minimum': 1, 'description': '从哪条交流区发言升级'},
-                    lead=_text('用户开房时指定的牵头 leader')),
+                    lead=_text('用户开房时指定的牵头 leader；全局助手不填则自己牵头'),
+                    budget_tokens={'type': 'integer', 'minimum': 10000, 'description': '成员合计可花的 token 上限，到了就暂停等用户确认；不填不设上限'}),
    description='同一件事要 3 位以上 leader 推进、一条脉络 4 条以上回复还没收口、需要共享契约或分工状态、'
                '或几个组的分歧要用户拍板时开；一问一答、通知结果留在交流区。')
 op('war_room.members', '牵头邀请或移出作战室成员', _members, access='write',
@@ -173,3 +186,8 @@ op('war_room.close', '收尾作战室：结论进交流区，成员回原岗', _
    schemas=_schemas(['room', 'summary'], room=ROOM, summary=_text('收尾结论', war_room.GOAL_LIMIT)))
 op('war_room.mark_read', '标记作战室已读', _read, access='write',
    schemas=_schemas(['room'], room=ROOM, id={'type': 'integer', 'minimum': 0, 'description': '读到的最后一条房内发言编号'}))
+op('war_room.budget', '设置或追加作战室预算；暂停的作战室随之继续', _budget, access='write', risk='high', scopes=HBD,
+   assistant='high',
+   schemas=_schemas(['room', 'budget_tokens'], room=ROOM,
+                    budget_tokens={'type': 'integer', 'minimum': 10000, 'description': '新的 token 上限，要大于已用量'}),
+   description='作战室到了预算会暂停并停下成员；只有用户能决定追加。全局助手调用会请用户在界面确认。')

@@ -146,6 +146,8 @@ def _migrate_channel_replies(conn):
                                     ('room_id', 'INTEGER REFERENCES war_rooms(id)')),
                'channel_mentions': (('await_reply', 'INTEGER NOT NULL DEFAULT 0'),
                                     ('reason', "TEXT NOT NULL DEFAULT 'mention' CHECK (reason IN ('mention', 'reply'))")),
+               'war_rooms': (('budget_tokens', 'INTEGER'), ('budget_base', "TEXT NOT NULL DEFAULT '{}'"),
+                             ('paused_at', 'TEXT')),
                'leader_notices': (('delivered_via', "TEXT CHECK (delivered_via IN ('hook'))"), ('batch_id', 'TEXT'),
                                   ('waiting', "TEXT CHECK (waiting IN ('external', 'busy', 'stopped'))"))}
 

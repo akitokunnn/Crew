@@ -26,6 +26,11 @@
   --wr-mono-bg:color-mix(in srgb,var(--panel) 50%,var(--studio-card));
   --wr-aside-bg:color-mix(in srgb,var(--panel) 38%,var(--studio-sheet));
   --wr-backdrop:color-mix(in srgb,var(--text) 22%,transparent);
+  /* 预算暂停：红；接近上限沿用阻塞的琥珀 */
+  --wr-stop:var(--danger);
+  --wr-stop-fg:color-mix(in srgb,var(--danger) 72%,var(--text));
+  --wr-stop-bg:color-mix(in srgb,var(--danger) 9%,var(--studio-card));
+  --wr-stop-line:color-mix(in srgb,var(--danger) 38%,transparent);
 }
 
 /* ---------- 页头（玻璃） ---------- */
@@ -207,6 +212,32 @@
 .wr-dc-answer>.i{flex:none;margin-top:2px;color:var(--wr-done-fg)}
 .wr-dc-answer small{display:block;color:var(--wr-muted);font-size:calc(11.5px * var(--fs))}
 .wr-dc-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:7px 14px 10px 16px;font-size:calc(11.5px * var(--fs));color:var(--wr-muted)}
+
+/* ---------- 预算 ---------- */
+.wr-paused{display:flex;align-items:center;gap:10px;max-width:820px;margin:0 auto;padding:10px 12px;border:1px solid var(--wr-stop-line);border-left:3px solid var(--wr-stop);border-radius:var(--wr-r);background:var(--wr-stop-bg)}
+.wr-paused>.i{flex:none;width:18px;height:18px;color:var(--wr-stop-fg)}
+.wr-paused>div{flex:1;min-width:0}
+.wr-paused strong{display:block;font-size:calc(13px * var(--fs));font-weight:600;color:var(--wr-stop-fg)}
+.wr-paused small{display:block;margin-top:2px;font-size:calc(11.5px * var(--fs));color:var(--wr-muted)}
+.wr-paused .cx-btn{flex:none}
+.wr-pin .wr-paused+.wr-summary{margin-top:8px}
+.wr-budget{margin:0 2px;font-size:calc(12.5px * var(--fs));color:var(--text-2)}
+.wr-budget-row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.wr-budget-row b{font-weight:600;color:var(--text)}
+.wr-budget-tag{display:inline-flex;align-items:center;gap:4px;flex:none;height:20px;padding:0 7px;border-radius:999px;border:1px solid var(--line-strong);font-size:calc(11px * var(--fs));font-weight:500;color:var(--text-2);white-space:nowrap}
+.wr-budget-tag .i{width:12px;height:12px}
+.wr-budget-tag[data-s=near]{color:var(--wr-block-fg);background:var(--wr-block-bg);border-color:var(--wr-block-line)}
+.wr-budget-tag[data-s=paused]{color:var(--wr-stop-fg);background:var(--wr-stop-bg);border-color:var(--wr-stop-line)}
+.wr-budget-track{height:6px;margin:6px 0 5px;border-radius:999px;background:var(--hover);overflow:hidden}
+.wr-budget-track i{display:block;height:100%;border-radius:inherit;background:var(--accent)}
+.wr-budget[data-s=near] .wr-budget-track i{background:var(--wr-block)}
+.wr-budget[data-s=paused] .wr-budget-track i{background:var(--wr-stop)}
+.wr-budget small{display:block;font-size:calc(11.5px * var(--fs));line-height:1.5;color:var(--wr-muted)}
+.wr-node[data-s=paused]{padding-top:6px;padding-bottom:6px;background:var(--wr-stop-bg);border:1px solid var(--wr-stop-line);border-left:3px solid var(--wr-stop)}
+.wr-node[data-s=paused] .wr-node-ic,.wr-node[data-s=paused] .wr-node-txt span{color:var(--wr-stop-fg)}
+.wr-node[data-s=resumed] .wr-node-ic{color:var(--accent-text)}
+.wr-budget-out{font-size:12px;font-weight:400;color:var(--wr-muted)}
+.wr-pb-txt .wr-budget-tag{height:20px}
 
 /* ---------- 发言框补充 ---------- */
 .wr-composer-wrap .cx-replybar,.wr-composer-wrap .cx-targets,.wr-composer-wrap .cx-composer{max-width:860px}
@@ -508,6 +539,8 @@ button.wr-group-h:hover{background:var(--hover)}
   .wr-ann-row>.av{display:none}
   .wr-upgrade-hint{flex:1 1 100%}
   .wr-field-row{grid-template-columns:1fr}
+  .wr-paused{flex-wrap:wrap}
+  .wr-paused .cx-btn{width:100%;min-height:40px;justify-content:center}
 }
 
 @media (prefers-reduced-motion:reduce){

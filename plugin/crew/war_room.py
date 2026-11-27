@@ -5,9 +5,10 @@ channel's (docs/WAR_ROOM_DESIGN.md). ``actor`` is a leader's session id or ``boa
 """
 import json
 
-from . import board, change_feed, channel
+from . import board, change_feed, channel, personal
 
 TITLE_LIMIT, GOAL_LIMIT, ITEM_LIMIT, CONTRACT_LIMIT = 30, 200, 60, 8000
+BUDGET_MIN, BUDGET_MAX = 10_000, 1_000_000_000
 ITEM_STATES = {'todo': '待办', 'doing': '进行中', 'blocked': '阻塞', 'done': '完成'}
 
 
@@ -86,8 +87,15 @@ def _source(actor):
 
 
 def _gate(conn, room, actor, lead_only=False):
-    """The user may do anything; a leader must be a member, and the lead for lead-only actions."""
+    """The user (and the global assistant acting for the user) may do anything; a leader must be a member,
+    and the lead for lead-only actions."""
     if actor == board.HUMAN:
+        return
+    if personal.is_assistant(conn, actor):
+        # The assistant acts in a room on its own only where it leads (a campaign the user confirmed).
+        if room['lead_session_id'] != actor:
+            raise board.BoardError('作战室《%s》由「%s」牵头；助手只在自己牵头的作战室里直接操作'
+                                   % (room['title'], _name(conn, room['lead_session_id'])))
         return
     if lead_only and actor != room['lead_session_id']:
         raise board.BoardError('只有牵头 leader「%s」能这样做' % _name(conn, room['lead_session_id']))
@@ -101,11 +109,16 @@ def _post(conn, room, actor, body, to=(), now=None, reply_to=None):
 
 
 @board.atomic
-def start(conn, project_name, actor, title, goal, member_names, from_message=None, lead=None, now=None):
+def start(conn, project_name, actor, title, goal, member_names, from_message=None, lead=None, budget_tokens=None,
+          now=None):
     """Open a room; a leader leads its own room, the user names the lead. Members are told in the room."""
     board.project(conn, project_name)
     title, goal = _text(title, '作战室标题', TITLE_LIMIT), _text(goal, '目标', GOAL_LIMIT)
-    if actor == board.HUMAN:
+    assistant = actor != board.HUMAN and personal.is_assistant(conn, actor)
+    if assistant and lead is None:
+        # A campaign room: the assistant leads it until the first milestone, then hands over.
+        lead_id = actor
+    elif actor == board.HUMAN or assistant:
         if not isinstance(lead, str):
             raise board.BoardError('用户开作战室要指定牵头 leader（lead）')
         lead_id = _leaders(conn, project_name, [lead])[0]['session_id']
@@ -121,11 +134,16 @@ def start(conn, project_name, actor, title, goal, member_names, from_message=Non
                           if item['session_id'] != lead_id]
     if len(joined) < 2:
         raise board.BoardError('作战室至少要两位 leader；一个人的事在自己的任务里做')
+    # The assistant leads without being a member: members are the workspace's leaders.
+    seated = joined[1:] if lead_id == actor and assistant else joined
     stamp = board._time(now)
-    room_id = conn.execute('INSERT INTO war_rooms(project,title,goal,lead_session_id,origin_message_id,created_at) '
-                           'VALUES(?,?,?,?,?,?)', (project_name, title, goal, lead_id, from_message, stamp)).lastrowid
+    budget_tokens = _budget(budget_tokens)
+    room_id = conn.execute('INSERT INTO war_rooms(project,title,goal,lead_session_id,origin_message_id,created_at,'
+                           'budget_tokens,budget_base) VALUES(?,?,?,?,?,?,?,?)',
+                           (project_name, title, goal, lead_id, from_message, stamp, budget_tokens,
+                            json.dumps(_codex_totals(conn, joined)))).lastrowid
     conn.executemany('INSERT INTO war_room_members(room_id,session_id,joined_at) VALUES(?,?,?)',
-                     [(room_id, sid, stamp) for sid in joined])
+                     [(room_id, sid, stamp) for sid in seated])
     room = _room(conn, room_id)
     names = [_name(conn, sid) for sid in joined]
     notice = channel.post.__wrapped__(conn, project_name, actor, '开了作战室 #%d《%s》：%s（牵头 %s，成员 %s）' % (
@@ -146,13 +164,15 @@ def start(conn, project_name, actor, title, goal, member_names, from_message=Non
 def change_members(conn, room_id, actor, add=(), remove=(), now=None):
     room = open_room(conn, room_id)
     _gate(conn, room, actor, lead_only=True)
-    added = []
+    added, base = [], json.loads(room['budget_base'])
     for target in _leaders(conn, room['project'], list(add)):
         if not is_member(conn, room_id, target['session_id']):
             conn.execute('INSERT INTO war_room_members(room_id,session_id,joined_at) VALUES(?,?,?) '
                          'ON CONFLICT(room_id,session_id) DO UPDATE SET joined_at=excluded.joined_at,left_at=NULL',
                          (room_id, target['session_id'], board._time(now)))
             added.append(target['crew_name'])
+            base.update(_codex_totals(conn, [target['session_id']]))
+    conn.execute('UPDATE war_rooms SET budget_base=? WHERE id=?', (json.dumps(base), room_id))
     removed = []
     for target in _leaders(conn, room['project'], list(remove)):
         if target['session_id'] == room['lead_session_id']:
@@ -268,6 +288,110 @@ def close(conn, room_id, actor, summary, now=None):
     return get(conn, room_id, actor)
 
 
+def _budget(value):
+    if value is not None and (type(value) is not int or not BUDGET_MIN <= value <= BUDGET_MAX):
+        raise board.BoardError('预算上限是 %d 到 %d 之间的 token 数' % (BUDGET_MIN, BUDGET_MAX))
+    return value
+
+
+def _natives(conn, session_ids):
+    """Each member's native conversations (its own and its task executions'), by runtime."""
+    from . import usage
+    owners = usage._dispatch_owners(conn)[2]
+    found = {'claude': {}, 'codex': {}}
+    for (runtime, native), (owner, _, _) in owners.items():
+        if owner in session_ids and runtime in found:
+            found[runtime][native] = owner
+    for sid in session_ids:
+        # A leader's general Claude conversation uses its session id as the native id.
+        found['claude'].setdefault(sid, sid)
+    return found
+
+
+def _codex_totals(conn, session_ids):
+    """Tokens each member's Codex rollouts have spent so far (uncached input + output)."""
+    natives = list(_natives(conn, set(session_ids))['codex'])
+    if not natives:
+        return {}
+    return {row[0]: row[1] for row in conn.execute(
+        'SELECT rollout_id,input_tokens-cached_input_tokens+output_tokens FROM codex_sessions WHERE rollout_id IN (%s)'
+        % ','.join('?' * len(natives)), natives)}
+
+
+def spent(conn, room):
+    """Tokens the members spent since they joined: Claude requests (uncached input, cache writes and output) plus the
+    growth of their Codex rollouts. Usage scans run in the background, so the figure trails by a scan."""
+    joined = {row['session_id']: row['joined_at'] for row in conn.execute(
+        'SELECT session_id,joined_at FROM war_room_members WHERE room_id=?', (room['id'],))}
+    if room['lead_session_id'] not in joined and not personal.is_assistant(conn, room['lead_session_id']):
+        joined[room['lead_session_id']] = room['created_at']
+    natives = _natives(conn, set(joined))
+    total = 0
+    for native, owner in natives['claude'].items():
+        total += conn.execute('SELECT COALESCE(SUM(input_tokens+cache_write_tokens+output_tokens),0) FROM claude_requests '
+                              'WHERE session_id=? AND ts>=?', (native, joined[owner])).fetchone()[0]
+    base = json.loads(room['budget_base'])
+    for native, now_total in _codex_totals(conn, set(joined)).items():
+        total += max(0, now_total - base.get(native, 0))
+    return total
+
+
+def over_budget(conn, now=None):
+    """Pause each open room whose members reached its cap; returns (room id, member ids) for the host to stop."""
+    paused = []
+    for row in conn.execute("SELECT * FROM war_rooms WHERE status='open' AND budget_tokens IS NOT NULL "
+                            "AND paused_at IS NULL").fetchall():
+        room = dict(row)
+        used = spent(conn, room)
+        if used < room['budget_tokens']:
+            continue
+        with board.transaction(conn):
+            if conn.execute('UPDATE war_rooms SET paused_at=? WHERE id=? AND paused_at IS NULL',
+                            (board._time(now), room['id'])).rowcount == 0:
+                continue
+            _post(conn, room, room['lead_session_id'], '预算到了：已用约 %d / 上限 %d tokens。作战室暂停，成员已停下，'
+                  '等用户确认追加预算后继续。' % (used, room['budget_tokens']), now=now)
+            _event(conn, room['id'], room['lead_session_id'], 'budget', {'paused': True, 'spent': used,
+                                                                        'budget': room['budget_tokens']}, now)
+            if personal.is_assistant(conn, room['lead_session_id']):
+                conn.execute('INSERT INTO leader_notices(project,session_id,source,text,created_at,wake) VALUES(?,?,?,?,?,1)',
+                             (room['project'], room['lead_session_id'], 'crew',
+                              '作战室 #%d《%s》预算到了（约 %d / %d tokens），成员已停下。告诉用户，等用户确认是否追加预算'
+                              '（war_room.budget），不要自己继续推进。' % (room['id'], room['title'], used,
+                                                                       room['budget_tokens']), board._time(now)))
+            _touch(conn, room['id'], room['project'])
+        paused.append((room['id'], [member['session_id'] for member in members(conn, room['id'])]))
+    return paused
+
+
+@board.atomic
+def set_budget(conn, room_id, actor, budget_tokens, now=None):
+    """The user sets or raises the cap; a paused room goes on, and the members stopped for it are let go."""
+    room = open_room(conn, room_id)
+    if actor != board.HUMAN and not personal.is_assistant(conn, actor):
+        raise board.BoardError('作战室预算只能由用户设置')
+    budget_tokens = _budget(budget_tokens)
+    if budget_tokens is None:
+        raise board.BoardError('要给出新的预算上限')
+    used = spent(conn, room)
+    if budget_tokens <= used:
+        raise board.BoardError('新上限要大于已用的约 %d tokens' % used)
+    conn.execute('UPDATE war_rooms SET budget_tokens=?,paused_at=NULL WHERE id=?', (budget_tokens, room_id))
+    if room['paused_at'] is not None:
+        from . import goals, messaging
+        for member in members(conn, room_id):
+            messaging.clear_stop(conn, member['session_id'])
+            # The pause stopped them like the user's stop button, which also paused their running tasks.
+            for goal in conn.execute("SELECT id FROM goals WHERE leader_session_id=? AND status='paused' "
+                                     "AND reason='明确停止此人员'", (member['session_id'],)).fetchall():
+                goals.resume(conn, goal['id'], now=now)
+        _post(conn, room, room['lead_session_id'], '用户确认继续：预算上限改为 %d tokens（已用约 %d）。' % (budget_tokens, used),
+              now=now)
+    _event(conn, room_id, actor, 'budget', {'paused': False, 'spent': used, 'budget': budget_tokens}, now)
+    _touch(conn, room_id, room['project'])
+    return get(conn, room_id, actor)
+
+
 def _read_id(conn, room_id, reader):
     row = conn.execute('SELECT message_id FROM war_room_reads WHERE room_id=? AND reader=?', (room_id, reader)).fetchone()
     return 0 if row is None else row[0]
@@ -321,7 +445,9 @@ def _card(conn, room, reader):
         'lead_name': lead, 'members': members(conn, room['id']), 'items': counts,
         'open_decisions': conn.execute("SELECT COUNT(*) FROM war_room_decisions w JOIN decisions d ON d.id=w.decision_id "
                                        "WHERE w.room_id=? AND d.status='open'", (room['id'],)).fetchone()[0],
-        'unread': _unread(conn, room['id'], reader), 'latest_id': _latest(conn, room['id'])}
+        'unread': _unread(conn, room['id'], reader), 'latest_id': _latest(conn, room['id']),
+        'budget': None if room['budget_tokens'] is None else {
+            'tokens': room['budget_tokens'], 'spent': spent(conn, room), 'paused_at': room['paused_at']}}
 
 
 def rooms(conn, project_name, reader=board.HUMAN):

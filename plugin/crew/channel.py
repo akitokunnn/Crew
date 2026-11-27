@@ -155,11 +155,17 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
             room_id = answered_room
         elif answered_room != room_id:
             raise board.BoardError("回复要和原发言在同一个地方：原发言 #%d 不在这个作战室" % reply_to)
-    room = None
+    from . import personal
+    # The global assistant speaks as itself (it leads campaign war rooms), never as the user.
+    assistant = actor != board.HUMAN and personal.is_assistant(conn, actor)
+    room = lead = None
     if room_id is not None:
         from . import war_room
         room = war_room.open_room(conn, room_id, project_name)
-        if actor != board.HUMAN and not war_room.is_member(conn, room_id, actor):
+        # A room the assistant leads can name it and tell it about replies to its posts.
+        lead = conn.execute("SELECT * FROM sessions WHERE session_id=?", (room["lead_session_id"],)).fetchone()
+        lead = dict(lead) if lead is not None and personal.is_assistant(conn, lead["session_id"]) else None
+        if actor != board.HUMAN and not assistant and not war_room.is_member(conn, room_id, actor):
             raise board.BoardError("你不是作战室《%s》的成员；有事在交流区说，或请牵头邀请你" % room["title"])
     if type(detail) is not bool:
         raise board.BoardError("detail 必须是 true 或 false")
@@ -167,6 +173,10 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
         speaker_name = "用户"
         if source != "web":
             raise board.BoardError("用户在 Leader 交流区的发言来源必须为 web")
+    elif assistant:
+        speaker_name = board.session(conn, actor)["crew_name"]
+        if source != "crew":
+            raise board.BoardError("助手在交流区的发言来源必须为 crew")
     else:
         speaker = _leader(conn, project_name, actor)
         if speaker is None:
@@ -199,8 +209,16 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
             raise board.BoardError('当前工作区没有可点名的 leader')
     # Leaders write "@name" in the text as in any group chat; that names them just like --to.
     names += _named_in_body(conn, project_name, body, actor)
+    aliases = set() if lead is None or lead["session_id"] == actor else {lead["crew_name"], lead["session_id"], "助手"}
+    if aliases and "@" + lead["crew_name"] in body:
+        names.append(lead["crew_name"])
     identities = set()
     for name in dict.fromkeys(names):
+        if name in aliases:
+            if lead["session_id"] not in identities:
+                targets.append(lead)
+                identities.add(lead["session_id"])
+            continue
         # A leader's session id names it as well as its name does (AI callers often only have the id).
         by_id = _leader(conn, project_name, name)
         target = by_id if by_id is not None else board.named_session(conn, project_name, name)
@@ -216,7 +234,7 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
         # Answering a leader's post tells that leader even unnamed; answering yourself or the user wakes no leader.
         author = conn.execute("SELECT speaker_session_id FROM channel_messages WHERE id=?", (reply_to,)).fetchone()[0]
         if author not in (actor, board.HUMAN) and author not in identities:
-            leader = _leader(conn, project_name, author)
+            leader = lead if lead is not None and author == lead["session_id"] else _leader(conn, project_name, author)
             if leader is not None:
                 told.append((leader, "reply"))
     message_id = conn.execute(
@@ -244,7 +262,17 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
                     if actor == board.HUMAN else
                     '%s：「%s」%s（%s发言 #%d）：\n%s\n\n回复用 Crew 工具 `channel_post`（参数 `text`、`reply_to=%d`）；只是回“收到”就不用回。' %
                     (where, speaker_name, what, kind, message_id, body, message_id))
-            notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now)
+            if room is not None and target["role"] == "leader":
+                text += ("\n看全貌、写状态板和契约用 `war_room_get` / `war_room_item` / `war_room_contract`"
+                         "（作战室编号 %d；不在默认工具里，先用 `crew_search` 搜“作战室”载入）。" % room_id)
+            if target["role"] == "leader":
+                notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now)
+            else:
+                # The assistant leading this room: the same notice queue, delivered by the same loop.
+                text += "\n\n（你是作战室牵头：在房里接话用 war_room.post，reply_to=%d）" % message_id
+                notice_id = conn.execute(
+                    "INSERT INTO leader_notices(project,session_id,source,text,created_at,wake) VALUES(?,?,?,?,?,1)",
+                    (project_name, target["session_id"], source, text, board._time(now))).lastrowid
         conn.execute("INSERT INTO channel_mentions(message_id,session_id,name,notice_id,await_reply,reason) "
                      "VALUES(?,?,?,?,?,?)", (message_id, target["session_id"], target["crew_name"], notice_id,
                                              int(actor == board.HUMAN and notice_id is not None), reason))

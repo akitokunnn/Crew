@@ -9,7 +9,7 @@ const sandbox={document,setTimeout,clearTimeout,matchMedia:()=>({matches:false,a
 sandbox.window=sandbox;vm.createContext(sandbox);
 const folder=path.join(__dirname,"../../frontend");
 vm.runInContext(fs.readFileSync(path.join(folder,"channel.js"),"utf8"),sandbox);
-vm.runInContext(fs.readFileSync(path.join(folder,"war-room.js"),"utf8").replace("window.CrewWarRoom = {mount, update, changed, unmount};","window.CrewWarRoom = {mount, update, changed, unmount, since, contractVersion, timeline, timelineHTML, crewHTML, headHTML, asideHTML};"),sandbox);
+vm.runInContext(fs.readFileSync(path.join(folder,"war-room.js"),"utf8").replace("window.CrewWarRoom = {mount, update, changed, unmount};","window.CrewWarRoom = {mount, update, changed, unmount, since, contractVersion, timeline, timelineHTML, crewHTML, headHTML, asideHTML, panelbarHTML, pinHTML};"),sandbox);
 const W=sandbox.CrewWarRoom;
 const flush=async()=>{for(let i=0;i<20;i++)await Promise.resolve();};
 
@@ -33,7 +33,7 @@ function room(extra={}){
       t(5,70,1,"网关验签","doing","todo"),t(6,45,2,"SDK 适配","doing","todo"),ev(7,40,"contract",{length:20}),ev(8,30,"contract",{length:24}),
       t(9,19,2,"SDK 适配","blocked","doing","等算法定稿"),ev(10,12,"contract",{length:26}),ev(11,10,"decision",{id:7,question:"nonce 谁生成？"}),t(12,5,2,"SDK 适配","blocked","blocked","等算法定稿")],
     messages:[message(301,75,"pay","支付","目标定了 @所有成员",[mention("voice","语音","queued",{queued_at:ago(75),waiting:"external"})]),message(305,3,"voice","语音","我这边 <b>卡住</b> 了")],
-    has_more:false,read_id:301,...extra};
+    has_more:false,read_id:301,budget:null,...extra};
 }
 const state=()=>({project:{name:"demo"},channel:{latest_id:305},goals:[{id:11,title:"网关验签 v2 上线"}],
   leaders:[{session_id:"pay",name:"支付",where:"bg",busy:true,runtime:"claude",active_goal_id:11,context:null},{session_id:"voice",name:"语音",where:"vscode",busy:false,runtime:"codex",context:null}]});
@@ -154,5 +154,60 @@ test("live changes: this room's war_room change re-reads it, another room's does
   assert(f.nodes[".wr-inner"].innerHTML.includes("徽章已更新的那条"));
   W.changed(null);await flush();
   assert.equal(reads(),3);
+  W.unmount();
+});
+
+const budgetRoom=(budget,extra={})=>room({budget,...extra});
+test("budget bar: none without a cap, plain under 80%, amber with words from 80%, red with words when paused",()=>{
+  const none=ctxOf();
+  assert(!W.asideHTML(none).includes("wr-budget")&&!W.panelbarHTML(none).includes("wr-budget-tag")&&W.pinHTML(none)==="");
+  const ok=W.asideHTML(ctxOf(budgetRoom({tokens:200000,spent:32000,paused_at:null})));
+  assert(ok.includes('class="wr-budget" data-s="ok"')&&ok.includes("已用 <b>3.2 万</b> / 20 万 tokens")&&ok.includes("已用 16%")&&ok.includes('style="width:16%"'));
+  assert(ok.includes('data-wr="budget"')&&!W.panelbarHTML(ctxOf(budgetRoom({tokens:200000,spent:32000,paused_at:null}))).includes("wr-budget-tag"));
+  const nearCtx=ctxOf(budgetRoom({tokens:200000,spent:172000,paused_at:null})),near=W.asideHTML(nearCtx);
+  assert(near.includes('data-s="near"')&&near.includes("接近上限 · 86%"));
+  assert(W.panelbarHTML(nearCtx).includes('<span class="wr-budget-tag" data-s="near">')&&W.panelbarHTML(nearCtx).includes("预算 86%"));
+  assert.equal(W.pinHTML(nearCtx),"");
+  const pausedCtx=ctxOf(budgetRoom({tokens:200000,spent:203500,paused_at:ago(4)})),paused=W.asideHTML(pausedCtx);
+  assert(paused.includes('class="wr-budget" data-s="paused"')&&paused.includes("已暂停")&&paused.includes('style="width:100%"')&&paused.includes("20.4 万"));
+  assert(W.panelbarHTML(pausedCtx).includes("预算已暂停"));
+});
+test("a paused room pins a banner above the timeline with the raise button; a closed room keeps the banner without it",()=>{
+  const pin=W.pinHTML(ctxOf(budgetRoom({tokens:200000,spent:203500,paused_at:ago(4)})));
+  assert(pin.includes("预算到了，作战室已暂停，成员已停下")&&pin.includes("已用 20.4 万 / 上限 20 万 tokens")&&pin.includes('data-wr="budget"')&&pin.includes("追加预算并继续"));
+  const r=budgetRoom({tokens:200000,spent:203500,paused_at:ago(4)},{status:"closed",summary:"先停在这里",closed_at:ago(1),closed_message_id:320});
+  r.events.push(ev(13,1,"closed",{summary:"先停在这里"}));
+  const closedPin=W.pinHTML(ctxOf(r));
+  assert(closedPin.includes("预算到了，作战室已暂停")&&!closedPin.includes('data-wr="budget"')&&closedPin.includes("收尾结论"));
+  assert(closedPin.indexOf("wr-paused")<closedPin.indexOf("wr-summary"));
+  assert(!W.asideHTML(ctxOf(r)).includes('data-wr="budget"'));
+});
+test("budget events are handoff nodes in the timeline: the pause with spent and cap, the raise by the user; never folded",()=>{
+  const r=room();
+  r.events.push(ev(13,2,"budget",{paused:true,spent:203500,budget:200000}),ev(14,1,"budget",{paused:false,spent:203500,budget:400000},"user","用户"));
+  const html=W.timelineHTML(ctxOf(r));
+  assert(html.includes('data-s="paused" role="note" aria-label="预算暂停"')&&html.includes("预算到了，已暂停（已用 20.4 万 / 上限 20 万 tokens）"));
+  assert(html.includes('data-s="resumed" role="note" aria-label="追加预算"')&&html.includes("用户追加预算到 40 万 tokens，继续"));
+  const node=html.slice(html.indexOf('aria-label="预算暂停"'),html.indexOf("</div>",html.indexOf('aria-label="预算暂停"')));
+  assert(!node.includes("<strong>支付</strong>"),"the pause is the room's, not the lead's");
+  assert(W.timeline(r).every(row=>!row.fold||row.fold.every(e=>e.kind!=="budget")));
+});
+test("raising the budget checks the new cap against the spend and the minimum, then posts war_room.budget and reloads",async()=>{
+  const f=mounted(budgetRoom({tokens:200000,spent:203500,paused_at:ago(4)}));await flush();
+  assert(f.nodes[".wr-pin"].hidden===false&&f.nodes[".wr-pin"].innerHTML.includes("追加预算并继续"));
+  f.nodes[".wr-layerbox"].querySelector=()=>({focus(){}});
+  f.click("[data-wr]",{wr:"budget"});
+  const dialog=f.nodes[".wr-layerbox"].innerHTML;
+  assert(dialog.includes('data-wr-form="budget"')&&dialog.includes('value="400000"')&&dialog.includes('min="203501"')&&dialog.includes("= 40 万 tokens"));
+  const error={textContent:""},form=value=>({dataset:{wrForm:"budget"},querySelector:()=>error,elements:{budget:{value}}});
+  for(const bad of ["150000","9000","abc"]){
+    f.host.onsubmit({preventDefault(){},target:form(bad)});await flush();
+    assert.match(error.textContent,/大于已用 20.4 万，且不少于 1 万 tokens/);
+  }
+  assert.equal(f.calls.filter(call=>call.route==="/api/op/war_room.budget").length,0);
+  f.host.onsubmit({preventDefault(){},target:form("400000")});await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(f.calls.find(call=>call.route==="/api/op/war_room.budget").data)),{project:"demo",room:3,budget_tokens:400000});
+  assert(f.toasts.includes("预算上限已改为 40 万 tokens，作战室继续，成员接着推进"));
+  assert.equal(f.calls.filter(call=>call.route.startsWith("/api/op/war_room.get?id=3")).length,2);
   W.unmount();
 });

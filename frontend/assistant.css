@@ -46,3 +46,60 @@
 .assistant-confirmations[hidden]{display:none}
 @media(min-width:761px){.assistant-confirmation{background:var(--studio-card)}}
 @media(max-width:620px){.assistant-confirmations{margin:6px 12px 0}.assistant-confirmation-actions .btn{min-height:40px;flex:1}}
+
+/* Rich confirmation cards: an opening plan (campaign.launch) and a war-room budget raise, rendered from what they do. */
+.assistant-confirmation-rich{gap:6px}
+.assistant-confirmation .ac-note{color:var(--text)}
+.ac-detail{display:flex;flex-direction:column;gap:10px;margin-top:4px;min-width:0;font-size:12.5px;line-height:1.6;color:var(--text)}
+.ac-detail .ac-quiet{color:var(--text-2)}
+.ac-detail h4{margin:0 0 4px;font-size:12px;font-weight:600;color:var(--text-2)}
+.ac-cost{padding:10px 12px;border:1px solid color-mix(in srgb,var(--accent) 34%,transparent);border-radius:10px;background:var(--accent-softer)}
+.ac-cost h4{color:var(--accent-text)}
+.assistant-confirmation .ac-cost-note{margin:0 0 6px;font-size:13px;font-weight:500;color:var(--text)}
+.assistant-confirmation .ac-flag{display:inline-block;margin:0 0 6px;padding:1px 8px;border:1px solid var(--warn-line);border-radius:999px;background:var(--warn-soft);color:var(--text);font-weight:500}
+.ac-facts{display:grid;grid-template-columns:88px minmax(0,1fr);gap:5px 12px;margin:0}
+.ac-facts dt{color:var(--text-2)}
+.ac-facts dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.ac-facts dd small{display:block;color:var(--text-2);font-size:11.5px}
+.ac-facts b,.ac-row b{font-weight:600}
+.ac-carriers{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px}
+.ac-carriers li{display:flex;align-items:baseline;gap:6px}
+.ac-carriers li>span:not(.ac-rt){min-width:0;overflow-wrap:anywhere}
+.ac-carriers b{flex:none}
+.ac-rt,.ac-tag{flex:none;padding:0 6px;border-radius:999px;border:1px solid var(--line-strong);font-size:11px;line-height:1.6;color:var(--text-2)}
+.ac-rt[data-rt=codex]{color:var(--codex-accent);background:var(--codex-soft);border-color:color-mix(in srgb,var(--codex-accent) 26%,transparent)}
+.ac-rt[data-rt=claude]{color:var(--accent-text);background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 26%,transparent)}
+.ac-tag{margin-left:6px;color:var(--accent-text);border-color:color-mix(in srgb,var(--accent) 30%,transparent)}
+.ac-tag.stop{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 36%,transparent);background:color-mix(in srgb,var(--danger) 8%,transparent)}
+.ac-problems{padding:9px 12px;border:1px solid color-mix(in srgb,var(--danger) 40%,transparent);border-left:3px solid var(--danger);border-radius:10px;background:color-mix(in srgb,var(--danger) 8%,var(--surface))}
+.ac-problems strong{color:color-mix(in srgb,var(--danger) 70%,var(--text));font-weight:600}
+.ac-problems ul{margin:4px 0;padding-left:18px}
+.ac-problems small{display:block;color:var(--text-2);font-size:11.5px}
+.ac-build{display:flex;flex-direction:column}
+.ac-sec{border-top:1px solid var(--line)}
+.ac-sec>summary{display:flex;align-items:center;gap:6px;min-height:32px;cursor:pointer;list-style:none;font-weight:500;color:var(--text)}
+.ac-sec>summary::before{content:"";width:6px;height:6px;margin:0 3px 0 2px;border:solid var(--text-3);border-width:0 1.5px 1.5px 0;transform:rotate(-45deg);transition:transform .15s}
+.ac-sec[open]>summary::before{transform:rotate(45deg)}
+.ac-sec summary::-webkit-details-marker,.ac-brief summary::-webkit-details-marker,.ac-goal summary::-webkit-details-marker{display:none}
+.ac-count{padding:0 6px;border-radius:999px;background:var(--hover);color:var(--text-2);font-size:11px;font-weight:500}
+.ac-sec>.ac-facts{margin:0 0 8px 17px}
+.ac-list{list-style:none;margin:0 0 6px;padding:0 0 0 17px}
+.ac-list>li{padding:6px 0;border-top:1px dashed var(--line)}
+.ac-list>li:first-child{border-top:0;padding-top:0}
+.ac-row{display:flex;align-items:center;flex-wrap:wrap;gap:3px 6px;min-width:0}
+.ac-row small{margin-left:auto;color:var(--text-2);font-size:11.5px}
+.ac-model{color:var(--text-2)}
+.ac-row .ac-tag{margin-left:0}
+.ac-brief summary,.ac-goal summary{cursor:pointer;list-style:none}
+.ac-brief summary{display:block;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2)}
+.ac-brief[open] summary{white-space:pre-wrap;overflow-wrap:anywhere}
+.ac-goal summary{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 8px}
+.ac-goal summary small{color:var(--text-2);font-size:11.5px}
+.ac-goal summary small::after{content:" · 展开";color:var(--accent-text)}
+.ac-goal[open] summary small::after{content:" · 收起"}
+.assistant-confirmation .ac-goal p{margin:4px 0 2px;color:var(--text);white-space:pre-wrap}
+.ac-goal ol{margin:0;padding-left:18px;color:var(--text-2)}
+.assistant-confirmation-rich .assistant-confirmation-actions{position:sticky;bottom:-14px;z-index:1;margin:4px -12px -10px;padding:8px 12px 10px;border-top:1px solid var(--line);border-radius:0 0 10px 10px;background:inherit}
+@media(max-width:620px){.ac-facts{grid-template-columns:minmax(0,1fr);gap:0}.ac-facts dt{margin-top:6px;font-size:11.5px}.ac-facts dt:first-child{margin-top:0}.ac-row small{margin-left:0;flex-basis:100%}.ac-list,.ac-sec>.ac-facts{padding-left:0;margin-left:0}}
+/* An opening plan is the costliest thing confirmed here: give the panel room so the cost part shows without scrolling. */
+.assistant-confirmations:has(.ac-cost){max-height:70dvh}
