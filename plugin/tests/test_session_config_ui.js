@@ -3,8 +3,8 @@ const {test} = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const sandbox = {window:{}}; vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/settings-ui.js"),"utf8"),sandbox);
-vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/runtime-switch-ui.js"),"utf8"),sandbox);
+vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/settings-ui.js"),"utf8"),sandbox);
+vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/runtime-switch-ui.js"),"utf8"),sandbox);
 const switching = sandbox.window.CrewRuntimeSwitch;
 const plain = value => JSON.parse(JSON.stringify(value));
 const member = extra => ({session_id:"member",runtime:"claude",where:"offline",status:"offline",model:"opus",effort:"max",runtime_switch:{allowed:true},...extra});
@@ -54,7 +54,7 @@ test("unavailable tools retain their actionable error and cannot prepare",()=>{
 
 test("runtime switch does not preselect an unavailable alternative on a Codex-only installation",()=>{
   const notices=[],overlay={hidden:false,addEventListener(){}},environment={window:{},document:{createElement:()=>overlay,body:{append(){}},addEventListener(){}}};
-  vm.createContext(environment);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/runtime-switch-ui.js"),"utf8"),environment);
+  vm.createContext(environment);vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/runtime-switch-ui.js"),"utf8"),environment);
   const ui=environment.window.CrewRuntimeSwitch.create({getMember:()=>member({runtime:"codex"}),catalog:()=>[{id:"claude",available:false},{id:"codex",available:true}],toast:text=>notices.push(text)});
   ui.open("member");assert.equal(overlay.hidden,true);assert.match(notices[0],/没有可用的其他执行工具/);
 });

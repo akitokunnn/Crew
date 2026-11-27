@@ -542,7 +542,10 @@ class TestUsage(UsageFixture, unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claude_prompts").fetchone()[0], 0)
         self.assertEqual(self.scan()["skipped"], 0)
 
-    def test_critical_file_error_is_propagated_and_scan_rolled_back(self):
+    def test_critical_file_error_is_propagated_and_its_batch_rolls_back(self):
+        # Transcripts commit in short batches together with their offsets, so a long first scan never holds
+        # the database for its whole length; the batch with a failing file leaves nothing behind, and the
+        # next scan finishes the rest without counting anything twice.
         self.main_file([assistant("main")])
         path = self.claude / "project" / "session-one" / "subagents" / "agent-locked.jsonl"
         self.write(path, [assistant("child")])
@@ -557,6 +560,26 @@ class TestUsage(UsageFixture, unittest.TestCase):
             self.scan()
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claude_requests").fetchone()[0], 0)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM usage_files").fetchone()[0], 0)
+        self.scan()
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claude_requests").fetchone()[0], 2)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM usage_files").fetchone()[0], 3)  # with the runs file
+
+    def test_the_writer_lock_is_held_only_around_each_short_transaction(self):
+        self.main_file([assistant("main")])
+        self.write(self.claude / "project" / "session-one" / "subagents" / "agent-a.jsonl", [assistant("child")])
+        held = []
+
+        class Writer:
+            def __enter__(self):
+                held.append(self.conn_in_transaction())
+            def __exit__(self, *exc):
+                return False
+            conn_in_transaction = staticmethod(lambda: self.conn.in_transaction)
+
+        usage.scan(self.conn, self.claude, self.codex, self.runs, writer=Writer())
+        # reset, one batch of whole transcripts, finish: never entered inside an open transaction
+        self.assertEqual(held, [False] * 3)
+        self.assertFalse(self.conn.in_transaction)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ import os
 import sqlite3
 import uuid
 
-from . import board, report_documents, runtimes, store
+from . import board, change_feed, report_documents, runtimes, store
 
 STATES = frozenset(('queued', 'running', 'pausing', 'paused', 'waiting_user',
                     'awaiting_acceptance', 'completed', 'failed', 'cancelled'))
@@ -156,8 +156,16 @@ def _expected(goal, version):
         raise board.Conflict('目标已变化，请刷新后重新检查')
 
 
+def touch(conn, goal_id):
+    """Mark the task card changed; board.transaction records its final value before commit."""
+    project = _row(conn, goal_id)['project']
+    change_feed.touch(conn, 'goal', project, goal_id)
+    change_feed.touch(conn, 'workspace_activity', None, project)
+
+
 def _touch(conn, goal_id, now):
     conn.execute('UPDATE goals SET version=version+1,updated_at=? WHERE id=?', (board._time(now), goal_id))
+    touch(conn, goal_id)
 
 
 def _control(conn, goal_id, actor):
@@ -206,6 +214,7 @@ def create(conn, project, leader_session_id, title, request, acceptance, *, cons
                   _json(_requirement_source(actor, source, identity, 1)), at))
     conn.execute('INSERT INTO goal_rounds VALUES(?,?,?,?,?,?,?,?)', (identity, 1, 1, 'queued', None, None, at, None))
     conn.execute('INSERT INTO goal_assignments VALUES(?,?,?,?,?,?)', (identity, leader_session_id, request, 'assigned', at, at))
+    touch(conn, identity)
     from . import goal_mode
     goal_mode.initialize(conn, identity, decision_mode, actor=actor, now=now)
     _control(conn, identity, actor)
@@ -381,8 +390,9 @@ def request_pause(conn, goal_id, *, manual=True, actor=board.HUMAN, reason='暂�
 
 
 def confirm_paused(conn, goal_id, *, actor=None, now=None):
-    # Stop confirmation is runtime bookkeeping, not a new user intent.
-    return transition(conn, goal_id, 'paused', actor=actor or _OPERATIONS, now=now)
+    # Stop confirmation is runtime bookkeeping, not a new user intent: the reason given when the pause was
+    # requested (a person stopped, the leader gone, a cancel on its way) stays, since resuming relies on it.
+    return transition(conn, goal_id, 'paused', actor=actor or _OPERATIONS, reason=_row(conn, goal_id)['reason'], now=now)
 
 
 def _finished_review(conn, goal):
@@ -408,6 +418,7 @@ def resume_review(conn, goal_id, *, actor=board.HUMAN, now=None):
     if goal['manual_pause'] and actor != board.HUMAN:
         raise board.Conflict('自动恢复不能覆盖用户暂停')
     conn.execute('DELETE FROM goal_cancellations WHERE goal_id=?', (goal_id,))
+    touch(conn, goal_id)
     conn.execute('UPDATE goals SET manual_pause=0 WHERE id=?', (goal_id,))
     return transition(conn, goal_id, 'awaiting_acceptance', actor=actor, now=now)
 
@@ -421,6 +432,7 @@ def resume(conn, goal_id, *, actor=board.HUMAN, automatic=False, now=None):
     if goal['manual_pause'] and (automatic or actor != board.HUMAN):
         raise board.Conflict('自动恢复不能覆盖用户暂停')
     conn.execute('DELETE FROM goal_cancellations WHERE goal_id=?', (goal_id,))
+    touch(conn, goal_id)
     conn.execute('UPDATE goals SET manual_pause=0 WHERE id=?', (goal_id,))
     result = transition(conn, goal_id, 'queued', actor=actor, now=now)
     conn.execute("UPDATE goal_executions SET status='idle',updated_at=? WHERE goal_id=? AND round=? AND status IN ('paused','waiting_user')",
@@ -464,19 +476,27 @@ def continue_task(conn, goal_id, text, *, actor=board.HUMAN, discussion_executio
                   _json(previous_round), at))
     conn.execute("UPDATE goal_round_finishes SET status='superseded' WHERE goal_id=? AND round=?", (goal_id, goal['current_round']))
     conn.execute("UPDATE goals SET status='queued',manual_pause=0,reason=? WHERE id=?", (text, goal_id))
+    touch(conn, goal_id)
     conn.execute("UPDATE goal_rounds SET status='queued',outcome=NULL,reason=?,ended_at=NULL WHERE goal_id=? AND number=?",
                  (text, goal_id, goal['current_round']))
     value = amend(conn, goal_id, text, actor=actor, acceptance=acceptance, constraints=constraints,
                   source={'type': 'task-continuation', 'message_id': response['message_id'] if response else None}, now=now)
     from . import goal_work
     goal_work.carry_forward(conn, goal_id, goal['requirement_version'], actor=actor)
-    if response:
-        receipt = {'text': text, 'acceptance': acceptance, 'constraints': constraints,
-                   'expected_version': expected_version, 'requirement_version': value['requirement_version']}
+    # The change is the task's work now: the discussion that asked for it, or (for the user's own
+    # continuation such as 需修改) any discussion of this round still open, continues as that work.
+    promoted = [discussion_execution_id] if response else [row['execution_id'] for row in conn.execute(
+        'SELECT d.execution_id FROM goal_discussion_executions d JOIN goal_executions e ON e.id=d.execution_id '
+        "WHERE e.goal_id=? AND e.round=? AND d.promoted_at IS NULL AND e.status NOT IN ('completed','failed','cancelled')",
+        (goal_id, goal['current_round']))]
+    receipt = {'text': text, 'acceptance': acceptance, 'constraints': constraints,
+               'expected_version': expected_version, 'requirement_version': value['requirement_version']}
+    for execution_id in promoted:
         conn.execute('UPDATE goal_discussion_executions SET promoted_at=?,promotion_json=? WHERE execution_id=?',
-                     (at, _json(receipt), discussion_execution_id))
+                     (at, _json(receipt), execution_id))
         conn.execute('UPDATE goal_executions SET requirement_version=?,updated_at=? WHERE id=?',
-                     (value['requirement_version'], at, discussion_execution_id))
+                     (value['requirement_version'], at, execution_id))
+    if response:
         value = transition(conn, goal_id, 'running', actor=actor, now=now)
     return value
 
@@ -490,6 +510,7 @@ def reopen(conn, goal_id, text, *, actor=board.HUMAN, now=None):
         raise board.Conflict('目标本轮尚未结束')
     number, at = goal['current_round'] + 1, board._time(now)
     conn.execute('DELETE FROM goal_cancellations WHERE goal_id=?', (goal_id,))
+    touch(conn, goal_id)
     if goal['status'] == 'awaiting_acceptance':
         conn.execute("UPDATE goal_rounds SET outcome='awaiting_acceptance',ended_at=? WHERE goal_id=? AND number=?", (at, goal_id, goal['current_round']))
     conn.execute("UPDATE goals SET current_round=?,status='queued',manual_pause=0,reason=? WHERE id=?", (number, text, goal_id))
@@ -511,12 +532,14 @@ def get_execution(conn, execution_id):
 
 @atomic
 def mark_read(conn, execution_id, read_seq, *, now=None):
-    get_execution(conn, execution_id)
+    execution = get_execution(conn, execution_id)
     if type(read_seq) is not int or read_seq < 0:
         raise board.BoardError('已读位置必须为非负整数')
     conn.execute('INSERT INTO goal_execution_reads VALUES(?,?,?) ON CONFLICT(execution_id) '
                  'DO UPDATE SET read_seq=MAX(read_seq,excluded.read_seq),updated_at=excluded.updated_at',
                  (execution_id, read_seq, board._time(now)))
+    if read_seq > execution['read_seq']:
+        change_feed.touch(conn, 'workspace_activity', None, _row(conn, execution['goal_id'])['project'])
     return get_execution(conn, execution_id)
 
 
@@ -568,6 +591,7 @@ def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=N
                  'requirement_version,created_at,updated_at,ended_at,error) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                  (identity, goal_id, goal['current_round'], session_id, generation, runtime, model, effort, speed,
                   'queued', goal['requirement_version'], at, at, None, None))
+    touch(conn, goal_id)
     if discussion_message_id is not None:
         conn.execute('INSERT INTO goal_discussion_executions VALUES(?,?,?,NULL,NULL)', (identity, discussion_message_id, at))
     return get_execution(conn, identity)
@@ -612,6 +636,7 @@ def set_execution_status(conn, execution_id, status, *, requirement_version=None
     at = board._time(now)
     conn.execute('UPDATE goal_executions SET status=?,requirement_version=?,error=?,updated_at=?,ended_at=? WHERE id=?',
                  (status, version, error, at, at if status in TERMINAL else None, execution_id))
+    touch(conn, execution['goal_id'])
     return get_execution(conn, execution_id)
 
 
@@ -794,7 +819,9 @@ def save_report(conn, goal_id, data, *, now=None):
     identity = uuid.uuid4().hex
     version = conn.execute('SELECT COALESCE(MAX(version),0)+1 FROM goal_reports WHERE goal_id=? AND round=?', (goal_id, goal['current_round'])).fetchone()[0]
     rendered = render_report(conn, goal_id, validated)
-    conn.execute('INSERT INTO goal_reports VALUES(?,?,?,?,?,?,?,?,?)', (identity, goal_id, goal['current_round'], validated['requirement_version'], version, validated['outcome'], _json(validated), rendered, board._time(now)))
+    requirement_version = validated.pop('requirement_version')
+    conn.execute('INSERT INTO goal_reports VALUES(?,?,?,?,?,?,?,?,?)', (identity, goal_id, goal['current_round'], requirement_version, version, validated['outcome'], _json(validated), rendered, board._time(now)))
+    touch(conn, goal_id)
     return get_report(conn, identity)
 
 
@@ -804,6 +831,7 @@ def get_report(conn, report_id):
         raise board.BoardError('目标报告不存在')
     value = dict(row)
     value['data'] = json.loads(value.pop('data_json'))
+    value['data']['requirement_version'] = row['requirement_version']
     goal = _row(conn, value['goal_id'])
     latest = conn.execute('SELECT id FROM goal_reports WHERE goal_id=? AND round=? ORDER BY version DESC LIMIT 1',
                           (value['goal_id'], goal['current_round'])).fetchone()
@@ -864,6 +892,7 @@ def review_acceptance(conn, goal_id, accepted, *, note='', actor=board.HUMAN, ex
                  'ON CONFLICT(goal_id,round) DO UPDATE SET report_id=excluded.report_id,accepted=excluded.accepted,'
                  'note=excluded.note,actor=excluded.actor,created_at=excluded.created_at',
                  (goal_id, goal['current_round'], report['id'], int(accepted), note, actor, board._time(now)))
+    touch(conn, goal_id)
     reason = ('用户验收通过' + ('：' + note if note else '')) if accepted else '用户要求修改：' + note
     if accepted:
         result = transition(conn, goal_id, 'completed', actor=actor, reason=reason, now=now)
@@ -879,7 +908,7 @@ def review_acceptance(conn, goal_id, accepted, *, note='', actor=board.HUMAN, ex
         config = board.git_config(conn, goal['project'])
         names = [s['crew_name'] for s in candidates if not board.is_archived(conn, s['session_id'])
                  and (config is None or config['admin_session_id'] != s['session_id'])]
-        text = '任务「%s」用户验收通过。\n可归档的成员：%s。\n请完成收尾；可用 crew archive <名字>（Codex：crew_archive）归档这些成员。' % (goal['title'], '、'.join(names) if names else '无')
+        text = '任务「%s」用户验收通过。\n可归档的成员：%s。\n请完成收尾。用 Crew 工具 `session_archive` 归档这些成员，`target` 填成员名。' % (goal['title'], '、'.join(names) if names else '无')
     else:
         result = continue_task(conn, goal_id, note, actor=actor, expected_version=expected_version, now=now)
         if not notify_rejection:
@@ -891,8 +920,8 @@ def review_acceptance(conn, goal_id, accepted, *, note='', actor=board.HUMAN, ex
 
 def rejection_notice(goal, note):
     """General-chat fallback when the rejected task could not be resumed in its own execution."""
-    return ('任务「%s」用户验收后要求修改：%s\n任务 ID %s 仍是第 %s 轮，已回到待开始。请用 crew goal start %s'
-            '（Codex：crew_goal 的 start）在本任务内按意见修改，完成并验证后重新 crew goal finish 提交验收。'
+    return ('任务「%s」用户验收后要求修改：%s\n任务 ID %s 仍是第 %s 轮，已回到待开始。请用 Crew 工具 `goal_start`（`goal_id=%s`）'
+            '在本任务内按意见修改，完成并验证后重新用 `goal_finish` 提交验收。'
             % (goal['title'], note, goal['id'], goal['current_round'], goal['id']))
 
 
@@ -985,7 +1014,7 @@ def _finish_notice(goal, report):
     if len(summary) > 600:
         summary = summary[:600] + '…'
     status = {'awaiting_acceptance': '已交付，等用户验收', 'failed': '未达标结束', 'cancelled': '已取消结束'}[report['outcome']]
-    text = '任务「%s」（ID %s）的执行%s。\n摘要：%s\n完整报告用 crew goal status %s 查看（Codex：crew_goal 的 status）。\n' % (
+    text = '任务「%s」（ID %s）的执行%s。\n摘要：%s\n用 Crew 工具 `goal_get`（`goal_id=%s`）查看完整报告。\n' % (
         goal['title'], goal['id'], status, summary or '（报告没有写摘要）', goal['id'])
     if report['outcome'] == 'awaiting_acceptance':
         return text + '用几句话告诉用户结果、你做过的验证和需要用户确认的内容；验收由用户决定，不要替用户验收，也不要重做已交付的工作。'
@@ -1024,7 +1053,11 @@ def finalize_finish(conn, goal_id, *, now=None):
     if finish['execution_id'] is not None or finish['actor'] != goal['leader_session_id']:
         board._queue_leader_notice(conn, goal['leader_session_id'], _finish_notice(goal, report),
                                    'crew', now, wake=report['outcome'] != 'cancelled')
+    if report['outcome'] != 'cancelled':
+        from . import war_room
+        war_room.task_returned(conn, {**goal, 'status': finish['outcome']}, finish['outcome'], now=now)
     conn.execute("UPDATE goal_round_finishes SET status='finalized',finalized_at=? WHERE goal_id=? AND round=?", (board._time(now), goal_id, goal['current_round']))
+    touch(conn, goal_id)
     return {'finalized': True, 'already': False, 'goal': result, 'finish': get_finish(conn, goal_id)}
 
 
@@ -1040,6 +1073,7 @@ def request_cancel(conn, goal_id, *, actor=board.HUMAN, now=None):
     if existing is None:
         conn.execute('INSERT OR REPLACE INTO goal_cancellations VALUES(?,?,?,?)', (goal_id, goal['current_round'], board._time(now), actor))
         conn.execute("UPDATE goal_round_finishes SET status='superseded' WHERE goal_id=? AND round=? AND status='pending'", (goal_id, goal['current_round']))
+        touch(conn, goal_id)
         request_pause(conn, goal_id, manual=actor == board.HUMAN, actor=actor, reason='已请求取消，等待执行实际结束', now=now)
     return get(conn, goal_id)
 
@@ -1081,6 +1115,22 @@ def _transfer_target(conn, goal, session_id):
     return target
 
 
+def transfer_blocker(conn, goal, to_session_id):
+    """Why the task cannot be handed to this leader now, or None; the restructure preview asks the same."""
+    if goal['status'] in TERMINAL:
+        return '已结束的任务不能交接；需要继续请先重开'
+    old = pending_transfer(conn, goal['id'])
+    if old is not None:
+        return None if old['to_session_id'] == to_session_id else '任务正在交给另一位 leader，等那次交接完成后再改'
+    if conn.execute("SELECT 1 FROM goal_round_finishes WHERE goal_id=? AND round=? AND status='pending'",
+                    (goal['id'], goal['current_round'])).fetchone():
+        return '本轮已提交交付、等待收尾；收尾后再交接' + (
+            '（任务暂停中，继续推进后会自动收尾）' if goal['manual_pause'] or goal['status'] in ('pausing', 'paused') else '')
+    if conn.execute('SELECT 1 FROM goal_cancellations WHERE goal_id=? AND round=?', (goal['id'], goal['current_round'])).fetchone():
+        return '任务已请求取消，不能再交接'
+    return None
+
+
 @atomic
 def request_transfer(conn, goal_id, to_session_id, note='', *, actor=board.HUMAN, now=None):
     """Record that the task moves to another leader; the host finalizes once no execution is running."""
@@ -1089,21 +1139,17 @@ def request_transfer(conn, goal_id, to_session_id, note='', *, actor=board.HUMAN
     if not isinstance(to_session_id, str) or not to_session_id:
         raise board.BoardError('请指定接手的 leader')
     if goal['status'] in TERMINAL:
-        raise board.Conflict('已结束的任务不能交接；需要继续请先重开')
+        raise board.Conflict(transfer_blocker(conn, goal, to_session_id))
     if to_session_id == goal['leader_session_id']:
         raise board.BoardError('任务已经由这个 leader 负责')
     _transfer_target(conn, goal, to_session_id)
     note = _text(note or '', '交接说明', required=False, limit=20000).strip()
+    blocker = transfer_blocker(conn, goal, to_session_id)
+    if blocker is not None:
+        raise board.Conflict(blocker)
     old = pending_transfer(conn, goal_id)
     if old is not None:
-        if old['to_session_id'] == to_session_id:
-            return old
-        raise board.Conflict('任务正在交给另一位 leader，等那次交接完成后再改')
-    if conn.execute("SELECT 1 FROM goal_round_finishes WHERE goal_id=? AND round=? AND status='pending'",
-                    (goal_id, goal['current_round'])).fetchone():
-        raise board.Conflict('本轮已提交交付、等待收尾；收尾后再交接')
-    if conn.execute('SELECT 1 FROM goal_cancellations WHERE goal_id=? AND round=?', (goal_id, goal['current_round'])).fetchone():
-        raise board.Conflict('任务已请求取消，不能再交接')
+        return old
     identity, at = uuid.uuid4().hex, board._time(now)
     conn.execute("INSERT INTO goal_transfers VALUES(?,?,?,?,?,?,?,'pending',NULL,?,NULL)",
                  (identity, goal_id, goal['current_round'], goal['leader_session_id'], to_session_id, note, actor, at))
@@ -1117,7 +1163,7 @@ def _transfer_notice(goal, transfer, giver, status, manual_pause):
     text = '任务「%s」（ID %s）已从 %s 交给你负责%s。\n交接说明：%s\n' % (
         goal['title'], goal['id'], giver['crew_name'] or giver['session_id'],
         '，是用户的安排' if transfer['actor'] == board.HUMAN else '', transfer['note'] or '（没有写）')
-    text += ('原负责人组里的成员已退出此任务，需要人手用 crew goal assign 从你组里安排（Codex：crew_goal 的 assign）；'
+    text += ('原负责人组里的成员已退出此任务，需要人手用 Crew 工具 `goal_assign` 从你组里安排；'
              '未完成的工作清单项已转到你名下，用 work.list 查看。\n')
     if manual_pause or status in ('pausing', 'paused'):
         return text + '任务目前暂停，等用户恢复后再继续，不要自行开工。', False
@@ -1125,7 +1171,7 @@ def _transfer_notice(goal, transfer, giver, status, manual_pause):
         return text + '任务在等用户答复，答复到达前不要开工。', False
     if status == 'awaiting_acceptance':
         return text + '任务已交付、等用户验收；用户要求修改时由你在本任务内处理，现在无需开工。', False
-    return (text + '请用 crew goal start %s（Codex：crew_goal 的 start）在本任务内接着做：先核对已有进展、交付物和代码，'
+    return (text + '请用 Crew 工具 `goal_start`（`goal_id=%s`）在本任务内接着做：先核对已有进展、交付物和代码，'
             '已完成的不要重做。' % goal['id']), True
 
 

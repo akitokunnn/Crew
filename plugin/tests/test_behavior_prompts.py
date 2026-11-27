@@ -34,6 +34,20 @@ class BehaviorPromptTests(unittest.TestCase):
         self.assertEqual(manifest['native_private_instructions'], 'not_controlled')
         self.assertEqual(self.conn.total_changes, previous_changes)
 
+    def test_war_room_conflicts_go_to_the_leads_card_and_openings_split_the_files(self):
+        # Scenario 8: a member asked the user in its own task first and only later sent a card; the opening plan never
+        # said which leader owns which files in their shared folder.
+        rendered = prompts.render(prompts.resolve(self.conn, session_id='leader-one', keys=prompts.bundle('leader')))
+        for rule in ('当场在房里 `war_room_post` 点名牵头和对方', '由牵头发拍板卡',
+                     '不在自己的对话或任务里先问用户、不自己 `decision_ask`', '牵头收到就马上汇成一张拍板卡（`war_room_decide`）',
+                     '作战室里和别的成员冲突的事按作战室规则交牵头发拍板卡'):
+            self.assertIn(rule, rendered)
+        self.assertNotIn('成员不各自去问用户', rendered)
+        assistant = prompts.render(prompts.resolve(self.conn, session_id='leader-one', keys=prompts.bundle('assistant')))
+        self.assertIn('两位以上时用 `owns` 给每位划好只归它改的文件或目录', assistant)
+        self.assertIn('成员报来要用户定的冲突（包括两边各说用户要求不一样、你这边查不到来源），不替用户定案、'
+                      '不在你和用户的对话里问，当场发拍板卡', assistant)
+
     def test_each_kind_can_be_edited_versioned_and_restored(self):
         for key in prompts.KEYS:
             with self.subTest(key=key):

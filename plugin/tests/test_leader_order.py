@@ -1,6 +1,7 @@
 """Project-scoped leader order through an isolated HTTP service."""
 import tests
 from contextlib import closing
+import uuid
 import json
 import threading
 import unittest
@@ -39,7 +40,7 @@ class LeaderOrderTests(ShellFixture, unittest.TestCase):
         board.join(self.conn, sid, project, name, self.project, self.project, 'main', role='leader', now=NOW)
 
     def request(self, path, data=None):
-        req = Request(self.server.url + path, None if data is None else json.dumps(data).encode(), {'X-Crew': '1'})
+        req = Request(self.server.url + path, None if data is None else json.dumps(data).encode(), {'X-Crew': '1', 'X-Crew-Request-Id': uuid.uuid4().hex})
         try:
             response = self.opener.open(req, timeout=5)
         except HTTPError as exc:
@@ -48,10 +49,10 @@ class LeaderOrderTests(ShellFixture, unittest.TestCase):
             return response.status, json.load(response)
 
     def order(self, order, project='demo'):
-        return self.request('/api/leaders/order', {'project': project, 'order': order})
+        return self.request('/api/op/leaders.order.set', {'project': project, 'order': order})
 
     def ids(self, project='demo'):
-        code, state = self.request('/api/state?project=' + project)
+        code, state = self.request('/api/op/workspace.state?project=' + project)
         self.assertEqual(code, 200, state)
         return [s['session_id'] for s in state['leaders']]
 
@@ -85,8 +86,8 @@ class LeaderOrderTests(ShellFixture, unittest.TestCase):
         for order in (['s3', 'second', 's3'], 's3', [1], None):
             with self.subTest(order=order):
                 self.assertEqual(self.order(order)[0], 400)
-        self.assertEqual(self.request('/api/leaders/order?project=demo', {'project': 'other', 'order': []})[0], 400)
-        self.assertEqual(self.request('/api/leaders/order', {'order': ['s3', 'second']})[0], 400)
+        self.assertEqual(self.request('/api/op/leaders.order.set?project=demo', {'project': 'other', 'order': []})[0], 400)
+        self.assertEqual(self.request('/api/op/leaders.order.set', {'order': ['s3', 'second']})[0], 400)
 
     def test_new_leaders_follow_saved_order_in_existing_relative_order_and_projects_are_isolated(self):
         self.order(['second', 's3'])

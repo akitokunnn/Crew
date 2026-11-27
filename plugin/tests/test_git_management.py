@@ -1,16 +1,21 @@
 """Git opt-in commands and HTTP routes use isolated boards and temporary repositories."""
 import tests  # Install the production-service connection guard.
+import uuid
 import json
 from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from unittest import mock
 
-from crew import board, git_admin, git_view, hooks, messaging, models, runtimes, settings, spawn, store, web
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
+from crew import board, git_admin, git_overview, git_view, hooks, messaging, models, runtimes, settings, spawn, store, web
+from crew.ops import tokens
 from test_core import CoreCase, NOW
 from test_shell import PLUGIN, ShellFixture
 from tests.fixture_carriers import install_lookup
@@ -58,7 +63,7 @@ class GitStorageMigrationTests(unittest.TestCase):
                 conn.close()
 
 
-class GitCommandTests(CoreCase):
+class GitOperationTests(CoreCase):
     def setUp(self):
         super().setUp()
         install_lookup(self, self.base)
@@ -71,23 +76,21 @@ class GitCommandTests(CoreCase):
                  "commit", "--allow-empty", "-m", "fixture")
         for name in ("develop", "dev", "master", "topic"):
             self.git("branch", name)
-        self.plans = []
-        patcher = mock.patch("crew.spawn.request_start", side_effect=self.service_request)
-        self.service = patcher.start()
-        self.addCleanup(patcher.stop)
-        self.transcripts = self.base / "claude-projects"
+        self.plans, self.launch_roles, self.native_failure = [], [], None
+        self.transcripts = self.base / 'claude-projects'
         self.transcripts.mkdir()
-        patcher = mock.patch("crew.cli.CLAUDE_PROJECTS", self.transcripts)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.service = web.Service(self.home, PLUGIN, cwd=self.root, agents_provider=lambda: [],
+                                   claude_root=self.transcripts, isolated_sources=True, now=lambda: store.parse_iso(NOW))
+        self.addCleanup(self.service.close)
+        self.service.chat.start = lambda *args, **kwargs: self.launcher(*args, **kwargs)
 
-    def service_request(self, home, project_name, path, body):
-        if path == "/api/git/enable":
-            return git_admin.enable(self.conn, home, self.fake_plugin, project_name, self.launcher, **body, now=NOW)
-        self.assertEqual(path, "/api/git/disable")
-        return git_admin.disable(self.conn, project_name, now=NOW)
+    def configure(self, **options):
+        return self.service.op('git.enable', options, project='demo')
 
-    def launcher(self, conn, project_name, name, task, **options):
+    def agent(self, operation, args=None, sid='s1'):
+        return ai_call(self.service, self.conn, sid, operation, args)
+
+    def launcher(self, conn, project_name, name, task, _registered=None, **options):
         plan = spawn.prepare(conn, self.home, self.fake_plugin, project_name, name, task, **options)
         self.plans.append(plan)
         spec = plan["spec"]
@@ -98,12 +101,18 @@ class GitCommandTests(CoreCase):
                                    name=name, role=spec["role"], group_name=spec["group"], spawn_id=spec["id"], now=NOW)
             runtimes.set(conn, plan['session_id'], spec['runtime'], plan['session_id'] if spec['runtime'] == 'claude' else None)
             models.set(conn, plan["session_id"], spec["model"], spec["effort"], now=NOW, speed=spec["speed"])
+            if _registered is not None:
+                _registered(plan["session_id"])
+            # The native starts here: its MCP token takes the role the board shows at this moment.
+            self.launch_roles.append(tokens.role_of(conn, plan["session_id"]))
+            if self.native_failure is not None:
+                raise self.native_failure
 
         result = spawn._execute(conn, plan, register)
         return {**result, "session_id": plan["session_id"]}
 
     def enable(self):
-        self.assert_cli(["git", "enable"])
+        self.configure()
         return board.git_config(self.conn, "demo")["admin_session_id"]
 
     def git(self, *arguments):
@@ -111,10 +120,7 @@ class GitCommandTests(CoreCase):
                               capture_output=True, text=True, encoding="utf-8").stdout
 
     def test_enable_starts_git_administrator_in_separate_worktree(self):
-        text = self.assert_cli(["git", "enable"], sid=None)[1]
-        self.assertIn("Git 助手已启用", text)
-        self.assertIn("base: develop", text)
-        self.assertIn("本地集成分支: 未设置", text)
+        self.configure()
         config = board.git_config(self.conn, "demo")
         # No integration branch is guessed; master is not special any more.
         self.assertEqual((config["base"], config["integration"]), ("develop", None))
@@ -132,55 +138,53 @@ class GitCommandTests(CoreCase):
         self.assertEqual(command[command.index("--agent") + 1], "crew:git")
         self.assertNotIn('--model', command)
         self.assertNotIn('--effort', command)
-        self.assertIn("/crew:git", plan["files"][plan["spec"]["md"]])
+        self.assertIn("[Crew git]", plan["files"][plan["spec"]["md"]])
         self.assertIsNone(config["branch_rules"])
         self.assertIsNotNone(config["enabled_at"])
+        self.assertNotIn("/crew:git", plan["files"][plan["spec"]["md"]])
 
     def test_repeated_enable_updates_config_without_starting_another_administrator(self):
         administrator = self.enable()
-        self.assert_cli(["git", "enable", "--base", "topic", "--integration", "main"])
+        self.configure(base='topic', integration='main')
         config = board.git_config(self.conn, "demo")
         self.assertEqual(config["admin_session_id"], administrator)
         self.assertEqual((config["base"], config["integration"]), ("topic", "main"))
         self.assertEqual(len(self.plans), 1)
 
-    def test_cli_names_the_assistant_without_changing_json_contract(self):
+    def test_git_assistant_retains_leader_identity(self):
         sid = self.enable()
-        text = self.assert_cli(['whoami'], sid=sid)[1]
-        self.assertIn('身份：本项目内置 Git 助手', text)
-        status = self.assert_cli(['git', 'status'])[1]
-        self.assertIn('Git 助手：Git 助手（%s）' % sid, status)
-        value = json.loads(self.assert_cli(['whoami', '--json'], sid=sid)[1])
+        value = self.agent('session.whoami', sid=sid)
         self.assertEqual(value['role'], 'leader')
+        self.assertEqual(value['session_id'], sid)
         self.assertNotIn('builtin', value)
 
     def test_global_assistant_whoami_has_no_project_git_identity(self):
         from crew import personal
         self.enable()
         assistant = personal.ensure_assistant(self.conn, self.home)
-        text = self.assert_cli(['whoami'], sid=assistant['session_id'])[1]
-        self.assertIn(assistant['session_id'], text)
-        self.assertNotIn('身份：本项目内置 Git 助手', text)
+        identity = self.agent('session.whoami', sid=assistant['session_id'])
+        self.assertEqual(identity['session_id'], assistant['session_id'])
+        self.assertFalse(identity.get('project'))
 
     def test_reenable_preserves_existing_assistant_name(self):
         sid = self.enable()
         self.conn.execute("UPDATE sessions SET crew_name='git管理员' WHERE session_id=?", (sid,))
-        self.assert_cli(['git', 'enable'])
+        self.configure()
         self.assertEqual(board.session(self.conn, sid)['crew_name'], 'git管理员')
         self.assertEqual(len(self.plans), 1)
 
-    def test_cli_request_can_explicitly_wait_for_merge_before_follow_up_work(self):
+    def test_request_can_explicitly_wait_for_merge_before_follow_up_work(self):
         admin = self.enable()
-        self.assert_cli(['git', 'request', 'After merge, verify the integration', '--blocking'])
+        self.agent('git.request.add', {'description': 'After merge, verify the integration', 'blocking': True})
         item = board.git_requests(self.conn, 'demo')[0]
         self.assertEqual(item['blocking'], 1)
-        self.assert_cli(['git', 'resolve', str(item['id']), 'merged', '--note', 'Ready for verification'], sid=admin)
+        self.agent('git.request.resolve', {'id': item['id'], 'status': 'merged', 'note': 'Ready for verification'}, sid=admin)
         self.assertEqual(self.conn.execute('SELECT request_id FROM git_result_handoffs').fetchone()[0], item['id'])
 
     def test_codex_only_git_administrator_reads_both_rules_without_claude_flags(self):
         settings.save(self.conn, {'default': {'runtime': 'codex', 'model': None, 'effort': None, 'speed': 'priority'}})
         with mock.patch.object(spawn.codex_client, 'command', return_value=['codex.exe', 'app-server']):
-            self.assert_cli(['git', 'enable'])
+            self.configure()
         plan = self.plans[0]
         administrator = board.git_config(self.conn, 'demo')['admin_session_id']
         self.assertEqual(runtimes.get(self.conn, administrator)['runtime'], 'codex')
@@ -189,22 +193,24 @@ class GitCommandTests(CoreCase):
         brief = plan['files'][plan['spec']['md']]
         # Rules arrive through the editable injected configuration, not built-in file paths.
         self.assertNotIn('SKILL.md', brief)
-        self.assertIn('crew_git(action="policy"', brief)
+        self.assertIn('git_policy_set', brief)
         self.assertNotIn('/crew:leader', brief)
         self.assertNotIn('/crew:git', brief)
 
     def test_explicit_codex_git_enable_reaches_launcher_and_reenable_keeps_identity(self):
         with mock.patch.object(spawn.codex_client, 'command', return_value=['codex.exe', 'app-server']):
-            self.assert_cli(['git', 'enable', '--runtime', 'codex'])
+            self.configure(runtime='codex')
         administrator = board.git_config(self.conn, 'demo')['admin_session_id']
-        self.assert_cli(['git', 'enable', '--base', 'topic'])
+        self.configure(base='topic')
         self.assertEqual(board.git_config(self.conn, 'demo')['admin_session_id'], administrator)
         self.assertEqual(len(self.plans), 1)
-        self.assertIn('会话菜单', self.assert_cli(['git', 'enable', '--runtime', 'claude'], code=3)[2])
+        with self.assertRaisesRegex((OpError, board.BoardError, ValueError), '会话菜单'):
+            self.configure(runtime='claude')
 
     def test_no_ai_carrier_does_not_enable_git_or_create_worktree(self):
         with mock.patch.object(settings, 'resolve', side_effect=board.BoardError('请先安装并登录 Codex CLI 或 Claude Code')):
-            self.assertIn('安装并登录', self.assert_cli(['git', 'enable'], code=1)[2])
+            with self.assertRaisesRegex((OpError, board.BoardError, ValueError), '安装并登录'):
+                self.configure()
         self.assertIsNone(board.git_config(self.conn, 'demo'))
         self.assertFalse((self.root / 'Temp' / 'wt').exists())
 
@@ -212,14 +218,28 @@ class GitCommandTests(CoreCase):
         settings.save(self.conn, {'default': {'runtime': 'claude', 'model': None, 'effort': None},
                                  'git': {'runtime': 'codex', 'model': 'gpt-fixture-purpose', 'effort': 'high'}})
         with mock.patch.object(spawn.codex_client, 'command', return_value=['codex.exe', 'app-server']):
-            self.assert_cli(['git', 'enable', '--runtime', 'codex'])
+            self.configure(runtime='codex')
         self.assertEqual(self.plans[0]['spec']['model'], 'gpt-fixture-purpose')
         self.assertEqual(self.plans[0]['spec']['effort'], 'high')
         self.assertIsNone(settings.load(self.conn)['default']['model'])
 
+    def test_administrator_starts_with_its_git_role(self):
+        # Real Haiku run (2026-11-27): the first Git assistant could not find git_request_resolve or
+        # git_policy_set, because its token was issued as a leader before the board named it administrator.
+        administrator = self.enable()
+        self.assertEqual(self.launch_roles, ['git_admin'])
+        self.assertEqual(tokens.role_of(self.conn, administrator), 'git_admin')
+
+    def test_native_start_failure_after_registration_does_not_mark_git_enabled(self):
+        self.native_failure = OSError('fixture native failure')
+        with self.assertRaisesRegex((OpError, board.BoardError, ValueError, OSError), 'fixture native failure'):
+            self.configure()
+        self.assertIsNone(board.git_config(self.conn, "demo"))
+
     def test_start_failure_does_not_mark_git_enabled(self):
         with mock.patch.object(self, "launcher", side_effect=OSError("fixture launch failure")):
-            self.assertIn("fixture launch failure", self.assert_cli(["git", "enable"], code=1)[2])
+            with self.assertRaisesRegex((OpError, board.BoardError, ValueError, OSError), 'fixture launch failure'):
+                self.configure()
         self.assertIsNone(board.git_config(self.conn, "demo"))
 
     def test_enable_auto_priority_never_picks_an_integration_branch(self):
@@ -227,48 +247,47 @@ class GitCommandTests(CoreCase):
             if removed == "main":
                 self.git("symbolic-ref", "HEAD", "refs/heads/master")
             self.git("branch", "-D", removed)
-            self.assert_cli(["git", "enable"], sid=None)
+            self.configure()
             config = board.git_config(self.conn, "demo")
             self.assertEqual(config["base"], expected)
         self.assertIsNone(config["integration"])
 
     def test_enable_explicit_branches_and_invalid_branch_leave_config_unchanged(self):
-        self.assert_cli(["git", "enable", "--base", "topic", "--integration", "main"])
+        self.configure(base='topic', integration='main')
         previous = board.git_config(self.conn, "demo")
-        for arguments in (("--base", "missing"), ("--integration", "missing")):
-            error = self.assert_cli(["git", "enable", *arguments], code=1)[2]
-            self.assertIn("分支不存在: missing", error)
+        for field in ('base', 'integration'):
+            with self.assertRaisesRegex(board.BoardError, '分支不存在: missing'):
+                self.configure(**{field: 'missing'})
             self.assertEqual(board.git_config(self.conn, "demo"), previous)
 
     def test_integration_branch_is_optional_and_must_differ_from_base(self):
-        self.assert_cli(["git", "enable", "--base", "master", "--integration", "main"])
+        self.configure(base='master', integration='main')
         self.assertEqual(board.git_config(self.conn, "demo")["integration"], "main")
-        self.assertIn("本地集成分支必须与主干分支不同",
-                      self.assert_cli(["git", "enable", "--base", "main", "--integration", "main"], code=1)[2])
+        with self.assertRaisesRegex(board.BoardError, '本地集成分支必须与主干分支不同'):
+            self.configure(base='main', integration='main')
         board.enable_git(self.conn, "demo", "develop", "")
         self.assertIsNone(board.git_config(self.conn, "demo")["integration"])
-        self.assert_cli(["git", "enable", "--base", "develop"])
+        self.configure(base='develop')
         self.assertIsNone(board.git_config(self.conn, "demo")["integration"])
-        self.assertNotIn("--stable", self.assert_cli(["git", "enable", "--help"])[1])
 
     def test_status_disable_and_project_isolation(self):
-        self.assertIn("未启用", self.assert_cli(["git", "status"], sid=None)[1])
-        self.assert_cli(["git", "enable"])
+        self.assertIsNone(self.service.op("git.settings.get", project="demo")["config"])
+        self.configure()
         administrator = board.git_config(self.conn, "demo")["admin_session_id"]
-        self.assertIn("base: develop", self.assert_cli(["git", "status"])[1])
+        self.assertEqual(self.service.op("git.settings.get", project="demo")["config"]["base"], "develop")
         board.init_project(self.conn, "other", self.base / "other", now=NOW)
         self.assertIsNone(board.git_config(self.conn, "other"))
-        self.assert_cli(["git", "disable"])
+        self.service.op('git.disable', project='demo')
         self.assertIsNone(board.git_config(self.conn, "demo"))
         self.assertEqual(board.session(self.conn, administrator)["status"], "closed")
         group = next(g for g in board.groups(self.conn, "demo") if g["name"] == "git")
         self.assertEqual(group["closed_at"], NOW)
-        self.assertIn("未启用", self.assert_cli(["git", "status"])[1])
-        self.assert_cli(["git", "disable"])
+        self.assertIsNone(self.service.op("git.settings.get", project="demo")["config"])
+        self.service.op('git.disable', project='demo')
 
     def test_enable_after_disable_gets_a_new_worktree(self):
         first = self.enable()
-        self.assert_cli(["git", "disable"])
+        self.service.op('git.disable', project='demo')
         second = self.enable()
         self.assertNotEqual(first, second)
         self.assertNotEqual(self.plans[0]["spec"]["cwd"], self.plans[1]["spec"]["cwd"])
@@ -277,103 +296,84 @@ class GitCommandTests(CoreCase):
         self.git("symbolic-ref", "HEAD", "refs/heads/topic")
         for name in ("develop", "dev", "main", "master"):
             self.git("branch", "-D", name)
-        self.assertIn("请指定 --base", self.assert_cli(["git", "enable"], code=1)[2])
-        self.assert_cli(["git", "enable", "--base", "topic"])
+        with self.assertRaisesRegex((OpError, board.BoardError, ValueError), '请指定 --base'):
+            self.configure()
+        self.configure(base='topic')
 
     def test_policy_read_and_only_administrator_can_set(self):
-        self.assertIn("未启用", self.assert_cli(["git", "policy"], code=1)[2])
+        with self.assertRaisesRegex((OpError, board.BoardError, ValueError), '未启用'):
+            self.agent('git.policy.get')
         administrator = self.enable()
-        self.assertIn("还没写分支规则", self.assert_cli(["git", "policy"], sid=None)[1])
+        self.assertFalse(self.agent("git.policy.get")["policy"])
         policy = "小改直接合 base\n大改走 PR\n命名 feature/<任务>\n提交 feat: 说明"
-        self.assertIn("只有 git 管理员", self.assert_cli(["git", "policy", "--set", policy], code=1)[2])
-        self.assert_cli(["git", "policy", "--set", policy], sid=administrator)
-        self.assertEqual(self.assert_cli(["git", "policy"], sid=None)[1].strip(), policy)
+        with self.assertRaisesRegex((OpError, board.BoardError, ValueError), '不能调用'):
+            self.agent('git.policy.set', {'text': policy})
+        self.agent('git.policy.set', {'text': policy}, sid=administrator)
+        self.assertEqual(self.agent("git.policy.get")["policy"], policy)
         self.assertEqual(board.git_config(self.conn, "demo")["branch_rules"], policy)
-        self.assert_cli(["git", "policy", "--set", " "], sid=administrator, code=1)
+        with self.assertRaises((OpError, board.BoardError, ValueError)):
+            self.agent('git.policy.set', {'text': ' '}, sid=administrator)
 
     def test_request_defaults_to_current_branch_and_queues_administrator_notice(self):
         administrator = self.enable()
         description = "增加按钮；单测通过；无需设备验收"
-        self.assertIn("合并请求 #1", self.assert_cli(["git", "request", description])[1])
+        self.agent("git.request.add", {"description": description})
         request = board.git_requests(self.conn, "demo")[0]
         self.assertEqual((request["session_id"], request["branch"], request["description"], request["status"]),
                          ("s1", "main", description, "open"))
         notice = board.pending_notices(self.conn, administrator)[0]
         self.assertIn(description, notice["text"])
         self.assertIn("main", notice["text"])
-        self.assert_cli(["git", "request", "指定分支", "--branch", "topic"])
+        self.agent('git.request.add', {'description': '指定分支', 'branch': 'topic'})
         self.assertEqual(board.git_requests(self.conn, "demo")[1]["branch"], "topic")
 
     def test_request_requires_enabled_project_session_identity_and_text(self):
-        self.assert_cli(["git", "request", "未启用"], code=1)
+        with self.assertRaises((OpError, board.BoardError, ValueError)):
+            self.agent('git.request.add', {'description': '未启用'})
         self.enable()
-        self.assert_cli(["git", "request", "无身份"], sid=None, code=1)
-        self.assert_cli(["git", "request", " "], code=1)
-        self.assert_cli(["git", "request", "空分支", "--branch", " "], code=1)
+        with self.assertRaises(OpError):
+            self.service.op('git.request.add', {'description': '无身份'}, project='demo')
+        with self.assertRaises((OpError, board.BoardError, ValueError)):
+            self.agent('git.request.add', {'description': ' '})
+        with self.assertRaises((OpError, board.BoardError, ValueError)):
+            self.agent('git.request.add', {'description': '空分支', 'branch': ' '})
         board.init_project(self.conn, "other", self.base / "other", now=NOW)
         board.register_session(self.conn, "outsider", "other", self.base / "other", self.base / "other", "main", now=NOW)
         with self.assertRaisesRegex(board.BoardError, "不属于本项目"):
             board.request_git_merge(self.conn, "demo", "outsider", "main", "跨项目", title=None, now=NOW)
         self.assertEqual(board.git_requests(self.conn, "demo"), [])
 
-    def test_unadopted_and_closed_sessions_can_request_and_receive_the_result(self):
-        administrator = self.enable()
-        board.register_session(self.conn, "unjoined-session", "demo", self.root, self.root, "main", now=NOW)
-        self.assert_cli(["git", "request", "没有标题时用编号"], sid="unjoined-session")
-        self.assertIn("unjoined（未收编） 提交分支 main", board.pending_notices(self.conn, administrator)[0]["text"])
-        board.update_cc_name(self.conn, "unjoined-session", "cc-outsource", now=NOW)
-        self.assertEqual(board.git_requests(self.conn, "demo")[0]["requester_name"], "cc-outsource")
-        bucket = self.transcripts / "bucket"
-        bucket.mkdir()
-        (bucket / "unjoined-session.jsonl").write_text("".join(json.dumps(record, ensure_ascii=False) + "\n" for record in (
-            {"type": "user", "cwd": str(self.root), "message": {"role": "user", "content": "修登录页"}},
-            {"type": "ai-title", "aiTitle": "外包修复登录页"})), encoding="utf-8")
-        self.assert_cli(["git", "request", "外包改动；测试通过"], sid="unjoined-session")
-        self.assertIn("外包修复登录页（未收编，SendMessage 地址：cc-outsource） 提交分支 main",
-                      board.pending_notices(self.conn, administrator)[1]["text"])
-        self.assertIn("外包修复登录页", self.assert_cli(["git", "requests"])[1])
-        (bucket / "unjoined-session").mkdir()
-        (bucket / "unjoined-session" / "custom-title.json").write_text(json.dumps({"customTitle": "我改的名字"}), encoding="utf-8")
-        self.assertIn("我改的名字", self.assert_cli(["git", "requests"])[1])
-        request = board.git_requests(self.conn, "demo")[0]
-        board.set_status(self.conn, "s2", "closed", now=NOW)
-        self.assert_cli(["git", "request", "已关闭的会话也能交"], sid="s2")
-        self.assert_cli(["git", "resolve", str(request["id"]), "merged", "--note", "已合入 base"], sid=administrator)
-        delivered = board.deliver(self.conn, "unjoined-session", now=NOW)["handoffs"]
-        self.assertEqual(len(delivered), 1)
-        self.assertIn("已合入 base", delivered[0]["body"])
-        self.assertEqual(board.handoffs(self.conn, "unjoined-session"), [])
-        self.assertEqual(board.handoffs(self.conn, "s1"), [])
-
     def test_resolve_transitions_preserves_pr_and_member_delivery(self):
         administrator = self.enable()
-        self.assert_cli(["git", "request", "变更；测试通过"])
-        self.assertIn("只有 git 管理员", self.assert_cli(["git", "resolve", "1", "merged", "--note", "越权"], code=1)[2])
-        self.assert_cli(["git", "resolve", "1", "merging", "--note", "检查 CI", "--pr", "42"], sid=administrator)
-        self.assert_cli(["git", "resolve", "1", "waiting_user", "--note", "等待设备验收"], sid=administrator)
+        self.agent('git.request.add', {'description': '变更；测试通过'})
+        with self.assertRaisesRegex((OpError, board.BoardError, ValueError), '不能调用'):
+            self.agent('git.request.resolve', {'id': 1, 'status': 'merged', 'note': '越权'})
+        self.agent('git.request.resolve', {'id': 1, 'status': 'merging', 'note': '检查 CI', 'pr_number': 42}, sid=administrator)
+        self.agent('git.request.resolve', {'id': 1, 'status': 'waiting_user', 'note': '等待设备验收'}, sid=administrator)
         request = board.git_requests(self.conn, "demo")[0]
         self.assertEqual((request["status"], request["pr_number"], request["note"]), ("waiting_user", 42, "等待设备验收"))
         self.assertEqual(len(board.handoffs(self.conn, "s1")), 0)
         delivered = board.deliver(self.conn, "s1", now=NOW)["handoffs"]
         self.assertTrue(all("合并请求 #1" in item["body"] for item in delivered))
         self.assertEqual(board.handoffs(self.conn, "s1"), [])
-        self.assert_cli(["git", "resolve", "1", "merged", "--note", "已合入 base"], sid=administrator)
+        self.agent('git.request.resolve', {'id': 1, 'status': 'merged', 'note': '已合入 base'}, sid=administrator)
         self.assertEqual(board.git_requests(self.conn, "demo"), [])
         self.assertEqual(board.git_requests(self.conn, "demo", all=True)[0]["status"], "merged")
-        self.assert_cli(["git", "resolve", "1", "rejected", "--note", "重复处理"], sid=administrator, code=1)
+        with self.assertRaises((OpError, board.BoardError, ValueError)):
+            self.agent('git.request.resolve', {'id': 1, 'status': 'rejected', 'note': '重复处理'}, sid=administrator)
 
     def test_leader_result_notice_and_queue_order_and_project_isolation(self):
         administrator = self.enable()
         board.join(self.conn, "lead", "demo", "feature-lead", self.root, self.root, "topic", role="leader", now=NOW)
-        self.assert_cli(["git", "request", "leader提交"], sid="lead")
-        self.assert_cli(["git", "resolve", "1", "rejected", "--note", "范围不符"], sid=administrator)
+        self.agent('git.request.add', {'description': 'leader提交'}, sid='lead')
+        self.agent('git.request.resolve', {'id': 1, 'status': 'rejected', 'note': '范围不符'}, sid=administrator)
         self.assertEqual(board.pending_notices(self.conn, "lead"), [])
         self.assertIn("rejected", board.handoffs(self.conn, "lead")[0]["body"])
         self.assertEqual(self.conn.execute("SELECT session_id FROM git_result_handoffs").fetchone()[0], "lead")
-        self.assert_cli(["git", "request", "新的请求"])
+        self.agent('git.request.add', {'description': '新的请求'})
         self.assertEqual([item["id"] for item in board.git_requests(self.conn, "demo", all=True)], [2, 1])
-        self.assertNotIn("leader提交", self.assert_cli(["git", "requests"])[1])
-        self.assertIn("leader提交", self.assert_cli(["git", "requests", "--all"])[1])
+        self.assertNotIn('leader提交', [item['description'] for item in self.agent('git.requests.list')['requests']])
+        self.assertIn('leader提交', [item['description'] for item in self.agent('git.requests.list', {'all': True})['requests']])
         board.init_project(self.conn, "other", self.base / "other", now=NOW)
         self.assertEqual(board.git_requests(self.conn, "other", all=True), [])
         with self.assertRaises(board.BoardError):
@@ -381,10 +381,12 @@ class GitCommandTests(CoreCase):
 
     def test_resolve_validation_is_atomic(self):
         administrator = self.enable()
-        self.assert_cli(["git", "request", "待处理"])
-        for args in (("1", "merging", "--note", " "), ("1", "merging", "--note", "PR错", "--pr", "0"),
-                     ("999", "merged", "--note", "不存在")):
-            self.assert_cli(["git", "resolve", *args], sid=administrator, code=1)
+        self.agent('git.request.add', {'description': '待处理'})
+        for args in ({'id': 1, 'status': 'merging', 'note': ' '},
+                     {'id': 1, 'status': 'merging', 'note': 'PR错', 'pr_number': 0},
+                     {'id': 999, 'status': 'merged', 'note': '不存在'}):
+            with self.assertRaises((OpError, board.BoardError, ValueError)):
+                self.agent('git.request.resolve', args, sid=administrator)
         self.assertEqual(board.git_requests(self.conn, "demo")[0]["status"], "open")
         self.assertEqual(board.handoffs(self.conn, "s1"), [])
 
@@ -412,6 +414,20 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         self.thread.start()
         self.addCleanup(self.close_server)
         self.assertTrue(self.server.service.agents_ready.wait(5))
+        # The startup warm-up reads the workspace once; let it finish before a test enables Git or mocks a scan.
+        self.server.service.warm_worker.join(10)
+        self.assertFalse(self.server.service.warm_worker.is_alive())
+
+    def settle_git(self):
+        """Wait for the background branch scans that state reads queued (web_service/git.py)."""
+        for worker in self.server.service._git_scan_workers():
+            worker.join(10)
+            self.assertFalse(worker.is_alive())
+
+    def state(self):
+        code, result = self.request("/api/op/workspace.state?project=demo")
+        self.assertEqual(code, 200, result)
+        return result
 
     def close_server(self):
         self.server.shutdown()
@@ -421,7 +437,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
 
     def request(self, path, data=None, header=True):
         payload = None if data is None else json.dumps(data).encode("utf-8")
-        headers = {"X-Crew": "1"} if header else {}
+        headers = {"X-Crew": "1", 'X-Crew-Request-Id': uuid.uuid4().hex} if header else {}
         try:
             response = urlopen(Request(self.server.url + path, payload, headers), timeout=5)
         except HTTPError as exc:
@@ -431,13 +447,13 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
 
     def test_disabled_get_enable_and_disable(self):
         with mock.patch("crew.git_view.view") as view:
-            code, result = self.request("/api/git?project=demo")
+            code, result = self.request("/api/op/git.overview?project=demo")
             self.assertEqual(code, 200)
             self.assertFalse(result["enabled"])
             self.assertEqual(result["choices"], self.choices)
             self.assertIsNone(result["config"])
             view.assert_not_called()
-        code, config = self.request("/api/git/enable", {"project": "demo"})
+        code, config = self.request("/api/op/git.enable", {"project": "demo"})
         self.assertEqual(code, 200, config)
         self.assertEqual((config["base"], config["integration"]), ("develop", None))
         sid = config["admin_session_id"]
@@ -448,28 +464,29 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         command = self.commands[-1]
         self.assertEqual(command[command.index("--agent") + 1], "crew:git")
         self.assertNotIn('--model', command)
-        state = self.request("/api/state?project=demo")[1]
+        state = self.request("/api/op/workspace.state?project=demo")[1]
         admin_state = state['git_assistant']
         self.assertEqual(admin_state['session_id'], sid)
         self.assertTrue(admin_state['builtin'])
         self.assertNotIn(sid, {leader['session_id'] for leader in state['leaders']})
         self.assertEqual((admin_state["model"], admin_state["effort"]), (None, None))
-        self.assertEqual(self.request("/api/session/options?project=demo", {"session_id": sid, "model": "claude-opus-5-5"})[0], 200)
-        self.assertEqual(self.request("/api/git/disable?project=demo", {}), (200, {"ok": True}))
+        self.assertEqual(self.request("/api/op/session.options.set?project=demo", {"session_id": sid, "model": "claude-opus-5-5"})[0], 200)
+        self.assertEqual(self.request("/api/op/git.disable?project=demo", {}), (200, {"ok": True}))
         self.assertIsNone(board.git_config(self.conn, "demo"))
         self.assertEqual(board.session(self.conn, sid)["status"], "closed")
         group = next(group for group in board.groups(self.conn, "demo") if group["name"] == "git")
         self.assertIsNotNone(group["closed_at"])
 
     def test_enabled_get_passes_config_excluded_assistant_branch_and_force(self):
-        code, config = self.request("/api/git/enable?project=demo", {"base": "topic", "integration": "master"})
+        code, config = self.request("/api/op/git.enable?project=demo", {"base": "topic", "integration": "master"})
         self.assertEqual(code, 200, config)
         payload = {"base": {"name": "topic", "origin": False, "unpushed": None, "behind_origin": None},
                    "integration": None, "branches": [], "merged_hidden": 2,
                    "repository": self.project.name, "last_fetch_at": None}
         with mock.patch("crew.git_view.view", return_value=payload) as view, mock.patch("crew.git_view.fetch") as fetch:
-            code, result = self.request("/api/git?project=demo")
+            code, result = self.request("/api/op/git.overview?project=demo")
             fetch.assert_not_called()
+            self.settle_git()
         self.assertEqual(code, 200, result)
         self.assertTrue(result["enabled"])
         self.assertEqual({key: result[key] for key in payload}, payload)
@@ -478,9 +495,11 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         self.assertNotIn("stable", result["choices"])
         root = board.project(self.conn, "demo")["root"]
         assistant = board.session(self.conn, config["admin_session_id"])
+        # The page reads the repository itself; the leader cards built beside it only queue a background scan,
+        # which the mocked view() leaves without a cached result.
         self.assertEqual(view.call_args_list, [
             mock.call(root, config, exclude=(assistant["branch"],), force=True),
-            mock.call(root, config, exclude=(assistant["branch"],), force=False)])
+            mock.call(root, config, exclude=(assistant["branch"],))])
 
     def topic_owner_fixture(self):
         self.git("switch", "topic")
@@ -488,13 +507,13 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
                  "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "topic work")
         self.git("switch", "develop")
         board.join(self.conn, "s1", "demo", "one", self.project, None, "topic", group_name="lead", now=NOW)
-        code, config = self.request("/api/git/enable?project=demo", {})
+        code, config = self.request("/api/op/git.enable?project=demo", {})
         self.assertEqual(code, 200, config)
 
     def test_real_git_data_through_http(self):
         self.topic_owner_fixture()
         with mock.patch("crew.git_view.fetch") as fetch:
-            code, result = self.request("/api/git?project=demo")
+            code, result = self.request("/api/op/git.overview?project=demo")
             fetch.assert_not_called()
         self.assertEqual(code, 200, result)
         self.assertEqual({key: result["base"][key] for key in ("name", "origin", "unpushed", "behind_origin")},
@@ -515,19 +534,65 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
     def test_state_includes_git_branches_with_owners_when_enabled(self):
         self.topic_owner_fixture()
         with mock.patch("crew.git_view.view", wraps=git_view.view) as view:
-            code, result = self.request("/api/state?project=demo")
-        self.assertEqual(code, 200, result)
-        data = result["git_branches"]
+            self.assertEqual(self.state()["git_branches"], {"pending": True})
+            self.settle_git()
+            data = self.state()["git_branches"]
         self.assertEqual(data["base"]["name"], "develop")
         self.assertEqual([branch["name"] for branch in data["branches"]], ["topic"])
         self.assertEqual(data["branches"][0]["owners"], [{"session_id": "s3", "name": "lead"}])
         self.assertEqual(data["merged_hidden"], 1)
+        # One unforced background scan; the second read is served from its result.
         view.assert_called_once()
-        self.assertEqual(view.call_args.kwargs["force"], False)
+        self.assertNotIn("force", view.call_args.kwargs)
+
+    def test_first_state_does_not_wait_for_the_branch_scan_and_gets_the_direct_result_after_it(self):
+        self.topic_owner_fixture()
+        started, release = threading.Event(), threading.Event()
+        refs = git_view._refs
+
+        def held(root):
+            started.set()
+            release.wait(10)
+            return refs(root)
+
+        before = self.conn.execute("SELECT COALESCE(MAX(seq),0) FROM change_log").fetchone()[0]
+        with mock.patch("crew.git_view._refs", side_effect=held):
+            began = time.monotonic()
+            self.assertEqual(self.state()["git_branches"], {"pending": True})
+            self.assertTrue(started.wait(5))
+            # The scan is still held inside Git, and another read does not wait for it either.
+            self.assertEqual(self.state()["git_branches"], {"pending": True})
+            self.assertLess(time.monotonic() - began, 5)
+            release.set()
+            self.settle_git()
+        result = self.state()["git_branches"]
+        expected = git_overview.read(self.conn, board.project(self.conn, "demo"), board.git_config(self.conn, "demo"), force=True)
+        self.assertEqual(result, expected)
+        self.assertEqual([branch["owners"] for branch in result["branches"]], [[{"session_id": "s3", "name": "lead"}]])
+        # The finished scan reached the event stream as the workspace's conversations invalidation.
+        query = ("SELECT entity FROM change_log WHERE seq>? AND scope='workspace:demo' "
+                 "AND type='conversations.invalidated'")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and self.conn.execute(query, (before,)).fetchone() is None:
+            time.sleep(.05)
+        self.assertEqual(self.conn.execute(query, (before,)).fetchone()[0], "demo")
+
+    def test_failed_branch_scan_shows_its_reason_until_a_scan_succeeds(self):
+        self.topic_owner_fixture()
+        reason = "fatal: detected dubious ownership in repository at 'C:/fixture'"
+        with mock.patch("crew.git_view._refs", side_effect=git_view.GitError(reason)):
+            self.assertEqual(self.state()["git_branches"], {"pending": True})
+            self.settle_git()
+            self.assertEqual(self.state()["git_branches"], {"error": reason})
+            self.settle_git()
+        # Every read retries a failed scan; the reason stays until one succeeds.
+        self.assertEqual(self.state()["git_branches"], {"error": reason})
+        self.settle_git()
+        self.assertEqual([branch["name"] for branch in self.state()["git_branches"]["branches"]], ["topic"])
 
     def test_state_git_branches_is_none_when_disabled(self):
         with mock.patch("crew.git_overview.read") as read:
-            code, result = self.request("/api/state?project=demo")
+            code, result = self.request("/api/op/workspace.state?project=demo")
         self.assertEqual(code, 200, result)
         self.assertIsNone(result["git_branches"])
         read.assert_not_called()
@@ -541,7 +606,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         self.conn.execute("INSERT INTO git_management(project,enabled_at,base) VALUES(?,?,?)",
                           ("ordinary", NOW, "main"))
         with mock.patch("crew.git_overview.read") as read:
-            code, result = self.request("/api/state?project=ordinary")
+            code, result = self.request("/api/op/workspace.state?project=ordinary")
         self.assertEqual(code, 200, result)
         self.assertIsNone(result["git_branches"])
         read.assert_not_called()
@@ -553,28 +618,30 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         for failure in failures:
             with self.subTest(error_type=type(failure).__name__), \
                     mock.patch("crew.git_view.view", side_effect=failure):
-                code, result = self.request("/api/state?project=demo")
-            self.assertEqual(code, 200, result)
+                self.state()
+                self.settle_git()
+                result = self.state()
+                self.settle_git()
             self.assertEqual(result["git_branches"], {"error": str(failure)})
 
     def test_enabled_get_propagates_git_read_error(self):
         self.topic_owner_fixture()
         with mock.patch("crew.git_view.view", side_effect=git_view.GitError("boom")):
-            code, result = self.request("/api/git?project=demo")
+            code, result = self.request("/api/op/git.overview?project=demo")
         self.assertEqual(code, 400, result)
         self.assertEqual(result["error"], "boom")
 
     def test_enable_reuses_admin_and_git_view_lists_project_merge_requests(self):
-        code, config = self.request("/api/git/enable?project=demo", {})
+        code, config = self.request("/api/op/git.enable?project=demo", {})
         self.assertEqual(code, 200, config)
         sid = config["admin_session_id"]
-        self.assertEqual(self.request("/api/git/enable?project=demo", {"base": "topic"})[1]["admin_session_id"], sid)
+        self.assertEqual(self.request("/api/op/git.enable?project=demo", {"base": "topic"})[1]["admin_session_id"], sid)
         self.assertEqual(len(self.processes), 1)
         merged = board.request_git_merge(self.conn, "demo", "s1", "topic", "Implementation and tests", title=None, now=NOW)
         board.resolve_git_request(self.conn, "demo", sid, merged["id"], "merged", "CI passed", pr_number=17, now=NOW)
         opened = board.request_git_merge(self.conn, "demo", "s2", "master", "Needs review", title=None, now=NOW)
         with mock.patch("crew.git_overview.read", return_value={"branches": []}):
-            code, result = self.request("/api/git?project=demo")
+            code, result = self.request("/api/op/git.overview?project=demo")
         self.assertEqual(code, 200, result)
         requests = {request["id"]: request for request in result["requests"]}
         self.assertEqual(set(requests), {merged["id"], opened["id"]})
@@ -586,7 +653,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         board.join(self.conn, 'chief', 'demo', 'Git 助手', self.project, self.project,
                    'develop', role='leader', group_name='git', now=NOW)
         board.enable_git(self.conn, 'demo', 'develop', '', admin_session_id='chief', now=NOW)
-        code, snapshot = self.request('/api/git/settings?project=demo')
+        code, snapshot = self.request('/api/op/git.settings.get?project=demo')
         self.assertEqual(code, 200, snapshot)
         return {'project': 'demo', 'revision': snapshot['revision'],
                 'base': 'develop', 'integration': '', 'branch_rules': 'Use PRs, tests and project rules.'}
@@ -597,7 +664,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         for sid in ('chief', 's3', 's1', 'outsider', '', None):
             for enabled in (True, False):
                 with self.subTest(sid=sid, enabled=enabled):
-                    code, error = self.request('/api/git/settings?project=demo',
+                    code, error = self.request('/api/op/git.settings.set?project=demo',
                                                {**body, 'admin_session_id': sid, 'enabled': enabled})
                     self.assertEqual(code, 400, error)
                     self.assertEqual(error['error'], 'Git 助手由 Crew 内置，不能指定其他 leader')
@@ -606,7 +673,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
 
     def test_settings_requires_enable_to_create_the_assistant(self):
         body = {'project': 'demo', 'revision': git_admin.revision(None), 'base': 'develop', 'integration': '', 'branch_rules': ''}
-        code, error = self.request('/api/git/settings?project=demo', body)
+        code, error = self.request('/api/op/git.settings.set?project=demo', body)
         self.assertEqual(code, 400, error)
         self.assertEqual(error['error'], '请先启用 Git 助手')
         self.assertIsNone(board.git_config(self.conn, 'demo'))
@@ -640,7 +707,7 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         for runtime in ('claude', 'codex'):
             with self.subTest(runtime=runtime):
                 runtimes.set(self.conn, 'chief', runtime)
-                state = self.request('/api/state?project=demo')[1]
+                state = self.request('/api/op/workspace.state?project=demo')[1]
                 assistant = state['git_assistant']
                 self.assertTrue(assistant['builtin'])
                 self.assertEqual(assistant['runtime'], runtime)
@@ -654,26 +721,26 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(assistant['pending'], 2)  # Shared leader field also includes its member's choice.
                 self.assertEqual(assistant['attention'], 5)  # 2 waiting requests + 2 replies + 1 own open choice.
                 with mock.patch('crew.git_overview.read', return_value={'branches': []}):
-                    code, git = self.request('/api/git?project=demo')
+                    code, git = self.request('/api/op/git.overview?project=demo')
                 self.assertEqual(code, 200, git)
                 self.assertEqual(git['assistant'], assistant)
-        other_state = self.request('/api/state?project=other')[1]
+        other_state = self.request('/api/op/workspace.state?project=other')[1]
         self.assertEqual(other_state['leaders'], [])
         self.assertEqual(other_state['git_assistant']['attention'], 3)
-        self.assertEqual(self.request('/api/leaders/order?project=demo', {'project': 'demo', 'order': ['s3']})[0], 200)
-        self.assertEqual(self.request('/api/leaders/order?project=demo', {'project': 'demo', 'order': ['s3'], 'pinned': ['s3']})[0], 200)
-        self.assertEqual(self.request('/api/leaders/order?project=demo', {'project': 'demo', 'order': ['s3'], 'pinned': ['chief']})[0], 400)
+        self.assertEqual(self.request('/api/op/leaders.order.set?project=demo', {'project': 'demo', 'order': ['s3']})[0], 200)
+        self.assertEqual(self.request('/api/op/leaders.order.set?project=demo', {'project': 'demo', 'order': ['s3'], 'pinned': ['s3']})[0], 200)
+        self.assertEqual(self.request('/api/op/leaders.order.set?project=demo', {'project': 'demo', 'order': ['s3'], 'pinned': ['chief']})[0], 400)
 
     def test_disabled_assistant_is_null_and_legacy_ordinary_leader_stays_visible(self):
-        self.assertIsNone(self.request('/api/state?project=demo')[1]['git_assistant'])
+        self.assertIsNone(self.request('/api/op/workspace.state?project=demo')[1]['git_assistant'])
         with mock.patch('crew.git_overview.read', return_value={'branches': []}):
-            self.assertIsNone(self.request('/api/git?project=demo')[1]['assistant'])
+            self.assertIsNone(self.request('/api/op/git.overview?project=demo')[1]['assistant'])
         board.enable_git(self.conn, 'demo', 'develop', '', admin_session_id='s3', now=NOW)
         board.join(self.conn, 'unbound-git', 'demo', 'git管理员', self.project, self.project,
                    'topic', role='leader', group_name='git', now=NOW)
         before = board.session(self.conn, 's3')
         config = board.git_config(self.conn, 'demo')
-        state = self.request('/api/state?project=demo')[1]
+        state = self.request('/api/op/workspace.state?project=demo')[1]
         self.assertFalse(state['git_assistant']['builtin'])
         self.assertIn('unbound-git', {item['session_id'] for item in state['leaders']})
         self.assertEqual(state['git_assistant']['session_id'], 's3')
@@ -681,14 +748,14 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual({key: value for key, value in state['git_assistant'].items()
                           if key not in {'builtin', 'base', 'integration', 'requests', 'attention'}}, leader)
         with mock.patch('crew.git_overview.read', return_value={'branches': []}):
-            self.assertFalse(self.request('/api/git?project=demo')[1]['assistant']['builtin'])
+            self.assertFalse(self.request('/api/op/git.overview?project=demo')[1]['assistant']['builtin'])
         self.assertEqual(board.session(self.conn, 's3'), before)
         self.assertEqual(board.git_config(self.conn, 'demo'), config)
 
     def test_settings_changes_branches_rules_without_restarting_sessions(self):
         body = self.git_settings_fixture()
-        first = self.request('/api/git/settings?project=demo', body)[1]
-        code, updated = self.request('/api/git/settings?project=demo',
+        first = self.request('/api/op/git.settings.set?project=demo', body)[1]
+        code, updated = self.request('/api/op/git.settings.set?project=demo',
                                     {**body, 'revision': first['revision'], 'base': 'topic', 'integration': 'master',
                                      'branch_rules': 'New policy'})
         self.assertEqual(code, 200, updated)
@@ -707,27 +774,27 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
         for changes in ({'base': 'missing'}, {'integration': 'develop'}, {'integration': 'missing'}, {'integration': None},
                         {'branch_rules': 42}, {'project': 'other'}):
             with self.subTest(changes=changes):
-                code, result = self.request('/api/git/settings?project=demo', {**body, **changes})
+                code, result = self.request('/api/op/git.settings.set?project=demo', {**body, **changes})
                 self.assertEqual(code, 400, result)
                 self.assertEqual(board.git_config(self.conn, 'demo'), before)
-        self.assertEqual(self.request('/api/git/settings?project=demo', body, header=False)[0], 403)
+        self.assertEqual(self.request('/api/op/git.settings.set?project=demo', body, header=False)[0], 403)
         self.assertEqual(len(self.processes), 0)
 
     def test_settings_concurrent_ai_policy_edit_is_not_overwritten(self):
         body = self.git_settings_fixture()
-        saved = self.request('/api/git/settings?project=demo', body)[1]
+        saved = self.request('/api/op/git.settings.set?project=demo', body)[1]
         board.set_git_policy(self.conn, 'demo', 'chief', 'A newer AI policy', now=NOW)
-        code, error = self.request('/api/git/settings?project=demo', {**body, 'revision': saved['revision']})
+        code, error = self.request('/api/op/git.settings.set?project=demo', {**body, 'revision': saved['revision']})
         self.assertEqual(code, 409, error)
         self.assertIn('重新读取', error['error'])
         self.assertEqual(board.git_policy(self.conn, 'demo'), 'A newer AI policy')
 
     def test_settings_disable_keeps_leader_group_and_merge_requests(self):
         body = self.git_settings_fixture()
-        saved = self.request('/api/git/settings?project=demo', body)[1]
+        saved = self.request('/api/op/git.settings.set?project=demo', body)[1]
         request = board.request_git_merge(self.conn, 'demo', 's1', 'topic', 'Ready for merge', title=None, now=NOW)
         before = board.session(self.conn, 'chief')
-        code, result = self.request('/api/git/settings?project=demo',
+        code, result = self.request('/api/op/git.settings.set?project=demo',
                                     {'project': 'demo', 'revision': saved['revision'], 'enabled': False})
         self.assertEqual(code, 200, result)
         self.assertIsNone(board.git_config(self.conn, 'demo'))
@@ -738,11 +805,11 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
 
     def test_settings_is_independent_of_graph_github_and_keeps_config_on_repository_error(self):
         body = self.git_settings_fixture()
-        self.request('/api/git/settings?project=demo', body)
+        self.request('/api/op/git.settings.set?project=demo', body)
         with mock.patch('crew.git_view.view', side_effect=AssertionError('No graph scan')), \
                 mock.patch('crew.git_view._github', side_effect=AssertionError('No network')), \
                 mock.patch('crew.git_view.branch_choices', side_effect=subprocess.TimeoutExpired(['fixture-git'], 10)):
-            code, result = self.request('/api/git/settings?project=demo')
+            code, result = self.request('/api/op/git.settings.get?project=demo')
         self.assertEqual(code, 200, result)
         self.assertFalse(result['available'])
         self.assertIn('timed out', result['reason'])
@@ -752,65 +819,65 @@ class GitHttpTests(ShellFixture, unittest.TestCase):
 
     def test_fetch_calls_only_explicit_post_and_returns_raw_error(self):
         with mock.patch("crew.git_view.fetch") as fetch:
-            self.assertEqual(self.request("/api/git/fetch?project=demo", {})[0], 400)
+            self.assertEqual(self.request("/api/op/git.fetch?project=demo", {})[0], 400)
             fetch.assert_not_called()
-        self.request("/api/git/enable?project=demo", {})
+        self.request("/api/op/git.enable?project=demo", {})
         for result in ({"ok": True, "output": "updated\n", "error": None, "last_fetch_at": NOW},
                        {"ok": False, "output": "", "error": "fatal: fixture remote rejected\n", "last_fetch_at": None}):
             with self.subTest(result=result), mock.patch("crew.git_view.fetch", return_value=result) as fetch:
-                self.assertEqual(self.request("/api/git/fetch?project=demo", {}), (200, result))
+                self.assertEqual(self.request("/api/op/git.fetch?project=demo", {}), (200, result))
                 fetch.assert_called_once_with(board.project(self.conn, "demo")["root"])
 
     def test_adopt_hands_unowned_branch_to_chosen_leader(self):
         body = {"project": "demo", "branch": "topic", "leader_session_id": "heir"}
-        self.assertEqual(self.request("/api/git/adopt", body)[0], 400)
-        self.assertEqual(self.request("/api/git/enable?project=demo", {})[0], 200)
+        self.assertEqual(self.request("/api/op/git.adopt", body)[0], 400)
+        self.assertEqual(self.request("/api/op/git.enable?project=demo", {})[0], 200)
         self.git("switch", "topic")
         self.git("-c", "user.name=Crew Test", "-c", "user.email=crew@example.invalid", "-c", "commit.gpgsign=false",
                  "commit", "--allow-empty", "-m", "orphan work")
         self.git("switch", "develop")
         board.join(self.conn, "heir", "demo", "Heir", self.project, None, "develop", role="leader", now=NOW)
-        self.assertEqual(self.request("/api/git/adopt", body, header=False)[0], 403)
-        self.assertEqual(self.request("/api/git/adopt", {**body, "branch": " "})[0], 400)
-        code, result = self.request("/api/git/adopt", body)
+        self.assertEqual(self.request("/api/op/git.adopt", body, header=False)[0], 403)
+        self.assertEqual(self.request("/api/op/git.adopt", {**body, "branch": " "})[0], 400)
+        code, result = self.request("/api/op/git.adopt", body)
         self.assertEqual(code, 200, result)
         self.assertEqual(result, {"branch": "topic", "leader": {"session_id": "heir", "name": "Heir"}, "already": False})
-        branch = next(item for item in self.request("/api/git?project=demo")[1]["branches"] if item["name"] == "topic")
+        branch = next(item for item in self.request("/api/op/git.overview?project=demo")[1]["branches"] if item["name"] == "topic")
         self.assertEqual(branch["owners"], [{"session_id": "heir", "name": "Heir"}])
 
     def test_commit_detail_returns_real_stats_and_invalid_sha_is_400(self):
-        self.assertEqual(self.request("/api/git/commit?project=demo&sha=0000")[0], 400)
-        self.assertEqual(self.request("/api/git/enable?project=demo", {})[0], 200)
+        self.assertEqual(self.request("/api/op/git.commit.get?project=demo&sha=0000")[0], 400)
+        self.assertEqual(self.request("/api/op/git.enable?project=demo", {})[0], 200)
         sha = self.git("rev-parse", "HEAD")
-        code, result = self.request("/api/git/commit?project=demo&sha=" + sha)
+        code, result = self.request("/api/op/git.commit.get?project=demo&sha=" + sha)
         self.assertEqual(code, 200, result)
         self.assertEqual(result["sha"], sha)
         self.assertEqual(result["file_count"], 2)
         self.assertEqual(result["additions"], 2)
         self.assertEqual(result["deletions"], 0)
         for invalid in ("0" * 40, "--help", ""):
-            code, result = self.request("/api/git/commit?project=demo&sha=" + invalid)
+            code, result = self.request("/api/op/git.commit.get?project=demo&sha=" + invalid)
             self.assertEqual(code, 400, result)
             self.assertTrue(result["error"])
-        self.assertEqual(self.request("/api/git/commit?project=unknown&sha=" + sha)[0], 400)
+        self.assertEqual(self.request("/api/op/git.commit.get?project=unknown&sha=" + sha)[0], 400)
 
     def test_commit_detail_selects_only_requested_project(self):
         other = self.root / "other-project"
         other.mkdir()
         board.init_project(self.conn, "other", other, now=NOW)
-        self.request("/api/git/enable?project=demo", {})
+        self.request("/api/op/git.enable?project=demo", {})
         board.enable_git(self.conn, "other", "develop", None, now=NOW)
         payload = {"sha": "a" * 40, "files": [], "file_count": 0, "additions": 0, "deletions": 0}
         with mock.patch("crew.git_view.commit_detail", return_value=payload) as detail:
-            self.assertEqual(self.request("/api/git/commit?project=other&sha=" + payload["sha"]), (200, payload))
+            self.assertEqual(self.request("/api/op/git.commit.get?project=other&sha=" + payload["sha"]), (200, payload))
             detail.assert_called_once_with(board.project(self.conn, "other")["root"], payload["sha"])
 
     def test_invalid_project_branch_and_csrf(self):
-        self.assertEqual(self.request("/api/git?project=unknown")[0], 400)
-        self.assertEqual(self.request("/api/git/enable?project=demo", {"base": "missing"})[0], 400)
-        self.assertEqual(self.request("/api/git/enable?project=demo", {"integration": 42})[0], 400)
-        self.assertEqual(self.request("/api/git/enable?project=demo", {"integration": "develop"})[0], 400)
-        self.assertEqual(self.request("/api/git/enable?project=demo", {}, header=False)[0], 403)
+        self.assertEqual(self.request("/api/op/git.overview?project=unknown")[0], 400)
+        self.assertEqual(self.request("/api/op/git.enable?project=demo", {"base": "missing"})[0], 400)
+        self.assertEqual(self.request("/api/op/git.enable?project=demo", {"integration": 42})[0], 400)
+        self.assertEqual(self.request("/api/op/git.enable?project=demo", {"integration": "develop"})[0], 400)
+        self.assertEqual(self.request("/api/op/git.enable?project=demo", {}, header=False)[0], 403)
         self.assertIsNone(board.git_config(self.conn, "demo"))
 
     def test_static_git_assets(self):

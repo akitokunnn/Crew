@@ -4,7 +4,7 @@ from pathlib import Path
 from stat import S_ISDIR
 import subprocess
 
-from . import board, hooks, store
+from . import board, change_feed, hooks, store
 
 
 def _settings(conn, project):
@@ -135,6 +135,7 @@ def apply_update(conn, project, display_name, root, expected_revision, now=None)
     conn.execute('INSERT INTO project_settings(project,display_name,revision) VALUES(?,?,?) '
                  'ON CONFLICT(project) DO UPDATE SET display_name=excluded.display_name,revision=excluded.revision',
                  (project, display_name, revision))
+    board.touch_project(conn, project)
     if directory_change is not None:
         conn.execute('UPDATE projects SET root=? WHERE name=?', (plan['new_root'], project))
         for session in plan['sessions']:
@@ -157,6 +158,8 @@ def remove(conn, project, expected_revision, now=None):
         conn.execute('INSERT INTO project_settings(project,removed_at,revision) VALUES(?,?,?) '
                      'ON CONFLICT(project) DO UPDATE SET removed_at=excluded.removed_at,revision=excluded.revision',
                      (project, stamp, current['revision'] + 1))
+        # It leaves the global workspace list.
+        change_feed.touch(conn, 'project', None, project)
         board._event(conn, 'project:remove', project, board.HUMAN, {'revision': current['revision'] + 1}, stamp)
     return snapshot(conn, project, include_removed=True)
 

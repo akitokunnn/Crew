@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS sound_settings (
     updated_at TEXT NOT NULL
 );
 
+-- First-run guide on the desktop home: once finished or skipped it is never shown automatically again.
+CREATE TABLE IF NOT EXISTS onboarding_state (
+    singleton  INTEGER PRIMARY KEY CHECK (singleton = 1),
+    status     TEXT NOT NULL CHECK (status IN ('completed', 'skipped')),
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS projects (
     name        TEXT PRIMARY KEY,
     root        TEXT NOT NULL UNIQUE,      -- absolute path, as given (compare with crew.store.norm_path)
@@ -394,7 +401,10 @@ CREATE TABLE IF NOT EXISTS leader_notices (
     text       TEXT NOT NULL,
     created_at TEXT NOT NULL,
     sent_at    TEXT,
-    wake       INTEGER NOT NULL DEFAULT 1   -- 0: wait for the leader's next conversation instead of starting a turn
+    wake       INTEGER NOT NULL DEFAULT 1,  -- 0: wait for the leader's next conversation instead of starting a turn
+    delivered_via TEXT CHECK (delivered_via IN ('hook')),  -- NULL: written into the leader's input; hook: carried by an external session's prompt hook
+    batch_id   TEXT,                       -- the web service's input batch that owns delivering it; the hook never takes these
+    waiting    TEXT CHECK (waiting IN ('external', 'busy', 'stopped'))  -- why it is still queued, as last seen by the web service
 );
 CREATE INDEX IF NOT EXISTS leader_notices_pending ON leader_notices (session_id, sent_at);
 
@@ -407,9 +417,70 @@ CREATE TABLE IF NOT EXISTS channel_messages (
     created_at         TEXT NOT NULL,
     reply_to           INTEGER REFERENCES channel_messages(id),  -- the post this one answers
     detail             INTEGER NOT NULL DEFAULT 0,  -- 1: the speaker wrote the full answer in its own conversation
-    auto               INTEGER NOT NULL DEFAULT 0   -- 1: Crew posted it because the leader answered only in private
+    auto               INTEGER NOT NULL DEFAULT 0,  -- 1: Crew posted it because the leader answered only in private
+    room_id            INTEGER REFERENCES war_rooms(id)  -- set: the post belongs to that war room's timeline
 );
 CREATE INDEX IF NOT EXISTS channel_messages_project ON channel_messages (project, id);
+
+-- A war room is a channel topic with fixed members, a shared board and one decision card (docs/WAR_ROOM_DESIGN.md).
+CREATE TABLE IF NOT EXISTS war_rooms (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project             TEXT NOT NULL REFERENCES projects(name),
+    title               TEXT NOT NULL,
+    goal                TEXT NOT NULL,
+    lead_session_id     TEXT NOT NULL,
+    origin_message_id   INTEGER REFERENCES channel_messages(id),  -- the channel post it was raised from
+    opened_message_id   INTEGER REFERENCES channel_messages(id),  -- the main-channel notice that it opened
+    closed_message_id   INTEGER REFERENCES channel_messages(id),  -- the main-channel notice that it closed
+    contract            TEXT NOT NULL DEFAULT '',
+    contract_updated_at TEXT,
+    contract_updated_by TEXT,
+    status              TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+    summary             TEXT,
+    created_at          TEXT NOT NULL,
+    closed_at           TEXT,
+    budget_tokens       INTEGER,                    -- NULL: no cap; else the members' tokens this room may spend
+    budget_base         TEXT NOT NULL DEFAULT '{}', -- Codex rollout totals when each member joined (counted from there)
+    paused_at           TEXT                        -- the cap was reached; members stopped until the user goes on
+);
+CREATE INDEX IF NOT EXISTS war_rooms_project ON war_rooms (project, status);
+CREATE TABLE IF NOT EXISTS war_room_members (
+    room_id    INTEGER NOT NULL REFERENCES war_rooms(id),
+    session_id TEXT NOT NULL,
+    joined_at  TEXT NOT NULL,
+    left_at    TEXT,
+    PRIMARY KEY (room_id, session_id)
+);
+CREATE TABLE IF NOT EXISTS war_room_items (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id          INTEGER NOT NULL REFERENCES war_rooms(id),
+    title            TEXT NOT NULL,
+    owner_session_id TEXT,
+    status           TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'blocked', 'done')),
+    note             TEXT,
+    updated_at       TEXT NOT NULL,
+    updated_by       TEXT NOT NULL
+);
+-- Board and membership changes, shown as handoff points on the room timeline.
+CREATE TABLE IF NOT EXISTS war_room_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id    INTEGER NOT NULL REFERENCES war_rooms(id),
+    at         TEXT NOT NULL,
+    actor      TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    detail     TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS war_room_decisions (
+    decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
+    room_id     INTEGER NOT NULL REFERENCES war_rooms(id)
+);
+CREATE TABLE IF NOT EXISTS war_room_reads (
+    room_id    INTEGER NOT NULL REFERENCES war_rooms(id),
+    reader     TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (room_id, reader)
+);
 
 CREATE TABLE IF NOT EXISTS channel_mentions (
     message_id INTEGER NOT NULL REFERENCES channel_messages(id),
@@ -417,8 +488,11 @@ CREATE TABLE IF NOT EXISTS channel_mentions (
     name       TEXT NOT NULL,
     notice_id  INTEGER REFERENCES leader_notices(id),
     await_reply INTEGER NOT NULL DEFAULT 0,  -- 1: the user named this leader and it has not answered in the channel yet
+    reason     TEXT NOT NULL DEFAULT 'mention' CHECK (reason IN ('mention', 'reply')),  -- reply: told because the post answers its own
     PRIMARY KEY (message_id, session_id)
 );
+-- A notice's delivery change finds the posts that show it (change_triggers.py).
+CREATE INDEX IF NOT EXISTS channel_mentions_notice ON channel_mentions (notice_id);
 
 CREATE TABLE IF NOT EXISTS channel_reads (
     project    TEXT NOT NULL REFERENCES projects(name),
@@ -542,6 +616,23 @@ CREATE TABLE IF NOT EXISTS events (
     detail      TEXT                       -- JSON object
 );
 CREATE INDEX IF NOT EXISTS events_ts ON events (ts);
+
+-- Incremental changes behind the snapshot + sequence stream (docs/EVENT_STREAM_DESIGN.md).
+-- Written in the same transaction as the business write (or by the card triggers, change_triggers.py);
+-- a row says which entity changed, and readers build its current value. `events` above stays the audit log.
+-- `seq` never repeats (AUTOINCREMENT) and SQLite's single writer commits rows in seq order.
+-- Pruning only removes the oldest rows, so the pruned watermark is min(seq) - 1, or the last
+-- assigned seq (sqlite_sequence) once every row is gone; no separate state row is written.
+CREATE TABLE IF NOT EXISTS change_log (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL,
+    scope       TEXT NOT NULL,             -- 'global' or 'workspace:<project name>'
+    type        TEXT NOT NULL,             -- '<kind>.invalidated'; '<kind>.updated' for the usage scan's limits (and rows written before invalidations)
+    entity      TEXT NOT NULL,             -- the entity id inside its kind, as text
+    data        TEXT                       -- NULL for invalidations; the JSON value for '.updated' rows
+);
+CREATE INDEX IF NOT EXISTS change_log_at ON change_log (at);
+CREATE INDEX IF NOT EXISTS change_log_scope ON change_log (scope, seq);
 
 -- ---------------------------------------------------------------- usage
 
@@ -1039,4 +1130,79 @@ CREATE TABLE IF NOT EXISTS domain_boards (
     version    INTEGER NOT NULL,
     updated_at TEXT NOT NULL,
     direction  TEXT NOT NULL DEFAULT 'TB' CHECK (direction IN ('TB', 'LR'))
+);
+-- The board's structure after each batch that changed it (docs/ASSISTANT_CAMPAIGN_DESIGN.md §3). number counts
+-- from 1 per workspace; baseline is the board as it was before the first recorded change. state holds parts and
+-- placed leaders; detail explains a restructure or rollback. A rollback is a version of its own (restored_from).
+CREATE TABLE IF NOT EXISTS domain_board_versions (
+    project       TEXT NOT NULL REFERENCES projects(name),
+    number        INTEGER NOT NULL,
+    board_version INTEGER NOT NULL,
+    source        TEXT NOT NULL CHECK (source IN ('baseline', 'edit', 'mindmap', 'restructure', 'rollback')),
+    note          TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    detail        TEXT,
+    restored_from INTEGER,
+    created_at    TEXT NOT NULL,
+    PRIMARY KEY (project, number)
+);
+
+-- Operation receipts: a write retried with the same request_id runs once (OPERATIONS_REGISTRY_DESIGN §5.5).
+CREATE TABLE IF NOT EXISTS op_requests (
+ caller_key TEXT NOT NULL,
+ request_id TEXT NOT NULL,
+ op TEXT NOT NULL,
+ args_hash TEXT NOT NULL,
+ status TEXT NOT NULL CHECK (status IN ('running','done','failed','unknown')),
+ result TEXT,
+ created_at TEXT NOT NULL,
+ finished_at TEXT,
+ PRIMARY KEY (caller_key, request_id)
+);
+
+-- Per-session MCP tokens; only the hash is stored (OPERATIONS_REGISTRY_DESIGN §3.2).
+CREATE TABLE IF NOT EXISTS mcp_tokens (
+ token_hash TEXT PRIMARY KEY,
+ session_id TEXT NOT NULL,
+ execution_id TEXT,
+ goal_id TEXT,
+ role TEXT NOT NULL,
+ runtime TEXT NOT NULL,
+ project TEXT,
+ own_scopes TEXT NOT NULL,
+ delegable_scopes TEXT NOT NULL,
+ issuer_token_hash TEXT,
+ created_at TEXT NOT NULL,
+ revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS mcp_tokens_session ON mcp_tokens(session_id, revoked_at);
+
+-- Tools a Claude conversation found with crew_search (execution_id '' = its general conversation).
+-- Kept per conversation, not per token, so a resumed native still lists them after a restart.
+CREATE TABLE IF NOT EXISTS mcp_loaded_tools (
+ session_id TEXT NOT NULL,
+ execution_id TEXT NOT NULL,
+ op TEXT NOT NULL,
+ PRIMARY KEY (session_id, execution_id, op)
+);
+
+-- User confirmations of high-risk operations an AI asked for (OPERATIONS_REGISTRY_DESIGN §5.6).
+CREATE TABLE IF NOT EXISTS interaction_requests (
+ id TEXT PRIMARY KEY,
+ kind TEXT NOT NULL CHECK (kind IN ('confirmation')),
+ caller_key TEXT NOT NULL,
+ request_id TEXT NOT NULL,
+ session_id TEXT NOT NULL,
+ execution_id TEXT,
+ role TEXT NOT NULL,
+ op TEXT NOT NULL,
+ args TEXT NOT NULL,
+ args_hash TEXT NOT NULL,
+ project TEXT,
+ status TEXT NOT NULL CHECK (status IN ('pending','approved','rejected','failed')),
+ result TEXT,
+ error TEXT,
+ created_at TEXT NOT NULL,
+ decided_at TEXT,
+ UNIQUE (caller_key, request_id)
 );

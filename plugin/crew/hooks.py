@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import board, branch_claims, channel, git_process, goals, guard, install, messaging, rules, runtimes, store
+from . import board, branch_claims, channel, domains, git_process, goals, guard, install, messaging, rules, runtimes, store
 
 EVENTS = ("session-start", "user-prompt-submit", "stop", "notification", "pre-ask", "post-ask", "session-end", "guard")
 
@@ -64,16 +64,37 @@ def _inactive_claude_runtime(home, session_id):
         return False
 
 
-def _goal_hook(event, data, home, plugin_root, environ, now):
-    """Native goal UUIDs never become new people or consume the global inbox."""
-    execution_id = environ.get('CREW_EXECUTION_ID')
-    if not execution_id:
+def managed(home, session_id):
+    """Whether Crew runs this session now: it holds an unrevoked MCP token (design §7 step 3)."""
+    if not store.db_path(home).exists():
+        return False
+    try:
+        with contextlib.closing(guard.readonly(home)) as conn:
+            return conn.execute('SELECT 1 FROM mcp_tokens WHERE session_id=? AND revoked_at IS NULL LIMIT 1',
+                                (session_id,)).fetchone() is not None
+    except sqlite3.Error:
+        return False
+
+
+def _goal_execution(home, native_id):
+    """The goal execution a Claude native ID is bound to, read without creating or migrating HOME."""
+    if not store.db_path(home).exists():
         return None
+    try:
+        with contextlib.closing(guard.readonly(home)) as conn:
+            return goals.resolve_native(conn, 'claude', native_id)
+    except sqlite3.Error:
+        return None
+
+
+def _goal_hook(event, data, home, plugin_root, now):
+    """Native goal UUIDs never become new people or consume the global inbox."""
+    execution = _goal_execution(home, data['session_id'])
+    if execution is None:
+        return None
+    execution_id = execution['id']
     with contextlib.closing(store.connect(home)) as conn:
-        execution = goals.get_execution(conn, execution_id)
-        native = goals.resolve_native(conn, 'claude', data['session_id'])
-        if (native is None or native['id'] != execution_id or execution['runtime'] != 'claude'
-                or execution['session_id'] != environ.get('CREW_SESSION_ID')):
+        if execution['runtime'] != 'claude':
             raise board.BoardError('目标执行与 Claude 原生会话不匹配')
         logical = {**data, 'session_id': execution['session_id']}
         if event == 'guard':
@@ -94,8 +115,8 @@ def _goal_hook(event, data, home, plugin_root, environ, now):
     return 0, None
 
 
-def handle(event, data, home, plugin_root, environ, git_provider=git_details, now=None):
-    scoped = _goal_hook(event, data, home, plugin_root, environ, now)
+def handle(event, data, home, plugin_root, git_provider=git_details, now=None):
+    scoped = _goal_hook(event, data, home, plugin_root, now)
     if scoped is not None:
         return scoped
     if _inactive_claude_runtime(home, data['session_id']):
@@ -113,11 +134,6 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
         if data.get("tool_name") in guard.SHELLS:
             branch_claims.record_from_hook(home, data["session_id"], data["cwd"],
                                            (data.get("tool_input") or {}).get("command", ""))
-        role = rules.SKILLS.get(data["tool_input"].get("skill")) if data.get("tool_name") == "Skill" else None
-        if role is not None and guard.enabled_project(home, data["session_id"], data["cwd"]) is not None:
-            with contextlib.closing(store.connect(home)) as conn:
-                if conn.execute("SELECT 1 FROM sessions WHERE session_id=?", (data["session_id"],)).fetchone() is not None:
-                    rules.record_read(conn, data["session_id"], role, plugin_root, now=now)
         try:
             project_for_mail = guard.enabled_project(home, data["session_id"], data["cwd"])
         except (OSError, sqlite3.Error, ValueError):
@@ -145,31 +161,37 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
     p = guard.enabled_project(home, data["session_id"], data["cwd"])
     if p is None:
         return 0, None
-    identity, git_info = None, None
+    git_info = None
     with contextlib.closing(store.connect(home)) as conn:
-        registered = conn.execute("SELECT 1 FROM sessions WHERE session_id=?", (data["session_id"],)).fetchone() is not None
-    if event == "session-start" or not registered:
+        registered = conn.execute("SELECT spawn_id,task FROM sessions WHERE session_id=?", (data["session_id"],)).fetchone()
+    if event == "session-start" or registered is None:
         git_info = git_provider(data["cwd"])
-    if event == "session-start":
-        if "CREW_NAME" in environ:
-            identity = {"name": environ["CREW_NAME"], "role": environ.get("CREW_ROLE", "member"),
-                        "group_name": environ.get("CREW_GROUP"), "spawn_id": environ.get("CREW_SPAWN_ID")}
-            if identity["spawn_id"]:
-                identity["task"] = _spawn_task(home, identity["spawn_id"])
+    # Crew registers the sessions it starts (name, role, group, spawn) before launching them.
+    external = not managed(home, data["session_id"])
     with contextlib.closing(store.connect(home)) as conn:
-        deliveries = board.apply_hook(conn, event, data, p["name"], identity=identity, git_info=git_info, now=now)
-        if event == 'user-prompt-submit' and not environ.get('CREW_SESSION_ID'):
+        deliveries = board.apply_hook(conn, event, data, p["name"], git_info=git_info, now=now)
+        if event == 'session-start' and registered is not None and registered['spawn_id'] and registered['task'] is None:
+            task = _spawn_task(home, registered['spawn_id'])
+            if task:
+                conn.execute('UPDATE sessions SET task=? WHERE session_id=? AND task IS NULL', (task, data['session_id']))
+                conn.commit()
+        if event == 'user-prompt-submit' and external:
             guard.clear_general_handoff(conn, data['session_id'])
         lines = _deliveries_text(deliveries)
         if event in ("session-start", "user-prompt-submit"):
             session = board.session(conn, data["session_id"])
             if session["crew_name"] and session["status"] != "closed" and not board.is_archived(conn, data["session_id"]):
                 lines.extend(messaging.take_for_hook(conn, data["session_id"], now=now))
-                if not environ.get('CREW_SESSION_ID'):
+                if external:
                     from . import trust_mode
                     _, authorization = trust_mode.input_context(conn, data['session_id'])
                     if authorization:
                         lines.append(authorization)
+                    if event == 'session-start':
+                        # Crew's own sessions get this with their inputs (chat_delivery), changes included.
+                        placement = domains.placement(conn, data['session_id'])
+                        if placement:
+                            lines.append(placement)
         if event == "session-start":
             if board.is_archived(conn, data["session_id"]):
                 control = board.session_control(conn, data["session_id"])
@@ -178,29 +200,26 @@ def handle(event, data, home, plugin_root, environ, git_provider=git_details, no
             else:
                 s = board.whoami(conn, data["session_id"])
                 leader = s["leader"]
-                lines = ["Crew 项目：%s" % p["name"], "我的 crew 名：%s" % (s["crew_name"] if s["crew_name"] is not None else "未收编（不要自己 crew join；用户说“收编到某某”时再照 /crew:member 收编）"),
+                lines = ["Crew 项目：%s" % p["name"], "我的 crew 名：%s" % (s["crew_name"] if s["crew_name"] is not None else "未收编（用户可在 Crew 的会话库里收编）"),
                          "分组：%s；leader：%s；SendMessage 地址：%s" % (s["group_name"], leader["crew_name"] if leader else None, leader["cc_name"] if leader else None),
-                         '命令行：python "%s" ...' % (Path(home).resolve() / "crew.py"),
-                         "请遵守 Crew 注入的守则（[Crew {0}]，可能已被用户在设置里修改）；没有看到注入时调用 /crew:{0} 读取".format(rules.skill_role(conn, s))] + lines
-                lines.append("跨执行工具的会话消息用 crew send <crew名> \"<内容>\" --kind task|result|blocker|decision（按用途选；资料留档才用 information，不会叫醒对方）；"
-                             "crew who <名字> 可查 runtime。双方都是 Claude Code 时仍可用 SendMessage。")
+                         "请遵守 Crew 注入的守则（[Crew {0}]，可能已被用户在设置里修改）。".format(rules.skill_role(conn, s))] + lines
+                if not external:
+                    lines.append("与同事协作用 crew MCP 工具（message_send、channel_post 等，其余用 crew_search 查找）；"
+                                 "双方都是 Claude Code 时仍可用 SendMessage。")
             config = board.git_config(conn, p["name"])
             if config is not None:
                 administrator = board.session(conn, config['admin_session_id']) if config['admin_session_id'] else None
                 if config['admin_session_id'] == data['session_id']:
                     lines.append('你是本项目当前绑定的 Git 助手，处理项目规则授权的推送、PR 与合并；发版分支由用户自己处理，本地集成分支不推送。')
                 else:
-                    lines.append("本项目的推送、开 PR、合并交给 Git 助手「%s」：做完用 `crew git request` 交给它，需要商量时用 crew send %s \"<内容>\" --kind task 联系；"
+                    lines.append("本项目的推送、开 PR、合并交给 Git 助手「%s」：做完用 Crew 工具 git_request_add 交给它；"
                                  "自己不 push、不开 PR、不合并。发版分支由用户自己处理。" %
-                                 ((administrator['crew_name'],) * 2 if administrator else ('未绑定', '<Git 助手>')))
-                lines.append("分支规则（全文用 crew git policy 看）：\n" + "\n".join(config["branch_rules"].splitlines()[:6])
-                             if config["branch_rules"] else "Git 助手还没写分支规则，开工前先问它。全文用 crew git policy 看。")
-        if event == "user-prompt-submit" or (event == "session-start" and data.get("source") in ("resume", "compact")):
-            reminder = rules.reminder(conn, data["session_id"], plugin_root)
-            if reminder is not None:
-                lines.append(reminder)
+                                 (administrator['crew_name'] if administrator else '未绑定'))
+                lines.append("分支规则（全文用 git_policy_get 看）：\n" + "\n".join(config["branch_rules"].splitlines()[:6])
+                             if config["branch_rules"] else "Git 助手还没写分支规则，开工前先问它。全文用 git_policy_get 看。")
         if event == "user-prompt-submit":
-            summary = channel.summary(conn, data["session_id"], now=now)
+            # Crew writes notices into the input of sessions it runs; an external one only hears them here.
+            summary = channel.summary(conn, data["session_id"], now=now, carry_pending=external)
             if summary is not None:
                 lines.append(summary)
     if lines and event in ("session-start", "user-prompt-submit"):
@@ -221,7 +240,7 @@ def main(argv=None):
     if args.event == "guard":
         try:
             data = json.loads(sys.stdin.read())
-            code, output = handle(args.event, data, args.home, Path(__file__).resolve().parents[1], os.environ)
+            code, output = handle(args.event, data, args.home, Path(__file__).resolve().parents[1])
             if output is not None:
                 print(json.dumps(output, ensure_ascii=False))
             return code
@@ -230,7 +249,7 @@ def main(argv=None):
             return 2
     try:
         data = json.loads(sys.stdin.read())
-        code, output = handle(args.event, data, args.home, Path(__file__).resolve().parents[1], os.environ)
+        code, output = handle(args.event, data, args.home, Path(__file__).resolve().parents[1])
         if output is not None:
             print(json.dumps(output, ensure_ascii=False))
         return code

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Crew</title>
+  <link id="project-favicon" rel="icon" type="image/svg+xml" href="/logo.svg?v=c-dot">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/channel.css">
+  <link rel="stylesheet" href="/war-room.css">
+  <link rel="stylesheet" href="/remote-access-ui.css">
+  <script src="/access-context.js" defer></script>
+  <script src="/browser-utils.js" defer></script>
+  <script src="/remote-access-ui.js" defer></script>
+  <link rel="stylesheet" href="/git.css">
+  <link rel="stylesheet" href="/git-settings.css">
+  <link rel="stylesheet" href="/architecture.css">
+  <link rel="stylesheet" href="/restructure-ui.css">
+  <link rel="stylesheet" href="/documents.css">
+  <link rel="stylesheet" href="/runtime-switch-ui.css">
+  <link rel="stylesheet" href="/goal-ui.css">
+  <link rel="stylesheet" href="/right-panels.css">
+  <link rel="stylesheet" href="/reader-ui.css">
+  <link rel="stylesheet" href="/settings-ui.css">
+  <link rel="stylesheet" href="/storage-ui.css">
+  <link rel="stylesheet" href="/member-ui.css">
+  <link rel="stylesheet" href="/session-library.css">
+  <link rel="stylesheet" href="/operations-ui.css">
+  <link rel="stylesheet" href="/workspace-settings-ui.css">
+  <link rel="stylesheet" href="/native-approval-ui.css">
+  <link rel="stylesheet" href="/maintenance-ui.css">
+  <link rel="stylesheet" href="/workspace-home.css">
+  <link rel="stylesheet" href="/workspace-entry.css">
+  <link rel="stylesheet" href="/skill-picker.css">
+  <script src="/vendor/markdown-it.min.js" defer></script>
+  <script src="/reader-ui.js" defer></script>
+  <script src="/skill-picker.js" defer></script>
+  <script src="/chat.js" defer></script>
+  <script src="/channel.js" defer></script>
+  <script src="/war-room.js" defer></script>
+  <script src="/sounds.js" defer></script>
+  <script src="/sound-settings-ui.js" defer></script>
+  <script src="/git.js" defer></script>
+  <script src="/git-settings.js" defer></script>
+  <script src="/restructure-ui.js" defer></script>
+  <script src="/architecture.js" defer></script>
+  <script src="/themes.js" defer></script>
+  <script src="/global-rail.js" defer></script>
+  <script src="/documents.js" defer></script>
+  <script src="/runtime-switch-ui.js" defer></script>
+  <script src="/goal-work-ui.js" defer></script>
+  <script src="/stage-report-ui.js" defer></script>
+  <script src="/goal-ui.js" defer></script>
+  <script src="/launch-settings-ui.js" defer></script>
+  <script src="/operations-ui.js" defer></script>
+  <script src="/settings-ui.js" defer></script>
+  <script src="/connections-ui.js" defer></script>
+  <script src="/storage-ui.js" defer></script>
+  <script src="/workspace-settings-ui.js" defer></script>
+  <script src="/native-approval-ui.js" defer></script>
+  <script src="/maintenance-ui.js" defer></script>
+  <script src="/member-ui.js" defer></script>
+  <script src="/session-library.js" defer></script>
+  <script src="/workspace-home.js" defer></script>
+  <script src="/workspace-entry.js" defer></script>
+  <link rel="stylesheet" href="/personal-notes-ui.css">
+  <link rel="stylesheet" href="/behavior-prompts-ui.css"><script src="/behavior-prompts-ui.js" defer></script>
+  <script src="/leader-look.js" defer></script>
+  <script src="/app-data.js" defer></script>
+  <script src="/app.js" defer></script>
+  <link rel="stylesheet" href="/mobile.css" media="(max-width:760px)"><link rel="stylesheet" href="/mobile-home.css" media="(max-width:760px)"><link rel="stylesheet" href="/mobile-chat.css" media="(max-width:760px)"><link rel="stylesheet" href="/mobile-pages.css" media="(max-width:760px)"><script src="/mobile-shell.js" defer></script>
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="sb" id="sidebar" aria-label="工作区导航"></aside>
+    <aside id="leader-panel" class="leader-panel" aria-label="Leader 列表" data-open="true"></aside>
+    <main class="main" id="main" aria-label="工作区内容"></main>
+  </div>
+  <div id="overlay-root"></div>
+  <aside id="chat-attention" class="chat-sidepanels" aria-label="本组工作" hidden>
+    <div id="attention-slot" class="attention-slot" data-open="false" aria-hidden="true" inert>
+      <section id="side-attention-section" class="attention-panel" aria-labelledby="attention-title">
+        <header class="attention-head"><div><h2 id="attention-title">待你处理 <span id="side-attention-count"></span></h2><p id="attention-scope"></p></div><button type="button" class="icon-btn" data-act="side-section-close" data-section="attention" aria-label="收起待处理">−</button></header>
+        <div class="attention-scroll"><div id="native-approval-tray"></div><div id="decision-tray"></div><p id="attention-empty" class="attention-empty">这里暂时没有待处理事项</p></div>
+      </section>
+    </div>
+    <aside class="rp" id="right-panel" aria-label="会话结构" hidden></aside>
+  </aside>
+  <section id="settings-surface" aria-label="Crew 设置" hidden></section>
+  <div id="connection-status" class="connection-status" role="status" aria-live="polite" hidden></div>
+  <div id="toast-root" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

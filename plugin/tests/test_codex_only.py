@@ -1,11 +1,11 @@
 """New AI jobs work with Codex alone; old identities and paid cards survive."""
 import tests
-from contextlib import closing
-import json
 import unittest
 from unittest import mock
 
-from crew import board, runtimes, spawn, store
+from test_core import operation_service
+from tests.ops_helpers import ai_call
+from crew import board, runtimes, spawn
 import test_runtime_spawn as runtime_fixtures
 
 
@@ -22,7 +22,6 @@ class DefaultRuntimeTests(unittest.TestCase):
 
 class CodexOnlySpawnTests(runtime_fixtures.RuntimeFixture):
     plan = runtime_fixtures.RuntimeSpawnTests.plan
-    run_cli = runtime_fixtures.RuntimeSpawnTests.run_cli
 
     def setUp(self):
         super().setUp()
@@ -32,15 +31,12 @@ class CodexOnlySpawnTests(runtime_fixtures.RuntimeFixture):
         resolver.start()
         self.addCleanup(resolver.stop)
 
-    def test_new_leader_ungrouped_worker_and_cli_dry_run_choose_installed_codex(self):
+    def test_new_leader_ungrouped_worker_choose_installed_codex(self):
         with mock.patch.object(runtimes.shutil, 'which', side_effect=lambda name: 'codex.exe' if name == 'codex' else None):
             for name, role in (('new-chief', 'leader'), ('ungrouped', 'member')):
                 plan = spawn.prepare(self.conn, self.home, self.root, 'demo', name, 'work', role=role)
                 self.assertEqual(plan['spec']['runtime'], 'codex')
                 self.assertIsNone(plan['spec']['model'])
-            code, output, errors = self.run_cli(['leader', 'start', '--name', 'cli-chief', '--dry-run'])
-            self.assertEqual(code, 0, errors)
-            self.assertEqual(json.loads(output)['spec']['runtime'], 'codex')
 
     def test_explicit_and_inherited_carriers_are_not_silently_switched(self):
         with mock.patch.object(runtimes, 'default_runtime', side_effect=AssertionError('Keep the chosen carrier')):
@@ -50,20 +46,13 @@ class CodexOnlySpawnTests(runtime_fixtures.RuntimeFixture):
     def test_status_reads_codex_host_without_invoking_claude_discovery(self):
         for person in board.sessions(self.conn, 'demo'):
             runtimes.set(self.conn, person['session_id'], 'codex')
-        state = {'leaders': [{'session_id': 'chief-id', 'status': 'working', 'where': 'bg', 'context': None}],
-                 'members': [], 'git_assistant': None}
-        # run_cli's own helper supplies an empty state, so invoke the production
-        # context merger against the host snapshot separately below.
-        with mock.patch('crew.cli._agents', side_effect=AssertionError('No Claude discovery')):
-            code, output, errors = self.run_cli(['status', '--json'])
-        self.assertEqual(code, 0, errors)
-        people = json.loads(output)['groups']
-        self.assertTrue(any(p['runtime'] == 'codex' for g in people for p in g['members']))
-        from crew import cli
-        chief = {**board.session(self.conn, 'chief-id'), **runtimes.get(self.conn, 'chief-id')}
-        with mock.patch.object(spawn, 'request_state', return_value=state):
-            cli._with_context(self.home, 'demo', [chief])
-        self.assertEqual((chief['status'], chief['where']), ('working', 'bg'))
+        service = operation_service(self, self.root)
+        board.set_status(self.conn, 'chief-id', 'working')
+        with mock.patch('crew.cli.claude_agents', side_effect=AssertionError('Unexpected discovery')):
+            state = ai_call(service, self.conn, 'chief-id', 'workspace.state', runtime='codex')
+        people = [person for group in state['groups'] for person in group['members']]
+        chief = next(person for person in people if person['session_id'] == 'chief-id')
+        self.assertEqual((chief['runtime'], chief['status']), ('codex', 'working'))
 
 
 if __name__ == '__main__':

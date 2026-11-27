@@ -1,9 +1,10 @@
 """Host integration: temporary Crew data, fake runtimes and ephemeral HTTP only."""
 import tests
+import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import threading
@@ -12,15 +13,14 @@ from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import behavior_prompts, board, chat, hooks, messaging, models, runtimes, store, todo, web
+from crew import behavior_prompts, board, hooks, messaging, models, runtimes, store, todo, web
 from test_shell import NOW, PLUGIN, ShellFixture
-
 
 class FakeCodex:
     runtime = 'codex'
 
-    def __init__(self, home, plugin_root, session, spec, options, journal, router, **kwargs):
-        self.execution, self.goal_handler = kwargs.get('execution'), kwargs.get('goal_handler')
+    def __init__(self, home, plugin_root, session, spec, options, journal, **kwargs):
+        self.execution = kwargs.get('execution')
         self.maintenance = kwargs.get('maintenance')
         self.stop_reason, self.interrupt_requested = None, False
         self.thread_id = 'fixture-native-' + session['session_id']
@@ -62,9 +62,9 @@ class ManagedRuntimeTests(ShellFixture, unittest.TestCase):
         self.conn.execute('UPDATE sessions SET cc_name=NULL WHERE session_id=?', ('s3',))
         with mock.patch.object(self.manager, '_resume', return_value=False) as resume:
             self.manager.wake(self.conn, board.session(self.conn, 's1'), '接着验收', caller_session_id='s3')
-        self.assertIn('回复 leader 用 crew send lead', resume.call_args.args[2])
+        self.assertIn('回复 leader 用 Crew 工具 `message_send`（`to` 填「lead」', resume.call_args.args[2])
         notice = self.manager.wake(self.conn, board.session(self.conn, 's3'), '需要协调', caller_session_id='s1')
-        self.assertIn('crew send one', board.pending_notices(self.conn, 's3')[0]['text'])
+        self.assertIn('message_send', board.pending_notices(self.conn, 's3')[0]['text'])
         self.assertTrue(notice['ok'])
 
     def test_codex_only_recovery_keeps_unknown_claude_processes_unlaunched(self):
@@ -101,7 +101,7 @@ class ManagedRuntimeTests(ShellFixture, unittest.TestCase):
         self.assertFalse(self.manager.running(sid))
 
     def test_peer_delivery_is_queued_while_busy_then_delivered_once(self):
-        current = FakeCodex(self.home, PLUGIN, board.session(self.conn, 's1'), {}, {}, self.manager.journal('s1'), None)
+        current = FakeCodex(self.home, PLUGIN, board.session(self.conn, 's1'), {}, {}, self.manager.journal('s1'))
         self.manager.processes['s1'] = current
         current.journal.set_status('working')
         receipt = self.manager.send_message('s2', 's1', '附上已核对的结果', message_id='stable-call', kind='result')
@@ -118,7 +118,7 @@ class ManagedRuntimeTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(current.calls), 1)
 
     def test_own_leader_message_steers_into_busy_member_turn(self):
-        current = FakeCodex(self.home, PLUGIN, board.session(self.conn, 's1'), {}, {}, self.manager.journal('s1'), None)
+        current = FakeCodex(self.home, PLUGIN, board.session(self.conn, 's1'), {}, {}, self.manager.journal('s1'))
         self.manager.processes['s1'] = current
         current.journal.set_status('working')
         self.manager.send_message('s3', 's1', '先停下设备上的操作', kind='task')
@@ -151,11 +151,11 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
             'supportedReasoningEfforts':[{'reasoningEffort':'future-effort'}]}], 'nextCursor':None}
         factory = mock.Mock(return_value=native)
         self.server.service.runtime_catalog = Catalog(client_factory=factory, which=lambda name:name)
-        self.assertEqual(self.request('/api/settings')[1]['runtimes'][1]['models'], [])
-        code, result = self.request('/api/runtimes?refresh=1')
+        self.assertEqual(self.request('/api/op/settings.get')[1]['runtimes'][1]['models'], [])
+        code, result = self.request('/api/op/runtimes.list?refresh=1')
         self.assertEqual(code, 200, result)
         self.assertEqual(result['runtimes'][1]['models'][0]['id'], 'future-native')
-        self.assertEqual(self.request('/api/settings')[1]['runtimes'][1]['models'][0]['efforts'], ['future-effort'])
+        self.assertEqual(self.request('/api/op/settings.get')[1]['runtimes'][1]['models'][0]['efforts'], ['future-effort'])
         factory.assert_called_once_with(timeout=15)
         native.list_models.assert_called_once_with()
         self.assertEqual(self.processes, [])
@@ -163,7 +163,7 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
 
     def setUp(self):
         super().setUp()
-        for method in ('_poll_agents', '_poll_notices', '_poll_git_ci'):
+        for method in ('_poll_agents', '_poll_notices', '_poll_git_ci', '_poll_usage'):
             patcher = mock.patch.object(web.Service, method, return_value=None)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -185,7 +185,7 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
     def request(self, path, data=None):
         path += ('&' if '?' in path else '?') + 'project=demo'
         payload = None if data is None else json.dumps(data).encode('utf-8')
-        request = Request(self.server.url + path, payload, {'X-Crew': '1'})
+        request = Request(self.server.url + path, payload, {'X-Crew': '1', 'X-Crew-Request-Id': uuid.uuid4().hex})
         try:
             response = self.opener.open(request, timeout=10)
         except HTTPError as exc:
@@ -200,11 +200,11 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         with mock.patch.object(runtimes.shutil, 'which', side_effect=lambda name: 'codex.exe' if name == 'codex' else None), \
                 mock.patch('crew.codex_runtime.CodexRunning', FakeCodex), \
                 mock.patch('crew.codex_client.command', return_value=['codex.exe', 'app-server']):
-            code, leader = self.request('/api/leader', {'name': 'codex-only-chief', 'task': 'one finite task'})
+            code, leader = self.request('/api/op/leader.create', {'name': 'codex-only-chief', 'task': 'one finite task'})
             self.assertEqual(code, 200, leader)
             sid = leader['session_id']
             self.assertEqual(runtimes.get(self.conn, sid)['runtime'], 'codex')
-            code, member = self.request('/api/spawn', {'name': 'codex-only-member', 'task': 'parallel check', 'group': 'codex-only-chief'})
+            code, member = self.request('/api/op/execution.spawn', {'name': 'codex-only-member', 'task': 'parallel check', 'group': 'codex-only-chief'})
             self.assertEqual(code, 200, member)
             self.assertEqual(runtimes.get(self.conn, member['session_id'])['runtime'], 'codex')
             self.assertEqual(self.processes, [])  # No Claude process was launched.
@@ -215,26 +215,26 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         with mock.patch.object(runtimes.shutil, 'which', side_effect=lambda name: name + '.exe'), \
                 mock.patch('crew.codex_runtime.CodexRunning', FakeCodex), \
                 mock.patch('crew.codex_client.command', return_value=['codex.exe', 'app-server']):
-            code, leader = self.request('/api/leader', {'name': 'fast-chief', 'task': 'one finite task'})
+            code, leader = self.request('/api/op/leader.create', {'name': 'fast-chief', 'task': 'one finite task'})
             self.assertEqual(code, 200, leader)
             self.assertEqual(models.get(self.conn, leader['session_id'])['speed'], 'priority')
-            code, member = self.request('/api/spawn', {'name': 'fast-member', 'task': 'check', 'group': 'fast-chief'})
+            code, member = self.request('/api/op/execution.spawn', {'name': 'fast-member', 'task': 'check', 'group': 'fast-chief'})
             self.assertEqual(code, 200, member)
             self.assertEqual(models.get(self.conn, member['session_id'])['speed'], 'priority')
-            code, chosen = self.request('/api/spawn', {'name': 'standard-member', 'task': 'check', 'group': 'fast-chief',
+            code, chosen = self.request('/api/op/execution.spawn', {'name': 'standard-member', 'task': 'check', 'group': 'fast-chief',
                                                        'speed': 'default'})
             self.assertEqual(code, 200, chosen)
             self.assertEqual(models.get(self.conn, chosen['session_id'])['speed'], 'default')
-            code, result = self.request('/api/session/options', {'session_id': chosen['session_id'], 'speed': 'priority'})
+            code, result = self.request('/api/op/session.options.set', {'session_id': chosen['session_id'], 'speed': 'priority'})
             self.assertEqual((code, result.get('speed')), (200, 'priority'), result)
             self.assertEqual(self.server.service.chat.processes[chosen['session_id']].applied['speed'], 'priority')
-            code, claude_member = self.request('/api/spawn', {'name': 'claude-member', 'task': 'check', 'group': 'fast-chief',
+            code, claude_member = self.request('/api/op/execution.spawn', {'name': 'claude-member', 'task': 'check', 'group': 'fast-chief',
                                                               'runtime': 'claude'})
             self.assertEqual(code, 200, claude_member)
             self.assertEqual(models.get(self.conn, claude_member['session_id'])['speed'], None)
-            for path, body in (('/api/leader', {'name': 'claude-chief', 'task': 't', 'runtime': 'claude', 'speed': 'priority'}),
-                               ('/api/spawn', {'name': 'bad-speed', 'task': 't', 'group': 'fast-chief', 'speed': 'bad speed'}),
-                               ('/api/session/options', {'session_id': claude_member['session_id'], 'speed': 'priority'})):
+            for path, body in (('/api/op/leader.create', {'name': 'claude-chief', 'task': 't', 'runtime': 'claude', 'speed': 'priority'}),
+                               ('/api/op/execution.spawn', {'name': 'bad-speed', 'task': 't', 'group': 'fast-chief', 'speed': 'bad speed'}),
+                               ('/api/op/session.options.set', {'session_id': claude_member['session_id'], 'speed': 'priority'})):
                 with self.subTest(path=path, body=body):
                     self.assertEqual(self.request(path, body)[0], 400)
 
@@ -242,7 +242,7 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         from crew import settings
         settings.save(self.conn, {'default': {'runtime': None, 'model': None, 'effort': None}})
         with mock.patch.object(runtimes.shutil, 'which', return_value=None):
-            code, result = self.request('/api/leader', {'name': 'not-created', 'task': 'work'})
+            code, result = self.request('/api/op/leader.create', {'name': 'not-created', 'task': 'work'})
         self.assertEqual(code, 400, result)
         self.assertIn('安装并登录', result['error'])
         self.assertFalse(any(g['name'] == 'not-created' for g in board.groups(self.conn, 'demo')))
@@ -252,24 +252,24 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         original = runtimes.get(self.conn, 's3')
         payload = {'ai': {'default': {'runtime': 'codex', 'model': 'gpt-fixture-default', 'effort': 'high'},
                           'leader': None, 'member': None, 'digest': None, 'git': None, 'operations': None}}
-        request = Request(self.server.url + '/api/settings', json.dumps(payload).encode(), {'X-Crew': '1'})
+        request = Request(self.server.url + '/api/op/settings.save', json.dumps(payload).encode(), {'X-Crew': '1', 'X-Crew-Request-Id': uuid.uuid4().hex})
         with self.opener.open(request, timeout=5) as response:
             result = json.load(response)
         self.assertEqual(result['ai'], {**payload['ai'], 'default': {**payload['ai']['default'], 'speed': None}, 'assistant': None})
         self.assertEqual(result['home'], str(self.home.resolve()))
         self.assertEqual(runtimes.get(self.conn, 's3'), original)
         self.assertEqual(self.processes, [])
-        with self.opener.open(self.server.url + '/api/settings', timeout=5) as response:
+        with self.opener.open(self.server.url + '/api/op/settings.get', timeout=5) as response:
             self.assertEqual(json.load(response)['ai'], {**payload['ai'], 'default': {**payload['ai']['default'], 'speed': None}, 'assistant': None})
-        self.assertEqual(self.request('/api/settings', {'ai': {'default': {'runtime': 'codex'}}})[0], 400)
-        self.assertEqual(self.request('/api/settings', {'ai': payload['ai'], 'unknown': True})[0], 400)
+        self.assertEqual(self.request('/api/op/settings.save', {'ai': {'default': {'runtime': 'codex'}}})[0], 400)
+        self.assertEqual(self.request('/api/op/settings.save', {'ai': payload['ai'], 'unknown': True})[0], 400)
 
     def test_leader_without_explicit_options_uses_saved_default_brain(self):
         from crew import settings
         settings.save(self.conn, {'default': {'runtime': 'codex', 'model': 'gpt-fixture-default', 'effort': 'high'}})
         with mock.patch('crew.codex_runtime.CodexRunning', FakeCodex), \
                 mock.patch('crew.codex_client.command', return_value=['codex.exe', 'app-server']):
-            code, result = self.request('/api/leader', {'name': 'configured-chief', 'task': 'finite task'})
+            code, result = self.request('/api/op/leader.create', {'name': 'configured-chief', 'task': 'finite task'})
         self.assertEqual(code, 200, result)
         current = self.server.service.chat.processes[result['session_id']]
         self.assertEqual(current.applied, {'model': 'gpt-fixture-default', 'effort': 'high', 'speed': None})
@@ -278,26 +278,26 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         from crew import settings
         original = settings.load(self.conn)
         ai = {'default': {'runtime': 'codex', 'model': 'gpt-fixture', 'effort': None}}
-        code, _ = self.request('/api/settings', {'ai': ai, 'execution': {'codex': 'invalid', 'claude': 'default'}})
+        code, _ = self.request('/api/op/settings.save', {'ai': ai, 'execution': {'codex': 'invalid', 'claude': 'default'}})
         self.assertEqual(code, 400)
         self.assertEqual(settings.load(self.conn), original)
         execution = {'codex': 'danger-full-access', 'claude': 'acceptEdits'}
-        code, result = self.request('/api/settings', {'ai': ai, 'execution': execution})
+        code, result = self.request('/api/op/settings.save', {'ai': ai, 'execution': execution})
         self.assertEqual(code, 200, result)
         self.assertEqual(result['execution'], execution)
         self.assertEqual(self.processes, [])
 
     def test_manual_todo_state_resolve_and_undo_do_not_change_decisions(self):
         item = todo.add(self.conn, 's1', '亲手验收编辑器', '打开测试关卡，点击运行', '人物动作和预期一致', blocking=True)
-        before = self.request('/api/state')[1]
+        before = self.request('/api/op/workspace.state')[1]
         self.assertEqual(before['todo_count'], 1)
         self.assertEqual(before['decisions'], [])
-        code, done = self.request('/api/todo/resolve', {'id': item['id'], 'status': 'done', 'note': '已实测', 'expected_version': 1})
+        code, done = self.request('/api/op/todo.resolve', {'id': item['id'], 'status': 'done', 'note': '已实测', 'expected_version': 1})
         self.assertEqual(code, 200, done)
-        self.assertEqual(self.request('/api/todos')[1]['todos'], [])
-        code, undo = self.request('/api/todo/undo', {'id': item['id'], 'before': done['before'], 'version': done['version']})
+        self.assertEqual(self.request('/api/op/todo.list')[1]['todos'], [])
+        code, undo = self.request('/api/op/todo.undo', {'id': item['id'], 'before': done['before'], 'version': done['version']})
         self.assertEqual(code, 200, undo)
-        self.assertEqual(self.request('/api/state')[1]['todo_count'], 1)
+        self.assertEqual(self.request('/api/op/workspace.state')[1]['todo_count'], 1)
 
     def test_codex_wake_and_offline_notices_do_not_require_claude_cli(self):
         service = self.server.service
@@ -306,7 +306,7 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         service.agents_ready.clear()
         service.agents_error = 'Claude CLI is not installed'
         with mock.patch.object(service.chat, 'wake', return_value={'ok': True}) as wake:
-            code, result = self.request('/api/wake', {'session_id': 's1', 'text': '接着干'})
+            code, result = self.request('/api/op/session.wake', {'session_id': 's1', 'text': '接着干'})
         self.assertEqual(code, 200, result)
         wake.assert_called_once()
         service.chat.path('s3').parent.mkdir(parents=True, exist_ok=True)
@@ -320,50 +320,50 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
     def test_mixed_decision_reply_uses_crew_message_transport(self):
         runtimes.set(self.conn, 's1', 'codex', native_id='native-member')
         number = board.ask(self.conn, 's1', '选择验收时间', options=('今天验收', '明天验收'))
-        code, result = self.request('/api/answer', {'id': number, 'text': '明天验收'})
+        code, result = self.request('/api/op/decision.answer', {'id': number, 'text': '明天验收'})
         self.assertEqual(code, 200, result)
         notice = board.pending_notices(self.conn, 's3')[0]['text']
-        self.assertIn('crew send one', notice)
+        self.assertIn('message_send', notice)
         self.assertNotIn('用 SendMessage', notice)
 
     def test_trust_goal_is_explicit_and_report_is_downloadable(self):
-        self.assertEqual(self.request('/api/trust', {'enabled': True, 'goal': ''})[0], 400)
-        self.assertEqual(self.request('/api/trust', {'enabled': True, 'goal': '交付可复查的测试目标','leader_session_id':'s3'})[0], 200)
-        state = self.request('/api/state')[1]
+        self.assertEqual(self.request('/api/op/trust.set', {'enabled': True, 'goal': ''})[0], 400)
+        self.assertEqual(self.request('/api/op/trust.set', {'enabled': True, 'goal': '交付可复查的测试目标','leader_session_id':'s3'})[0], 200)
+        state = self.request('/api/op/workspace.state')[1]
         self.assertTrue(next(leader for leader in state['leaders'] if leader['session_id']=='s3')['trust']['enabled'])
         self.assertNotIn('trust',state)
-        code, report = self.request('/api/trust/report?leader_session_id=s3')
+        code, report = self.request('/api/op/trust.report?leader_session_id=s3')
         self.assertEqual(code, 200)
         self.assertIn('交付可复查的测试目标', report)
-        self.assertEqual(self.request('/api/trust/report')[0],400)
-        self.assertEqual(self.request('/api/trust', {'enabled':True,'goal':'bad member target','leader_session_id':'s1'})[0],400)
+        self.assertEqual(self.request('/api/op/trust.report')[0],400)
+        self.assertEqual(self.request('/api/op/trust.set', {'enabled':True,'goal':'bad member target','leader_session_id':'s1'})[0],400)
 
     def test_runtime_prepare_confirm_and_idempotent_retry_are_scoped_and_never_start_a_process(self):
         catalog=[{'id':'claude','available':True},{'id':'codex','available':True,'models':[]}]
         self.server.service.runtime_catalog=mock.Mock(snapshot=lambda:catalog,refresh=lambda **kw:catalog)
-        code,preview=self.request('/api/session/runtime/prepare',{'session_id':'s1','runtime':'codex'})
+        code,preview=self.request('/api/op/session.runtime.prepare',{'session_id':'s1','runtime':'codex'})
         self.assertEqual(code,200,preview);self.assertFalse(preview['starts_turn'])
         self.assertEqual(runtimes.get(self.conn,'s1')['runtime'],'claude')
-        self.assertEqual(self.request('/api/session/runtime/switch',{'session_id':'s1','preview_id':preview['preview_id'],'confirm':False})[0],400)
-        code,result=self.request('/api/session/runtime/switch',{'session_id':'s1','preview_id':preview['preview_id'],'confirm':True})
+        self.assertEqual(self.request('/api/op/session.runtime.switch',{'session_id':'s1','preview_id':preview['preview_id'],'confirm':False})[0],400)
+        code,result=self.request('/api/op/session.runtime.switch',{'session_id':'s1','preview_id':preview['preview_id'],'confirm':True})
         self.assertEqual(code,200,result);self.assertEqual(result['status'],'configured')
         self.assertFalse(result['starts_turn']);self.assertEqual(self.processes,[])
         self.server.service.runtime_catalog.refresh=mock.Mock(side_effect=AssertionError('receipt retries must not inspect native tools'))
-        self.assertEqual(self.request('/api/session/runtime/switch',{'session_id':'s1','preview_id':preview['preview_id'],'confirm':True})[1],result)
+        self.assertEqual(self.request('/api/op/session.runtime.switch',{'session_id':'s1','preview_id':preview['preview_id'],'confirm':True})[1],result)
         board.init_project(self.conn,'foreign',self.root/'foreign')
-        code,_=self.request('/api/session/runtime/prepare?project=foreign',{'session_id':'s1','runtime':'claude'})
+        code,_=self.request('/api/op/session.runtime.prepare?project=foreign',{'session_id':'s1','runtime':'claude'})
         self.assertEqual(code,400)
 
     def test_runtime_stale_confirmation_is_409_and_state_disables_external_sessions(self):
         catalog=[{'id':'claude','available':True},{'id':'codex','available':True,'models':[]}]
         self.server.service.runtime_catalog=mock.Mock(snapshot=lambda:catalog,refresh=lambda **kw:catalog)
-        code,preview=self.request('/api/session/runtime/prepare',{'session_id':'s1','runtime':'codex'})
+        code,preview=self.request('/api/op/session.runtime.prepare',{'session_id':'s1','runtime':'codex'})
         self.assertEqual(code,200,preview)
         self.server.service.chat.journal('s1').message('new-message','changed after preview')
-        self.assertEqual(self.request('/api/session/runtime/switch',{'session_id':'s1','preview_id':preview['preview_id'],'confirm':True})[0],409)
+        self.assertEqual(self.request('/api/op/session.runtime.switch',{'session_id':'s1','preview_id':preview['preview_id'],'confirm':True})[0],409)
         with self.server.service.agents_lock:
             self.server.service.agents=[{'sessionId':'s1','pid':32,'name':'external','status':'idle','cwd':str(self.project)}]
-        state=self.request('/api/state')[1]
+        state=self.request('/api/op/workspace.state')[1]
         member=next(row for row in state['members'] if row['session_id']=='s1')
         self.assertFalse(member['runtime_switch']['allowed']);self.assertIn('外部',member['runtime_switch']['reason'])
 
@@ -372,65 +372,64 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         ungrouped=board.ask(self.conn,'s2','No leader owned this question',options=('yes','no'))
         board.join(self.conn,'new-chief','demo','other',self.project,self.project,'main',role='leader')
         board.roster(self.conn,'demo','move','other',session_ids=['s1','s2'])
-        state=self.request('/api/state')[1]
+        state=self.request('/api/op/workspace.state')[1]
         scopes={row['id']:row['leader_session_id'] for row in state['decisions']}
         self.assertEqual(scopes[number],'s3');self.assertIsNone(scopes[ungrouped])
-        code,result=self.request('/api/answer',{'id':number,'text':'yes'})
+        code,result=self.request('/api/op/decision.answer',{'id':number,'text':'yes'})
         self.assertEqual(code,200,result);self.assertEqual(result['routed_to'],'lead')
         self.assertEqual(board.pending_notices(self.conn,'new-chief'),[])
         self.assertIn('Original group owns this question',board.pending_notices(self.conn,'s3')[0]['text'])
-        code,result=self.request('/api/answer',{'id':ungrouped,'text':'yes'})
+        code,result=self.request('/api/op/decision.answer',{'id':ungrouped,'text':'yes'})
         self.assertEqual(code,200,result);self.assertIsNone(result['routed_to'])
         self.assertEqual(board.pending_notices(self.conn,'new-chief'),[])
 
     def test_usage_scan_does_not_upgrade_a_stale_snapshot_after_a_service_writer(self):
-        service=self.server.service
-        service.scanned_at=None
-        snapshot=threading.Event();attempted=threading.Event();written=threading.Event()
-        writer_errors=[]
-        def scan(conn,*args,receipts_only=False):
-            self.assertFalse(receipts_only)
-            # Reproduce SQLite's deferred read -> write hazard. The competing
-            # service writer must wait until this complete scan releases its lock.
-            conn.execute('SAVEPOINT timing_scan')
+        service = self.server.service
+        service.scanned_at = None
+        snapshot = threading.Event()
+        lock_available = Future()
+        backfill = web.usage._backfill_peer_prompts
+
+        def read_then_backfill(conn, files, claude_root, counts):
+            # Run inside the real scan batch, after it has reserved the SQLite writer.
             conn.execute('SELECT COUNT(*) FROM sessions').fetchone()
             snapshot.set()
-            if not attempted.wait(3):raise AssertionError('writer never attempted')
-            written.wait(.15)
-            conn.execute('PRAGMA user_version=2')
-            conn.execute('RELEASE timing_scan')
+            self.assertFalse(lock_available.result(timeout=3), 'scan released the service lock inside a batch')
+            return backfill(conn, files, claude_root, counts)
+
         def write():
-            try:
-                if not snapshot.wait(3):raise AssertionError('scan never read')
-                attempted.set()
-                with service.write_lock,closing(store.connect(self.home)) as conn:
-                    conn.execute("UPDATE sessions SET last_prompt='parallel service writer' WHERE session_id='s1'")
-                written.set()
-            except BaseException as exc:writer_errors.append(exc)
-        writer=threading.Thread(target=write)
-        writer.start()
-        try:
-            with mock.patch('crew.web.usage.scan',side_effect=scan):service.scan_usage()
-        finally:writer.join(5)
-        self.assertFalse(writer.is_alive());self.assertEqual(writer_errors,[])
-        self.assertTrue(written.is_set())
+            self.assertTrue(snapshot.wait(3), 'scan never read')
+            acquired = service.write_lock.acquire(blocking=False)
+            if acquired:
+                service.write_lock.release()
+            lock_available.set_result(acquired)
+            with service.write_lock, closing(store.connect(self.home)) as conn:
+                conn.execute("UPDATE sessions SET last_prompt='parallel service writer' WHERE session_id='s1'")
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            writer = pool.submit(write)
+            with mock.patch.object(web.usage, '_backfill_peer_prompts', side_effect=read_then_backfill):
+                service.scan_usage()
+            writer.result(timeout=5)
+        self.assertEqual(self.conn.execute("SELECT last_prompt FROM sessions WHERE session_id='s1'").fetchone()[0],
+                         'parallel service writer')
 
     def test_comments_have_project_scope_and_notify_leader(self):
-        code, comment = self.request('/api/comments', {'session_id': 's1', 'text': '请解释这里的进度'})
+        code, comment = self.request('/api/op/comment.add', {'session_id': 's1', 'text': '请解释这里的进度'})
         self.assertEqual(code, 200, comment)
-        self.assertEqual(self.request('/api/comments?session_id=s1')[1]['comments'][0]['text'], '请解释这里的进度')
+        self.assertEqual(self.request('/api/op/comment.list?session_id=s1')[1]['comments'][0]['text'], '请解释这里的进度')
         self.assertIn('用户在总览中', board.pending_notices(self.conn, 's3')[0]['text'])
         board.init_project(self.conn, 'elsewhere', self.root / 'elsewhere')
         board.join(self.conn, 'foreign', 'elsewhere', 'foreign', self.root, None, None)
-        self.assertEqual(self.request('/api/comments', {'session_id': 'foreign', 'text': 'wrong'})[0], 400)
+        self.assertEqual(self.request('/api/op/comment.add', {'session_id': 'foreign', 'text': 'wrong'})[0], 400)
 
     def test_existing_question_can_be_sent_for_clarification_once(self):
         number = board.ask(self.conn, 's1', '很长但无法理解的旧问题', options=('继续①②', '先等着'))
-        code, first = self.request('/api/decision/clarify', {'id': number})
+        code, first = self.request('/api/op/decision.clarify', {'id': number})
         self.assertEqual(code, 200, first)
-        code, repeated = self.request('/api/decision/clarify', {'id': number})
+        code, repeated = self.request('/api/op/decision.clarify', {'id': number})
         self.assertEqual(code, 200, repeated)
         self.assertIsNotNone(first['notice_id'])
         self.assertIsNone(repeated['notice_id'])
         self.assertEqual(len(board.pending_notices(self.conn, 's3')), 1)
-        self.assertIsNone(self.request('/api/state')[1]['decisions'][0]['brief'])
+        self.assertIsNone(self.request('/api/op/workspace.state')[1]['decisions'][0]['brief'])

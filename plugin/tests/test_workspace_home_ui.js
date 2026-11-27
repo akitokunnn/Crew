@@ -3,10 +3,10 @@ const {test} = require("node:test");
 const assert = require("node:assert/strict");
 const vm = require("node:vm"), fs = require("node:fs"), path = require("node:path");
 const window = {};
-vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-ui.js"),"utf8"),{window});
-vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../crew/web/workspace-home.js"),"utf8"), {window});
+vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../../frontend/goal-ui.js"),"utf8"),{window});
+vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../../frontend/workspace-home.js"),"utf8"), {window});
 const ui = window.CrewWorkspaceHome;
-const data = patch => ({name:"健身打卡",git_assistant:null,leaders:[],members:[],goals:[],todos:[],decisions:[],...patch});
+const data = patch => ({name:"健身打卡",project:"fitness",git_assistant:null,leaders:[],members:[],goals:[],todos:[],decisions:[],...patch});
 const render = snapshot => ui.render(snapshot, {settingsIcon:"<svg></svg>",decisionCards:items=>items.map(item=>`decision:${item.id}`).join(";"),taskCards: items => items.map(item=>`task:${item.id}`).join(";"),todoCards:items=>items.map(item=>`todo:${item.id}`).join(";")});
 
 test("home badge shares review, decision and TODO entries and ignores resolved work",()=>{
@@ -40,6 +40,25 @@ test("empty workspace invites a discussion, without automatically launching or c
   const html=render(data());
   assert.match(html,/开始新对话/);assert.match(html,/data-act="modal-leader"/);
   assert.doesNotMatch(html,/data-goal-act="start"|undefined|NaN/);
+});
+
+test("a blank workspace offers 自己搭 and 助手开局 as two equal entries that start nothing by themselves", () => {
+  const html=render(data({name:"健身 <打卡>",project:"fit & go"}));
+  assert.match(html,/空白工作区，从哪里开始？/);
+  const paths=[...html.matchAll(/<article class="wh-path" data-path="(\w+)">/g)].map(match=>match[1]);
+  assert.deepEqual(paths,["self","assistant"]);
+  assert.match(html,/<h3>自己搭<\/h3>/);assert.match(html,/<h3>助手开局<\/h3>/);
+  assert.match(html,/data-act="modal-leader">开始新对话/);assert.match(html,/data-act="view" data-view="architecture">画架构图/);
+  assert.match(html,/href="\/assistant\.html#opening=fit%20%26%20go">让助手开局/);
+  assert.doesNotMatch(html,/wh-overview|wh-empty|任务列表/,"the empty columns step aside for the two entries");
+  assert.doesNotMatch(html,/data-goal-act="start"|\/api\/|undefined|NaN/);
+});
+
+test("the two entries leave once there is a leader or a task, and pending attention keeps its columns", () => {
+  assert.doesNotMatch(render(data({project:"p",leaders:[{session_id:"L",name:"甲",goal:"聊需求",status:"idle"}]})),/wh-start/);
+  assert.doesNotMatch(render(data({project:"p",goals:[{id:"g",status:"completed",ended_at:"2026-11-19T09:00:00Z"}]})),/wh-start/);
+  const todo=render(data({project:"p",todos:[{id:7,status:"open"}]}));
+  assert.match(todo,/wh-start/);assert.match(todo,/todo:7/);assert.match(todo,/wh-overview/);
 });
 
 test("merged decisions retain their type and escape the workspace name and question", () => {
@@ -80,5 +99,5 @@ test("home acceptance supplements preserve folding, version order, authors and e
 });
 test("home names working sessions and dispatches separately from its task total",()=>{
   const html=render(data({leaders:[{session_id:"L",status:"working",codex:[{source:"skill_dispatch",status:"running"}]}],goals:[{id:"g",leader_session_id:"L",status:"running"}]}));
-  assert.match(html,/<strong>1<\/strong>项任务/);assert.match(html,/<strong>2<\/strong>个会话 \/ 派工执行中/);
+  assert.match(html,/<strong>1<\/strong>项任务/);assert.match(html,/<strong>2<\/strong><span class="wh-overview-label"><span>个会话 \/<\/span> <span>派工执行中<\/span><\/span>/,"the label breaks only between its two phrases on narrow screens");
 });

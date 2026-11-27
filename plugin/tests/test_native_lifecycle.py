@@ -68,7 +68,7 @@ class NativeLifecycleTests(UsageFixture, unittest.TestCase):
         self.assertTrue(any('Claude 退出（1）' in e.get('text', '') for e in current.journal.events))
 
     def test_top_level_result_ends_only_its_turn_without_fabricating_a_tool_result(self):
-        journal = chat.Journal(self.home / 'chat' / 'terminal.jsonl')
+        journal = chat.Journal(self.home / 'chat' / 'terminal.jsonl', None)
         for failed in (False, True):
             journal.set_status('working')
             before = len(journal.events)

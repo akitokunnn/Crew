@@ -1,5 +1,6 @@
 """Project palette persistence and HTTP changes use temporary homes only."""
 import tests  # Install the production-service connection guard.
+import uuid
 import json
 import tempfile
 import threading
@@ -39,20 +40,24 @@ class ProjectThemeTests(unittest.TestCase):
         self.assertEqual(self.add('second')['theme'], 'celadon')
         self.assertEqual(self.add('third')['theme'], 'wisteria')
 
-    def test_first_list_read_assigns_legacy_projects_by_enable_order_and_persists(self):
+    def test_opening_the_database_assigns_legacy_projects_by_enable_order_and_persists(self):
         self.legacy('alpha', now='2026-10-23T08:00:00.000Z')
         self.legacy('zeta', now='2026-10-21T08:00:00.000Z')
         self.legacy('beta', now='2026-10-21T08:00:00.000Z')
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM project_themes').fetchone()[0], 0)
+        # Reading never writes: a workspace from before themes is not listed until the database is opened again.
+        self.assertEqual(board.projects(self.conn), [])
+        store.connect(self.root / 'home').close()
         self.assertEqual({p['name']: p['theme'] for p in board.projects(self.conn)},
                          {'zeta': 'celadon', 'beta': 'indigo', 'alpha': 'wisteria'})
         before = [tuple(row) for row in self.conn.execute('SELECT * FROM project_themes ORDER BY project')]
-        board.projects(self.conn)
+        store.connect(self.root / 'home').close()
         self.assertEqual(before, [tuple(row) for row in self.conn.execute('SELECT * FROM project_themes ORDER BY project')])
 
-    def test_single_project_read_assigns_all_legacy_projects_before_new_project(self):
+    def test_opening_assigns_all_legacy_projects_before_a_new_project(self):
         self.legacy('first')
         self.legacy('second')
+        store.connect(self.root / 'home').close()
         self.assertEqual(board.project(self.conn, 'second')['theme'], 'indigo')
         self.assertEqual(self.add('third')['theme'], 'wisteria')
         self.assertEqual(board.project(self.conn, 'first')['theme'], 'celadon')
@@ -69,11 +74,13 @@ class ProjectThemeTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM project_themes').fetchone()[0], 1)
 
     def test_assignment_participates_in_outer_transaction(self):
-        self.conn.execute('BEGIN IMMEDIATE')
-        self.legacy('temporary')
-        self.assertEqual(board.project(self.conn, 'temporary')['theme'], 'celadon')
-        self.assertTrue(self.conn.in_transaction)
-        self.conn.rollback()
+        class Rollback(Exception):
+            pass
+        with self.assertRaises(Rollback), board.transaction(self.conn):
+            board.init_project.__wrapped__(self.conn, 'temporary', self.root / 'temporary', now=NOW)
+            self.assertEqual(board.project(self.conn, 'temporary')['theme'], 'celadon')
+            self.assertTrue(self.conn.in_transaction)
+            raise Rollback
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM project_themes').fetchone()[0], 0)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM projects').fetchone()[0], 0)
 
@@ -132,7 +139,7 @@ class ProjectThemeHttpTests(ShellFixture, unittest.TestCase):
 
     def request(self, path, data=None, header=True):
         payload = None if data is None else json.dumps(data).encode('utf-8')
-        headers = {'X-Crew': '1'} if header else {}
+        headers = {'X-Crew': '1', 'X-Crew-Request-Id': uuid.uuid4().hex} if header else {}
         try:
             response = self.opener.open(Request(self.server.url + path, payload, headers), timeout=5)
         except HTTPError as exc:
@@ -142,30 +149,30 @@ class ProjectThemeHttpTests(ShellFixture, unittest.TestCase):
 
     def test_state_exposes_catalogue_and_each_project_choice(self):
         board.init_project(self.conn, 'other', self.root / 'other', now=NOW)
-        code, landing = self.request('/api/state')
+        code, landing = self.request('/api/op/workspace.state')
         self.assertEqual(code, 200)
         self.assertIsNone(landing['project'])
         self.assertEqual(landing['themes'], themes.THEMES)
         self.assertEqual(landing['projects'], [{'name': 'demo', 'display_name': None, 'theme': 'celadon'}, {'name': 'other', 'display_name': None, 'theme': 'indigo'}])
-        code, selected = self.request('/api/state?project=other')
+        code, selected = self.request('/api/op/workspace.state?project=other')
         self.assertEqual(code, 200)
         self.assertEqual(selected['project']['theme'], 'indigo')
 
     def test_change_is_immediate_persisted_and_project_scoped(self):
         board.init_project(self.conn, 'other', self.root / 'other', now=NOW)
-        self.assertEqual(self.request('/api/project/theme', {'project': 'other', 'theme': 'lotus'}),
+        self.assertEqual(self.request('/api/op/workspace.theme.set', {'project': 'other', 'theme': 'lotus'}),
                          (200, {'ok': True, 'theme': 'lotus'}))
-        self.assertEqual(self.request('/api/state?project=other')[1]['project']['theme'], 'lotus')
+        self.assertEqual(self.request('/api/op/workspace.state?project=other')[1]['project']['theme'], 'lotus')
         self.assertEqual(board.project(self.conn, 'other')['theme'], 'lotus')
         self.assertEqual(board.project(self.conn, 'demo')['theme'], 'celadon')
-        self.assertEqual(self.request('/api/project/theme?project=demo', {'theme': 'mist'}),
+        self.assertEqual(self.request('/api/op/workspace.theme.set?project=demo', {'theme': 'mist'}),
                          (200, {'ok': True, 'theme': 'mist'}))
 
     def test_invalid_theme_and_mismatched_project_are_rejected_without_change(self):
         for data in ({'theme': 'unknown'}, {'theme': ''}, {'theme': 42}, {'theme': None}):
-            code, error = self.request('/api/project/theme?project=demo', data)
+            code, error = self.request('/api/op/workspace.theme.set?project=demo', data)
             self.assertEqual(code, 400, error)
-        self.assertEqual(self.request('/api/project/theme?project=demo', {'project': 'other', 'theme': 'mist'})[0], 400)
-        self.assertEqual(self.request('/api/project/theme', {'project': 'missing', 'theme': 'mist'})[0], 400)
-        self.assertEqual(self.request('/api/project/theme?project=demo', {'theme': 'mist'}, header=False)[0], 403)
+        self.assertEqual(self.request('/api/op/workspace.theme.set?project=demo', {'project': 'other', 'theme': 'mist'})[0], 400)
+        self.assertEqual(self.request('/api/op/workspace.theme.set', {'project': 'missing', 'theme': 'mist'})[0], 400)
+        self.assertEqual(self.request('/api/op/workspace.theme.set?project=demo', {'theme': 'mist'}, header=False)[0], 403)
         self.assertEqual(board.project(self.conn, 'demo')['theme'], 'celadon')

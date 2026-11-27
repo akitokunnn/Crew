@@ -4,13 +4,14 @@ A part nests under at most one parent part (none = top level). Any number of lea
 at most one of them may lead it, owning the work its sub-parts share. A leader sits in at most one part or stays
 unassigned. Positions, folds and the drawing direction (top-down tree or left-to-right blueprint) are the
 board's own layout. Edits arrive as a batch of operations applied in one transaction, so moving a selection or
-undoing a step is one change; every batch bumps the board version.
+undoing a step is one change; every batch bumps the board version. A batch that changes the structure (not just
+the layout) also saves a version that can be compared and rolled back to (docs/ASSISTANT_CAMPAIGN_DESIGN.md §3).
 """
 import math
 import re
 import uuid
 
-from . import board
+from . import board, change_feed, domain_versions
 
 ID = re.compile(r'[A-Za-z0-9_-]{6,64}\Z')
 NAME_MAX = 40
@@ -60,6 +61,40 @@ def leader_paths(conn, project):
         'SELECT session_id,domain_id FROM domain_leaders WHERE project=? AND domain_id IS NOT NULL', (project,))}
 
 
+def outline(conn, project):
+    """The board as a leader reads it: parts and who works where, without the page's layout."""
+    board_snapshot = snapshot(conn, project)
+    return {'project': project, 'version': board_snapshot['version'],
+            'parts': [{'id': part['id'], 'parent_id': part['parent_id'], 'name': part['name']}
+                      for part in board_snapshot['parts']],
+            'leaders': board_snapshot['leaders']}
+
+
+def placement(conn, session_id):
+    """One line telling a leader where it sits on the board, e.g. 你负责：产品 › 客户端 › 语音; None when nowhere."""
+    place = conn.execute('SELECT project,domain_id,lead FROM domain_leaders WHERE session_id=? AND domain_id IS NOT NULL',
+                         (session_id,)).fetchone()
+    if place is None:
+        return None
+    path = ' › '.join(part['name'] for part in leader_paths(conn, place['project'])[session_id])
+    if not place['lead']:
+        return '【Crew 架构图】你负责：%s。' % path
+    children = [row['name'] for row in conn.execute(
+        'SELECT name FROM domains WHERE parent_id=? ORDER BY created_at,id', (place['domain_id'],))]
+    shared = '，也负责其下%s共用的部分' % '、'.join(children) if children else ''
+    return '【Crew 架构图】你负责：%s（节点负责人%s）。' % (path, shared)
+
+
+def input_context(conn, session_id, previous):
+    """Deliver a changed placement on the next ordinary input only; leaving the board is said once."""
+    current = placement(conn, session_id)
+    if current == previous:
+        return current, None
+    if current is None:
+        return None, '【Crew 架构图】你已不在架构图的任何节点里。'
+    return current, current
+
+
 def summary(conn, project):
     """What the rest of the page needs without loading the board: its version and the leaders' paths."""
     return {'version': version(conn, project), 'paths': leader_paths(conn, project)}
@@ -68,17 +103,39 @@ def summary(conn, project):
 @board.atomic
 def apply(conn, project, ops, base_version=None, now=None):
     """Apply a batch of board edits in order; any invalid one rejects the whole batch."""
+    note = domain_versions.edit_note(ops) if isinstance(ops, list) and all(
+        isinstance(op, dict) and isinstance(op.get('op'), str) for op in ops) else None
+    return apply_ops(conn, project, ops, base_version, now, source='edit', note=note)
+
+
+def check_version(conn, project, base_version):
+    if type(base_version) is not int:
+        raise board.BoardError('base_version 必须是整数')
+    if base_version != version(conn, project):
+        raise board.Conflict('架构图已在别处改动，请先刷新再继续')
+
+
+def bump(conn, project, now):
+    """Every change to a board raises its version, so pages holding an older copy reload first."""
+    conn.execute('INSERT INTO domain_boards(project,version,updated_at) VALUES(?,1,?) ON CONFLICT(project) '
+                 'DO UPDATE SET version=version+1,updated_at=excluded.updated_at', (project, now))
+    change_feed.touch(conn, 'domains', project, project)
+
+
+def apply_ops(conn, project, ops, base_version, now, *, source, note, detail=None):
+    """``apply`` inside the caller's transaction, for features that write the board together with their own rows.
+
+    ``source`` and ``note`` describe the version this batch saves when it changes the structure.
+    """
     board.project(conn, project)
     if base_version is not None:
-        if type(base_version) is not int:
-            raise board.BoardError('base_version 必须是整数')
-        if base_version != version(conn, project):
-            raise board.Conflict('架构图已在别处改动，请先刷新再继续')
+        check_version(conn, project, base_version)
     if not isinstance(ops, list) or not ops:
         raise board.BoardError('ops 必须是非空数组')
     if len(ops) > OPS_MAX:
         raise board.BoardError('一次最多 %d 步改动' % OPS_MAX)
     now = board._time(now)
+    before = domain_versions.state(conn, project)
     edit, effects = _Edit(conn, project, now), []
     for index, op in enumerate(ops):
         if not isinstance(op, dict) or not isinstance(op.get('op'), str):
@@ -87,15 +144,107 @@ def apply(conn, project, ops, base_version=None, now=None):
         if handler is None:
             raise board.BoardError('不认识的改动：%s' % op['op'])
         effects.append(handler(op))
-    conn.execute('INSERT INTO domain_boards(project,version,updated_at) VALUES(?,1,?) ON CONFLICT(project) '
-                 'DO UPDATE SET version=version+1,updated_at=excluded.updated_at', (project, now))
+    bump(conn, project, now)
+    number = (domain_versions.record(conn, project, source, note, before, now, detail=detail)
+              if domain_versions.structural(ops) else None)
     # effects[i] says what ops[i] did beyond the request itself (a new id, a lead it replaced, what moved up);
     # with the board before the batch, that is enough for the page to build the undo batch.
-    return {'board': snapshot(conn, project), 'effects': effects}
+    return {'board': snapshot(conn, project), 'effects': effects, 'version': number}
+
+
+def living_leaders(conn, project, session_ids):
+    """Which of these sessions are still leaders of this workspace; a permanently deleted one keeps only a tombstone."""
+    if not session_ids:
+        return set()
+    return {row['session_id'] for row in conn.execute(
+        "SELECT s.session_id FROM sessions s LEFT JOIN session_controls c ON c.session_id=s.session_id "
+        "WHERE s.project=? AND s.role='leader' AND COALESCE(c.removed,0)=0 AND s.session_id IN (%s)"
+        % ','.join('?' * len(session_ids)), (project, *session_ids))}
+
+
+def rollback_preview(conn, project, number):
+    """What rolling back to a version changes, and which leaders it leaves without a place or cannot restore."""
+    meta, target = domain_versions.get(conn, project, number)
+    current = domain_versions.state(conn, project)
+    living = living_leaders(conn, project, [item['session_id'] for item in target['leaders']])
+    restorable = dict(target, leaders=[item for item in target['leaders'] if item['session_id'] in living])
+    change = domain_versions.diff(current, restorable)
+    targeted = {item['session_id'] for item in restorable['leaders']}
+    paths = domain_versions.paths(current)
+    return {'version': meta, 'state': target, 'current': current, 'diff': change,
+            'board_version': version(conn, project),
+            'rollback': {'nothing': change['count'] == 0,
+                         'unplaced': [{'session_id': item['session_id'], 'name': item['name'],
+                                       'from': paths.get(item['domain_id'], [])}
+                                      for item in current['leaders'] if item['session_id'] not in targeted],
+                         'gone': [{'session_id': item['session_id'], 'name': item['name']}
+                                  for item in target['leaders'] if item['session_id'] not in living],
+                         'archived': [{'session_id': item['session_id'], 'name': item['name']}
+                                      for item in restorable['leaders'] if board.is_archived(conn, item['session_id'])]}}
+
+
+@board.atomic
+def rollback(conn, project, number, base_version, now=None):
+    """Restore a version's structure as a new version. Sessions are never deleted, archived or restored here."""
+    board.project(conn, project)
+    check_version(conn, project, base_version)
+    preview = rollback_preview(conn, project, number)
+    if preview['rollback']['nothing']:
+        raise board.BoardError('当前架构与版本 %s 相同，不需要回滚' % number)
+    now = board._time(now)
+    restore(conn, project, preview['state'], now)
+    bump(conn, project, now)
+    impact = preview['rollback']
+    created = domain_versions.record(
+        conn, project, 'rollback', '回滚到版本 %s' % number, preview['current'], now, restored_from=number,
+        detail={'unplaced': [item['name'] for item in impact['unplaced']],
+                'gone': [item['name'] for item in impact['gone']],
+                'archived': [item['name'] for item in impact['archived']]})
+    return {'ok': True, 'version': created, 'board': snapshot(conn, project), 'rollback': impact}
+
+
+def restore(conn, project, target, now):
+    """Make the board's structure match ``target``; parts that still exist keep their current layout.
+
+    Removed parts come back with their original id (mind map links to them work again), name and layout. Leaders
+    who are no longer leaders here are skipped; everyone else placed now but not in ``target`` becomes unassigned.
+    """
+    current = {row['id']: row for row in conn.execute('SELECT * FROM domains WHERE project=?', (project,))}
+    wanted = {part['id'] for part in target['parts']}
+    conn.execute('UPDATE domain_leaders SET domain_id=NULL,lead=0,updated_at=? WHERE project=? AND domain_id IS NOT NULL',
+                 (now, project))
+    conn.execute('UPDATE domains SET parent_id=NULL WHERE project=? AND parent_id IS NOT NULL', (project,))
+    for part_id in current:
+        if part_id not in wanted:
+            conn.execute('DELETE FROM domains WHERE id=?', (part_id,))
+    for part in target['parts']:
+        row = current.get(part['id'])
+        if row is None:
+            conn.execute('INSERT INTO domains(id,project,parent_id,name,x,y,collapsed,created_at,updated_at) '
+                         'VALUES(?,?,NULL,?,?,?,?,?,?)', (part['id'], project, part['name'], part['x'], part['y'],
+                                                         int(part['collapsed']), part['created_at'], now))
+        elif row['name'] != part['name']:
+            conn.execute('UPDATE domains SET name=?,updated_at=? WHERE id=?', (part['name'], now, part['id']))
+    for part in target['parts']:
+        row = current.get(part['id'])
+        if part['parent_id'] is not None:
+            conn.execute('UPDATE domains SET parent_id=? WHERE id=?', (part['parent_id'], part['id']))
+        if row is not None and row['parent_id'] != part['parent_id']:
+            conn.execute('UPDATE domains SET updated_at=? WHERE id=?', (now, part['id']))
+    living = living_leaders(conn, project, [item['session_id'] for item in target['leaders']])
+    for item in target['leaders']:
+        if item['session_id'] in living:
+            conn.execute('INSERT INTO domain_leaders(session_id,project,domain_id,lead,updated_at) VALUES(?,?,?,?,?) '
+                         'ON CONFLICT(session_id) DO UPDATE SET domain_id=excluded.domain_id,lead=excluded.lead,'
+                         'updated_at=excluded.updated_at', (item['session_id'], project, item['domain_id'],
+                                                            int(item['lead']), now))
 
 
 def release_leader(conn, session_id):
     """A permanently deleted leader leaves the board."""
+    for row in conn.execute('SELECT project FROM domain_leaders WHERE session_id=? AND domain_id IS NOT NULL', (session_id,)).fetchall():
+        # Its path leaves the board summary.
+        change_feed.touch(conn, 'domains', row['project'], row['project'])
     conn.execute('DELETE FROM domain_leaders WHERE session_id=?', (session_id,))
 
 

@@ -1,13 +1,13 @@
 'use strict';
 (() => {
   const $=id=>document.getElementById(id), bridge=window.crewDesktop, panel=$('settings-page'), root=$('native-settings-root');
-  let ui=null, creating=null, visible=false, mode='system', appearanceHost=null;
+  let ui=null, creating=null, visible=false, mode='system', fontScale=1, appearanceHost=null;
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
   const media=window.matchMedia('(prefers-color-scheme: dark)');
   // The desktop keeps one display mode; its themeSource drives this media query in every page and the chrome.
   function applyTheme(){document.documentElement.dataset.theme=media.matches?'dark':'light';}
   applyTheme();media.addEventListener('change',applyTheme);
-  function adopt(state){if(!['system','light','dark'].includes(state?.mode))return;mode=state.mode;if(appearanceHost?.isConnected)appearance(appearanceHost);}
+  function adopt(state){if(!['system','light','dark'].includes(state?.mode))return;mode=state.mode;fontScale=state.fontScale;if(appearanceHost?.isConnected)appearance(appearanceHost);}
   void bridge.theme().then(async state=>{
     // First launch with the shared setting: keep the mode chosen earlier on this home page.
     let legacy=null;try{legacy=localStorage.getItem('crew.desktop.theme');}catch(_){ /* Storage may be unavailable. */ }
@@ -16,13 +16,26 @@
     adopt(state);
   }).catch(error=>console.error('无法读取显示模式：',error));
   bridge.onTheme(adopt);
+  const reason=error=>String(error?.message||error).replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/,'');
   function appearance(host){
     appearanceHost=host;
-    host.innerHTML=`<section class="cs-card"><h2>显示模式</h2><p class="cs-hint">这台电脑上的 Crew 共用一个显示模式，首页、所有工作区和窗口边框同时生效。</p><div class="cs-theme-options">${[['system','跟随系统'],['light','浅色'],['dark','深色']].map(([id,title])=>`<button type="button" data-desktop-theme="${id}" aria-pressed="${mode===id}">${title}</button>`).join('')}</div><p role="status" data-theme-note></p></section>`;
+    const percent=value=>Math.round(value*100)+'%';
+    host.innerHTML=`<div class="hs-appearance"><section class="cs-card"><h2>显示模式</h2><p class="cs-hint">这台电脑上的 Crew 共用一个显示模式，首页、所有工作区和窗口边框同时生效。</p><div class="cs-theme-options">${[['system','跟随系统'],['light','浅色'],['dark','深色']].map(([id,title])=>`<button type="button" data-desktop-theme="${id}" aria-pressed="${mode===id}">${title}</button>`).join('')}</div><p role="status" data-theme-note></p></section>`+
+      `<section class="cs-card"><h2>字号</h2><p class="cs-hint">工作区、助手和想法墙页面共用一个字号；首页保持标准大小。</p><div class="hs-font"><input type="range" min="0.9" max="1.4" step="0.01" value="${fontScale}" data-desktop-font aria-label="字号"><output data-font-value>${percent(fontScale)}</output><button type="button" class="cs-button" data-font-reset ${fontScale===1?'disabled':''}>恢复标准</button></div><p role="status" data-font-note></p></section>`+
+      `<section class="cs-card"><h2>新手引导</h2><p class="cs-hint">再走一遍：检测执行载体、外观、Crew 的特色和第一个工作区。</p><button type="button" class="cs-button hs-guide" data-onboarding-open>重新打开新手引导</button></section></div>`;
     for(const button of host.querySelectorAll('[data-desktop-theme]'))button.onclick=async()=>{
       try{adopt(await bridge.setTheme(button.dataset.desktopTheme));}
-      catch(error){host.querySelector('[data-theme-note]').textContent=String(error?.message||error).replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/,'');}
+      catch(error){host.querySelector('[data-theme-note]').textContent=reason(error);}
     };
+    // Dragging only updates the readout; releasing saves the size for every Crew page.
+    const slider=host.querySelector('[data-desktop-font]'),saveFont=async value=>{
+      try{adopt(await bridge.setFontScale(value));}
+      catch(error){host.querySelector('[data-font-note]').textContent=reason(error);}
+    };
+    slider.oninput=()=>{host.querySelector('[data-font-value]').textContent=percent(Number(slider.value));};
+    slider.onchange=()=>{void saveFont(Number(slider.value));};
+    host.querySelector('[data-font-reset]').onclick=()=>{void saveFont(1);};
+    host.querySelector('[data-onboarding-open]').onclick=()=>{$('nav-workspaces').click();window.CrewHomeOnboarding.open();};
   }
   function connections(host){
     return window.CrewConnections.mount(host,{

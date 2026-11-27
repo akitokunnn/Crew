@@ -125,7 +125,7 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
         text = current.journal.path.read_text(encoding="utf-8")
         self.assertNotIn("<command-name>", text)
         self.assertNotIn("/compact", text)
-        self.assertEqual(chat.Journal(current.journal.path).messages, {sent["uuid"]})
+        self.assertEqual(chat.Journal(current.journal.path, None).messages, {sent["uuid"]})
 
     def test_compact_busy_rejects_before_writing(self):
         manager, current, session = self.running("working")
@@ -206,8 +206,8 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
         original = current.journal.consume
         response = []
 
-        def consume(record):
-            original(record)
+        def consume(record, **options):
+            original(record, **options)
             if record["type"] == "result":
                 entered.set()
                 self.assertTrue(release.wait(3))
@@ -309,7 +309,7 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
             {"type": "result", "local_command": "compact", "num_turns": 0},
             {"type": "command_lifecycle", "state": "completed"},
         ]
-        journal = chat.Journal(self.home / "chat" / "s1.jsonl")
+        journal = chat.Journal(self.home / "chat" / "s1.jsonl", None)
         phases = []
         for record in records:
             journal.consume(record)
@@ -321,6 +321,36 @@ class ContextRuntimeTests(UsageFixture, unittest.TestCase):
         self.assertEqual(journal.status, "idle")
         self.assertIsNone(journal.progress)
         self.assertNotIn("<command-name>", journal.path.read_text(encoding="utf-8"))
+
+    def test_refused_compact_ends_with_native_reason(self):
+        # Required fields only, captured from Claude 2.1.332 on 2026-11-27: a /compact the CLI
+        # refuses answers with a synthetic message and a successful result, but no boundary.
+        journal = chat.Journal(self.home / "chat" / "s1.jsonl", None)
+        for text in ("Error: No messages to compact", "Not enough messages to compact."):
+            journal.message("compact-" + text, "/compact")
+            journal.consume({"type": "assistant", "parent_tool_use_id": None,
+                             "local_command_run": {"command": "compact", "args": ""},
+                             "local_command_outcome": {"kind": "failed"},
+                             "message": {"id": "synthetic-" + text, "model": "<synthetic>",
+                                         "content": [{"type": "text", "text": text}]}})
+            journal.consume({"type": "result", "subtype": "success", "is_error": False,
+                             "num_turns": 0, "result": "", "local_command": "compact"})
+            cancelled = [event for event in journal.events if event["type"] == "compact_cancelled"]
+            self.assertEqual(cancelled[-1]["reason"], text)
+            kinds = [event["type"] for event in journal.events]
+            self.assertLess(kinds.index("compact_cancelled"), kinds.index("turn_result"))
+        self.assertEqual(len(cancelled), 2)
+        self.assertEqual(journal.status, "idle")
+
+    def test_confirmed_compact_and_plain_turns_never_report_cancellation(self):
+        journal = chat.Journal(self.home / "chat" / "s1.jsonl", None)
+        journal.message("compact-1", "/compact")
+        journal.consume({"type": "system", "subtype": "compact_boundary",
+                         "compact_metadata": {"pre_tokens": 46123, "post_tokens": 9925}})
+        journal.consume({"type": "result", "is_error": False, "local_command": "compact", "num_turns": 0})
+        journal.message("plain-1", "hello")
+        journal.consume({"type": "result", "is_error": False, "num_turns": 1})
+        self.assertFalse(any(event["type"] == "compact_cancelled" for event in journal.events))
 
 
 if __name__ == "__main__":

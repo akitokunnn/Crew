@@ -190,6 +190,7 @@ class MenuTests(unittest.TestCase):
                 configure.assert_called_once_with(action, self.home, self.plugin)
 
     def test_repository_icon_has_multiple_png_sizes(self):
-        data = (PLUGIN / "crew" / "web" / "logo.ico").read_bytes()
+        from crew import frontend_root
+        data = (frontend_root.resolve(PLUGIN) / "logo.ico").read_bytes()
         self.assertEqual(b"\x00\x00\x01\x00", data[:4])
         self.assertGreaterEqual(int.from_bytes(data[4:6], "little"), 3)

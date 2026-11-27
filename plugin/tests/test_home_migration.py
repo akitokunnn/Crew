@@ -125,7 +125,14 @@ class HomeMigrationTests(unittest.TestCase):
         with closing(self.database(self.target)) as conn:
             self.assertEqual(conn.execute('SELECT type,name,sql FROM sqlite_master ORDER BY name').fetchall(), schema)
             for table, count in counts.items():
+                if table == 'change_log':
+                    continue
                 self.assertEqual(conn.execute('SELECT COUNT(*) FROM "' + table + '"').fetchone()[0], count, table)
+            # The change feed keeps every row; relocating owned paths only adds invalidations of the cards and the
+            # workspace activity list that show them.
+            copied = conn.execute('SELECT type FROM change_log ORDER BY seq').fetchall()
+            self.assertGreaterEqual(len(copied), counts['change_log'])
+            self.assertEqual({row[0] for row in copied[counts['change_log']:]} - {'conversations.invalidated', 'workspace_activity.invalidated'}, set())
             self.assertEqual(conn.execute("SELECT root FROM projects WHERE name='inside'").fetchone()[0], str(self.target / 'projects' / 'demo'))
             self.assertEqual(conn.execute("SELECT cwd FROM sessions WHERE session_id='outside'").fetchone()[0], str(self.external))
             self.assertEqual(conn.execute('SELECT body FROM fixture_legacy').fetchone()[0], 'keep ' + str(self.source))

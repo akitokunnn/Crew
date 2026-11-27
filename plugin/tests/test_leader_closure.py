@@ -178,7 +178,7 @@ class LeaderClosureTests(GoalFixture):
         self.assertIn('Free worker', notices[0]['text'])
         self.assertNotIn('Other task worker', notices[0]['text'])
         self.assertNotIn('Git admin', notices[0]['text'])
-        self.assertIn('crew archive', notices[0]['text'])
+        self.assertIn('session_archive', notices[0]['text'])
         with self.assertRaises(board.Conflict):
             goals.review_acceptance(self.conn, goal['id'], True, expected_version=goal['version'])
         self.assertEqual(len(board.pending_notices(self.conn, 'chief-id')), 1)
@@ -201,7 +201,7 @@ class LeaderClosureTests(GoalFixture):
                 notices = board.pending_notices(self.conn, 'chief-id')
                 self.assertEqual(len(notices), 1)
                 self.assertEqual((notices[0]['source'], notices[0]['wake']), ('crew', 1))
-                for part in (goal['title'], goal['id'], '等用户验收', 'Measured <exactly> once.', 'crew goal status'):
+                for part in (goal['title'], goal['id'], '等用户验收', 'Measured <exactly> once.', 'goal_get'):
                     self.assertIn(part, notices[0]['text'])
                 self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['already'])
                 self.assertEqual(len(board.pending_notices(self.conn, 'chief-id')), 1)

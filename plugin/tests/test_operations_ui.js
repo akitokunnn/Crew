@@ -1,7 +1,7 @@
 "use strict";
 const {test} = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
 const sandbox = {window:{}}; vm.createContext(sandbox);
-vm.runInContext(fs.readFileSync(path.join(__dirname, "../crew/web/operations-ui.js"), "utf8"), sandbox);
+vm.runInContext(fs.readFileSync(path.join(__dirname, "../../frontend/operations-ui.js"), "utf8"), sandbox);
 const ui = sandbox.window.CrewOperations, plain = value => JSON.parse(JSON.stringify(value));
 
 test("operations preflight follows explicit task/default choices and only infers a sole installed carrier", () => {
@@ -29,8 +29,12 @@ test("operations form rejects malformed JSON and commands without program names"
 function operationsHarness(){
   const element=()=>({innerHTML:"",textContent:"",hidden:false,classList:{toggle(){},add(){}},setAttribute(){},addEventListener(){},append(){},replaceChildren(){},querySelector(){return element();},querySelectorAll(){return [];},focus(){},scrollIntoView(){}});
   const panel=element(),root={...element(),querySelector:selector=>selector===".co-panel"?panel:element()};
-  const sandbox={window:{},document:{createElement:()=>root,addEventListener(){},hidden:false},setTimeout,clearTimeout};
-  vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/operations-ui.js"),"utf8"),sandbox);
+  const sandbox={document:{createElement:()=>root,addEventListener(){},hidden:false},setTimeout,clearTimeout};
+  sandbox.window=sandbox;
+  vm.createContext(sandbox);
+  for (const script of ["browser-utils.js", "operations-ui.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend",script),"utf8"),sandbox);
+  }
   return {ui:sandbox.window.CrewOperations,root,panel,sandbox};
 }
 test("a LAN host keeps its operations chat and repair policy on the host: only status and connection remain",()=>{

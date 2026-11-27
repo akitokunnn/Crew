@@ -15,9 +15,9 @@ function harness() {
   const assistant={session_id:"git",name:"Git 助手",base:"main",integration:null,requests:{active:4,waiting_user:1,merging:1,queued:2},attention:8};
 
   const sandbox={CrewChat:{mount:options=>mounts.push(options),update:state=>updates.push(state),unmount(){}},document:{addEventListener(){},removeEventListener(){}},window:{addEventListener(){},removeEventListener(){}},setInterval:fn=>{timers.set(1,fn);return 1;},clearInterval:id=>timers.delete(id),clearTimeout(){}};
-  vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/git.js"),"utf8")+"\nglobalThis.component=CrewGit;",sandbox);
+  vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/git.js"),"utf8")+"\nglobalThis.component=CrewGit;",sandbox);
   const ui=sandbox.component;
-  const settings=(project="demo",root="C:/fixture/demo")=>({project,root,state,chatAccess:()=>({readonly:false}),beforeStop(){},onRouted(){},catalog:()=>[{id:"codex",name:"Codex",available:true}],defaultRuntime:()=>"codex",api:async(route,body)=>{calls.push({project,root,route,body});const value=await read(route,body);if(body===undefined)state.git_assistant=value.enabled?assistant:null;return value;},toast:message=>toasts.push(message),onChanged:async()=>{changed++;}});
+  const settings=(project="demo",root="C:/fixture/demo")=>({project,root,state,chatAccess:()=>({readonly:false}),contextControls:()=>"",replace:(element,markup)=>{element.innerHTML=markup;},beforeStop(){},onRouted(){},catalog:()=>[{id:"codex",name:"Codex",available:true}],defaultRuntime:()=>"codex",api:async(route,body)=>{calls.push({project,root,route,body});const value=await read(route,body);if(body===undefined)state.git_assistant=value.enabled?assistant:null;return value;},toast:message=>toasts.push(message),onChanged:async()=>{changed++;}});
   function mount(project,root){ui.mount(host,settings(project,root));}
   function click(act){const button={dataset:{gitAct:act}};handlers.get("click")({target:{closest:selector=>selector==="[data-git-act]"?button:null}});}
   return {host,calls,timers,ui,mounts,updates,assistant,state,mount,click,scroll,toasts,get changed(){return changed;},read:fn=>{read=fn;}};

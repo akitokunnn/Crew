@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const {test} = require("node:test");
 
-const source = fs.readFileSync(path.join(__dirname, "../crew/web/app.js"), "utf8").replace(/\r\n/g, "\n");
+const source = fs.readFileSync(path.join(__dirname, "../../frontend/app.js"), "utf8").replace(/\r\n/g, "\n");
 const fixture = () => ({models:[{id:"claude-sonnet", name:"Sonnet"}, {id:"claude-haiku-4-5-20251001", name:"Haiku"}],
   efforts:["low", "medium", "high", "max"], runtimes:[
     {id:"claude", name:"Claude Code", available:true, error:null,
@@ -32,16 +32,20 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
   for (const id of ["menu", "backdrop", "main", "leader-panel", "trust-error", "leader-runtime-options", "leader-runtime-status", "leader-model-options", "leader-effort-note", "leader-effort-options", "leader-speed-field", "leader-speed-options"]) nodes.set(id, node());
   const escape = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"})[c]);
   const sandbox = {window:{matchMedia:() => ({matches:false})}, document:{visibilityState:"visible",hasFocus:()=>true,activeElement:null, getElementById:id => nodes.get(id) || null, addEventListener:(type, handler) => listeners.set(type, handler)},
-    location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console,
+    location:{search:"?project=fixture", origin:"http://fixture.local", hash:""}, URLSearchParams, URL, fetch:fetcher, console, EventSource:class {},
     CrewTheme:{logo:()=>""}, CrewChat:{renderInline:escape, renderMarkdown:text => `<p>${escape(text)}</p>`}};
   vm.createContext(sandbox);
-  const contextSource=fs.readFileSync(path.join(__dirname, "../crew/web/chat.js"), "utf8");
+  const contextSource=fs.readFileSync(path.join(__dirname, "../../frontend/chat.js"), "utf8");
   vm.runInContext(contextSource.slice(0, contextSource.indexOf("})();")+5), sandbox);
   sandbox.CrewContext=sandbox.window.CrewContext;
   sandbox.CrewActivity={markup:()=>""};
-  vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/workspace-home.js"),"utf8"),sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/browser-utils.js"),"utf8"),sandbox);
+  // index.html loads the workspace data layer before app.js; app.js sends requests through it.
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/app-data.js"),"utf8"),sandbox);
+  sandbox.CrewAppData=sandbox.window.CrewAppData;
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/workspace-home.js"),"utf8"),sandbox);
   sandbox.CrewWorkspaceHome=sandbox.window.CrewWorkspaceHome;
-  vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/settings-ui.js"),"utf8"),sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/settings-ui.js"),"utf8"),sandbox);
   // Expose lexical UI functions while leaving setup and its state-poll timer off.
   const end = "  setup();\n})();";
   assert(source.endsWith(end + "\n") || source.endsWith(end));
@@ -65,7 +69,7 @@ function harness(state = fixture(), fetcher = () => { throw new Error("Unexpecte
 const plain = value => JSON.parse(JSON.stringify(value));
 
 test("archive and delete conflicts toast the exact backend Chinese reason",async()=>{
-  for(const route of ["/api/session/archive","/api/session/delete"]){
+  for(const route of ["/api/op/session.archive","/api/op/session.delete"]){
     const reason="会话仍有待验收任务，请先完成验收",toasts=[];
     const {ui}=harness(fixture(),async()=>({ok:false,status:409,json:async()=>({error:reason})}));
     ui.services({toast:text=>toasts.push(text)});
@@ -89,7 +93,7 @@ test("runtime refresh corrects an automatic leader default while preserving the 
   const calls=[],{ui,nodes}=harness(fixture(),async url=>{calls.push(url);return {ok:true,json:async()=>({runtimes:updated.runtimes})};});
   const leader=form("");leader.dataset={};nodes.set("leader-form",leader);ui.renderLeaderRuntime();assert.equal(leader.elements.runtime.value,"");
   await ui.refreshRuntimes();assert.equal(leader.elements.runtime.value,"codex");assert.equal(leader.submit.disabled,false);assert.equal(ui.leaderPayload(leader).runtime,"codex");
-  assert.equal(leader.elements.name.value," fixture ");assert.equal(leader.elements.task.value," work ");assert.deepEqual(calls,["/api/runtimes?project=fixture"]);
+  assert.equal(leader.elements.name.value," fixture ");assert.equal(leader.elements.task.value," work ");assert.deepEqual(calls,["/api/op/runtimes.list?project=fixture"]);
 });
 
 test("saved default overrides installation order and keeps custom model and effort through catalog refresh",async()=>{
@@ -215,7 +219,7 @@ for (const scenario of [
       loadState:async () => ui.setState({...state, [role]:[{...item, ...changes}]}), toast:text => toasts.push(text)});
     click({act:`set-${scenario.field}`, id:item.session_id, [scenario.field]:scenario.value === null ? "" : scenario.value});
     await new Promise(setImmediate);
-    assert.deepEqual(requests, [{url:"/api/session/options", body:{session_id:item.session_id, ...changes}}]);
+    assert.deepEqual(requests, [{url:"/api/op/session.options.set", body:{session_id:item.session_id, ...changes}}]);
     assert.deepEqual(toasts, [scenario.expected], role);
   }
 });
@@ -284,7 +288,7 @@ test("an unavailable tool has a clear error and cannot submit or update options"
 test("explicit catalog refresh is deduplicated and old servers are never probed", async () => {
   let requests = 0, resolve;
   const response = new Promise(done => { resolve = done; });
-  const {ui} = harness(fixture(), url => {requests += 1; assert.equal(url, "/api/runtimes?project=fixture"); return response;});
+  const {ui} = harness(fixture(), url => {requests += 1; assert.equal(url, "/api/op/runtimes.list?project=fixture"); return response;});
   assert.equal(requests, 0);
   const first = ui.refreshRuntimes(), second = ui.refreshRuntimes();
   assert.equal(requests, 1);
@@ -385,11 +389,11 @@ test("resolving a personal action posts its version and undo uses the exact serv
     loadState:async () => {state.todos = state.todos.filter(item => item.id !== 44);},
     toast:(message, undo) => notices.push({message, undo})});
   await ui.resolveTodo("44");
-  assert.deepEqual(calls[0], ["/api/todo/resolve", {id:44, status:"done", note:"已授权", expected_version:2}]);
+  assert.deepEqual(calls[0], ["/api/op/todo.resolve", {id:44, status:"done", note:"已授权", expected_version:2}]);
   assert.equal(ui.todoActions.has("44"), false);
   assert.equal(typeof notices[0].undo, "function");
   await notices[0].undo();
-  assert.deepEqual(calls[1], ["/api/todo/undo", {id:44, before:receipt.before, version:3}]);
+  assert.deepEqual(calls[1], ["/api/op/todo.undo", {id:44, before:receipt.before, version:3}]);
 });
 
 test("a stale action retains the user's reason and asks them to review updated content", async () => {
@@ -539,19 +543,24 @@ test("offline conversations with history keep a usable compact ring without show
 });
 
 test("a ring queues only its own session, suppresses duplicate clicks, and clears on actual completion",async()=>{
-  for(const runtime of ["claude","codex"])for(const id of ["lead","member"]){
-    const {ui}=harness(contextState(runtime)),writes=[],toasts=[];let watcher,release;
+  for(const runtime of ["claude","codex"])for(const id of ["lead","member","git"]){
+    const state=contextState(runtime),writes=[],toasts=[];let watcher,release;
+    state.git_assistant={...state.leaders[0],session_id:"git",name:"Git 助手",builtin:true};
+    const {ui}=harness(state);
     ui.services({render(){},loadState:async()=>{},toast:text=>toasts.push(text),
       watchCompact:async(sid,options)=>{assert.equal(sid,id);watcher=options;return()=>{};},
       api:async(path,data)=>{writes.push({path,...data});return new Promise(resolve=>{release=resolve;});}});
     const pending=ui.compactContext(id);await Promise.resolve();await Promise.resolve();
     await ui.compactContext(id);
-    assert.equal(writes.length,1);assert.deepEqual(plain(writes[0]),{path:"/api/session/compact",session_id:id,after_turn:true});
+    assert.equal(writes.length,1);assert.deepEqual(plain(writes[0]),{path:"/api/op/session.compact",session_id:id,after_turn:true});
     release({ok:true,queued:true,message:"这一轮说完后压缩"});await pending;
     assert.equal(ui.compactions.get(id).phase,"queued");
-    const own=ui.contextRing({...contextState(runtime).leaders[0],session_id:id});
+    const item=[...state.leaders,...state.members,state.git_assistant].find(person=>person.session_id===id);
+    const own=ui.contextRing(item,id==="git");
     assert(own.includes('aria-busy="true" aria-disabled="true"'));assert(!own.includes(" disabled"),"stays focusable for keyboard users");assert(own.includes("已排队"));assert(own.includes("is-queued"));
+    if(id==="git") assert.match(own,/>等待压缩<\/span>/);
     watcher.onFinish({type:"compact",seq:3});assert.equal(ui.compactions.size,0);
+    if(id==="git") assert.match(ui.contextControls(item,true),/>压缩上下文<\/span>/);
     assert(toasts.some(text=>text.includes("这一轮说完后压缩")));
   }
 });
@@ -589,7 +598,7 @@ test("pinning keeps both parts ordered and saves the whole leader list",async()=
   const state=fixture(),posts=[],toasts=[];state.project={name:"fixture"};state.leaders=[{session_id:"p",name:"P",pinned:true},{session_id:"a",name:"A",pinned:false},{session_id:"b",name:"B",pinned:false}];
   const {ui}=harness(state);ui.services({api:async(path,data)=>posts.push({path,data:plain(data)}),loadState:async()=>{},toast:text=>toasts.push(text)});
   assert.deepEqual(plain(ui.sortableLeaders(state.leaders[1]).map(item=>item.session_id)),["a","b"]);
-  await ui.setPinned("b",true);assert.deepEqual(posts[0],{path:"/api/leaders/order",data:{project:"fixture",order:["b","p","a"],pinned:["b","p"]}});
+  await ui.setPinned("b",true);assert.deepEqual(posts[0],{path:"/api/op/leaders.order.set",data:{project:"fixture",order:["b","p","a"],pinned:["b","p"]}});
   await ui.setPinned("p",false);assert.deepEqual(posts[1].data,{project:"fixture",order:["p","a","b"],pinned:[]});
   assert.deepEqual(toasts,["已置顶「B」","已取消置顶「P」"]);
 });
@@ -602,4 +611,16 @@ test("Git rail attention comes from state before any Git snapshot is read",()=>{
   const {ui,nodes}=harness(state);nodes.set("sidebar",{innerHTML:"",dataset:{},contains:()=>false,querySelectorAll:()=>[]});ui.services({});
   ui.renderSidebar();assert.match(nodes.get("sidebar").innerHTML,/class="rail-git"[\s\S]*?class="rail-badge">7<\/span>/);assert.doesNotMatch(nodes.get("sidebar").innerHTML,/>99<\/span>/);
   state.git_assistant=null;ui.renderSidebar();assert.doesNotMatch(nodes.get("sidebar").innerHTML,/class="rail-badge"/);
+});
+test("the leader list says while branch chips are computed and shows why their scan failed",()=>{
+  const state=fixture();Object.assign(state,{project:{name:"fixture"},leaders:[],members:[],todos:[],decisions:[],git_assistant:null,git_branches:{pending:true},channel:{unread:0},notification:{channels:[],error:null,away:false},limits:{claude:{seven_day:null},codex:null}});
+  const {ui,nodes}=harness(state);nodes.set("sidebar",{innerHTML:"",dataset:{},contains:()=>false,querySelectorAll:()=>[]});ui.services({});
+  const panel=()=>nodes.get("leader-panel").innerHTML;
+  ui.renderSidebar();
+  assert.match(panel(),/<\/button><p class="leader-git-status" role="status"><span class="spin" aria-hidden="true"><\/span><span>分支信息计算中…<\/span><\/p><div class="leader-panel-leaders">/);
+  state.git_branches={error:"fatal: detected dubious ownership in repository at 'C:/repo'\nTo add an exception for this directory, call:"};ui.renderSidebar();
+  assert.match(panel(),/<button type="button" class="leader-git-status error" data-act="view" data-view="git" title="分支信息读取失败：fatal: detected dubious ownership in repository at &#39;C:\/repo&#39;\nTo add an exception for this directory, call:\n点击打开 Git 页"><span>分支信息读取失败：fatal: detected dubious ownership in repository at &#39;C:\/repo&#39;<\/span><span aria-hidden="true">›<\/span><\/button>/);
+  for (const value of [{base:{name:"develop"},integration:null,branches:[]},null]) {
+    state.git_branches=value;ui.renderSidebar();assert.doesNotMatch(panel(),/leader-git-status/);
+  }
 });

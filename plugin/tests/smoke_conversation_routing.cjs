@@ -15,6 +15,8 @@ if(!process.versions.electron){
 }else{
   require.cache[require.resolve(path.join(desktop,'src/main.cjs'))]={id:path.join(desktop,'src/main.cjs'),filename:path.join(desktop,'src/main.cjs'),loaded:true,exports:{}};
   const {app,BrowserWindow,nativeTheme}=require('electron'),home=process.argv.find(value=>value.startsWith('--crew-routing-home=')).slice('--crew-routing-home='.length);
+  // Viewport checks use exact breakpoints (375 / 760); a scaled host display rounds the offscreen window a few pixels wider.
+  app.commandLine.appendSwitch('force-device-scale-factor','1');
   require('node:fs').mkdirSync(path.join(home,'electron'),{recursive:true});app.setPath('userData',path.join(home,'electron'));
   const evidence={home,checks:[],screenshots:[],errors:[],modelTurnsStarted:0,carrier:'FakeProcess only'},messages=[];
   let fixture,window,closed=false;
@@ -44,7 +46,7 @@ if(!process.versions.electron){
           await check('autonomy is not saved without a written scope','document.querySelector("#trust-error").textContent.includes("授权范围")&&!!document.querySelector("#trust-form")');
           await js(`document.querySelector('#trust-goal').value='推进本组交办的工作，遵守各任务原始要求与约束';document.querySelector("#trust-form").requestSubmit();true;`);
         }
-        await wait(`(async()=>{const state=await fetch('/api/state?project=demo').then(r=>r.json());return state.leaders.find(item=>item.session_id===${JSON.stringify(bootstrap.leader)}).trust.enabled===${mode==='autonomous'}})()`);
+        await wait(`(async()=>{const state=await fetch('/api/op/workspace.state?project=demo').then(r=>r.json());return state.leaders.find(item=>item.session_id===${JSON.stringify(bootstrap.leader)}).trust.enabled===${mode==='autonomous'}})()`);
       }
       async function type(text){await js(`document.querySelector('#chat-host textarea').value=${JSON.stringify(text)};document.querySelector('#chat-host textarea').dispatchEvent(new Event('input',{bubbles:true}));true;`);}
       async function capture(name){await js('document.fonts.ready.then(()=>true)');await pause(120);wc.debugger.attach('1.3');try{const result=await wc.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});const file=path.join(out,name+'.png');await fs.writeFile(file,Buffer.from(result.data,'base64'));evidence.screenshots.push(file);}finally{wc.debugger.detach();}}
@@ -54,9 +56,9 @@ if(!process.versions.electron){
       await click('[data-act="right-open"]');await pause(450);
       await check('real backend positions the conversation structure in the visible right column','(()=>{const root=document.querySelector("#chat-attention"),p=root.getBoundingClientRect(),r=document.querySelector("#right-panel").getBoundingClientRect();return getComputedStyle(root).position==="fixed"&&r.width>200&&r.height>300&&r.right<=innerWidth&&Math.abs(p.top-r.top)<1&&!!document.querySelector("#right-panel .rp-leader")})()');
       await check('conversation structure shows the leader branch and only runs of the active conversation',
-        '(()=>{const p=document.querySelector("#right-panel");return p.querySelector(".rp-branch")?.textContent.includes("语音评测")&&p.textContent.includes("盘点语音样本")&&p.textContent.includes("gpt-6-luna")&&p.textContent.includes("强度")&&p.querySelector(".rp-speed")?.textContent.includes("标准")&&p.querySelectorAll(".rp-run").length===3})()');
+        '(()=>{const p=document.querySelector("#right-panel");return p.querySelector(".rp-branch")?.textContent.includes("语音评测")&&p.textContent.includes("盘点语音样本")&&p.textContent.includes("gpt-6-luna")&&p.textContent.includes("强度")&&p.querySelector(".rp-speed")?.textContent.includes("标准")&&p.querySelectorAll(".rp-dispatch .rp-run").length===3})()');
       await check('completed and interrupted dispatches start folded while the running dispatch stays visible',
-        '(()=>{const p=document.querySelector("#right-panel"),d=p.querySelector(".rp-history");return d&&!d.open&&d.querySelector("summary").textContent.includes("2")&&!p.innerText.includes("盘点语音样本")&&!p.innerText.includes("复核录音环境")&&p.innerText.includes("核对声学样本")&&p.querySelector(".rp-dispatch-head").textContent.includes("运行中 1 个")})()');
+        '(()=>{const p=document.querySelector("#right-panel .rp-dispatch"),d=p.querySelector(".rp-history");return d&&!d.open&&d.querySelector("summary").textContent.includes("2")&&!p.innerText.includes("盘点语音样本")&&!p.innerText.includes("复核录音环境")&&p.innerText.includes("核对声学样本")&&p.querySelector(".rp-dispatch-head").textContent.includes("运行中 1 个")})()');
       await capture('structure-history-folded');
       await click('.rp-history > summary');
       await check('expanded history keeps the individual interrupted and completed statuses',
@@ -100,7 +102,7 @@ if(!process.versions.electron){
       await check('leader authorization saves through real HTTP without starting its general conversation',
         '!document.querySelector("#chat-host .chat-activity")');
       await check('leader authorization leaves the existing task modes intact',
-        `(async()=>{const state=await fetch('/api/state?project=demo').then(r=>r.json());return state.leaders.find(item=>item.session_id===${JSON.stringify(bootstrap.leader)}).trust.enabled&&state.goals.filter(item=>item.leader_session_id===${JSON.stringify(bootstrap.leader)}).every(item=>item.decision_mode.mode==='human')})()`);
+        `(async()=>{const state=await fetch('/api/op/workspace.state?project=demo').then(r=>r.json());return state.leaders.find(item=>item.session_id===${JSON.stringify(bootstrap.leader)}).trust.enabled&&state.goals.filter(item=>item.leader_session_id===${JSON.stringify(bootstrap.leader)}).every(item=>item.decision_mode.mode==='human')})()`);
       await capture('00-leader-autonomy');
       window.setSize(390,844);await capture('00-leader-autonomy-mobile');window.setSize(1280,900);
       await trust("human");
@@ -165,6 +167,34 @@ if(!process.versions.electron){
       await check('a completed coordination reply clears only general progress while tasks stay active','document.querySelector("#chat-head [data-act=tasks-toggle]").textContent.includes("2")&&document.querySelector("#chat-host textarea").value==="主对话草稿"');
       await capture('03-general-idle-tasks-active');
       evidence.reply=messages.find(value=>value.replied);assert.equal(evidence.reply.parallel_tasks,2);assert.equal(evidence.reply.source_general_started,false);assert.equal(evidence.errors.length,0,JSON.stringify(evidence.errors));
+      fixture.stdin.write('start-group-executions\n');
+      await until(()=>messages.some(value=>value.group_executions_started),'six group executions started');
+      nativeTheme.themeSource='light';window.setSize(1280,900);
+      if(!await js('document.querySelector("#leader-panel").dataset.open==="true"')) await click('#leader-entry');
+      if(await js('document.querySelector("#task-list").dataset.open==="true"')) await click('[data-act="tasks-toggle"]');
+      await check('the sidebar reports six running task members in the group',
+        'document.querySelector(\'#leader-panel [data-id="coordinator"].leader-row\')?.textContent.includes("6 个执行在干活")');
+      await click('[data-act="right-open"]');
+      await check('the general conversation structure lists the same six members and their task',
+        '(()=>{const panel=document.querySelector("#right-panel"),group=panel.querySelector(".rp-executions"),dispatch=panel.querySelector(".rp-dispatch"),history=dispatch.querySelector(".rp-history");return !panel.hidden&&group?.querySelectorAll("button.rp-run").length===6&&group.querySelectorAll("[data-runtime=codex]").length===3&&group.querySelectorAll("[data-runtime=claude]").length===3&&[...group.querySelectorAll("button.rp-run")].every(run=>run.textContent.includes("客户端联调")&&run.querySelector("[data-status=running]"))&&dispatch.querySelector(".rp-dispatch-head").textContent.includes("运行中 0 个")&&history&&!history.open})()');
+      await wait('!document.querySelector("#toast-root .toast")');
+      await capture('structure-group-executions');
+      await click('#leader-entry');
+      for(const width of [375,760]){
+        window.setSize(width,844);
+        for(const theme of ['light','dark']){
+          nativeTheme.themeSource=theme;
+          await check('the group executions fit at '+width+' in '+theme,
+            '(()=>{const panel=document.querySelector("#right-panel"),tree=panel.querySelector(".rp-tree"),run=panel.querySelector(".rp-executions button.rp-run"),rect=run.getBoundingClientRect();return !panel.hidden&&tree.scrollWidth<=tree.clientWidth+1&&rect.height>=44&&rect.right<=innerWidth&&run.contains(document.elementFromPoint(rect.left+10,rect.top+10))})()');
+          await capture('structure-group-executions-'+width+'-'+theme);
+        }
+      }
+      nativeTheme.themeSource='light';window.setSize(1280,900);
+      await click('#right-panel .rp-executions [data-id="group-execution-1"]');
+      await check('clicking a Codex member opens the task execution instead of the general chat',
+        'document.querySelector(".chat-name")?.textContent==="核对日志"&&document.querySelector(".member-scope-label")?.textContent.includes("客户端联调")&&!document.querySelector("#right-panel .rp-executions")');
+      await capture('structure-member-execution');
+      await click('#leader-panel [data-act="leader"][data-id="coordinator"]');
       await click('#chat-head [data-act="session-menu"]');
       await click('[data-act="close-group"][data-with-members="false"]');
       await wait(`!document.querySelector('#sidebar [data-act="leader"][data-id="${bootstrap.leader}"]')`);

@@ -30,14 +30,14 @@ function fixture(t, options = {}) {
     },
     request: async (_base, route, body, timeout) => {
       if (route === '/api/admin/health') { calls.push('health'); return health(); }
-      if (route === '/api/admin/update/prepare') {
+      if (route === '/api/op/admin.update.prepare') {
         calls.push('prepare'); assert.deepEqual(body, { instance_id: 'old-instance' }); assert.equal(timeout, 15000);
         if (options.onPrepare) options.onPrepare();
         if (options.prepareWait) await options.prepareWait;
         return options.busy ? { ok: false, status: 'busy', reasons: ['leader 正在回复'] } :
           { ok: true, status: 'ready', instance_id: 'old-instance', pid: 101, gate_id: 'update-gate', managed_pids: [103] };
       }
-      if (route === '/api/admin/update/cancel') {
+      if (route === '/api/op/admin.update.cancel') {
         calls.push('cancel-gate'); assert.deepEqual(body, { instance_id: 'old-instance', gate_id: 'update-gate' }); return { ok: true };
       }
       throw new Error('Unexpected request ' + route);

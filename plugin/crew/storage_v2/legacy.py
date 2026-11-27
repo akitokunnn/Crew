@@ -19,7 +19,7 @@ import sqlite3
 import tempfile
 import uuid
 
-TRANSFORM_VERSION = 'crew-v1-to-v2/1'
+TRANSFORM_VERSION = 'crew-v1-to-v2/2'
 NAMESPACE = uuid.UUID('11182da6-0b1e-5817-a488-4715fd5d599e')
 PRIVATE_TABLES = {'ai_settings', 'ai_task_settings', 'execution_settings', 'sound_settings', 'usage_files', 'trust_schema_migrations',
                   'notification_inbound', 'lark_notification_inbound'}
@@ -759,6 +759,8 @@ class _Projector:
                 existing=self.id('reports',source,self.sourcekey(source,row),_hash(_json(_pack(row)).encode()))
                 if existing in self.valid_aliases:
                     self.mark(source,row,'reports',existing)
+                    if source == 'goal_reports':
+                        self.report_version(existing, row)
                     continue
                 if source == 'reports':
                     agent, rid, body, data, html = self.agent(row['session_id']), None, row['body'], '{}', None
@@ -784,11 +786,20 @@ class _Projector:
                     kind='goal_delivery' if source == 'goal_reports' else 'phase', title='历史交付报告' if source == 'goal_reports' else '历史进展',
                     summary=body[:300], outcome='informational' if row.get('outcome') == 'progress' else row.get('outcome') or 'informational', body_markdown=body, data_json=data,
                     html_artifact_version_id=html_version)
+                if source == 'goal_reports':
+                    self.report_version(report, row)
                 _,body_version,_=self.artifact(source + ':body:' + str(row['id']), body.encode('utf-8'), 'report.md', 'report', 'text/markdown')
                 for version in (body_version,html_version):
                     if version:
                         self.put('artifact_links',self.id('artifact_links','report',[report,version]),artifact_version_id=version,
                                  relation='deliverable',report_id=report)
+
+    def report_version(self, report_id, row):
+        self.conn.execute(
+            'INSERT INTO goal_report_versions(id,workspace_id,report_id,format_version,version,requirement_version,created_at) '
+            'VALUES(?,?,?,2,?,?,?) ON CONFLICT(report_id) DO UPDATE SET format_version=2,version=excluded.version,'
+            'requirement_version=excluded.requirement_version,created_at=excluded.created_at WHERE format_version=1',
+            (report_id, self.ws, report_id, row['version'], row['requirement_version'], row['created_at']))
 
     def channel(self):
         if not self.rows.get('channel_messages'): return

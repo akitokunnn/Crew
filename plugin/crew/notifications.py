@@ -108,6 +108,16 @@ def desktop_locked():
 
 
 class Inbox:
+    # Fields status() and the channel state show; assigning one a different value marks the snapshot's
+    # `notification` field (docs/EVENT_STREAM_DESIGN.md §6.1). Config changes mark in save_config.
+    SHOWN = frozenset({'error', 'presence_error', 'locked', 'channel', 'enabled', 'credentials', 'domain'})
+
+    def __setattr__(self, name, value):
+        changed = name in self.SHOWN and name in self.__dict__ and self.__dict__[name] != value
+        object.__setattr__(self, name, value)
+        if changed:
+            self.service.chat.changes.mark('notification', None, 'notification')
+
     def __init__(self, service, client=None, lock_status=desktop_locked, batch_seconds=30, channel_id='qq'):
         if channel_id not in ('qq', 'lark'):
             raise ValueError('未知远程通道')
@@ -182,6 +192,7 @@ class Inbox:
         # A rename-into-place collides with Windows scanners holding the fresh temp file; the file is tiny.
         with self.lock:
             self.config_path.write_text(json.dumps(self.config, ensure_ascii=False, indent=2), encoding='utf-8')
+        self.service.chat.changes.mark('notification', None, 'notification')
 
     def start(self):
         if self.credentials is None or not self.enabled:
@@ -475,10 +486,12 @@ class Inbox:
                     # and the other channel continue independently.
                     continue
 
-    def delivery_snapshot(self):
-        with closing(store.connect(self.home)) as conn:
-            rows = self.execute(conn, 'SELECT item_id,kind,status,attempts,next_attempt,message_id,error FROM notification_messages '
-                                'ORDER BY created_at DESC,item_id DESC LIMIT 20').fetchall()
+    def delivery_snapshot(self, conn=None):
+        if conn is None:
+            with closing(store.connect(self.home)) as connection:
+                return self.delivery_snapshot(connection)
+        rows = self.execute(conn, 'SELECT item_id,kind,status,attempts,next_attempt,message_id,error FROM notification_messages '
+                            'ORDER BY created_at DESC,item_id DESC LIMIT 20').fetchall()
         return {'max_retries': MAX_RETRIES, 'receipts': [dict(row) for row in rows]}
 
     def question_message(self, entry):

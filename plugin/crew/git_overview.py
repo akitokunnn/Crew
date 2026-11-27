@@ -56,10 +56,27 @@ def read(conn, project, config, force=False):
     `owners` holds that one leader, or nothing. The Git assistant's own merge worktree is plumbing, not
     work, so it is neither listed nor counted as an owner.
     """
+    return _owned(conn, project, config, git_view.view(project['root'], config, exclude=excluded(conn, config), force=force))
+
+
+def cached(conn, project, config, exclude):
+    """read() from the last scan without running Git: (data, error, due) as git_view.cached gives them.
+
+    `exclude` is excluded(conn, config), which the caller also hands to the scan it starts when due.
+    """
+    data, error, due = git_view.cached(project['root'], config, exclude)
+    return None if data is None else _owned(conn, project, config, data), error, due
+
+
+def excluded(conn, config):
+    """The Git assistant's own merge branch, which the view leaves out."""
+    admin = conn.execute('SELECT branch FROM sessions WHERE session_id=?', (config['admin_session_id'],)).fetchone()
+    return () if admin is None or admin['branch'] is None else (admin['branch'],)
+
+
+def _owned(conn, project, config, data):
+    """`data` with the one leader answering for each branch (see read)."""
     admin_id = config['admin_session_id']
-    admin = conn.execute('SELECT branch FROM sessions WHERE session_id=?', (admin_id,)).fetchone()
-    exclude = () if admin is None or admin['branch'] is None else (admin['branch'],)
-    data = git_view.view(project['root'], config, exclude=exclude, force=force)
     sessions = _sessions(conn, project['name'], admin_id)
     names = {branch['name'] for branch in data['branches']}
     paths = {store.norm_path(branch['worktree']): branch['name'] for branch in data['branches'] if branch['worktree']}

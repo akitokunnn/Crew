@@ -71,8 +71,8 @@ class GoalMessageTests(GoalFixture):
             self.assertIn('Sample ' + str(index) + ' has new evidence', text)
         self.assertIn('不代表用户授权', text)
         # The reply rule is stated once per batch; each message keeps its own sender and id.
-        self.assertEqual(text.count('--reply-to'), 1)
-        self.assertIn('--kind result|blocker --reply-to <消息编号>', text)
+        self.assertEqual(text.count('`reply_to`'), 1)
+        self.assertIn('结果设 `kind=result`，阻塞设 `kind=blocker`，`reply_to` 填原消息编号', text)
         self.assertEqual(text.count(' · result · 消息'), 10)
         self.assertEqual(self.controller.send.call_args.kwargs['source'], 'peer')
         self.assertTrue(all(self.row(receipt)['status'] == 'accepted' for receipt in receipts))
@@ -177,7 +177,7 @@ class GoalMessageTests(GoalFixture):
         self.assertEqual(native.call_count, 1)
         self.assertEqual(self.controller.send.call_count, 3)
         self.assertEqual(self.row(receipt)['status'], 'failed')
-        journal = chat.Journal(manager.path(self.target['id']))
+        journal = chat.Journal(manager.path(self.target['id']), None)
         identity = self.controller.send.call_args.kwargs['identity']
         self.assertEqual(journal.inputs[identity]['status'], 'unknown')
 
@@ -303,7 +303,7 @@ class GoalMessageTests(GoalFixture):
         lines = messaging.take_for_hook(self.conn,'foreign-chief')
         self.assertEqual(len(lines),1)
         self.assertIn(self.active_goal['id'],lines[0])
-        self.assertIn('--reply-to '+original['message_id'],lines[0])
+        self.assertIn('`reply_to` 填 '+original['message_id'],lines[0])
         self.assertEqual(self.row(original)['status'],'delivered')
         receipt = messaging.receipt(self.conn,original['message_id'])
         self.assertFalse(receipt['accepted'])
@@ -320,7 +320,7 @@ class GoalMessageTests(GoalFixture):
 
     def test_general_hook_never_repeats_unknown_input_and_reconciles_an_accepted_receipt(self):
         receipt = messaging.queue(self.conn,'member-id','chief-id','General evidence',kind='result')
-        journal = chat.Journal(self.home/'chat'/'chief-id.jsonl')
+        journal = chat.Journal(self.home/'chat'/'chief-id.jsonl', None)
         identity = 'peer:'+receipt['message_id']
         journal.emit('input_delivery',message_id=identity,status='unknown')
         self.assertEqual(messaging.take_for_hook(self.conn,'chief-id'),[])

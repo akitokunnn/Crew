@@ -54,7 +54,7 @@ class ReadingContextTests(ShellFixture, unittest.TestCase):
         data = {'session_id': session_id, 'text': text, 'message_id': message_id, 'reading': reading}
         if goal_id is not None:
             data['goal_id'] = goal_id
-        return self.request('/api/chat/send?project=demo', data)
+        return self.request('/api/op/chat.send?project=demo', data)
 
     def delivered(self, key, runtime='claude'):
         current = self.server.service.chat.processes[key]
@@ -70,7 +70,7 @@ class ReadingContextTests(ShellFixture, unittest.TestCase):
             query['project'] = project
         if goal_id is not None:
             query['goal_id'] = goal_id
-        code, history, _ = self.request('/api/chat/history?' + urlencode(query))
+        code, history, _ = self.request('/api/op/chat.history?' + urlencode(query))
         self.assertEqual(code, 200, history)
         messages = [event for event in history['events'] if event['type'] == 'message' and event['id'] == message_id]
         self.assertEqual(len(messages), 1, messages)
@@ -153,7 +153,7 @@ class ReadingContextTests(ShellFixture, unittest.TestCase):
         removed.write_text('登记后删除', encoding='utf-8')
         document = documents.register(self.conn, 's3', str(removed), title='已删除文件', summary='测试错误')
         removed.unlink()
-        invalid = [(value, '阅读内容格式不正确') for value in (False, [], 'report', {}, {'kind': []}, {'kind': 'unknown'})]
+        invalid = [(value, 'arguments.reading') for value in (False, [], 'report', {}, {'kind': []}, {'kind': 'unknown'})]
         invalid += [
             ({'kind': 'report', 'report_id': reading['report_id']}, '阅读内容缺少 goal_id'),
             ({'kind': 'report', 'goal_id': goal['id']}, '阅读内容缺少 report_id'),
@@ -223,11 +223,11 @@ class ReadingContextTests(ShellFixture, unittest.TestCase):
     def test_note_and_reading_prefixes_keep_order_and_note_tracking(self):
         _, reading = self.saved_report()
         note = personal.note_action(self.conn, 'capture', {'text': '附注并存的想法原文'}, request_id='capture-note')['note']
-        code, opened, _ = self.request('/api/assistant/open', {})
+        code, opened, _ = self.request('/api/op/assistant.open', {})
         self.assertEqual(code, 200, opened)
         session_id = opened['session_id']
         text = '请结合正在看的报告讨论这个想法'
-        code, sent, _ = self.request('/api/chat/send', {
+        code, sent, _ = self.request('/api/op/chat.send', {
             'session_id': session_id, 'text': text, 'reading': reading, 'note_id': note['id'], 'message_id': 'combined'})
         self.assertEqual(code, 200, sent)
         delivered = self.delivered(session_id)

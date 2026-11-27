@@ -1,14 +1,12 @@
 """Human-only manual action completion with durable, reversible agent notices."""
 import tests
-import contextlib
-import io
-import json
-import os
 import threading
 import unittest
 from unittest import mock
 
-from crew import board, cli, store, todo
+from test_core import operation_service
+from tests.ops_helpers import ai_call
+from crew import board, store, todo
 from tests.test_runtimes import RuntimeFixture
 
 
@@ -221,24 +219,17 @@ class TodoTests(RuntimeFixture):
         self.assertEqual([entry["leader_session_id"] for entry in todo.backfill(self.conn, "demo")], ["new-chief"])
         self.assertEqual([entry["leader_session_id"] for entry in todo.backfill(self.conn)], ["foreign-id"])
 
-    def test_cli_todo_uses_host_home_and_identity_for_add_list_and_withdraw(self):
-        def run(arguments):
-            output, errors = io.StringIO(), io.StringIO()
-            with mock.patch.dict(os.environ, {"CREW_HOME": str(self.home), "CREW_SESSION_ID": "member-id",
-                                              "CLAUDE_CODE_SESSION_ID": "unrelated-native-id"}), \
-                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
-                code = cli.main(arguments, cwd=self.root)
-            self.assertEqual(code, 0, errors.getvalue())
-            return json.loads(output.getvalue())
-        added = run(["todo", "add", "Connect device", "--steps", "Plug it in", "--verify", "Listed", "--blocking", "--json"])
-        self.assertEqual(added["session_id"], "member-id")
-        self.assertEqual(run(["todo", "--json"]), [added])
-        self.assertEqual(run(["todo", "list", "--json"]), [added])
-        self.assertEqual(run(["todos", "--json"]), [added])
-        withdrawn = run(["todo", "withdraw", str(added["id"]), "--reason", "No longer needed", "--json"])
-        self.assertEqual(withdrawn["todo"]["status"], "withdrawn")
-        self.assertEqual(run(["todo", "--json"]), [])
-        self.assertEqual(run(["todos", "--all", "--json"])[0]["status"], "withdrawn")
+    def test_member_adds_lists_and_withdraws_own_todo(self):
+        service = operation_service(self, self.root)
+        def call(name, args=None):
+            return ai_call(service, self.conn, 'member-id', name, args)
+        added = call('todo.add', {'title': 'Connect device', 'steps': 'Plug it in', 'verification': 'Listed', 'blocking': True})
+        self.assertEqual(added['session_id'], 'member-id')
+        self.assertEqual(call('todo.list'), [added])
+        withdrawn = call('todo.withdraw', {'id': added['id'], 'reason': 'No longer needed'})
+        self.assertEqual(withdrawn['todo']['status'], 'withdrawn')
+        self.assertEqual(call('todo.list'), [])
+        self.assertEqual(call('todo.list', {'all': True})[0]['status'], 'withdrawn')
 
 
 if __name__ == "__main__":

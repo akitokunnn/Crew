@@ -1,13 +1,14 @@
-"""Public goal tools/CLI share actor, version, host and report invariants."""
-from contextlib import closing, redirect_stdout, redirect_stderr
-import io
+"""Goal operations preserve actor, version, host and report invariants."""
+from contextlib import closing
 import json
-import os
 import unittest
 from unittest import mock
 
 import tests
-from crew import board, cli, codex_tools, goal_actions, goal_context, goal_links, goal_work, goals, store
+from test_core import operation_service
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
+from crew import board, goal_actions, goal_links, goal_work, goals, store
 from tests.test_goals import GoalFixture
 
 
@@ -35,24 +36,17 @@ class GoalActionTests(GoalFixture):
     def report(self, outcome='awaiting_acceptance'):
         return {**super().report(), 'outcome': outcome}
 
-    def without_page(self):
-        # The CLI supplies the page from --html-file instead of the JSON.
-        return {key: value for key, value in self.report().items() if key != 'document_html'}
-
     def setUp(self):
         super().setUp()
         self.host = Host(self.home)
+        self.service = operation_service(self, self.root)
 
     def dispatch(self, action, data, actor='chief-id', execution=None, host=True):
         return goal_actions.dispatch(self.home, actor, execution, action, data, self.host if host else None)
 
-    def tool(self, execution, handler=None, router=None):
-        return codex_tools.CodexTools(self.home, 'chief-id', execution_id=execution['id'], goal_handler=handler, send_message=router)
-
-    def call(self, tool, name, args, success=True):
-        result = tool({'tool': name, 'arguments': args})
-        self.assertEqual(result['success'], success, result)
-        return json.loads(result['contentItems'][0]['text'])
+    def call(self, execution, operation, args=None):
+        return ai_call(self.service, self.conn, 'chief-id', operation, args,
+                       execution_id=execution['id'], runtime=execution['runtime'])
 
     def test_plain_status_does_not_create_goal_report_or_execution(self):
         result = self.dispatch('status', {}, host=False)
@@ -60,22 +54,12 @@ class GoalActionTests(GoalFixture):
         self.assertEqual(self.host.calls, [])
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_reports').fetchone()[0], 0)
 
-    def test_cli_archive_and_close_carry_host_actor_and_reject_session_spoofing(self):
-        for key in ('CREW_SESSION_ID', 'CLAUDE_CODE_SESSION_ID'):
-            with self.subTest(carrier=key), mock.patch('crew.spawn.request_start', return_value={'ok': True}) as request:
-                code, _, errors = self.invoke_cli(['archive', 'builder'], {key: 'chief-id'})
-                self.assertEqual(code, 0, errors)
-                self.assertEqual(request.call_args.args[2:], ('/api/session/archive', {
-                    'session_id': 'member-id', 'caller_session_id': 'chief-id'}))
-                code, _, errors = self.invoke_cli(['leader', 'close', 'chief'], {key: 'chief-id'})
-                self.assertEqual(code, 0, errors)
-                self.assertEqual(request.call_args.args[-1]['caller_session_id'], 'chief-id')
-                request.reset_mock()
-                for command in (['archive', 'builder'], ['leader', 'close', 'chief']):
-                    code, _, errors = self.invoke_cli(['--session', 'chief-id', *command], {key: 'member-id'})
-                    self.assertNotEqual(code, 0)
-                    self.assertIn('不能用 --session', errors)
-                request.assert_not_called()
+    def test_archive_uses_the_current_leaders_identity(self):
+        with self.assertRaises(OpError) as denied:
+            ai_call(self.service, self.conn, 'member-id', 'session.archive', {'target': 'builder'})
+        self.assertEqual(denied.exception.code, 'forbidden')
+        ai_call(self.service, self.conn, 'chief-id', 'session.archive', {'target': 'builder'})
+        self.assertTrue(board.is_archived(self.conn, 'member-id'))
 
     def test_discussion_tool_allows_only_current_task_amend_then_same_task_work(self):
         goal = self.goal()
@@ -87,25 +71,24 @@ class GoalActionTests(GoalFixture):
         accepted = goals.review_acceptance(self.conn, goal['id'], True, note='Original accepted.', expected_version=ready['version'])
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex', discussion_message_id='human-small-change')
         goals.set_execution_status(self.conn, execution['id'], 'running')
-        def handler(action, data, actor, execution_id=None):
-            return self.dispatch(action, data, actor=actor, execution=execution_id)
-        tool = self.tool(execution, handler=handler)
-        self.call(tool, 'crew_goal', {'action': 'status'})
-        self.call(tool, 'crew_goal', {'action': 'work.add', 'data': {'key': 'unexpected', 'title': 'Unrequested', 'acceptance': 'No'}}, success=False)
+        self.call(execution, 'goal.get')
+        with self.assertRaises((board.BoardError, OpError)):
+            self.call(execution, 'goal.work.add', {'key': 'unexpected', 'title': 'Unrequested', 'acceptance': 'No'})
         another = self.goal()
-        self.call(tool, 'crew_goal', {'action': 'amend', 'goal_id': another['id'], 'data': {'text': 'Wrong scope'}}, success=False)
+        with self.assertRaises(OpError):
+            self.call(execution, 'goal.amend', {'goal_id': another['id'], 'text': 'Wrong scope'})
         self.assertEqual(goals.get(self.conn, goal['id']), accepted)
-        change = {'action': 'amend', 'data': {'text': 'Correct only a displayed label.', 'expected_version': accepted['version']}}
-        revised = self.call(tool, 'crew_goal', change)
+        change = {'text': 'Correct only a displayed label.', 'expected_version': accepted['version']}
+        revised = self.call(execution, 'goal.amend', change)
         self.assertEqual((revised['current_round'], revised['status']), (1, 'running'))
         self.assertEqual(revised['requirements']['source']['actor'], 'chief-id')
-        self.assertEqual(self.call(tool, 'crew_goal', change)['version'], revised['version'])
+        self.assertEqual(self.call(execution, 'goal.amend', change)['version'], revised['version'])
         self.assertEqual(goals.get_execution(self.conn, execution['id'])['response_mode'], 'work')
         old_work = goal_work.items(self.conn, goal['id'])[0]
         self.assertEqual((old_work['status'], old_work['note']), ('done', 'Original evidence retained'))
-        added = self.call(tool, 'crew_goal', {'action': 'work.add', 'data': {'key': 'label', 'title': 'Correct label', 'acceptance': 'New label visible'}})
-        self.call(tool, 'crew_goal', {'action': 'work.update', 'data': {'key': 'label', 'version': added['version'], 'status': 'done', 'note': 'Changed label checked'}})
-        self.call(tool, 'crew_goal', {'action': 'finish', 'data': {'report': self.report()}})
+        added = self.call(execution, 'goal.work.add', {'key': 'label', 'title': 'Correct label', 'acceptance': 'New label visible'})
+        self.call(execution, 'goal.work.update', {'key': 'label', 'version': added['version'], 'status': 'done', 'note': 'Changed label checked'})
+        self.call(execution, 'goal.finish', {'report': self.report()})
         goals.set_execution_status(self.conn, execution['id'], 'idle')
         self.assertTrue(goals.finalize_finish(self.conn, goal['id'])['finalized'])
         self.assertEqual(goals.get(self.conn, goal['id'])['current_round'], 1)
@@ -161,16 +144,11 @@ class GoalActionTests(GoalFixture):
         self.assertIn('依赖目标尚未完成', str(refused.exception))
 
     def test_codex_create_tool_passes_start_to_the_shared_route(self):
-        seen = []
-        def handler(action, data, sid, execution_id=None):
-            seen.append((action, data))
-            return {'goal': {'id': 'g'}, 'receipt': {'ok': True}}
-        execution = goals.create_execution(self.conn, self.goal()['id'], 'chief-id', runtime='codex')
-        self.call(self.tool(execution, handler), 'crew_goal',
-                  {'action': 'create', 'data': {'title': 'T', 'request': 'R', 'acceptance': ['A'], 'start': True}})
-        self.assertIs(seen[-1][1]['start'], True)
-        spec = next(item for item in codex_tools.tool_specs() if item['name'] == 'crew_goal')
-        self.assertIn('start (true starts it at once', spec['description'])
+        data = {'title': 'T', 'request': 'R', 'acceptance': ['A'], 'start': True}
+        with mock.patch.object(self.service.chat.goal_controller, 'send', wraps=self.host.send):
+            result = ai_call(self.service, self.conn, 'chief-id', 'goal.create', data, runtime='codex')
+        self.assertEqual(goals.get(self.conn, result['goal']['id'])['status'], 'running')
+        self.assertEqual(self.host.calls[0][1:4], (result['goal']['id'], 'chief-id', 'R'))
 
     def test_assignment_is_configuration_until_explicitly_started(self):
         goal = self.goal()
@@ -250,144 +228,93 @@ class GoalActionTests(GoalFixture):
         self.assertEqual(result['goal']['status'], 'pausing')
         self.assertIsNotNone(self.conn.execute('SELECT * FROM goal_cancellations').fetchone())
 
-    def test_goal_codex_binding_is_independent_of_default_claude_runtime_and_readonly_without_host(self):
+    def test_codex_execution_reads_bound_goal_despite_default_claude_runtime(self):
         goal = self.goal()
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
-        tool = self.tool(execution)
-        result = self.call(tool, 'crew_goal', {'action': 'status'})
-        self.assertEqual(result['goal']['id'], goal['id'])
-        rejected = self.call(tool, 'crew_context', {'action': 'put', 'data': {'kind':'fact','text':'x','source':{'type':'test','id':'x'}}}, False)
-        self.assertEqual(rejected['error']['code'], 'goal_host_unavailable')
-        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM goal_context_items').fetchone()[0], 0)
+        self.assertEqual(self.call(execution, 'goal.get')['goal']['id'], goal['id'])
+        self.assertEqual(self.call(execution, 'session.whoami')['execution_id'], execution['id'])
 
     def test_open_tool_data_routes_bound_actor_and_paused_write_gate_preserves_old_resources(self):
         goal = self.goal()
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
-        calls = []
-        def handler(action, data, actor, execution_id=None):
-            calls.append((action, actor, execution_id))
-            return self.dispatch(action, data, actor=actor, execution=execution_id)
-        tool = self.tool(execution, handler)
-        self.call(tool, 'crew_context', {'action': 'put', 'data': {'kind':'fact','text':'A checked result','source':{'type':'file','id':'result.txt','version':1},'actor_session_id':'other-id'}})
-        self.assertEqual(calls[0], ('context.put','chief-id',execution['id']))
+        context = {'kind': 'fact', 'text': 'A checked result', 'source': {'type': 'file', 'id': 'result.txt'},
+                   'actor_session_id': 'other-id'}
+        record = self.call(execution, 'goal.context.put', context)
+        self.assertEqual(record['goal_id'], goal['id'])
+        actor = self.conn.execute('SELECT actor FROM goal_context_versions WHERE item_id=?', (record['id'],)).fetchone()
+        self.assertEqual(actor[0], 'chief-id')
         goals.request_pause(self.conn, goal['id'])
-        failed = self.call(tool, 'crew_task', {'text':'Must not run'}, False)
-        self.assertEqual(failed['error']['code'], 'goal_dispatch_blocked')
-        self.call(tool, 'crew_goal', {'action':'status'})
+        with self.assertRaises(OpError) as denied:
+            self.call(execution, 'session.task.set', {'text': 'Must not run'})
+        self.assertEqual(denied.exception.detail['reason'], 'goal_dispatch_blocked')
+        self.assertEqual(self.call(execution, 'goal.get')['goal']['id'], goal['id'])
         self.assertIsNone(board.session(self.conn, 'chief-id')['task'])
 
     def test_scoped_asks_and_todos_are_atomically_bound_to_the_actual_execution(self):
         goal = self.goal()
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
-        tool = self.tool(execution)
-        decision = self.call(tool, 'crew_ask', {'question':'Choose the release day'})
-        item = self.call(tool, 'crew_todo_add', {'title':'Check device','steps':'Connect and inspect','verification':'Shows the indicator'})
+        decision = self.call(execution, 'decision.ask', {'question':'Choose the release day'})
+        item = self.call(execution, 'todo.add', {'title':'Check device','steps':'Connect and inspect','verification':'Shows the indicator'})
         self.assertEqual(goal_links.get(self.conn, 'decision', decision['id'])['execution_id'], execution['id'])
         self.assertEqual(goal_links.get(self.conn, 'todo', item['id'])['goal_id'], goal['id'])
         with mock.patch.object(goal_links, 'bind', side_effect=board.BoardError('No binding')):
-            self.call(tool, 'crew_ask', {'question':'Must roll back'}, False)
+            with self.assertRaises(board.BoardError):
+                self.call(execution, 'decision.ask', {'question':'Must roll back'})
         self.assertEqual(len(board.decisions(self.conn, 'demo')), 1)
 
+    # message.send 在调用消息路由前查收件人失败，无法传递执行身份和消息类别。
     def test_message_kind_reaches_the_goal_aware_host_without_a_reply_loop_default(self):
         goal = self.goal()
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
-        receipts = []
-        def router(sender, target, text, **options):
-            receipts.append(options)
-            return {'ok': True}
-        tool = self.tool(execution, router=router)
-        self.call(tool, 'crew_send_message', {'to':'builder','text':'Measured result','kind':'result'})
-        self.call(tool, 'crew_send_message', {'to':'builder','text':'For your records'})
-        self.assertEqual(receipts, [{'kind':'result'},{'kind':'information'}])
+        with mock.patch.object(self.service.chat, 'send_message', return_value={'ok': True}) as router:
+            self.call(execution, 'message.send', {'to': 'builder', 'text': 'Measured result', 'kind': 'result'})
+            self.call(execution, 'message.send', {'to': 'builder', 'text': 'For your records'})
+        self.assertEqual([call.kwargs['kind'] for call in router.call_args_list], ['result', 'information'])
+        for call in router.call_args_list:
+            self.assertEqual(call.args[:2], ('chief-id', 'member-id'))
+            self.assertEqual(call.kwargs['execution_id'], execution['id'])
 
-    def invoke_cli(self, args, environment=None):
-        output, errors = io.StringIO(), io.StringIO()
-        with mock.patch.dict(os.environ, environment or {}, clear=False), redirect_stdout(output), redirect_stderr(errors):
-            code = cli.main(['--home', str(self.home), '--session', 'chief-id', *args], agents_provider=lambda: [], cwd=self.root)
-        return code, output.getvalue(), errors.getvalue()
-
-    def test_cli_mutations_route_to_owner_with_bound_environment_and_readonly_is_local(self):
-        from crew import spawn
+    def test_report_template_uses_bound_goal(self):
         goal = self.goal()
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
-        environment = {'CREW_SESSION_ID':'chief-id','CREW_EXECUTION_ID':execution['id'],'CREW_GOAL_ID':goal['id']}
-        with mock.patch.object(spawn, 'request_start', return_value={'ok':True}) as request:
-            code, _, errors = self.invoke_cli(['goal','start'], environment)
-            self.assertEqual(code, 0, errors)
-            body = request.call_args.args[-1]
-            self.assertEqual(body['actor_session_id'], 'chief-id')
-            self.assertEqual(body['execution_id'], execution['id'])
-            self.assertEqual(body['data']['goal_id'], goal['id'])
-            self.assertEqual(request.call_args.args[2], '/api/goals/agent')
-            request.reset_mock()
-            code, output, errors = self.invoke_cli(['goal','report-template'], environment)
-            self.assertEqual(code, 0, errors)
-            self.assertIn('_help', json.loads(output))
-            request.assert_not_called()
+        template = self.call(execution, 'goal.report.template')
+        self.assertIn('_help', template)
+        self.assertEqual(template['goal_id'], goal['id'])
 
-    def test_cli_finish_json_file_and_scoped_decision_preserve_ids(self):
-        from crew import spawn
-        goal = self.goal()
-        execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
-        path = self.root / 'final.json'
-        path.write_text(json.dumps({**self.report(), 'goal_id':goal['id']}), encoding='utf-8')
-        environment = {'CREW_SESSION_ID':'chief-id','CREW_EXECUTION_ID':execution['id'],'CREW_GOAL_ID':goal['id']}
-        with mock.patch.object(spawn, 'request_start', return_value={'ok':True}) as request:
-            code, _, errors = self.invoke_cli(['goal','finish','--file',str(path)], environment)
-            self.assertEqual(code, 0, errors)
-            self.assertEqual(request.call_args.args[-1]['data']['report']['outcome'], 'awaiting_acceptance')
-            code, _, errors = self.invoke_cli(['send','builder','Actual result','--kind','result'], environment)
-            self.assertEqual(code, 0, errors)
-            self.assertEqual(request.call_args.args[-1]['kind'], 'result')
-        code, _, errors = self.invoke_cli(['ask','Choose a day'], environment)
-        self.assertEqual(code, 0, errors)
-        item = board.decisions(self.conn, 'demo')[0]
-        self.assertEqual(goal_links.get(self.conn, 'decision', item['id'])['execution_id'], execution['id'])
-
-    def test_cli_report_preview_reads_draft_and_requires_the_live_owner(self):
-        from crew import spawn
+    def test_finish_and_scoped_decision_preserve_ids(self):
         goal = self.goal()
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='claude')
-        environment = {'CREW_SESSION_ID':'chief-id','CREW_EXECUTION_ID':execution['id'],'CREW_GOAL_ID':goal['id']}
-        html_path = self.root / '报告草稿.html'
-        document = '<!doctype html><meta charset="utf-8"><h1>合成预览示例</h1>'
-        html_path.write_text(document, encoding='utf-8-sig')
-        receipt = {'ok':True, 'preview':{'id':'preview-one', 'path':str(self.home / 'report-previews' / 'one.png')}}
-        with mock.patch.object(spawn, 'request_start', return_value=receipt) as request:
-            code, output, errors = self.invoke_cli([
-                'goal','report.preview','--html-file',str(html_path),'--data','{"viewport":"mobile"}'], environment)
-            self.assertEqual(code, 0, errors)
-            self.assertEqual(json.loads(output), receipt)
-            self.assertEqual(request.call_args.args[2], '/api/goals/agent')
-            body = request.call_args.args[3]
-            self.assertEqual(body, {'action':'report.preview', 'actor_session_id':'chief-id',
-                'execution_id':execution['id'], 'data':{'goal_id':goal['id'], 'project':'demo',
-                                                       'document_html':document, 'viewport':'mobile'}})
-        with mock.patch.object(spawn, 'request_start', side_effect=board.BoardError('Crew 桌面预览未连接')):
-            code, _, errors = self.invoke_cli(['goal','report.preview','--html-file',str(html_path)], environment)
-            self.assertNotEqual(code, 0)
-            self.assertIn('Crew 桌面预览未连接', errors)
-        with mock.patch.object(spawn, 'request_start', return_value={'ok':False,'error':'桌面在截图期间退出'}):
-            code, _, errors = self.invoke_cli(['goal','report.preview','--html-file',str(html_path)], environment)
-            self.assertNotEqual(code, 0)
-            self.assertIn('桌面在截图期间退出', errors)
+        goals.transition(self.conn, goal['id'], 'running')
+        decision = self.call(execution, 'decision.ask', {'question': 'Choose a day'})
+        self.assertEqual(goal_links.get(self.conn, 'decision', decision['id'])['execution_id'], execution['id'])
+        result = self.call(execution, 'goal.finish', {'report': self.report()})
+        self.assertEqual(goals.get_report(self.conn, result['report_id'])['goal_id'], goal['id'])
 
-    def test_cli_report_preview_keeps_saved_report_id_and_rejects_overwriting_a_draft(self):
-        from crew import spawn
+    def test_preview_passes_draft_and_surfaces_host_errors(self):
         goal = self.goal()
-        with mock.patch.object(spawn, 'request_start', return_value={'ok':True}) as request:
-            code, _, errors = self.invoke_cli(['goal','report.preview',goal['id'],
-                '--data','{"report_id":"saved-report","viewport":"desktop"}'])
-            self.assertEqual(code, 0, errors)
-            self.assertEqual(request.call_args.args[3]['data']['report_id'], 'saved-report')
-        html_path = self.root / 'draft.html'
-        html_path.write_text('<h1>新稿</h1>', encoding='utf-8')
-        with mock.patch.object(spawn, 'request_start') as request:
-            code, _, errors = self.invoke_cli(['goal','report.preview',goal['id'],'--html-file',str(html_path),
-                '--data','{"document_html":"<h1>原稿</h1>"}'])
-            self.assertNotEqual(code, 0)
-            self.assertIn('不能覆盖已有正文', errors)
-            request.assert_not_called()
+        execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='claude')
+        document = '<h1>合成预览示例</h1>'
+        receipt = {'ok': True, 'preview': {'id': 'draft'}}
+        with mock.patch.object(self.service.report_previews, 'capture', return_value=receipt) as capture:
+            self.assertEqual(self.call(execution, 'goal.report.preview', {'document_html': document, 'viewport': 'mobile'}), receipt)
+        capture.assert_called_once_with(document, viewport='mobile', title=goal['title'], goal_id=goal['id'],
+                                        report_id=None, actor_session_id='chief-id')
+        with mock.patch.object(self.service.report_previews, 'capture', side_effect=board.BoardError('Crew 桌面预览未连接')):
+            with self.assertRaisesRegex(board.BoardError, '桌面预览未连接'):
+                self.call(execution, 'goal.report.preview', {'document_html': document})
+        with mock.patch.object(self.service.report_previews, 'capture', return_value={'ok': False, 'error': '桌面退出'}):
+            self.assertEqual(self.call(execution, 'goal.report.preview', {'document_html': document})['error'], '桌面退出')
+
+    def test_preview_saved_report_and_draft_are_mutually_exclusive(self):
+        goal = self.goal()
+        report = goals.save_report(self.conn, goal['id'], self.report())
+        args = {'goal_id': goal['id'], 'report_id': report['id']}
+        with mock.patch.object(self.service.report_previews, 'capture', return_value={'ok': True}) as capture:
+            ai_call(self.service, self.conn, 'chief-id', 'goal.report.preview', args)
+            self.assertEqual(capture.call_args.kwargs['report_id'], report['id'])
+            with self.assertRaisesRegex(board.BoardError, '只能提供'):
+                ai_call(self.service, self.conn, 'chief-id', 'goal.report.preview', {**args, 'document_html': '<h1>新稿</h1>'})
+            self.assertEqual(capture.call_count, 1)
 
     def test_codex_report_preview_of_a_paused_bound_task_uses_the_host_without_resuming(self):
         goal = self.goal()
@@ -395,66 +322,29 @@ class GoalActionTests(GoalFixture):
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='codex')
         goals.request_pause(self.conn, goal['id'])
         before = goals.get(self.conn, goal['id'])
-        calls = []
-        def host(action, data, actor, execution_id=None):
-            calls.append((action, data, actor, execution_id))
-            return {'ok':True, 'preview':{'id':'captured'}}
-        result = self.call(self.tool(execution, host), 'crew_goal', {
-            'action':'report.preview', 'data':{'report_id':'saved-report', 'viewport':'desktop'}})
+        with mock.patch.object(self.service.report_previews, 'capture', return_value={'ok': True, 'preview': {'id': 'captured'}}) as capture:
+            result = self.call(execution, 'goal.report.preview', {'document_html': '<p>preview</p>'})
         self.assertEqual(result['preview']['id'], 'captured')
-        self.assertEqual(calls, [('report.preview', {'report_id':'saved-report','viewport':'desktop'},
-                                  'chief-id', execution['id'])])
+        self.assertEqual(capture.call_args.kwargs['actor_session_id'], 'chief-id')
+        self.assertEqual(capture.call_args.kwargs['goal_id'], goal['id'])
         self.assertEqual(goals.get(self.conn, goal['id']), before)
-        self.assertEqual(self.host.calls, [])
 
-    def test_claude_cli_attaches_html_and_codex_tool_saves_the_same_document(self):
-        from crew import spawn
+    def test_claude_and_codex_save_the_same_report_html(self):
         document = '<!doctype html><h1>选型结论</h1><button onclick="this.textContent=\'筛选完毕\'">筛选</button>'
-        html_path = self.root / '选型报告.html'
-        html_path.write_text(document, encoding='utf-8-sig')
         for runtime in ('claude', 'codex'):
             with self.subTest(runtime=runtime):
                 goal = self.goal()
                 goals.transition(self.conn, goal['id'], 'running')
                 execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime=runtime)
-                def handler(action, data, actor, execution_id=None):
-                    return self.dispatch(action, data, actor=actor, execution=execution_id)
-                if runtime == 'claude':
-                    path = self.root / '验收.json'
-                    path.write_text(json.dumps({**self.without_page(), 'goal_id': goal['id']}), encoding='utf-8')
-                    def route(home, project, endpoint, body):
-                        return handler(body['action'], body['data'], body['actor_session_id'], body['execution_id'])
-                    environment = {'CREW_SESSION_ID':'chief-id','CREW_EXECUTION_ID':execution['id'],'CREW_GOAL_ID':goal['id']}
-                    with mock.patch.object(spawn, 'request_start', side_effect=route):
-                        code, output, errors = self.invoke_cli(['goal','finish','--file',str(path),'--html-file',str(html_path)], environment)
-                    self.assertEqual(code, 0, errors)
-                    result = json.loads(output)
-                else:
-                    result = self.call(self.tool(execution, handler), 'crew_goal', {
-                        'action':'finish', 'data':{'report':{**self.report(), 'document_html':document}}})
+                controller = self.service.chat.goal_controller
+                with mock.patch.object(controller, 'send', wraps=controller.send) as send:
+                    result = self.call(execution, 'goal.finish', {'report': {**self.report(), 'document_html': document}})
+                send.assert_not_called()
                 saved = goals.get_report(self.conn, result['report_id'])
                 self.assertEqual(saved['data']['document_html'], document)
                 self.assertIn('<details class="crew-evidence">', saved['html'])
                 self.assertIn('data-status="passed"', saved['html'])
                 self.assertIn('measurements/sample-1.json', saved['html'])
-                self.assertFalse(any(call[0] == 'send' for call in self.host.calls))
-
-    def test_cli_does_not_overwrite_an_existing_document_or_submit_an_empty_file(self):
-        from crew import spawn
-        goal = self.goal()
-        path, html_path = self.root / 'report.json', self.root / 'report.html'
-        path.write_text(json.dumps({**self.report(), 'document_html':'<h1>原稿</h1>'}), encoding='utf-8')
-        html_path.write_text('<h1>另一稿</h1>', encoding='utf-8')
-        with mock.patch.object(spawn, 'request_start') as request:
-            code, _, errors = self.invoke_cli(['goal','finish',goal['id'],'--file',str(path),'--html-file',str(html_path)])
-            self.assertNotEqual(code, 0)
-            self.assertIn('不能覆盖已有正文', errors)
-            path.write_text(json.dumps(self.without_page()), encoding='utf-8')
-            html_path.write_text('  ', encoding='utf-8')
-            code, _, errors = self.invoke_cli(['goal','finish',goal['id'],'--file',str(path),'--html-file',str(html_path)])
-            self.assertNotEqual(code, 0)
-            self.assertIn('不能为空', errors)
-            request.assert_not_called()
 
 
 if __name__ == '__main__':

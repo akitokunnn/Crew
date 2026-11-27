@@ -79,7 +79,8 @@ class PeerBackfillTests(UsageFixture, unittest.TestCase):
         self.scan()
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claude_prompts WHERE kind = 'peer'").fetchone()[0], 2)
 
-    def test_backfill_and_completion_marker_roll_back_if_scan_fails(self):
+    def test_backfill_commits_with_its_marker_and_a_later_scan_failure_neither_undoes_nor_repeats_it(self):
+        # The scan commits in short batches; the one-time backfill and its completion marker are one of them.
         main = self.claude / "project" / "session-one.jsonl"
         self.seed_scanned_file(main, "claude", [dict(prompt("old-peer", 20, "peer"), isMeta=True)],
                                ("project", "session-one", None))
@@ -95,8 +96,9 @@ class PeerBackfillTests(UsageFixture, unittest.TestCase):
 
         with mock.patch.object(usage, "_lines", locked), self.assertRaises(PermissionError):
             self.scan()
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claude_prompts").fetchone()[0], 0)
-        self.assertEqual(self.conn.execute("PRAGMA user_version").fetchone()[0], before_version)
+        self.assertLess(before_version, 2)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claude_prompts WHERE kind = 'peer'").fetchone()[0], 1)
+        self.assertEqual(self.conn.execute("PRAGMA user_version").fetchone()[0], 2)
         self.scan()
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM claude_prompts WHERE kind = 'peer'").fetchone()[0], 1)
         self.assertEqual(self.conn.execute("PRAGMA user_version").fetchone()[0], 2)

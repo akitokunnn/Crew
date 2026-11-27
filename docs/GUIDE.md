@@ -29,7 +29,7 @@
 - **工具与更新**：检查发布版本和 `main` 主干版本，并可手动将后台和命令入口统一到当前桌面包；不会更新 V1 数据或共享的 Claude 插件；更新前备份，忙时等待。另支持 Claude Code / Codex CLI 更新，CLI 自动更新默认关闭。见 [Crew 更新说明](DESKTOP_UPDATES.md)。
 - **统一设置**：默认 AI、新建 leader、leader 开执行、交流区摘要、Git 管理员和运维可分别配置载体、模型与 effort。Codex 速度可选「跟随 Codex 设置」「标准」和「快速」，后者需要当前模型支持，会消耗更多用量。聊天栏提供可用的速度档位，要恢复继承可打开会话菜单的「模型、effort 和速度」。执行默认跟随所属 leader，每组也可单独覆盖，leader 开执行时也能单独指定。保存全局设置不启动任务，不改变已有会话。
 - **存储与清理**：桌面和网页设置可查看当前数据目录的分类占用，先预览再清理。过期启动日志直接释放；旧备份、孤儿图片及过期导出包先进入 7 天回收站，可恢复。自动维护仅处理过期启动日志与到期回收站。工作历史、项目文件和有引用附件保留。见 [存储管理](STORAGE_MANAGEMENT.md)。
-- **任务里的执行（原“组员”）**：组员不再是常驻的人，而是 leader 在任务里按块开的执行。leader 拆活时给每块开一个执行（`crew spawn --goal`，Codex `crew_spawn` 的 goal_id），可分别指定 CC / Codex、模型和 effort，数量不设上限；没有任务的零活不开执行。任务验收、取消或交接后，宿主自动归档这些执行（保留历史，可从会话库恢复）；失败的任务保留执行以便重试。空闲回收时任务执行的 Codex 线程也会归档，接回时自动恢复，不再挤在 Codex 侧栏里。对话内的「会话结构」显示 Leader 的架构位置和当前对话的 Agent 派发，含状态、模型、强度及已记录的速度。已有任务执行仍可点开查看对话。界面不再提供“新建组员”；Leader 会话菜单里的「执行默认大脑」修改本组之后开执行的默认值，优先于全局设置。收编已有会话仍在会话库里。
+- **任务里的执行（原“组员”）**：组员不再是常驻的人，而是 leader 在任务里按块开的执行。leader 拆活时给每块开一个执行（`crew spawn --goal`，Codex `crew_spawn` 的 goal_id），可分别指定 CC / Codex、模型和 effort，数量不设上限；没有任务的零活不开执行。任务验收、取消或交接后，宿主自动归档这些执行（保留历史，可从会话库恢复）；失败的任务保留执行以便重试。空闲回收时任务执行的 Codex 线程也会归档，接回时自动恢复，不再挤在 Codex 侧栏里。对话内的「会话结构」显示 Leader 的架构位置和当前对话的 Agent 派发，含状态、模型、强度及已记录的速度。已有任务执行仍可点开查看对话。Leader 总对话的「组内执行」列出本组执行的状态与正在做的任务，可点击查看对应对话。界面不再提供“新建组员”；Leader 会话菜单里的「执行默认大脑」修改本组之后开执行的默认值，优先于全局设置。收编已有会话仍在会话库里。
 - **执行权限**：设置页明确选择 Codex 的只读 / 项目沙箱 / 完全访问，或 Claude 的原生默认 / 允许编辑 / 完全访问；下一次启动载体生效，不改工具全局配置。摘要与后台修复保持各自隔离策略，不随对话权限扩大。
 - **两种执行工具**：创建 leader、成员时选择 Claude Code 或 Codex，可以混编在同一组。保留已有 Claude 会话，也能从 VS Code 收编进来。
 - **中断与停止**：任务输入区可中断当前回复；“停止此人”会结束其托管执行，并阻止排队消息自动复活。leader 负责的任务一并暂停，必须明确恢复。总对话可持续协调，各任务独立并行、分别保存历史；中断总对话只影响当前协调回复。
@@ -92,7 +92,7 @@ claude plugin install crew@crew --scope user
 
 使用浏览器和登录自启时，执行 `crew autostart install`；需要文件夹右键入口时，再执行 `crew menu install`。之后在工作文件夹里运行 `crew start`，或右键选择“在这里启动 Crew”，会自动启用项目并打开网页。已有服务时用 `crew web --open` 打开当前项目。
 
-Claude 协作会话建议统一权限模式；`/crew:trust` 用于 Claude 的工具权限。下面的 `crew trust set on --leader ... --goal ...` 用于单个 leader 组的自主决策目标，两者分别配置。
+Claude 协作会话建议统一权限模式，在 Claude Code 自己的权限设置里配置；Crew 自己的 MCP 工具由 Crew 后台鉴权，启动时已预先放行。信任模式用于单个 leader 组的自主决策目标，和 Claude 的工具权限无关。
 
 ## 日常怎么用
 
@@ -100,24 +100,24 @@ Claude 协作会话建议统一权限模式；`/crew:trust` 用于 Claude 的工
 |---|---|
 | 在另一个 git 项目打开 Crew | 文件夹或文件夹内空白处右键“在这里启动 Crew”；命令行 `crew start`，也可 `crew start --cwd "C:\项目目录" --name 项目名`。首次自动启用，已有项目直接打开；服务未运行时调用已安装的登录自启任务，最多等 20 秒 |
 | 打开网页 | `crew web --open`：按当前目录打开这个项目的页面（一个项目一个标签页），后台已有服务时直接复用 |
-| 起一个 leader | 左栏“起 leader”：起名、填写目标、选择执行工具和模型；命令行 `crew leader start --name 感知 --task "<这一组的目标>" --runtime codex`，也可选 `claude`，另有 `--model` / `--effort`，Codex 还可加 `--speed`（`default` 为标准速度，或模型清单里的档位如 `priority`） |
-| 把 VS Code 里的会话收编进组 | 在那个会话里说"收编到感知"，它会 `crew join` 写好任务卡并通知 leader；或者在网页"待收编"里点它、起名、选 leader |
+| 起一个 leader | 左栏“起 leader”：起名、填写目标、选择执行工具和模型；命令行 `crew leader create --args-json '{"name":"感知","task":"<这一组的目标>","runtime":"codex"}'`，也可选 `claude` 并带 model / effort / speed |
+| 把 VS Code 里的会话收编进组 | 在网页“待收编”或会话库里点它、起名、选 leader |
 | 和 leader 聊 | 网页点左栏的 leader；离开电脑时在 QQ 私聊里 `/leader` 看编号、`/1` 切过去直接说 |
-| 在公共交流区发言 | 网页左栏“交流区”，点“@所有 leader”可一次点名本工作区的全部 leader，也可选人或排除某个人；发送时确定实际接收人，归档人员和其他工作区不包括。leader 用 `crew say "<内容>" [--to <leader名字> ...]`，`--to '*'` 点名全部 leader（不重复通知自己）。点名后对方空闲时收到通知；普通发言在 leader 下一轮附摘要 |
-| 看交流区全文 | 网页"交流区"往上加载更早的发言；leader 和组员都可用 `crew channel [--limit N]`，默认最近 20 条 |
+| 在公共交流区发言 | 网页左栏“交流区”，点“@所有 leader”可一次点名本工作区的全部 leader，也可选人或排除某个人；发送时确定实际接收人，归档人员和其他工作区不包括。leader 用 Crew 工具 `channel_post`（to 填名字，`*` 点名全部 leader，不重复通知自己）。点名后对方空闲时收到通知；普通发言在 leader 下一轮附摘要 |
+| 看交流区全文 | 网页"交流区"往上加载更早的发言；leader 用 `channel_consume` 读最近发言，默认 20 条 |
 | 回答待拍板 | 对话顶部的卡片、“全部 → 等你拍板”，或 QQ 按钮 / 引用回复；先看决定事项、推荐理由和后果。旧题看不懂时点“让 leader 说明白”；答复后由 leader 协调继续 |
 | 处理人工待办 | 左栏“我的待办”，阻塞 AI 的事项排在前面；展开看步骤和验收方法，可点“做完了”“不做了”或“去问它”，误操作可撤销；有待办时，项目默认进入此页 |
-| 开启信任模式 | leader 对话头部或菜单里填写本组目标；普通终端用 `crew trust set on --leader 名字 --goal "<目标>"`，保存不唤醒；该 leader 的报告也在同一入口 |
+| 开启信任模式 | leader 对话头部或菜单里填写本组目标，保存不唤醒；该 leader 的报告也在同一入口 |
 | 和某个下属聊 | 总览或本组关系树点本人进入对话；资料与操作中查看范围、记录和载体。已由外部工具运行的会话需先结束外部进程再接管 |
 | 给成员更换执行工具 | 卡片或菜单点“更换…”，选择 CC/Codex 和兼容模型，检查交接内容及用量提示；确认后下次发消息/唤醒才启动，原生历史分别保留 |
-| 开一个新下属 | 让 leader 开；或命令行 `crew spawn --name 姿势 --group 感知 --task "<任务>" --runtime codex`，需要独立 worktree 时加 `--new-worktree feature/pose`；不写执行工具则继承 leader |
-| 跨工具发消息 | 已加入 Crew 的会话用 `crew send <名字> "<内容>" --kind decision`，Codex 也有 `crew_send_message` 动态工具；跨组请求进入对方总对话，回复加 `--reply-to <原消息编号>` 回原会话或任务；需要行动的消息忙时排队，默认 information 只归档、不唤醒 |
-| 找人、叫醒离线下属 | `crew wake 姿势 "<接着做什么>"` 后台续跑原会话。leader 可联系同项目其他 leader，成员可给自己的 leader 排唤醒通知；跨组改计划先找对方 leader |
+| 开一个新下属 | 让 leader 在任务里开执行（Crew 工具 `execution_spawn`）；不写执行工具则继承 leader |
+| 跨工具发消息 | Crew 托管的会话用 Crew 工具 `message_send`（明确 kind）；跨组请求进入对方总对话，回复带 reply_to 回原会话或任务；需要行动的消息忙时排队，默认 information 只归档、不唤醒 |
+| 找人、叫醒离线下属 | 页面上给它发消息即可续跑原会话；leader 用 `message_send`（kind=task），对方空闲时送达；跨组改计划先找对方 leader |
 | 下属跑歪了 | 任务输入区“中断本轮”保留会话；菜单“停止此人”确认托管进程退出，排队消息不能复活。外部 VS Code 会话去原工具停止 |
 | 收尾 | 目标每轮生成最终报告；成员与历史保留，后续可复用。明确不再需要时手动归档（可撤销），VS Code 的归档仍同步 |
-| 提交自定义报告 | 按验收标准填 JSON，需要时用 `crew goal report-template` 查看字段，再 `crew goal finish --file <报告.json> --html-file <报告.html>`；Codex `crew_goal` 的 finish 在 `data.report.document_html` 传同样正文。HTML 最大 512 KiB，CSS/JS 内联，图片嵌入；报告和证据一起保存，打开不调用模型 |
-| 预览报告排版 | `crew goal report.preview <目标ID> --html-file <报告.html> --data '{"viewport":"desktop"}'`，手机用 `mobile`；CC 用 Read 看返回 `preview.path`，Codex 用 `crew_goal` 的 `report.preview` 并查看返回图片。已保存报告在 data 传 `report_id` 代替正文；需要已连接的 Crew 桌面，不启动模型 |
-| 看谁在干什么、留评论 | “全部”页每组一列，横向滚动查看；组内有人在干活时，侧栏及架构图的 leader 头像显示工作光圈，文字区分本人和组员。组或成员可加评论并通知所属 leader；命令行 `crew status` |
+| 提交自定义报告 | 按验收标准填 JSON，需要时用 Crew 工具 `goal_report_template` 查看字段，再用 `goal_finish` 提交（报告正文放在 report.document_html）。HTML 最大 512 KiB，CSS/JS 内联，图片嵌入；报告和证据一起保存，打开不调用模型 |
+| 预览报告排版 | Crew 工具 `goal_report_preview`（document_html 或 report_id，viewport=desktop|mobile），返回截图位置；需要已连接的 Crew 桌面，不启动模型 |
+| 看谁在干什么、留评论 | “全部”页每组一列，横向滚动查看；组内有人在干活时，侧栏及架构图的 leader 头像显示工作光圈，文字区分本人和组员。组或成员可加评论并通知所属 leader；命令行 `crew workspace state` |
 | 找 AI 交付的文档 | 打开对应任务的“交付与文档”，查看原始文件、重要汇总和报告；文件只按真实任务绑定收录，不按 leader 猜归属 |
 | 验收任务 | 待验收时可“验收通过”或填写原因“需要修改”；保留 AI 原报告与用户验收记录，退回后可明确再开一轮 |
 | 同时打开多个工作区 | 桌面首页选择项目，会分别保留在顶部标签中；`Ctrl+Tab` 切换，关闭标签不停止后台任务 |
@@ -155,51 +155,28 @@ Codex 桌面的人员标题使用 Crew 名字与职位，例如“声纹施工 �
 
 会话里的守则在 `plugin/skills/`：Claude 成员是 `/crew:member`，leader 是 `/crew:leader`，Git 管理员是 `/crew:git`；Codex 由宿主加载同一角色守则，绑定 Crew 身份和动态白板工具。启动时 Crew 会说明身份、所属组和命令入口；还没收编的会话不会被要求自己登记。启用 Git 管理的项目还会附管理员提示和分支规则前 6 行，全文用 `crew git policy` 看。守则更新后，在下一条消息或 resume / compact 时提醒已收编会话重读。
 
-聊天输入框里打 `/` 会弹出技能窗口，列出这个会话的执行工具能用的技能：Claude Code 取原生命令清单（不含内置命令和上面的角色守则），Codex 取原生 `skills/list`。选中后插入该工具自己的写法（Claude `/名字`、Codex `$名字`），由 AI 自行调用；↑↓ 选择，Enter / Tab 插入，Esc 关闭。Crew 自带的可调用技能放在 `plugin/user-skills/`，Claude 里是 `/crew:<名字>`，Codex 里是 `$crew:<名字>`，比如 `git-land`（Git 一步到位：说明哪些内容测过、可以进主干，AI 完成锁定范围、同步远端、合入、验证、推送和核对）。
+聊天输入框里打 `/` 会弹出技能窗口，列出这个会话的执行工具能用的技能：Claude Code 取原生命令清单（不含内置命令和上面的角色守则），Codex 取原生 `skills/list`。选中后插入该工具自己的写法（Claude `/名字`、Codex `$名字`），由 AI 自行调用；↑↓ 选择，Enter / Tab 插入，Esc 关闭。Crew 不自带可调用技能，面板里是用户自己装在 Claude Code / Codex 里的技能。
 
 ## 命令速查
 
-新建成员承接已有目标时，使用 `crew spawn --goal <目标ID> --name <名字> --task "<任务>"`，直接在目标中启动一个执行。普通 `spawn` 会立即在总对话开工；总对话仍忙时再次 `goal assign --start` 会明确报冲突，避免重复施工。目标执行内创建成员会自动继承目标；`--dry-run --goal` 只返回目标计划，原生启动命令由宿主分配。
+`crew` 命令行给人和脚本用，调用者固定为用户本人；AI 会话不用它，而是通过 Crew 自带的 MCP 服务调用同一批操作（见下节）。
 
-PR 与 main 推送由 GitHub Actions 自动运行 Python、网页及桌面测试，以及隔离工作区和对话路由交互验收。新增回归覆盖 CC 给 Codex 派工的真实顺序、反向唤醒、重试、暂停和跨总对话/目标的原生身份唯一性。
+**主机命令**（不经后台）：
 
 | 命令 | 作用 |
 |---|---|
-| `crew init` / `crew projects` | 启用项目 / 列项目 |
 | `crew start [--cwd DIR] [--name N]` | 找到 git 根目录、首次启用、通过登录自启任务拉起服务并打开项目；非 git 目录或同名项目冲突时明确报错 |
-| `crew menu install\|status\|uninstall` | 安装 / 查看 / 移除当前用户的资源管理器右键入口，无需管理员权限；右键启动不弹终端，失败会弹窗说明原因 |
-| `crew resource add\|list\|rm` | 共享资源，`--guard` 正则让守卫拦住非借用人 |
-| `crew join <名字> [--group G] [--scope S] [--done-when D]` / `crew whoami` / `crew task "<一句话>"` / `crew card --scope S --done-when D` | 收编进组并写任务卡 / 我是谁 / 现在在做什么 / 改负责范围和完成标准 |
-| `crew status` / `crew who <名字>` | 总览 / 某个会话的详情和发消息地址，含上下文占比；拿不到时显示未知和原因 |
-| `crew lease take <资源> --for "<用途>"` / `crew lease give <资源> --note "<现状>"` / `crew lease list` | 借 / 还 / 列表 |
-| `crew claim <路径>` / `crew unclaim <路径>` / `crew claims` | 宣布文件归属（目录以 `/` 结尾） |
-| `crew ask "<问题>" --title "<短标题>" --why-user "<为什么要用户决定>" --recommend-reason "<推荐理由>" --option "<行动>" --consequence "<后果>" --option "<另一行动>" --consequence "<后果>" --recommend "<行动>"` | 登记结构化拍板，每个选项对应一个后果；完整示例见工作流程 |
-| `crew decisions` / `crew answer <编号> "<答复>"` / `crew decision revise <编号> ...` | 查看、答复、原位补写拍板说明 |
-| `crew todo add "<事项>" --steps "<操作步骤>" --verify "<确认方法>" [--blocking]` | AI 登记需要用户亲手做的事项 |
-| `crew todo list [--all]` / `crew todo withdraw <编号> --reason "<原因>"` | 查看人工待办 / AI 撤回不再需要的事项；用户完成、取消和撤销在页面操作 |
-| `crew trust set on --leader 名字 --goal "<目标>"` / `crew trust set off --leader 名字` / `crew trust status --leader 名字` / `crew trust report --leader 名字` | 设置指定 leader 的信任模式、查看本组状态与报告草稿；已绑定会话缺省用自己的组 |
-| `crew handoff --to <名字\|分组\|*> "<内容>"` / `crew handoffs` | 交接 |
-| `crew report "<内容>"` / `crew reports` | 日报 |
-| `crew doc add <路径> --title "<标题>" --summary "<摘要>" [--kind summary\|report\|guide\|other] [--important]` / `crew doc list [--leader 名字]` / `crew doc refresh` | 提交交付文档 / 查看列表 / 从历史会话增量整理；标题和摘要必填，原文件留在项目或提交者工作树 |
-| `crew say "<内容>" [--to <leader名字> ...]` | leader 在本项目交流区发言；可重复点名多人，点名才排通知叫醒 |
-| `crew channel [--limit N] [--raw]` | 默认先看要点卡，再看卡后最近 N 条全文（默认 20 条）；`--raw` 看最近 N 条原文。无卡时直接看原文，按时间正序并推进已读位置 |
-| `crew group list` / `crew roster add\|remove\|move` | 分组和花名册 |
-| `crew leader start --name <名字> --task "<目标>" [--runtime claude\|codex]` / `crew leader close <组名>` | 通过正在运行的服务开 leader / 收一个分组；`start --dry-run` 只看计划 |
-| `crew spawn --name <名字> --group <组名> --task "<任务>" [--runtime claude\|codex]` | 开后台成员；同工具时继承 leader 的模型设置，跨工具重新选择；`--dry-run` 只看计划 |
-| `crew send <名字> "<消息>" [--kind task\|result\|blocker\|decision\|information] [--message-id <重试编号>] [--reply-to <原消息编号>]` | 按 Crew 名字或 ID 寻址；回复按原消息归属回到总对话或任务，不猜当前任务；多行正文也可用 `--text-file <UTF-8文件>` 代替消息参数；默认 information 只归档 |
-| `crew wake <名字> "<消息>"` | leader 或用户叫醒离线组员；leader 找别的 leader、组员找自己的 leader 时排通知，空闲时送达；用户找 leader 直接在页面聊；服务未运行或组员进程状态未知时报错 |
-| `crew compact [<名字>]` | 通过网页服务压缩自己的组员，用户也可指定会话；网页 leader 不带名字或指定自己时，等这一轮说完后压缩 |
-| `crew stop <名字或会话ID>` | 停止自己或本组成员的 Crew 托管执行；用户可指定项目内人员。确认退出并保留停止门槛，队列不能自动恢复 |
 | `crew web --open` | 按当前目录打开工作区，已有服务时复用 |
-| `crew git enable [--base 分支] [--integration 分支] [--runtime codex\|claude]` / `crew git disable` / `crew git status` | 启用并自动开 Git 管理员 / 收掉管理员的组并停用 / 查看配置；base 自动依次选 develop、dev、main、master，本地集成分支省略即不启用 |
-| `crew git policy` / `crew git policy --set "<正文>"` | 看分支规则全文 / Git 管理员设置规则 |
-| `crew git request [--branch 分支] [--blocking] "<说明>"` / `crew git requests [--all]` | 本项目任何会话（含没收编的）提交合并请求（默认当前分支；确需合入后继续时显式加 `--blocking`） / 看活动队列或全部请求 |
-| `crew git resolve <编号> <merged\|rejected\|waiting_user\|merging> --note "<说明>" [--pr <号>]` | Git 管理员更新台账；中间状态静默，成功按等待标记保存待阅或接续，拒绝仍通知 |
+| `crew install` / `crew doctor` | 安装命令行启动器与默认文件 / 自检 |
 | `crew autostart install\|status\|uninstall` | 当前用户登录后隐藏运行，不弹浏览器 |
-| `crew usage scan\|summary\|sessions\|daily\|codex\|agents\|models\|export` | 用量 |
-| `crew events` / `crew doctor` | 事件流水 / 自检 |
+| `crew menu install\|status\|uninstall` | 安装 / 查看 / 移除当前用户的资源管理器右键入口，无需管理员权限 |
+| `crew usage scan\|summary\|sessions\|daily\|codex\|agents\|models\|export` | 用量（读本机原生日志） |
 
-每个命令都有 `--help`；大多数支持 `--json`。
+**业务命令**由操作清单生成，需要 Crew 后台在运行：`crew <领域> <动作> [参数]`，与界面调用的是同一个操作，例如 `crew workspace state`、`crew decision answer --args-json '{"id":3,"text":"按方案 A"}'`、`crew goal start --args-json '{"goal_id":"..."}'`。`crew --help` 列主机命令，`crew <领域> --help` 列该领域的操作及参数；全局参数 `--project`（不填按当前目录推断）、`--request-id`（写操作的稳定编号，重试时传相同值，不填自动生成）、`--json`。
+
+### AI 会话如何调用 Crew
+
+Crew 启动的每个 Claude Code / Codex 会话都拿到自己的 MCP 令牌（不放环境变量），通过名为 `crew` 的 MCP 服务调用操作；权限按角色在后台卡死，派出的执行权限不超过发起方。会话一开始只看到本角色的核心工具和 `crew_search`，其余能力用 `crew_search` 按中文意图查找：Claude Code 找到后工具会出现在列表里直接调用，Codex 用 `crew_call` 调用。高风险操作（删除、清理、恢复版本等）由 AI 发起时不会直接执行，而是生成确认请求，用户确认后才执行。托管会话在 Shell 里调用 `crew` 命令或 Crew 本机接口会被守卫拦下。
 
 ## 守卫和黑名单
 
@@ -252,7 +229,7 @@ Windows 的派工集成源码在 `integrations/codex-dispatch/` 与 `integration
 
 ## 更新和开发
 
-- Crew 托管的 Claude 会话按当前后台路径加载 `plugin/`；外部 Claude 会话从本地目录安装插件时也直接使用这份代码（不另拷一份）。改 Python 代码对之后的每次钩子调用立刻生效；改了钩子注册、技能、角色定义，外部会话要执行 `/reload-plugins` 或重开。插件元数据版本必须与 `desktop/package.json` 的桌面主版本一致，桌面测试会检查两者。
+- Crew 托管的 Claude 会话按当前后台路径加载 `plugin/`；外部 Claude 会话从本地目录安装插件时也直接使用这份代码（不另拷一份）。改 Python 代码对之后的每次钩子调用立刻生效；改了钩子注册、角色定义，外部会话要执行 `/reload-plugins` 或重开。插件元数据版本必须与 `desktop/package.json` 的桌面主版本一致，桌面测试会检查两者。
 - 所以**不要在主检出里直接改代码**：在 `Temp/wt/<名字>` 开 worktree 改，测试通过再合进 main。主检出里的代码一旦出错，所有会话的钩子都会跟着出错。
 - 本仓库的远程 `main` 要求通过 PR 合并，禁止强推和删除。用户已于 2026-10-26 取消额外人工批准要求；相关测试、必要构建与交互验收通过后，AI 自查并正常合并，具体遵循 [开发指南](../AGENTS.md)。
 - 这是单人本机工具，优先保持代码直白、少配置；测试用临时白板，不随意关闭用户正在使用的会话或窗口。提交信息用中文说明改了什么、为什么，不加署名行。
@@ -263,7 +240,7 @@ Windows 的派工集成源码在 `integrations/codex-dispatch/` 与 `integration
 ## 已知限制
 
 - 开在 VS Code 里的下属，网页只能看状态和卡片，不能发消息、也停不下它正在跑的一轮。
-- 混合工具消息使用 `crew send` / `crew_send_message`，明确指定 task、result、blocker 或 decision；默认 information 和 ack 仅归档，不会唤醒对方。回执“已交给执行输入”不代表模型已读或任务完成。Claude 原生 SendMessage 不能直接寻址 Codex。离线成员用 `crew wake <名字> "<要它做的事>"` 恢复原会话；VS Code、终端或后台仍有活进程时拒绝重复启动，进程状态未知时也拒绝启动。
+- 混合工具消息使用 Crew 工具 `message_send`，明确指定 task、result、blocker 或 decision；默认 information 和 ack 仅归档，不会唤醒对方。回执“已交给执行输入”不代表模型已读或任务完成。Claude 原生 SendMessage 不能直接寻址 Codex。离线成员在收到需要行动的消息时恢复原会话；VS Code、终端或后台仍有活进程时拒绝重复启动，进程状态未知时也拒绝启动。
 - **被叫醒的会话如果 VS Code 里还留着旧标签，不要在旧标签里直接打字**，否则可能两个进程同时写一个会话；要接过去请用网页卡片上的“在 VS Code 打开”。
 - 服务启动后会续跑聊天日志最后状态仍是 working 的未归档会话；用户停止或手动暂停的不会自动恢复。如果原进程还活着，等它退出再续跑，最多等 30 分钟。idle / offline 的不自动续跑。
 - 后台托管的 CC / Codex 进程空闲 30 分钟会自动关掉以省内存（有后台任务、正在回复或压缩的不关），显示为离线；之后给它发消息、组员回信或 leader 通知时自动用原会话接回，第一句会多等几秒。设环境变量 `CREW_IDLE_RECLAIM_MINUTES` 可改时长，0 表示不回收。

@@ -3,9 +3,11 @@ from contextlib import closing
 import json
 import os
 from pathlib import Path
+from .ops import launch
 from . import behavior_prompts
 import subprocess
 import threading
+import traceback
 import uuid
 
 from . import board, goal_context, goals, install, messaging, models, report_preview, runtimes, spawn, store, trust_mode
@@ -66,7 +68,7 @@ class Controller:
             (session_id, session_id)).fetchall()
         if not rows:
             return ''
-        lines = ['[Crew 目标索引；原生历史分别保存。需要详情用 crew goal status 查阅，不另起业务方案；暂停/结束不代表获准复工。]']
+        lines = ['[Crew 目标索引；原生历史分别保存。需要详情用 Crew 工具 `goal_get`（`goal_id` 填任务 ID），不另起业务方案；暂停/结束不代表获准复工。]']
         for row in rows:
             value = goals.get(conn, row['id'])
             lines.append('%s | %s | %s' % (value['id'], value['title'][:60], value['status']))
@@ -194,7 +196,7 @@ class Controller:
                 ('summary', 'delivered', 'unresolved', 'artifacts', 'follow_up')}, ensure_ascii=False))
         if review is not None:
             text += '\n用户对此前交付的验收：%s。原话：%s' % ('通过' if review['accepted'] else '需要修改', review['note'])
-        text += '\n沿用已有结果处理用户的新输入，不重复施工；完整报告可用 crew goal status 查阅。'
+        text += '\n沿用已有结果处理用户的新输入，不重复施工；完整报告可用 Crew 工具 `goal_get`（`goal_id` 填任务 ID）查阅。'
         text += '\n普通讨论无需新增工作清单或提交报告。确有修改时先 amend 登记，再用 work.list 继承已有工作；只重开实际受影响的旧项或补充新项，按需复核，不把此前交付当作新改动已完成。'
         return [{'source': {'type': 'goal-report', 'id': report['id']}, 'text': text,
                  'reason': '继续本任务时保留此前交付与用户修改意见', 'protected': True}]
@@ -248,7 +250,7 @@ class Controller:
                              (goal_id, session_id)).fetchone()
         if prior is None and self.manager.scope_busy(session_id, **runtimes.get(conn, session_id)):
             raise board.Conflict('成员「%s」的总对话正在执行任务，不能再新开目标线程重复派工；'
-                '请等待该轮结束或明确停止后再分配。新成员直接用 crew spawn --goal %s 绑定目标启动。'
+                '请等待该轮结束或明确停止后再分配。新成员用 Crew 工具 `execution_spawn` 启动，`goal_id` 填 %s。'
                 % (person['crew_name'], goal_id))
 
     def launch_maintenance(self, session, spec, marker):
@@ -287,10 +289,10 @@ class Controller:
         if execution['runtime'] == 'codex':
             from .codex_runtime import CodexRunning
             current = CodexRunning(self.home, self.manager.plugin_root, session, spec, options, journal,
-                                   self.manager.send_message, process_factory=self.manager.process_factory,
-                                   resume=binding is not None, execution=execution, goal_handler=self.agent_action,
-                                   maintenance=maintenance)
+                                   process_factory=self.manager.process_factory, resume=binding is not None,
+                                   execution=execution, maintenance=maintenance)
             self.manager.processes[key] = current
+            self.manager.changes.session(key)
             return spawn.command(key, session['crew_name'], session['role'], runtime='codex', **options)
         native_id = binding['native_id'] if binding else str(uuid.uuid4())
         if binding is None:
@@ -308,17 +310,24 @@ class Controller:
                                 **options)
         with closing(store.connect(self.home)) as prompt_conn:
             prompt_manifest = behavior_prompts.for_session(prompt_conn, logical_id, plugin_root=self.manager.plugin_root)
+        granted = launch.issue(self.home, session_id=logical_id, execution_id=key, runtime='claude', now=store.now_iso())
+        if granted is not None:
+            command += launch.claude_args(self.home, granted)
         command = behavior_prompts.append_to_command(command, behavior_prompts.render(prompt_manifest))
         command[0] = chat.claude_executable()
         environment = chat.child_environment({**spec, 'name': session['crew_name'], 'role': session['role'],
                                                'group': session['group_name']})
-        environment.update(CREW_HOME=str(self.home.resolve()), CREW_SESSION_ID=logical_id,
-                           CREW_EXECUTION_ID=key, CREW_GOAL_ID=execution['goal_id'])
+        environment['CREW_HOME'] = str(self.home.resolve())
         environment['PATH'] = str(self.home.resolve() / 'bin') + os.pathsep + environment.get('PATH', '')
-        process = self.manager.process_factory(command, cwd=session['cwd'], env=environment,
-                                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                               text=True, encoding='utf-8', bufsize=1,
-                                               creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        try:
+            process = self.manager.process_factory(command, cwd=session['cwd'], env=environment,
+                                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                                   text=True, encoding='utf-8', bufsize=1,
+                                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        except BaseException:
+            launch.abandon(self.home, granted, store.now_iso())
+            raise
+        launch.attach(granted, process)
         current = chat.Running(process, journal)
         current.resumed_native = native_id if binding is not None else None
         current.replacing = session.get('_native_replacing')
@@ -330,6 +339,7 @@ class Controller:
         current.maintenance = maintenance
         current.goal_manifests = dict(session.get('_goal_manifests', {}))
         self.manager.processes[key] = current
+        self.manager.changes.session(key)
         journal.reset_runtime()
         self.manager._control(current, 'get_settings')
         self.manager._control(current, 'get_context_usage')
@@ -460,6 +470,22 @@ class Controller:
             self.sync(conn, goal_id)
             return goals.get(conn, goal_id)
 
+    def approvals(self, goal_id=None):
+        """Native approvals still waiting in this host's task executions.
+
+        Listing re-checks each request against its task, so one the task no longer allows (delivery in,
+        paused, cancelled, handed over) is released with a decline instead of holding the native turn
+        until someone happens to open the approvals panel.
+        """
+        waiting = []
+        for current in list(self.manager.processes.values()):
+            execution = getattr(current, 'execution', None)
+            if execution is None or not hasattr(current, 'pending_approvals'):
+                continue
+            if goal_id is None or execution['goal_id'] == goal_id:
+                waiting.extend(current.pending_approvals())
+        return waiting
+
     def sync(self, conn, goal_id=None):
         """Runs from existing service work/state calls, never another polling thread."""
         unavailable = {row['session_id'] for row in conn.execute(
@@ -526,18 +552,24 @@ class Controller:
             executions = conn.execute('SELECT id FROM goal_executions WHERE goal_id=?', (identity,)).fetchall()
             if not any(self.manager.busy(row['id']) for row in executions):
                 goals.confirm_paused(conn, identity)
+        # A round whose delivery is in finishes once its executions end; an approval asked before the
+        # delivery would otherwise keep that execution mid-turn for good.
+        self.approvals(goal_id)
         pending = conn.execute("SELECT goal_id FROM goal_round_finishes WHERE status='pending'" +
                                (' AND goal_id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall()
-        for row in pending:
-            goals.finalize_finish(conn, row['goal_id'])
         cancellations = conn.execute('SELECT goal_id FROM goal_cancellations' +
                                      (' WHERE goal_id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall()
-        for row in cancellations:
-            goals.finalize_cancel(conn, row['goal_id'])
         transfers = conn.execute("SELECT goal_id FROM goal_transfers WHERE status='pending'" +
                                  (' AND goal_id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall()
-        for row in transfers:
-            self.finalize_transfer(conn, row['goal_id'])
+        # Each step is its own transaction: one task whose delivery no longer validates must not hold
+        # every other task's wrap-up behind it on each pass.
+        for finalize, rows in ((goals.finalize_finish, pending), (goals.finalize_cancel, cancellations),
+                               (self.finalize_transfer, transfers)):
+            for row in rows:
+                try:
+                    finalize(conn, row['goal_id'])
+                except board.BoardError:
+                    traceback.print_exc()
         running = conn.execute("SELECT id,leader_session_id FROM goals WHERE status='running' AND manual_pause=0" +
                                (' AND id=?' if goal_id else ''), (goal_id,) if goal_id else ()).fetchall()
         for value in running:

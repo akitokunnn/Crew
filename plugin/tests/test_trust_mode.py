@@ -303,7 +303,7 @@ class TrustModeTests(unittest.TestCase):
         for enabled in (True, False):
             with self.subTest(enabled=enabled):
                 self.set_mode(enabled,'A组保留的历史目标')
-                code,value=hooks.handle('user-prompt-submit',data,self.base/'home',plugin,{},now=NOW)
+                code,value=hooks.handle('user-prompt-submit',data,self.base/'home',plugin,now=NOW)
                 self.assertEqual(code,0)
                 context=(value or {}).get('hookSpecificOutput',{}).get('additionalContext','')
                 self.assertIn('A组保留的历史目标',context)

@@ -63,7 +63,6 @@ function Start-Process {
     param($FilePath, $ArgumentList, $WorkingDirectory, $RedirectStandardInput,
           $RedirectStandardOutput, $RedirectStandardError, $WindowStyle, [switch]$PassThru)
     if ($FilePath -ne 'FAKE-CODEX.exe' -or $WindowStyle -ne 'Hidden' -or -not $PassThru) { throw 'Unexpected launch' }
-    if ($env:CREW_SESSION_ID -or $env:CREW_EXECUTION_ID -or $env:CREW_GOAL_ID -or $env:CLAUDE_CODE_SESSION_ID) { throw 'Parent identity leaked into executor' }
     if ($ArgumentList -notmatch 'exec --cd' -or $ArgumentList -notmatch '--sandbox read-only' -or $ArgumentList -notmatch '--ephemeral --json') { throw 'Wrong arguments' }
     $receipt = '{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":1000,"output_tokens":100,"reasoning_output_tokens":40}}'
     if ($env:FAKE_MALFORMED -eq 'yes') { $receipt = 'invalid receipt' }
@@ -81,16 +80,14 @@ function Start-Process {
     }
     return $fake
 }
-& __SCRIPT__ -TaskFile __TASK__ -WorkDir __ROOT__ -Sandbox read-only -Model fake-model -Effort low -NoWatch
+& __SCRIPT__ -TaskFile __TASK__ -WorkDir __ROOT__ -Sandbox read-only -Model fake-model -Effort low -CrewSession logical-chief -CrewExecution goal-execution -NoWatch
 exit $LASTEXITCODE
 """.replace("__SCRIPT__", literal(SCRIPT)).replace("__TASK__", literal(task)).replace("__ROOT__", literal(root)),
                                    encoding="utf-8-sig")
                 run_home = root / ('selected-home' if private_home else '.crew')
                 env = {key: value for key, value in os.environ.items() if not key.startswith('CREW_')}
-                env.update(USERPROFILE=str(root), CLAUDE_CODE_SESSION_ID="fake-claude",
-                           CREW_SESSION_ID='logical-chief', CREW_EXECUTION_ID='goal-execution', CREW_GOAL_ID='goal',
-                           FAKE_CREW_RUN_HOME=str(run_home),
-                           CREW_ROLE='member', FAKE_EXIT=str(code), FAKE_LOG_FAILURE="yes" if log_failure else "no",
+                env.update(USERPROFILE=str(root), FAKE_CREW_RUN_HOME=str(run_home),
+                           FAKE_EXIT=str(code), FAKE_LOG_FAILURE="yes" if log_failure else "no",
                            FAKE_MALFORMED="yes" if malformed else "no")
                 if private_home:
                     env['CREW_HOME'] = str(run_home)
@@ -111,8 +108,9 @@ exit $LASTEXITCODE
                 self.assertIsNone(records[0]["exit_code"])
                 self.assertEqual(records[1]["exit_code"], code)
                 self.assertIsNotNone(records[1]["ended_at"])
-                self.assertEqual(records[1]["claude_session_id"], "fake-claude")
-                self.assertEqual((records[1]['crew_session_id'], records[1]['crew_execution_id']), ('logical-chief', 'goal-execution'))
+                for record in records:
+                    self.assertEqual((record['crew_session_id'], record['crew_execution_id']),
+                                     ('logical-chief', 'goal-execution'))
                 self.assertEqual(records[0]['pid'], 12345)
                 self.assertTrue(records[0]['pid_created'].startswith('win:'))
                 self.assertEqual((root / '.crew').exists(), not private_home)

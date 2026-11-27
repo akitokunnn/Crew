@@ -4,7 +4,8 @@ from glob import escape as escape_glob
 import json
 import ntpath
 import sys
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+import time
 from pathlib import Path
 
 from . import board, models, store
@@ -123,8 +124,10 @@ def session_titles(root, session_ids, cache):
                     elif not record.get("isSidechain"):
                         if record["type"] == "assistant":
                             message = record["message"]
-                            if "usage" in message and message["model"] != "<synthetic>":
-                                maximum = windows.get(message["model"])
+                            model = message["model"]
+                            if "usage" in message and isinstance(model, str) and model != "<synthetic>":
+                                # A provider can report the same model as anthropic/claude-opus-5.5.
+                                maximum = windows.get(model) or windows.get(model.removeprefix("anthropic/").replace(".", "-"))
                                 tokens = message["usage"]
                                 context = None if maximum is None else {
                                     "used": tokens["input_tokens"] + tokens["cache_read_input_tokens"]
@@ -448,11 +451,21 @@ def _subagent_type(path):
     return value if isinstance(value, str) and value else None
 
 
-def scan(conn, claude_root, codex_root, runs_file, *, receipts_only=False):
+# A scan writes in batches of whole transcripts of about this long, then pauses so that writers waiting on
+# SQLite's busy timeout (chat delivery receipts, the change feed) get the database in between.
+BATCH_SECONDS, YIELD_SECONDS = 0.5, 0.12
+
+
+def scan(conn, claude_root, codex_root, runs_file, *, receipts_only=False, writer=None):
     """Return inserted/updated domain rows, skipped lines and their locations.
 
     Metadata updates count as updates; bookkeeping and the scan event do not.
     Malformed complete lines are consumed. Incomplete tails are left unread.
+
+    Transcripts commit in batches of about BATCH_SECONDS, each together with its read offset, with a
+    pause in between, so a first scan of hundreds of transcripts never holds the database for its whole
+    length and a scan stopped half way resumes from the saved offsets. ``writer`` is the lock the
+    caller's other writers share; it is held only around each of those short transactions.
     """
     claude_root, codex_root, runs_file = Path(claude_root).absolute(), Path(codex_root).absolute(), Path(runs_file).absolute()
     files = []
@@ -466,7 +479,8 @@ def scan(conn, claude_root, codex_root, runs_file, *, receipts_only=False):
     if claude_runs.exists():
         files.append((claude_runs, 'codex_runs'))  # Existing receipt-source kind; runtime is stored on each run.
     counts = {"inserted": 0, "updated": 0, "skipped": 0, "bad_lines": []}
-    with _transaction(conn, "usage_scan", immediate=True):
+    hold = nullcontext() if writer is None else writer
+    with hold, _transaction(conn, "usage_scan", immediate=True):
         # Replay only peer prompts, never the shrink/reset path that deletes whole session families.
         if not receipts_only:
             _backfill_peer_prompts(conn, files, claude_root, counts)
@@ -490,42 +504,52 @@ def scan(conn, claude_root, codex_root, runs_file, *, receipts_only=False):
             for path, kind in files:
                 if kind.startswith("claude") and _claude_identity(path, claude_root, kind)[1] == session_id:
                     conn.execute("DELETE FROM usage_files WHERE path = ?", (str(path),))
-        scanned_files = 0
-        for path, kind in files:
-            stat = path.stat()
-            old = conn.execute("SELECT * FROM usage_files WHERE path = ?", (str(path),)).fetchone()
-            restored = kind == "codex" and old is not None and _restore_codex_path(conn, path, counts)
-            if old is not None and stat.st_size == old["size"] and stat.st_mtime == old["mtime"] and not restored:
-                continue
-            scanned_files += 1
-            offset = old["offset"] if old else 0
-            identity, agent_type = None, None
-            if kind.startswith("claude"):
-                identity = _claude_identity(path, claude_root, kind)
-                if kind == "claude_subagent":
-                    agent_type = _subagent_type(path)
-            for begin, end, line in _lines(path, offset):
-                before = counts["inserted"], counts["updated"]
-                try:
-                    with _transaction(conn, "usage_line"):
-                        record = json.loads(line)
-                        if not isinstance(record, dict):
-                            raise TypeError("JSON line must be an object")
-                        if kind.startswith("claude"):
-                            _claude_line(conn, record, identity, agent_type, counts)
-                        elif kind == "codex":
-                            _codex_line(conn, record, path, counts, is_header=begin == 0)
-                        else:
-                            _run_line(conn, record, counts, 'claude' if path == claude_runs else 'codex')
-                except (json.JSONDecodeError, KeyError, TypeError) as error:
-                    counts["inserted"], counts["updated"] = before
-                    counts["skipped"] += 1
-                    counts["bad_lines"].append({"path": str(path), "line": _line_number(path, begin), "error": str(error)})
-                offset = end
-            _save(conn, "usage_files", "path", {
-                "path": str(path), "kind": kind, "size": stat.st_size, "mtime": stat.st_mtime,
-                "offset": offset, "scanned_at": store.now_iso(),
-            })
+    scanned_files, pending, done = 0, iter(files), False
+    while not done:
+        with hold, _transaction(conn, "usage_batch", immediate=True):
+            started, done = time.monotonic(), True
+            for path, kind in pending:
+                stat = path.stat()
+                old = conn.execute("SELECT * FROM usage_files WHERE path = ?", (str(path),)).fetchone()
+                restored = kind == "codex" and old is not None and _restore_codex_path(conn, path, counts)
+                if old is not None and stat.st_size == old["size"] and stat.st_mtime == old["mtime"] and not restored:
+                    continue
+                scanned_files += 1
+                offset = old["offset"] if old else 0
+                identity, agent_type = None, None
+                if kind.startswith("claude"):
+                    identity = _claude_identity(path, claude_root, kind)
+                    if kind == "claude_subagent":
+                        agent_type = _subagent_type(path)
+                for begin, end, line in _lines(path, offset):
+                    before = counts["inserted"], counts["updated"]
+                    try:
+                        with _transaction(conn, "usage_line"):
+                            record = json.loads(line)
+                            if not isinstance(record, dict):
+                                raise TypeError("JSON line must be an object")
+                            if kind.startswith("claude"):
+                                _claude_line(conn, record, identity, agent_type, counts)
+                            elif kind == "codex":
+                                _codex_line(conn, record, path, counts, is_header=begin == 0)
+                            else:
+                                _run_line(conn, record, counts, 'claude' if path == claude_runs else 'codex')
+                    except (json.JSONDecodeError, KeyError, TypeError) as error:
+                        counts["inserted"], counts["updated"] = before
+                        counts["skipped"] += 1
+                        counts["bad_lines"].append({"path": str(path), "line": _line_number(path, begin), "error": str(error)})
+                    offset = end
+                _save(conn, "usage_files", "path", {
+                    "path": str(path), "kind": kind, "size": stat.st_size, "mtime": stat.st_mtime,
+                    "offset": offset, "scanned_at": store.now_iso(),
+                })
+                if time.monotonic() - started >= BATCH_SECONDS:
+                    done = False
+                    break
+        if not done:
+            # Let writers that wait on the busy timeout in: they retry at most every 100 ms.
+            time.sleep(YIELD_SECONDS)
+    with hold, _transaction(conn, "usage_finish", immediate=True):
         if scanned_files or not receipts_only:
             _match_runs(conn, counts)
         if scanned_files:

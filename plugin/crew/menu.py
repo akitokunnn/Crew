@@ -6,6 +6,8 @@ import io
 import sys
 from pathlib import Path
 
+from . import frontend_root
+
 
 LABEL = "在这里启动 Crew"
 KEYS = (
@@ -44,7 +46,7 @@ def configure(action, home, plugin_root, registry=None, executable=None):
     if action == "install":
         plugin_root = Path(plugin_root).resolve()
         entry = plugin_root / "crew" / "menu.py"
-        icon = plugin_root / "crew" / "web" / "logo.ico"
+        icon = frontend_root.resolve(plugin_root) / "logo.ico"
         pythonw = Path(sys.executable if executable is None else executable).with_name("pythonw.exe")
         for required in (entry, icon, pythonw):
             if not required.is_file():

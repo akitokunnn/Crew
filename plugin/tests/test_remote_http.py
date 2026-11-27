@@ -8,6 +8,7 @@ import threading
 import unittest
 from unittest import mock
 
+from datetime import datetime
 from crew import remote_http
 
 
@@ -33,6 +34,8 @@ class ListenerTests(unittest.TestCase):
                 class Service:  # Server only records its address and starts/stops the service.
                     def __init__(self):
                         self.home = Path(home)
+                        self.now = datetime.now
+                        self.mcp_exposure = 'core'
                     def start(self):
                         pass
                     def close(self):

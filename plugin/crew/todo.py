@@ -7,7 +7,7 @@ snapshot and its leader/handoff notification are committed together.
 import json
 import uuid
 
-from . import board, store
+from . import board, change_feed, store
 
 
 _FIELDS = ("id", "project", "session_id", "title", "steps", "verification", "blocking", "status",
@@ -78,6 +78,17 @@ def get(conn, project_name, todo_id):
     return _enrich(conn, _raw(conn, project_name, todo_id))
 
 
+def change_value(conn, project_name, todo_id):
+    """The action's snapshot value for the change feed; the snapshot lists open actions only."""
+    row = conn.execute("SELECT status FROM todos WHERE id=? AND project=?", (todo_id, project_name)).fetchone()
+    return get(conn, project_name, todo_id) if row is not None and row['status'] == 'open' else None
+
+
+def touch(conn, project_name, todo_id):
+    change_feed.touch(conn, 'todo', project_name, todo_id)
+    change_feed.touch(conn, 'workspace_activity', None, project_name)
+
+
 def list(conn, project_name=None, all=False):
     if project_name is not None:
         board.project(conn, project_name)
@@ -121,6 +132,7 @@ def add(conn, session_id, title, steps, verification, blocking=False, now=None, 
     conn.execute('INSERT INTO todo_operation_keys VALUES(?,?,?)',
                  (actor['project'], operation_key or 'crew-todo:' + uuid.uuid4().hex, todo_id))
     board._event(conn, "todo:add", actor["project"], session_id, {"id": todo_id}, now)
+    touch(conn, actor['project'], todo_id)
     return get(conn, actor['project'], todo_id)
 
 
@@ -207,6 +219,7 @@ def _change(conn, before, status, note, actor, kind, now):
                            source="web" if actor == board.HUMAN else "crew", sender=actor)
     board._event(conn, kind, before["project"], actor,
                  {"id": before["id"], "before": before, "version": after["version"], "notification": notification}, now)
+    touch(conn, before["project"], before["id"])
     return {"ok": True, "todo": get(conn, before["project"], before["id"]),
             "before": before, "version": after["version"]}
 
@@ -285,6 +298,7 @@ def undo(conn, project_name, todo_id, before, version, actor=board.HUMAN, now=No
                            route=operation["notification"])
     board._event(conn, "todo:undo", current["project"], actor,
                  {"id": todo_id, "before": current, "version": restored["version"], "notification": notification}, now)
+    touch(conn, current["project"], todo_id)
     return {"ok": True, "todo": get(conn, current["project"], todo_id), "before": current, "version": restored["version"]}
 
 
@@ -301,7 +315,7 @@ def backfill(conn, project_name=None, now=None):
                 continue
             if conn.execute("SELECT 1 FROM todo_backfills WHERE leader_session_id=?", (leader["session_id"],)).fetchone():
                 continue
-            notice = ("请盘点你当前组里尚未完成、确实需要用户亲手做的事项，并用 crew todo add 登记人工待办。"
+            notice = ("请盘点你当前组里尚未完成、确实需要用户亲手做的事项，并用 Crew 工具 `todo_add` 登记人工待办。"
                       "每项写清标题、用户操作步骤、完成后如何确认，以及是否卡住 AI。"
                       "只登记现在仍需做的；已经做过、不再需要或只是等待用户选择的问题不要登记。没有则不用登记。")
             notice_id = board._queue_leader_notice(conn, leader["session_id"], notice, "crew", now)

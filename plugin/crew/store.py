@@ -4,6 +4,8 @@ import os
 import sqlite3
 from pathlib import Path
 
+from . import change_triggers, themes
+
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 BUSY_TIMEOUT_MS = 5000
 
@@ -32,7 +34,38 @@ def connect(home):
     _migrate_leader_pins(conn)
     _migrate_codex_speed(conn)
     _migrate_domain_members(conn)
+    _migrate_project_themes(conn)
+    change_triggers.install(conn)
     return conn
+
+
+def assign_project_themes(conn, at):
+    """Give every workspace without a theme the next unused one, inside the caller's write transaction."""
+    assigned = [row[0] for row in conn.execute("SELECT theme FROM project_themes")]
+    named = []
+    for row in conn.execute("SELECT p.name FROM projects p LEFT JOIN project_themes t ON t.project=p.name "
+                            "WHERE t.project IS NULL ORDER BY p.created_at,p.rowid").fetchall():
+        unused = [theme for theme in themes.IDS if theme not in assigned]
+        theme = unused[0] if unused else themes.IDS[len(assigned) % len(themes.IDS)]
+        conn.execute("INSERT INTO project_themes(project,theme,assigned_at) VALUES(?,?,?)", (row[0], theme, at))
+        assigned.append(theme)
+        named.append(row[0])
+    return named
+
+
+def _migrate_project_themes(conn):
+    """Workspaces from before themes get theirs once here, so reading a workspace never writes."""
+    missing = ("SELECT 1 FROM projects p LEFT JOIN project_themes t ON t.project=p.name "
+               "WHERE t.project IS NULL LIMIT 1")
+    if conn.execute(missing).fetchone() is None:
+        return
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        assign_project_themes(conn, now_iso())
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 def _migrate_domain_members(conn):
@@ -103,10 +136,20 @@ def _migrate_quiet_leader_notices(conn):
 
 
 def _migrate_channel_replies(conn):
-    """Channel replies and pending answers; earlier posts stay plain and earlier mentions await nothing."""
+    """Channel replies and pending answers; earlier posts stay plain and earlier mentions await nothing.
+
+    Earlier mentions were all explicit names, and earlier sent notices all went through the leader's input.
+    Earlier notices record no owning batch or waiting reason; earlier posts all belong to the main channel.
+    """
     columns = {'channel_messages': (('reply_to', 'INTEGER REFERENCES channel_messages(id)'),
-                                    ('detail', 'INTEGER NOT NULL DEFAULT 0'), ('auto', 'INTEGER NOT NULL DEFAULT 0')),
-               'channel_mentions': (('await_reply', 'INTEGER NOT NULL DEFAULT 0'),)}
+                                    ('detail', 'INTEGER NOT NULL DEFAULT 0'), ('auto', 'INTEGER NOT NULL DEFAULT 0'),
+                                    ('room_id', 'INTEGER REFERENCES war_rooms(id)')),
+               'channel_mentions': (('await_reply', 'INTEGER NOT NULL DEFAULT 0'),
+                                    ('reason', "TEXT NOT NULL DEFAULT 'mention' CHECK (reason IN ('mention', 'reply'))")),
+               'war_rooms': (('budget_tokens', 'INTEGER'), ('budget_base', "TEXT NOT NULL DEFAULT '{}'"),
+                             ('paused_at', 'TEXT')),
+               'leader_notices': (('delivered_via', "TEXT CHECK (delivered_via IN ('hook'))"), ('batch_id', 'TEXT'),
+                                  ('waiting', "TEXT CHECK (waiting IN ('external', 'busy', 'stopped'))"))}
 
     def missing():
         return [(table, name, kind) for table, wanted in columns.items()

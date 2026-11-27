@@ -139,6 +139,8 @@ def input_context(conn, session_id, previous=None):
 def record_decision_scope(conn, decision_id, session_id):
     conn.execute('INSERT INTO decision_leader_scopes(decision_id,leader_session_id) VALUES(?,?)',
                  (decision_id, resolve_leader(conn, session_id)))
+    from . import snapshot_values
+    snapshot_values.touch_decision(conn, decision_id)
 
 
 def _decision_leader(conn, decision):

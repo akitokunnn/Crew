@@ -221,7 +221,7 @@ class VSCodeServiceTests(unittest.TestCase):
                 self.assertIn(sid, {item["session_id"] for item in before["members"]})
                 self.assertIn(sid, before["leaders"][0]["member_ids"])
 
-                result = self.service.post("/api/roster/remove", {"session_id": sid, "group": "lead"}, "alpha")
+                result = self.service.op("roster.remove", {"session_id": sid, "group": "lead"}, project="alpha")
                 state = self.service.state("alpha")
 
                 self.assertEqual((result["session"]["crew_name"], result["session"]["group_name"]), (name, None))
@@ -258,7 +258,7 @@ class VSCodeServiceTests(unittest.TestCase):
         sid = identity(1)
         self.record(sid)
         self.refresh()
-        result = self.service.post("/api/roster/adopt", {"session_id": sid, "name": "offline"}, "alpha")
+        result = self.service.op("roster.adopt", {"session_id": sid, "name": "offline"}, project="alpha")
         self.assertEqual((result["session_id"], result["crew_name"], result["cc_name"], result["group_name"]),
                          (sid, "offline", None, None))
         self.assertEqual((result["cwd"], result["worktree"], result["branch"]),
@@ -271,7 +271,7 @@ class VSCodeServiceTests(unittest.TestCase):
         self.record(sid)
         board.ensure_spawn_group(self.conn, "alpha", "empty-group", now=NOW)
         self.refresh()
-        result = self.service.post("/api/roster/adopt", {"session_id": sid, "name": "member", "group": "empty-group"}, "alpha")
+        result = self.service.op("roster.adopt", {"session_id": sid, "name": "member", "group": "empty-group"}, project="alpha")
         self.assertEqual((result["group_name"], result["cc_name"]), ("empty-group", None))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM leader_notices").fetchone()[0], 0)
         self.assertEqual(self.ids(), {"running": set(), "others": set()})
@@ -285,7 +285,7 @@ class VSCodeServiceTests(unittest.TestCase):
                 self.record(sid)
                 self.agents[:] = [self.agent(sid)] if running else []
                 self.refresh()
-                result = self.service.post("/api/roster/adopt", {"session_id": sid, "name": name, "group": "lead"}, "alpha")
+                result = self.service.op("roster.adopt", {"session_id": sid, "name": name, "group": "lead"}, project="alpha")
                 expected_address = "cc-" + sid if running else None
                 self.assertEqual((result["group_name"], result["cc_name"]), ("lead", expected_address))
                 notices = board.pending_notices(self.conn, leader)
@@ -293,9 +293,9 @@ class VSCodeServiceTests(unittest.TestCase):
                 notice = notices[-1]
                 address = "（SendMessage 地址：%s）" % expected_address if running else ""
                 self.assertEqual(notice["text"],
-                    name + address + " 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader，请它按 Crew 注入的成员守则工作（没看到注入时再读 /crew:member），"
-                    f'并用 crew card 写下负责范围和完成标准；crew who 显示离线时，用 crew wake {name} "要它做的事" '
-                    "叫醒后按 crew 名 SendMessage。")
+                    name + address + " 已收编到你组。请用 SendMessage 欢迎它、说明你是它的 leader，请它按 Crew 注入的成员守则工作"
+                    "，并请它用 Crew 工具 `session_card_set` 写下负责范围（`scope`）和完成标准（`done_when`）。"
+                    f"对方离线时，用 `message_send`（`to` 填「{name}」，`text` 填要它做的事，`kind=task`），会在对方空闲时送达。")
                 self.assertEqual((notice["project"], notice["session_id"], notice["source"], notice["created_at"], notice["sent_at"]),
                                  ("alpha", leader, "crew", NOW, None))
 
@@ -312,7 +312,7 @@ class VSCodeServiceTests(unittest.TestCase):
         self.refresh()
         with mock.patch("crew.web.board.register_session", wraps=board.register_session) as register, \
                 mock.patch("crew.web.hooks.git_details") as git_details:
-            result = self.service.post("/api/roster/adopt", {"session_id": sid, "name": "same", "group": "destination"}, "alpha")
+            result = self.service.op("roster.adopt", {"session_id": sid, "name": "same", "group": "destination"}, project="alpha")
         register.assert_not_called()
         git_details.assert_not_called()
         self.assertEqual((result["session_id"], result["crew_name"], result["group_name"], result["cc_name"]),
@@ -333,8 +333,8 @@ class VSCodeServiceTests(unittest.TestCase):
         original = board.session(self.conn, sid)
         self.refresh()
 
-        result = self.service.post("/api/roster/adopt",
-            {"session_id": sid, "name": "new-name", "group": "lead"}, "alpha")
+        result = self.service.op("roster.adopt",
+            {"session_id": sid, "name": "new-name", "group": "lead"}, project="alpha")
 
         self.assertEqual((result["crew_name"], result["group_name"]), ("new-name", "lead"))
         for field in ("started_at", "task", "cwd", "worktree", "branch", "entrypoint", "permission_mode", "status"):
@@ -351,8 +351,8 @@ class VSCodeServiceTests(unittest.TestCase):
         self.register(sid, "old-name")
         self.refresh()
         with self.assertRaisesRegex(board.BoardError, "分组"):
-            self.service.post("/api/roster/adopt",
-                {"session_id": sid, "name": "new-name", "group": "missing"}, "alpha")
+            self.service.op("roster.adopt",
+                {"session_id": sid, "name": "new-name", "group": "missing"}, project="alpha")
         saved = board.session(self.conn, sid)
         self.assertEqual((saved["crew_name"], saved["group_name"]), ("old-name", None))
 
@@ -364,8 +364,8 @@ class VSCodeServiceTests(unittest.TestCase):
         self.register(identity(10), "lead", role="leader")
         self.refresh()
         with self.assertRaisesRegex(board.Conflict, "重名"):
-            self.service.post("/api/roster/adopt",
-                {"session_id": sid, "name": "taken-name", "group": "lead"}, "alpha")
+            self.service.op("roster.adopt",
+                {"session_id": sid, "name": "taken-name", "group": "lead"}, project="alpha")
         saved = board.session(self.conn, sid)
         self.assertEqual((saved["crew_name"], saved["group_name"]), ("old-name", None))
 
@@ -389,7 +389,7 @@ class VSCodeServiceTests(unittest.TestCase):
         self.assertEqual(self.ids("beta"), {"running": {live_b}, "others": {b}})
         self.assertEqual(self.ids("nested"), {"running": {live_n}, "others": {n}})
         with self.assertRaisesRegex(board.BoardError, "待收编列表"):
-            self.service.post("/api/roster/adopt", {"session_id": b, "name": "wrong-project"}, "alpha")
+            self.service.op("roster.adopt", {"session_id": b, "name": "wrong-project"}, project="alpha")
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id=?", (b,)).fetchone()[0], 0)
 
     def test_archive_sync_covers_all_service_projects_is_idempotent_and_stops_managed_processes(self):
@@ -501,7 +501,7 @@ class VSCodeServiceTests(unittest.TestCase):
         stop.wait.return_value = True
         self.service.stop = stop
         with mock.patch.object(self.service, "_refresh_vscode", wraps=self.service._refresh_vscode) as refresh:
-            self.service._poll_agents()
+            self.service._poll_agents(threading.Event())
         refresh.assert_called_once_with()
         stop.wait.assert_called_once_with(10)
         self.assertEqual(self.ids()["running"], {sid})
@@ -530,7 +530,7 @@ class VSCodeServiceTests(unittest.TestCase):
         stop.wait.side_effect = next_pass
         self.service.stop = stop
         with mock.patch.object(self.service.chat, "auto_resume") as resume:
-            self.service._poll_agents()
+            self.service._poll_agents(threading.Event())
         self.assertEqual(stop.wait.call_count, 2)
         self.assertIn("JSONDecodeError", errors[0])
         self.assertIn("重试", errors[0])
@@ -624,7 +624,7 @@ class VSCodeServiceTests(unittest.TestCase):
                 mock.patch.object(self.service, "_refresh_vscode", wraps=self.service._refresh_vscode) as refresh, \
                 mock.patch.object(self.service.chat, "auto_resume") as resume, \
                 contextlib.redirect_stderr(io.StringIO()) as log:
-            self.service._poll_agents()
+            self.service._poll_agents(threading.Event())
         self.assertIn("database is locked", log.getvalue())
         self.assertEqual(refresh.call_count, 2)
         self.assertEqual(resume.call_count, 1)

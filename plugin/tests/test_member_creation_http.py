@@ -3,6 +3,8 @@ import tests
 import threading
 import unittest
 
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
 from crew import board, goals, member_defaults, models, runtimes, store, web
 import test_chat_http
 from test_shell import NOW, PLUGIN, ShellFixture
@@ -24,15 +26,15 @@ class MemberCreationHttpTests(ShellFixture, unittest.TestCase):
         self.choice = {'runtime':'claude','model':'claude-sonnet-5-5','effort':'high','speed':None}
 
     def test_owner_can_save_defaults_and_create_a_member_by_stable_leader_id_after_rename(self):
-        code, value, _ = self.request('/api/member-defaults?project=demo', {'leader_session_id':'s3','selection':self.choice})
+        code, value, _ = self.request('/api/op/member_defaults.set?project=demo', {'leader_session_id':'s3','selection':self.choice})
         self.assertEqual(code,200,value)
         self.assertEqual(value['selection'],self.choice)
         self.assertEqual(self.processes,[])
-        code, state, _ = self.request('/api/state?project=demo')
+        code, state, _ = self.request('/api/op/workspace.state?project=demo')
         self.assertEqual(next(leader for leader in state['leaders'] if leader['session_id']=='s3')['member_defaults'],self.choice)
-        code, value, _ = self.request('/api/session/rename?project=demo', {'session_id':'s3','name':'renamed leader'})
+        code, value, _ = self.request('/api/op/session.rename?project=demo', {'session_id':'s3','name':'renamed leader'})
         self.assertEqual(code,200,value)
-        code, value, _ = self.request('/api/spawn?project=demo', {'leader_session_id':'s3','name':'new owner member','task':'Finite task with a result','role':'member'})
+        code, value, _ = self.request('/api/op/execution.spawn?project=demo', {'leader_session_id':'s3','name':'new owner member','task':'Finite task with a result','role':'member'})
         self.assertEqual(code,200,value)
         sid=value['session_id']
         self.assertEqual(board.session(self.conn,sid)['group_name'],'renamed leader')
@@ -46,48 +48,44 @@ class MemberCreationHttpTests(ShellFixture, unittest.TestCase):
         board.init_project(self.conn,'other',other)
         board.join(self.conn,'foreign-chief','other','foreign',other,None,None,role='leader')
         for sid in ('s1','foreign-chief'):
-            code,value,_=self.request('/api/member-defaults?project=demo',{'leader_session_id':sid,'selection':self.choice})
+            code,value,_=self.request('/api/op/member_defaults.set?project=demo',{'leader_session_id':sid,'selection':self.choice})
             self.assertEqual(code,400,value)
-            code,value,_=self.request('/api/spawn?project=demo',{'leader_session_id':sid,'name':'bad child','task':'finite'})
+            code,value,_=self.request('/api/op/execution.spawn?project=demo',{'leader_session_id':sid,'name':'bad child','task':'finite'})
             self.assertEqual(code,400,value)
-        code,value,_=self.request('/api/spawn?project=demo',{'leader_session_id':'s3','group':'wrong','name':'bad child','task':'finite'})
+        code,value,_=self.request('/api/op/execution.spawn?project=demo',{'leader_session_id':'s3','group':'wrong','name':'bad child','task':'finite'})
         self.assertEqual(code,400,value)
         self.assertEqual(self.processes,[])
         self.assertIsNone(member_defaults.get(self.conn,'s3'))
 
     def test_member_cannot_spawn_or_create_leader_and_adopt_existing_members(self):
         before = self.conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]
-        for path, extra in (('/api/spawn', {'leader_session_id': 's3'}),
-                            ('/api/leader', {'members': ['two']})):
-            with self.subTest(path=path):
-                code, value, _ = self.request(path + '?project=demo', {
-                    'caller_session_id': 's1', 'name': 'nested', 'task': 'Finite task', **extra})
-                self.assertEqual(code, 400, value)
-                self.assertIn('只有本项目当前 leader', value['error'])
+        for name, extra in (('execution.spawn', {}), ('leader.create', {'members': ['two']})):
+            with self.subTest(name=name), self.assertRaises(OpError) as denied:
+                ai_call(self.server.service, self.conn, 's1', name,
+                        {'name': 'nested', 'task': 'Finite task', **extra})
+            self.assertEqual(denied.exception.code, 'forbidden')
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0], before)
         self.assertIsNone(board.session(self.conn, 's2')['group_name'])
         self.assertEqual(self.processes, [])
 
     def test_owner_can_create_a_leader_without_inventing_an_ai_identity(self):
-        code, value, _ = self.request('/api/leader?project=demo', {
+        code, value, _ = self.request('/api/op/leader.create?project=demo', {
             'name': 'owner leader', 'task': 'Finite task', 'members': []})
         self.assertEqual(code, 200, value)
         self.assertEqual(board.session(self.conn, value['session_id'])['role'], 'leader')
         self.assertEqual(len(self.processes), 1)
 
     def test_leader_opens_members_only_inside_a_task_and_cannot_create_another_leader(self):
-        code, value, _ = self.request('/api/spawn?project=demo', {
-            'caller_session_id': 's3', 'name': 'loose member', 'task': 'Finite task'})
-        self.assertEqual(code, 400, value)
-        self.assertIn('执行只能开在任务里', value['error'])
+        with self.assertRaisesRegex(board.BoardError, '执行只能开在任务里'):
+            ai_call(self.server.service, self.conn, 's3', 'execution.spawn',
+                    {'name': 'loose member', 'task': 'Finite task'})
         self.assertEqual(self.processes, [])
         goal = goals.transition(self.conn, goals.create(self.conn, 'demo', 's3', 'Split work', 'Request', ['Done'])['id'], 'running')
-        code, value, _ = self.request('/api/spawn?project=demo', {
-            'caller_session_id': 's3', 'name': 'direct member', 'task': 'Finite task', 'goal_id': goal['id']})
-        self.assertEqual(code, 200, value)
+        value = ai_call(self.server.service, self.conn, 's3', 'execution.spawn',
+                        {'name': 'direct member', 'task': 'Finite task', 'goal_id': goal['id']})
         self.assertEqual(board.session(self.conn, value['session_id'])['group_name'], 'lead')
-        code, value, _ = self.request('/api/leader?project=demo', {
-            'caller_session_id': 's3', 'name': 'nested leader', 'task': 'Finite task', 'members': []})
-        self.assertEqual(code, 400, value)
-        self.assertIn('只能在自己的当前组创建成员', value['error'])
+        with self.assertRaises(OpError) as denied:
+            ai_call(self.server.service, self.conn, 's3', 'leader.create',
+                    {'name': 'nested leader', 'task': 'Finite task', 'members': []})
+        self.assertEqual(denied.exception.code, 'forbidden')
         self.assertEqual(len(self.processes), 1)

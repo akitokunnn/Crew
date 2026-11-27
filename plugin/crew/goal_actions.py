@@ -212,7 +212,7 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
         if action == 'create':
             leader_id = data.get('leader_session_id') or data.get('leader') or (actor_session_id if actor and actor['role'] == 'leader' else None)
             if not leader_id:
-                raise board.BoardError('创建目标必须指定主责 leader')
+                raise board.BoardError('创建目标必须指定主责 leader：leader_session_id 填该 leader 的会话 ID')
             leader = _person(conn, project, leader_id)
             missing = [key for key in ('title', 'request', 'acceptance') if key not in data]
             if missing:
@@ -325,8 +325,8 @@ def dispatch(home, actor_session_id, execution_id, action, data, controller=None
                 value = goals.continue_task(conn, goal_id, data.get('text'), actor=actor_session_id, user_requested=True,
                                             acceptance=data.get('acceptance'), constraints=data.get('constraints'),
                                             expected_version=data.get('expected_version'))
-                return {**value, 'message': '已登记修改，任务仍在第 %s 轮、回到待开始，原工作清单沿用。用 crew goal start %s'
-                        '（Codex：crew_goal 的 start）在本任务内接着改，完成并验证后重新 finish 提交验收。'
+                return {**value, 'message': '已登记修改，任务仍在第 %s 轮、回到待开始，原工作清单沿用。用 Crew 工具 `goal_start`（`goal_id=%s`）'
+                        '在本任务内接着改，完成并验证后重新用 `goal_finish` 提交验收。'
                         % (value['current_round'], goal_id)}
             amended = goals.amend(conn, goal_id, data.get('text'), acceptance=data.get('acceptance'),
                                   constraints=data.get('constraints'), actor=actor_session_id, expected_version=data.get('expected_version'))

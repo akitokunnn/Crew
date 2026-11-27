@@ -9,7 +9,7 @@ import time
 from contextlib import closing
 from pathlib import Path
 
-from . import behavior_prompts, board, channel, chat, codex_client, settings, store
+from . import behavior_prompts, board, change_feed, channel, chat, codex_client, settings, store
 
 HEADINGS = ("## 已定结论", "## 未定的事 · 在等谁", "## 各组跨组相关进展")
 DIGEST_TIMEOUT = 300
@@ -112,10 +112,6 @@ def _codex(text, process_factory, selected, cancelled=None):
         elif method == 'turn/completed':
             complete.set()
 
-    def deny_tool(params):
-        actions.append('Codex 摘要请求了工具：' + str(params.get('tool')))
-        return {'success': False, 'contentItems': [{'type': 'inputText', 'text': actions[-1]}]}
-
     def deny_approval(method, params):
         actions.append('Codex 摘要请求了授权：' + method)
         return codex_client.Client._decline(method)
@@ -123,7 +119,7 @@ def _codex(text, process_factory, selected, cancelled=None):
     try:
         with tempfile.TemporaryDirectory(prefix='crew-channel-digest-') as cwd:
             with codex_client.Client(cwd=cwd, env=env, process_factory=process_factory, timeout=remaining(),
-                                     on_notification=notification, tool_handler=deny_tool,
+                                     on_notification=notification,
                                      approval_handler=deny_approval) as client:
                 # Enumerate configured MCP names without a model turn. Override
                 # each server explicitly: an empty map does not erase inherited config.
@@ -143,7 +139,7 @@ def _codex(text, process_factory, selected, cancelled=None):
                     options['serviceTier'] = selected['speed']
                 client.timeout = remaining()
                 started = client.start_thread(cwd=cwd, ephemeral=True, sandbox='read-only', approvalPolicy='never',
-                                               dynamicTools=[], environments=[], config=config, **options,
+                                               environments=[], config=config, **options,
                                                developerInstructions='仅把输入数据整理成指定格式的中文 Markdown 卡片。不要调用工具、执行命令、读取文件或发起协作。')
                 model = started.get('model')
                 if not isinstance(model, str) or not model.strip():
@@ -196,8 +192,9 @@ def generate(home, text, process_factory, cancelled=None):
 
 
 class Manager:
-    def __init__(self, home, write_lock, process_factory=subprocess.Popen):
-        self.home, self.write_lock, self.process_factory = Path(home), write_lock, process_factory
+    def __init__(self, home, write_lock, changes, process_factory=subprocess.Popen):
+        """`changes` (change_feed.Notifier) hears when a workspace's digesting or digest_error changes."""
+        self.home, self.write_lock, self.changes, self.process_factory = Path(home), write_lock, changes, process_factory
         self.lock = threading.Lock()
         self.running, self.errors, self.failed_upto, self.workers = set(), {}, {}, {}
         self.stopping = threading.Event()
@@ -259,11 +256,11 @@ class Manager:
             after = max(previous["upto_message_id"] if previous is not None else 0, boundary["channel_after"])
             if trigger == "auto":
                 baseline = max(after, self.failed_upto.get(project, 0))
-                count = conn.execute("SELECT COUNT(*) FROM channel_messages WHERE project=? AND id>?",
+                count = conn.execute("SELECT COUNT(*) FROM channel_messages WHERE project=? AND id>? AND room_id IS NULL",
                                      (project, baseline)).fetchone()[0]
                 if count < 20:
                     return False
-            rows = conn.execute("SELECT * FROM channel_messages WHERE project=? AND id>? ORDER BY id",
+            rows = conn.execute("SELECT * FROM channel_messages WHERE project=? AND id>? AND room_id IS NULL ORDER BY id",
                                 (project, after)).fetchall()
             if not rows:
                 raise board.BoardError("没有新发言需要整理")
@@ -276,6 +273,7 @@ class Manager:
             worker = threading.Thread(target=self._run, args=(project, previous, messages, trigger, boundary["cleanups"], job),
                                       name="crew-channel-digest", daemon=True)
             self.workers[project] = worker
+            self.changes.mark('channel_digest', project, project)
             worker.start()
             return True
 
@@ -297,13 +295,15 @@ class Manager:
             with self.write_lock, closing(store.connect(self.home)) as conn:
                 behavior_prompts.delivered(conn, application['id'], confirmed=True,
                     evidence='频道摘要载体 ' + runtime + ' 返回本次已验证结果；输入包含记录的配置')
-                with self.lock:
+                with self.lock, board.transaction(conn):
                     _check_cancelled(job['cancelled'])
                     if board.cleanup_boundary(conn, project)["cleanups"] != cleanups:
                         raise board.Conflict("工作区已在整理期间清理，本次要点卡基于清理前的交流，结果已作废")
                     conn.execute("INSERT INTO channel_digests(project,upto_message_id,body,message_count,trigger,model,"
                                  "cost_usd,created_at,runtime) VALUES(?,?,?,?,?,?,?,?,?)",
                                  (project, messages[-1]["id"], body, len(messages), trigger, model, cost, store.now_iso(), runtime))
+                    # The workspace snapshot names the latest card.
+                    change_feed.touch(conn, 'channel', project, project)
         except Exception as exc:
             # Worker boundary: expose failures to the web UI, including their real type.
             with self.lock:
@@ -314,9 +314,11 @@ class Manager:
                 self.failed_upto[project] = messages[-1]["id"]
                 self.running.remove(project)
                 del self.jobs[project]
+            self.changes.mark('channel_digest', project, project)
         else:
             with self.lock:
                 self.errors.pop(project, None)
                 self.failed_upto.pop(project, None)
                 self.running.remove(project)
                 del self.jobs[project]
+            self.changes.mark('channel_digest', project, project)

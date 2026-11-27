@@ -17,18 +17,18 @@ function readerFake(main){
   return reader;
 }
 function harness(api,{fetch:fetcher}={}){
-  const handlers={},main=node(),calls=[],network=[],navigations=[],reader=readerFake(main);
+  const handlers={},main=node(),calls=[],network=[],navigations=[],reader=readerFake(main),cards=[];
   const state={git_assistant:null,members:[],leaders:[{session_id:"leader",name:"验证组"}],goals:[
     {id:"a",leader_session_id:"leader",title:"短句验证",request:"保留原始要求",status:"running",current_round:1,requirement_version:1,version:1},
     {id:"b",leader_session_id:"leader",title:"性能目标",request:"另一份要求",status:"queued",current_round:1,version:1}]};
   for(const goal of state.goals) Object.assign(goal,{assignments:[],work_summary:{total:0,done:0,doing:0,blocked:0},decision_mode:{mode:"human",version:1},supplements_after_report:[],now_doing:[],pending_decision:null,working_count:0,last_activity_at:"2026-11-05T00:00:00Z"});
   const sandbox={window:{CrewReader:reader},URLSearchParams,document:{activeElement:null,addEventListener(type,handler){(handlers[type]??=[]).push(handler);},getElementById:id=>id==="main"?main:null,createElement:node,body:{append(){}}},
     fetch:async url=>{network.push(url);return fetcher?fetcher(url):{ok:true,text:async()=>"<h1>真实报告</h1>"};}};
-  vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-work-ui.js"),"utf8"),sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../crew/web/goal-ui.js"),"utf8"),sandbox);
-  const client=sandbox.window.CrewGoals.create({project:"fixture",state:()=>state,avatar:(name)=>`<i>${name}</i>`,ago:()=>"刚刚",api:async(url,data)=>{calls.push({url,data});const result=api?await api(url,data):{goal:state.goals.find(item=>url.includes(`id=${item.id}`)),context:{items:[],manifest:{}},reports:[]};if(result.goal)result.goal={supplements_after_report:[],...result.goal};return url.startsWith("/api/documents?")?{documents:result.documents||[]}:result;},renderDocuments:items=>items.map(item=>`<span>${item.title}</span>`).join(""),toast(){},onChange(){},onNavigate(id){navigations.push(id);client.sync("leader",id);},onGeneral(){},refreshState:async()=>{}});
+  vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/goal-work-ui.js"),"utf8"),sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/goal-ui.js"),"utf8"),sandbox);
+  const client=sandbox.window.CrewGoals.create({project:"fixture",state:()=>state,avatar:(name)=>`<i>${name}</i>`,ago:()=>"刚刚",api:async(url,data)=>{calls.push({url,data});const result=api?await api(url,data):{goal:state.goals.find(item=>url.includes(`id=${item.id}`)),context:{items:[],manifest:{}},reports:[]};if(result.goal)result.goal={supplements_after_report:[],...result.goal};return url.startsWith("/api/op/document.list?")?{documents:result.documents||[]}:result;},renderDocuments:items=>items.map(item=>`<span>${item.title}</span>`).join(""),decisionCards:id=>cards.filter(card=>card.goal===id).map(card=>card.html).join(""),toast(){},onChange(){},onNavigate(id){navigations.push(id);client.sync("leader",id);},onGeneral(){},refreshState:async()=>{}});
   async function click(act,extra={}){const button={disabled:false,closest:()=>null,dataset:{goalAct:act,...extra}};for(const handler of handlers.click||[])await handler({target:{closest:()=>button}});await tick();}
   async function submit(form){for(const handler of handlers.submit||[])await handler({target:form,preventDefault(){}});await tick();}
-  return {module:sandbox.window.CrewGoals,client,main,state,calls,network,navigations,click,submit,reader,window:sandbox.window};
+  return {module:sandbox.window.CrewGoals,client,main,state,calls,network,navigations,click,submit,reader,window:sandbox.window,cards};
 }
 
 const surfaces=h=>h.client.detailMarkup("leader");
@@ -52,10 +52,10 @@ test("ordinary conversation performs no goal reads and cards preserve status, gr
 
 
 test("cancel needs explicit confirmation and reject requires a preserved human note",async()=>{
-  const h=harness(async(url,data)=>data?{goal:{...h.state.goals[0],status:data.action==="reject"?"failed":"cancelled"}}:{goal:{...h.state.goals[0]},context:{items:[],manifest:{}},reports:[]});h.client.sync("leader","a");await tick();
+  const h=harness(async(url,data)=>data?{goal:{...h.state.goals[0],status:url==="/api/op/goal.reject"?"failed":"cancelled"}}:{goal:{...h.state.goals[0]},context:{items:[],manifest:{}},reports:[]});h.client.sync("leader","a");await tick();
   await h.click("action",{action:"cancel"});assert(!h.calls.some(call=>call.data));await h.click("close-create");assert(!h.calls.some(call=>call.data));
   await h.click("action",{action:"reject"});const error={textContent:""},button={disabled:false};const form={dataset:{goalConfirm:"reject",goalId:"a",version:"1"},elements:{note:{value:""}},hasAttribute:name=>name==="data-goal-confirm",querySelector:selector=>selector===".error-line"?error:button};
-  await h.submit(form);assert(!h.calls.some(call=>call.data));assert(error.textContent.includes("修改"));form.elements.note.value="缺少录音对照证据";await h.submit(form);assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(call=>call.data).data)),{goal_id:"a",action:"reject",version:1,note:"缺少录音对照证据"});
+  await h.submit(form);assert(!h.calls.some(call=>call.data));assert(error.textContent.includes("修改"));form.elements.note.value="缺少录音对照证据";await h.submit(form);assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(call=>call.data))),{url:"/api/op/goal.reject",data:{goal_id:"a",version:1,note:"缺少录音对照证据"}});
 });
 
 test("review buttons decide on the shown report from the home card, the task banner or the reader",async()=>{
@@ -63,14 +63,14 @@ test("review buttons decide on the shown report from the home card, the task ban
   const card=h.module.reviewButtons({id:"b",version:4},"report-b");
   for(const part of ['data-review="accept"','data-review="reject"','data-goal-id="b"','data-version="4"','data-report-id="report-b"','>通过<','>需修改<'])assert(card.includes(part),part);
   await h.click("review",{review:"accept",goalId:"b",version:"4",reportId:"report-b"});
-  assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(call=>call.data).data)),{goal_id:"b",action:"accept",version:4,report_id:"report-b",note:""},"a home card decides on its own goal, not the open task");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(call=>call.data))),{url:"/api/op/goal.accept",data:{goal_id:"b",version:4,report_id:"report-b",note:""}},"a home card decides on its own goal, not the open task");
   h.calls.length=0;await h.click("review",{review:"reject",goalId:"b",version:"4",reportId:"report-b"});assert(!h.calls.some(call=>call.data),"a requested change always asks for the reason first");
   assert(card.includes('data-review="observe"'));assert(!h.module.reviewButtons({id:"b",version:5,observing:{note:"",created_at:"2026-11-07T00:00:00Z"}},"report-b").includes('data-review="observe"'),"an observed task offers only the final decision");
   await h.click("review",{review:"observe",goalId:"b",version:"4",reportId:"report-b"});
-  assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(call=>call.data).data)),{goal_id:"b",action:"observe",version:4,report_id:"report-b"},"observing is one click and keeps the task open");
+  assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(call=>call.data))),{url:"/api/op/goal.observe",data:{goal_id:"b",version:4,report_id:"report-b"}},"observing is one click and keeps the task open");
   h.calls.length=0;await h.click("review",{review:"reject",goalId:"b",version:"4",reportId:"report-b"});
   const error={textContent:""},button={disabled:false};const form={dataset:{goalConfirm:"reject",goalId:"b",version:"4",reportId:"report-b"},elements:{note:{value:"按钮太小"}},hasAttribute:name=>name==="data-goal-confirm",querySelector:selector=>selector===".error-line"?error:button};
-  await h.submit(form);assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(call=>call.data).data)),{goal_id:"b",action:"reject",version:4,report_id:"report-b",note:"按钮太小"});
+  await h.submit(form);assert.deepEqual(JSON.parse(JSON.stringify(h.calls.find(call=>call.data))),{url:"/api/op/goal.reject",data:{goal_id:"b",version:4,report_id:"report-b",note:"按钮太小"}});
 });
 
 test("delivered tasks invite direct follow-up and a new round keeps the earlier human review visible",async()=>{
@@ -136,7 +136,7 @@ test("task actions show pending and retained failure feedback and allow a delibe
 
 test("delivery lists only documents supplied by the selected goal detail and never fetches a global list",async()=>{
   const h=harness(async url=>({goal:{...h.state.goals.find(item=>url.includes(`id=${item.id}`))},reports:[],context:{items:[],manifest:{}},documents:[{id:url.includes("id=a")?1:2,title:url.includes("id=a")?"A任务资料":"B任务资料"}]}));
-  h.client.sync("leader","a");await tick();assert(surfaces(h).includes("A任务资料"));assert(h.calls.every(call=>call.url.startsWith("/api/goal?")||call.url.startsWith("/api/documents?goal_id=")));
+  h.client.sync("leader","a");await tick();assert(surfaces(h).includes("A任务资料"));assert(h.calls.every(call=>call.url.startsWith("/api/op/goal.get?")||call.url.startsWith("/api/op/document.list?goal_id=")));
   h.client.sync("leader","b");await tick();assert(!surfaces(h).includes("A任务资料"));
 });
 
@@ -159,7 +159,7 @@ test("opening a task shows this round's AI conclusion compactly and reads no rep
   await h.click("conclusion-toggle",{reportId:"r2"});markup=surfaces(h);
   assert(markup.includes("goal-delivery-summary open"));assert(!markup.includes("混说"));assert(markup.includes("收起"));
   await h.click("report-notes-toggle",{reportId:"r2"});markup=surfaces(h);assert(markup.includes("混说 &lt;i&gt;仍误判&lt;/i&gt;"));
-  assert(h.calls.every(call=>call.data===undefined&&call.url.startsWith("/api/goal?")));assert.equal(h.network.length,0);
+  assert(h.calls.every(call=>call.data===undefined&&call.url.startsWith("/api/op/goal.get?")));assert.equal(h.network.length,0);
 });
 
 test("five acceptance checks remain five when the report also contains five narrative notes, for either carrier",async()=>{
@@ -200,14 +200,14 @@ test("a reopened round says it has no new delivery instead of presenting the old
 
 test("every report offers 打开文件夹 on this computer only, naming the folder it opens",async()=>{
   const folder={path:"C:\work\<out>",declared:true};
-  const h=harness(async url=>url==="/api/goals/report/folder"?{ok:true,...folder}:deliveryDetail(h,"a",{status:"awaiting_acceptance"},[report("r1",1,{current:true,status:"awaiting_acceptance",folder})]));
+  const h=harness(async url=>url==="/api/op/goal.report.folder"?{ok:true,...folder}:deliveryDetail(h,"a",{status:"awaiting_acceptance"},[report("r1",1,{current:true,status:"awaiting_acceptance",folder})]));
   h.client.sync("leader","a");await settle();
   let markup=surfaces(h);
   assert(markup.includes('data-goal-act="open-folder" data-goal-id="a" data-report-id="r1" title="打开交付文件夹：C:\work\&lt;out&gt;">打开文件夹</button>'),"task delivery names the declared folder");
   await h.click("delivery",{goalId:"a"});await settle();
   assert(readerText(h.main.appended).includes('data-goal-act="open-folder" data-goal-id="a" data-report-id="r1"'),"the report reader offers it too");
   await h.click("open-folder",{goalId:"a",reportId:"r1"});
-  assert.equal(JSON.stringify(h.calls.at(-1)),JSON.stringify({url:"/api/goals/report/folder",data:{goal_id:"a",report_id:"r1"}}));
+  assert.equal(JSON.stringify(h.calls.at(-1)),JSON.stringify({url:"/api/op/goal.report.folder",data:{goal_id:"a",report_id:"r1"}}));
   assert(h.module.folderButton("a","r0",{path:"out",declared:false,inferred:true}).includes('title="打开交付文件夹：out"'),"an older report can open the resolved artifact folder");
   assert(h.module.folderButton("a","r0",{path:"C:\work",declared:false}).includes('title="报告没有登记交付文件夹，打开工作区：C:\work"'),"an older report says it opens the workspace");
   h.window.CrewAccess={local_desktop:false};h.client.sync("leader","a");await settle();
@@ -220,8 +220,8 @@ test("one delivery click from the list opens the selected goal's current report 
   h.client.sync("leader",null);assert(h.client.listMarkup("leader").includes("任务"));
   await h.click("delivery",{goalId:"a"});await settle();
   assert.deepEqual(h.navigations,["a"]);assert(h.client.listMarkup("leader").includes('aria-pressed="true"'));
-  assert.equal(h.calls.map(call=>call.url).join(","),"/api/goal?id=a","one detail read for the selected goal");
-  assert.equal(h.network.join(","),"/api/goals/report?project=fixture&goal_id=a&report_id=ra2","prefers the current round report");
+  assert.equal(h.calls.map(call=>call.url).join(","),"/api/op/goal.get?id=a","one detail read for the selected goal");
+  assert.equal(h.network.join(","),"/api/op/goal.report.view?project=fixture&goal_id=a&report_id=ra2","prefers the current round report");
   const reader=h.main.appended;assert.equal(h.main.appends.length,1);assert.equal(reader.className,"goal-report-reader");
   for(const text of ["返回任务","当前版本","需求 v2","AI 报告结果：等待用户验收","短句验证 · 交付报告",'sandbox="allow-scripts"'])assert(readerText(reader).includes(text),text);
   assert(!readerText(reader).includes("暂无新交付"));assert(frameOf(reader).srcdoc.includes("default-src 'none'"));assert(frameOf(reader).srcdoc.includes("真实报告"));
@@ -237,7 +237,7 @@ test("delivery for a reopened goal opens the newest historical report labelled b
   await h.click("delivery",{goalId:"a"});await settle();
   const reader=h.main.appended;
   for(const text of ["历史报告","需求 v2","AI 报告结果：未达标","当前修改尚无新交付"])assert(readerText(reader).includes(text),text);
-  assert(!readerText(reader).includes("当前版本"));assert.equal(h.network.join(","),"/api/goals/report?project=fixture&goal_id=a&report_id=r2");
+  assert(!readerText(reader).includes("当前版本"));assert.equal(h.network.join(","),"/api/op/goal.report.view?project=fixture&goal_id=a&report_id=r2");
 });
 
 test("failed detail and report reads stay visible with a deliberate retry",async()=>{
@@ -305,7 +305,7 @@ test("an open report follows the latest goal state without rewriting its frame, 
 
   await source.update({status:"awaiting_acceptance"},[report("r2",2,{requirement_version:3,current:true,status:"awaiting_acceptance"}),report("r1b",1,{version:2,requirement_version:1}),report("r1",1,{requirement_version:1})]);
   assert(head().includes("历史报告"));assert(head().includes("已有更新版本"));unchanged("a new round report arrived");
-  assert(h.calls.every(call=>call.data===undefined&&call.url==="/api/goal?id=a"),"only read-only detail refreshes");
+  assert(h.calls.every(call=>call.data===undefined&&call.url==="/api/op/goal.get?id=a"),"only read-only detail refreshes");
 
   await h.click("close-report");assert.equal(reader.removed,true);assert.equal(h.reader.pane(),null,"closing releases the reading pane");assert(surfaces(h).includes('data-goal-tools="a"'));
 });
@@ -354,4 +354,22 @@ test("a delivered task shows its delivery as loading, not as undelivered, until 
   const pending=h.client.detailMarkup();assert(pending.includes("正在读取交付"));assert(!pending.includes("还没有交付"));
   release({goal:h.state.goals.find(item=>item.id==="a"),context:{items:[],manifest:{}},executions:[],reports:[],documents:[]});await tick();
   assert(h.client.detailMarkup().includes("还没有交付"));
+});
+
+// On a narrow screen the task panel covers the conversation, so the task's own open decision is answered in the panel.
+test("the task detail shows its own open decisions above the task tools, and none once the task has ended",async()=>{
+  const h=harness();
+  h.cards.push({goal:"a",html:'<article class="dc decision-card" data-dc="7"><button data-act="answer-option" data-id="7" data-option="0">改回字符串</button></article>'},
+               {goal:"b",html:'<article class="dc decision-card" data-dc="8"></article>'});
+  h.client.sync("leader","a");await tick();
+  const html=h.client.detailMarkup();
+  assert(html.includes('<section class="task-decisions" aria-label="等你拍板"><h2>等你拍板</h2><article class="dc decision-card" data-dc="7">'));
+  assert(html.indexOf('class="task-decisions"')<html.indexOf('data-goal-tools="a"'));
+  assert(html.includes('data-act="answer-option" data-id="7"'));assert(!html.includes('data-dc="8"'));
+  h.client.sync("leader","b");await tick();
+  assert(!h.client.detailMarkup().includes('data-dc="7"'));assert(h.client.detailMarkup().includes('data-dc="8"'));
+  h.cards.length=0;h.client.sync("leader","a");await tick();assert(!h.client.detailMarkup().includes("task-decisions"));
+  h.cards.push({goal:"a",html:'<article class="dc decision-card" data-dc="9"></article>'});
+  Object.assign(h.state.goals[0],{status:"completed",version:2});h.client.sync("leader","a");await tick();
+  assert(!h.client.detailMarkup().includes("task-decisions"));
 });

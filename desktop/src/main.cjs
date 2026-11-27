@@ -33,8 +33,10 @@ const AUTH_EXPIRED = '授权已失效，请在主机上重新生成配对码';
 app.setName(config.instanceName);
 if (process.platform === 'win32') app.setAppUserModelId(product.appId);
 config.bundledBackendDir = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '../../plugin');
+config.bundledFrontendDir = app.isPackaged ? path.join(process.resourcesPath, 'frontend') : path.resolve(__dirname, '../../frontend');
 config.backendDir = config.backendDir || config.bundledBackendDir;
 config.helperBackendDir = config.bundledBackendDir;
+config.helperFrontendDir = config.bundledFrontendDir;
 require('node:fs').mkdirSync(config.userData,{recursive:true});
 app.setPath('userData', config.userData);
 const homePage = pathToFileURL(path.join(__dirname, 'home.html')).href;
@@ -229,7 +231,7 @@ async function openProject(name, hash = '') {
   let project=(await core.projects(backend.url)).find(item=>item.name===name);
   if (!liveWindow(target)) return false;
   if(!project&&name.startsWith('storage:')){
-    const history=await workspaceDataRequest(backend.url,'/api/workspace-data/history?workspace_id='+encodeURIComponent(name.slice(8)));
+    const history=await workspaceDataRequest(backend.url,'/api/op/data.history?workspace_id='+encodeURIComponent(name.slice(8)));
     project={name,display_name:history.workspace.name,root:'已保存的工作区历史',read_only:true,workspace_id:history.workspace.id};
   }
   if (!liveWindow(target)) return false;
@@ -271,12 +273,12 @@ async function exportWorkspace(name){
   let result;
   if(remoteMode){
     // The host writes the package into its own HOME; this computer downloads it to the chosen file.
-    result=await workspaceDataRequest(backend.url,'/api/workspace-data/export',{project:name},120000);
+    result=await workspaceDataRequest(backend.url,'/api/op/data.export',{project:name},120000);
     if(typeof result.download_id!=='string'||!result.download_id)throw new Error('主机没有返回可下载的导出文件，请确认主机版本');
     storageProgress('正在从主机下载工作区包…');
-    try{await workspaceDataJob(()=>core.download(backend.url,'/api/workspace-data/download?'+new URLSearchParams({id:result.download_id}),answer.filePath));}
+    try{await workspaceDataJob(()=>core.download(backend.url,'/api/op/data.download?'+new URLSearchParams({id:result.download_id}),answer.filePath));}
     finally{storageProgress('');}
-  }else result=await workspaceDataRequest(backend.url,'/api/workspace-data/export',{project:name,destination:answer.filePath},120000);
+  }else result=await workspaceDataRequest(backend.url,'/api/op/data.export',{project:name,destination:answer.filePath},120000);
   if(!liveWindow())return result;
   await dialog.showMessageBox(window,{type:'info',title:'工作区已导出',message:'完整工作区包已保存',detail:answer.filePath+'\n包含历史记录及已保存的产出文件。'+(result.cached_files?.length?`\n${result.cached_files.length} 项资料原件暂不可用，已携带校验通过的保存版本。`:''),buttons:['好'],noLink:true});
   return result;
@@ -284,12 +286,12 @@ async function exportWorkspace(name){
 async function importWorkspace(){
   const answer=await dialog.showOpenDialog(window,{title:'导入工作区',filters:[{name:'Crew 工作区',extensions:['crewpack']}],properties:['openFile']});
   if(answer.canceled||!liveWindow())return null;
-  const path=answer.filePaths[0],preview=await workspaceDataRequest(backend.url,'/api/workspace-data/preview',{path},120000);
+  const path=answer.filePaths[0],preview=await workspaceDataRequest(backend.url,'/api/op/data.preview',{path},120000);
   if(!liveWindow())return null;
   const manifest=preview.manifest||preview;
   const choice=await dialog.showMessageBox(window,{type:'question',title:'导入工作区',message:'工作区包已通过校验',detail:`${preview.workspace?.name||manifest.workspace?.name||manifest.workspace_name||'工作区历史'}\n\n恢复历史保留原工作区身份；复制会建立独立的新工作区。导入不会接管原电脑的执行权限，也不会启动 AI。`,buttons:['恢复历史（保留身份）','复制为新工作区','取消'],defaultId:0,cancelId:2,noLink:true});
   if(choice.response===2||!liveWindow())return null;
-  const result=await workspaceDataRequest(backend.url,'/api/workspace-data/import',{path,mode:choice.response===0?'restore_readonly':'fork'},120000);
+  const result=await workspaceDataRequest(backend.url,'/api/op/data.import',{path,mode:choice.response===0?'restore_readonly':'fork'},120000);
   if(!liveWindow())return result;
   if(choice.response===1){
     const next=await dialog.showMessageBox(window,{type:'question',title:'工作区副本已导入',message:'要在这台电脑上接续工作吗？',detail:'选择已有代码目录后，Crew 会恢复本机工作区界面，保留历史与任务。所有执行保持停止；只有你明确继续或发送消息时，才会建立新的原生会话。',buttons:['选择目录并接续','先查看历史'],defaultId:0,cancelId:1,noLink:true});
@@ -306,7 +308,7 @@ async function activateWorkspace(workspaceId,root){
   }
   storageProgress(remoteMode?'正在恢复主机上的工作区界面，执行保持停止…':'正在恢复本机工作区界面，执行保持停止…');
   try{
-    const result=await workspaceDataRequest(backend.url,'/api/workspace-data/activate',{workspace_id:workspaceId,root,replace_source_marker:true},120000);
+    const result=await workspaceDataRequest(backend.url,'/api/op/data.activate',{workspace_id:workspaceId,root,replace_source_marker:true},120000);
     if(liveWindow())await tabs.open(result.project);return result;
   }finally{storageProgress('');}
 }
@@ -320,7 +322,7 @@ async function exportHandoff(name){
   const answer=await dialog.showOpenDialog(window,{title:'保存 Codex / VS Code 交接材料',buttonLabel:'保存到此文件夹',properties:['openDirectory']});
   if(answer.canceled||!liveWindow())return null;
   const destination=path.join(answer.filePaths[0],'Crew-handoff-'+new Date().toISOString().replace(/[:.]/g,'-'));
-  const result=await workspaceDataRequest(backend.url,'/api/workspace-data/handoff',{project:name,destination},120000);
+  const result=await workspaceDataRequest(backend.url,'/api/op/data.handoff',{project:name,destination},120000);
   if(!liveWindow())return result;
   const choice=await dialog.showMessageBox(window,{type:'info',title:'交接材料已生成',message:'可以在 Codex 或 VS Code 中接续工作',detail:result.markdown+'\n\n材料包含原始要求、当前进度、必要上下文和报告来源。它会建立可读的接续上下文；原生会话能否直接恢复取决于目标工具。开始修改前，请先暂停 Crew 中对应的执行。',buttons:['复制接续提示','查看文件夹','好'],defaultId:0,cancelId:2,noLink:true});
   if(!liveWindow())return result;
@@ -363,7 +365,7 @@ async function restartCrew() {
   let busy=[];
   // Restarting is also the remedy for an unreachable backend, so a failed check only skips the warning.
   // A LAN host's sessions keep running on the host; restarting this window never interrupts them.
-  if (!remoteMode) try { const plan=await core.request(backend.url,'/api/admin/connection/plan',undefined,3000); busy=Array.isArray(plan?.sessions)?plan.sessions.filter(item=>item.busy):[]; }
+  if (!remoteMode) try { const plan=await core.request(backend.url,'/api/op/admin.connection.plan',undefined,3000); busy=Array.isArray(plan?.sessions)?plan.sessions.filter(item=>item.busy):[]; }
   catch (error) { console.error('Crew restart check failed:',error); }
   if (quitting) return;
   if (busy.length) {
@@ -426,15 +428,6 @@ async function chromeEvidence() {
       overlayVisible:overlay?.visible, overlayRect:overlay?.getTitlebarAreaRect().toJSON(),
       nodeAvailable:typeof require!=='undefined', viewport:{width:innerWidth,height:innerHeight} };
   })()`);
-}
-async function waitForChrome(page) {
-  for (let attempt = 0; attempt < 200; attempt++) {
-    try {
-      if (await window.webContents.executeJavaScript('document.documentElement.dataset.crewDesktopChromeReady === "true"' + (page ? ' && document.documentElement.dataset.crewDesktopPage === ' + JSON.stringify(page) : ''))) return;
-    } catch (_) { /* The old document is being replaced by the recovery page. */ }
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
-  throw new Error('窗口外壳没有完成加载');
 }
 async function visualEvidence(target, evidence) {
   evidence.visual = {};
@@ -634,34 +627,51 @@ function themeSender(event){
 }
 ipcMain.handle('desktop:theme',event=>{themeSender(event);return appearance.state();});
 ipcMain.handle('desktop:theme-set',(event,mode)=>{themeSender(event);return appearance.set(mode);});
-function applyTheme(){
-  const dark=nativeTheme.shouldUseDarkColors,frame=chrome.colors(dark);
-  if(liveWindow()){
-    window.setBackgroundColor(frame.color);
-    if(platform!=='darwin')window.setTitleBarOverlay?.({color:frame.color,symbolColor:frame.symbolColor,height:chrome.HEIGHT});
-  }
+// The font size has no native event: every Crew page hears the new appearance state at once.
+ipcMain.handle('desktop:font-scale-set',async(event,value)=>{themeSender(event);const state=await appearance.setFontScale(value);publishAppearance();return state;});
+function publishAppearance(){
   const state=appearance.state();
   for(const contents of webContents.getAllWebContents()){
     if(contents.isDestroyed())continue;
     let origin=null;try{origin=new URL(contents.getURL()).origin;}catch(_){}
     if(liveWindow()&&contents===window.webContents||tabs&&origin===tabs.origin)contents.send('desktop:theme',state);
   }
-  tabs?.setBackground?.(dark?'#1E1E1C':'#F6F5F1');
+}
+function applyTheme(){
+  const dark=nativeTheme.shouldUseDarkColors,frame=chrome.colors(dark);
+  if(liveWindow()){
+    window.setBackgroundColor(frame.color);
+    if(platform!=='darwin')window.setTitleBarOverlay?.({color:frame.color,symbolColor:frame.symbolColor,height:chrome.HEIGHT});
+  }
+  publishAppearance();
+  tabs?.setBackground?.(frame.color);
 }
 nativeTheme.on('updated',applyTheme);
-handle('desktop:prompts-get',query=>settingsRequest('/api/behavior-prompts?'+new URLSearchParams(query || {})));
-handle('desktop:prompts-save',body=>settingsRequest('/api/behavior-prompts',body));
+handle('desktop:prompts-get',({action = 'list', ...query} = {})=>{
+  if (!['list','get','history','applied'].includes(action)) throw Error('不支持的行为配置读取操作。');
+  // crew-op: prompt.list prompt.get prompt.history prompt.applied
+  return settingsRequest('/api/op/prompt.' + action + '?' + new URLSearchParams(query));
+});
+handle('desktop:prompts-save',({action, ...body})=>{
+  if (!['save','reset'].includes(action)) throw Error('不支持的行为配置写入操作。');
+  // crew-op: prompt.save prompt.reset
+  return settingsRequest('/api/op/prompt.' + action, body);
+});
 // A LAN host's settings live in its HOME and are read and saved through its HTTP settings API.
 handle('desktop:settings-get',async()=>{
   if(!remoteMode)return operations.request('settings-get');
-  await settingsRequest('/api/runtimes?refresh=1',undefined,45000);
-  return settingsRequest('/api/settings');
+  await settingsRequest('/api/op/runtimes.list?refresh=1',undefined,45000);
+  return settingsRequest('/api/op/settings.get');
 });
 handle('desktop:settings-save',body=>{
   if(!remoteMode)return operationsMutation('settings-save',body);
   if(launchSettings?.pending)throw Error('后台连接正在切换，完成后再发送消息或修改设置。');
-  return settingsRequest('/api/settings',body);
+  return settingsRequest('/api/op/settings.save',body);
 });
+// First-run guide: its outcome lives in the backend's settings database; the readiness check runs each tool's own status command.
+handle('desktop:onboarding-get',()=>settingsRequest('/api/op/onboarding.get'));
+handle('desktop:onboarding-save',status=>settingsRequest('/api/op/onboarding.set',{status}));
+handle('desktop:runtime-readiness',()=>settingsRequest('/api/op/runtimes.readiness',undefined,60000));
 handle('desktop:launch-settings-get',()=>launchSettings.get());
 handle('desktop:launch-settings-validate',body=>launchSettings.validate(body));
 handle('desktop:launch-settings-apply',body=>launchSettings.apply(body));
@@ -673,25 +683,25 @@ handle('desktop:launch-settings-pick',async body=>{
     ...(body.current&&path.isAbsolute(body.current)?{defaultPath:body.current}:{}),properties:[file?'openFile':'openDirectory']});
   return {path:result.canceled?null:result.filePaths[0]};
 });
-handle('desktop:settings-connection',()=>settingsRequest('/api/connections'));
-handle('desktop:settings-connection-save',body=>settingsRequest('/api/connections/configure',body));
-handle('desktop:settings-connection-action',body=>settingsRequest('/api/connections/action',body));
-handle('desktop:settings-connection-preferences',body=>settingsRequest('/api/connections/preferences',body));
-localHandle('desktop:remote-access-read',()=>settingsRequest('/api/remote-access'));
-localHandle('desktop:remote-access-action',body=>settingsRequest('/api/remote-access',body));
+handle('desktop:settings-connection',()=>settingsRequest('/api/op/connections.get'));
+handle('desktop:settings-connection-save',body=>settingsRequest('/api/op/connections.configure',body));
+handle('desktop:settings-connection-action',body=>settingsRequest('/api/op/connections.action',body));
+handle('desktop:settings-connection-preferences',body=>settingsRequest('/api/op/connections.preferences.set',body));
+localHandle('desktop:remote-access-read',()=>settingsRequest('/api/op/remote_access.get'));
+localHandle('desktop:remote-access-action',body=>settingsRequest('/api/op/remote_access.action',body));
 handle('desktop:settings-away',away=>{
   if (typeof away !== 'boolean') throw Error('离开状态必须是 true 或 false');
-  return settingsRequest('/api/notifications/away', {away});
+  return settingsRequest('/api/op/notifications.away.set', {away});
 });
-handle('desktop:storage-read',()=>settingsRequest('/api/storage',undefined,180000));
-handle('desktop:storage-preview',body=>settingsRequest('/api/storage/preview',body,180000));
-handle('desktop:storage-clean',body=>settingsRequest('/api/storage/clean',body,180000));
-handle('desktop:storage-restore',body=>settingsRequest('/api/storage/restore',body,180000));
-handle('desktop:storage-empty-trash',body=>settingsRequest('/api/storage/trash/empty',body,180000));
-handle('desktop:storage-policy',body=>settingsRequest('/api/storage/policy',body));
+handle('desktop:storage-read',()=>settingsRequest('/api/op/storage.get',undefined,180000));
+handle('desktop:storage-preview',body=>settingsRequest('/api/op/storage.preview',body,180000));
+handle('desktop:storage-clean',body=>settingsRequest('/api/op/storage.clean',body,180000));
+handle('desktop:storage-restore',body=>settingsRequest('/api/op/storage.restore',body,180000));
+handle('desktop:storage-empty-trash',body=>settingsRequest('/api/op/storage.trash_empty',body,180000));
+handle('desktop:storage-policy',body=>settingsRequest('/api/op/storage.policy.set',body));
 handle('desktop:settings-ui',async()=>{
   // Only trusted home can load these fixed, packaged application assets.
-  const directory = path.join(config.helperBackendDir, 'crew', 'web');
+  const directory = await core.resolveFrontendDir(config.helperBackendDir, config.helperFrontendDir);
   return injectAssets(directory, [
     ['executeJavaScript','browser-utils.js'],
     ['executeJavaScript','launch-settings-ui.js'], ['insertCSS','operations-ui.css'],
@@ -704,7 +714,7 @@ handle('desktop:settings-ui',async()=>{
   ]);
 });
 handle('desktop:workspace-ui',async()=>{
-  const directory=path.join(config.helperBackendDir,'crew','web');
+  const directory = await core.resolveFrontendDir(config.helperBackendDir, config.helperFrontendDir);
   return injectAssets(directory, [
     ['insertCSS','workspace-settings-ui.css'], ['executeJavaScript','workspace-settings-ui.js'],
     ['insertCSS','maintenance-ui.css'], ['executeJavaScript','maintenance-ui.js']
@@ -713,20 +723,20 @@ handle('desktop:workspace-ui',async()=>{
 // Workspace cleanup from the settings dialog: only these maintenance routes are reachable.
 handle('desktop:workspace-maintenance',async request=>{
   const route=request?.route, body=request?.body;
-  const reads=['/api/maintenance/jobs?','/api/maintenance/archive?'], writes=['/api/maintenance/cleanup/preview','/api/maintenance/cleanup'];
+  const reads=['/api/op/maintenance.jobs?','/api/op/maintenance.archive.get?'], writes=['/api/op/maintenance.cleanup.preview','/api/op/maintenance.cleanup.run'];
   if(typeof route!=='string'||!(body===undefined?reads.some(prefix=>route.startsWith(prefix)):writes.includes(route)))throw Error('不支持的工作区维护请求。');
   return settingsRequest(route,body,180000);
 });
 handle('desktop:workspace-get',name=>{
   if(typeof name!=='string'||!name.trim())throw Error('请选择工作区。');
-  return settingsRequest('/api/project/settings?project='+encodeURIComponent(name));
+  return settingsRequest('/api/op/workspace.settings.get?project='+encodeURIComponent(name));
 });
 handle('desktop:workspace-update',async body=>{
-  const result=await settingsRequest('/api/project/update',body,180000);
+  const result=await settingsRequest('/api/op/workspace.update',body,180000);
   if(liveWindow())tabs.updateProject(result.project); return result;
 });
 handle('desktop:workspace-remove',async body=>{
-  const result=await settingsRequest('/api/project/remove',body,180000);
+  const result=await settingsRequest('/api/op/workspace.remove',body,180000);
   if(result.removed&&liveWindow())tabs.closeProject(result.project); return result;
 });
 localHandle('desktop:workspace-directory',async current=>{
@@ -785,6 +795,8 @@ else {
       // A LAN connection runs no local Python, so its packaged UI assets are read in place.
       if (app.isPackaged && !remoteMode) {
         config.helperBackendDir=await startupStep(core.materializeBackend(config.bundledBackendDir,config.home));
+        if (quitting) return;
+        config.helperFrontendDir=await startupStep(core.materializeBackend(config.bundledFrontendDir,path.join(config.home,'frontend-cache')));
         if (quitting) return;
         if(config.backendSource==='bundled')config.backendDir=config.helperBackendDir;
       }
@@ -863,20 +875,20 @@ else {
       tabs=new WorkspaceTabs(window,{origin:backend.url,
         createView:()=>{
           const view=new WebContentsView({webPreferences:{preload:path.join(__dirname,'workspace-preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,...(config.smoke?{backgroundThrottling:false}:{})}});
-          // Match the page's own first paint (system theme) so a loading page slides in without a white flash.
-          view.setBackgroundColor(nativeTheme.shouldUseDarkColors?'#1E1E1C':'#F6F5F1');return view;
+          // Match the Studio canvas the page paints first (panel colour, system theme) so a loading page slides in without a flash.
+          view.setBackgroundColor(chrome.colors(nativeTheme.shouldUseDarkColors).color);return view;
         },
         createStage:()=>new View(),
         prefersReducedMotion:()=>{const motion=systemPreferences.getAnimationSettings();return motion.prefersReducedMotion||!motion.shouldRenderRichAnimation;},
         onChange:state=>publishTabs(state),onHome:()=>{},external,openProject,workspaceSettings:name=>{void showHome('workspace-settings',name).catch(actionError);},
         onTitleChange:name=>{void core.projects(backend.url).then(items=>{if(!liveWindow())return;const item=items.find(project=>project.name===name);if(item)tabs.updateProject(item);}).catch(error=>console.error('Crew workspace metadata refresh failed:',error));},
-        readActivity:names=>core.request(backend.url,'/api/workspaces/activity?'+new URLSearchParams(names.map(name=>['project',name])).toString(),undefined,4000),
+        readActivity:names=>core.request(backend.url,'/api/op/workspace.activity?'+new URLSearchParams(names.map(name=>['project',name])).toString(),undefined,4000),
         onKeyboard:keyboard,onNavigationError:actionError});
       activityPreview=new ActivityPreview(window,{
         createView:()=>new WebContentsView({webPreferences:{preload:path.join(__dirname,'activity-preview-preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,backgroundThrottling:false}}),
         getTab:id=>tabs.state().tabs.find(tab=>tab.id===id&&tab.project),onSelect:id=>tabs.select(id)});
       window.on('blur',()=>activityPreview.hide());window.on('resize',()=>activityPreview.hide());
-      tabs.setBounds({x:7,y:75,width:1206,height:768});
+      tabs.setBounds({x:0,y:72,width:1220,height:778});
       window.once('ready-to-show', () => { if (!config.smoke && liveWindow()) window.show(); });
       for (const event of ['maximize', 'unmaximize', 'focus', 'blur']) window.on(event, () => {
         if (liveWindow()) window.webContents.send('desktop:window-state', currentWindowState());

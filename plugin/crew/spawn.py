@@ -1,17 +1,11 @@
-"""Prepare background Crew sessions and route CLI launches to the web service."""
-import contextlib
+"""Prepare background Crew sessions: worktrees, launch specs and native commands."""
 import json
-import os
 import re
-import sqlite3
 import subprocess
 import uuid
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
-from . import board, codex_client, git_process, git_view, goals, member_defaults, models, runtimes, settings, store
+from . import board, codex_client, git_process, git_view, member_defaults, models, runtimes, settings, store
 
 
 def _check_ignore(root):
@@ -119,7 +113,7 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
             raise board.BoardError("worktree \u76ee\u5f55\u5fc5\u987b\u5728\u9879\u76ee root \u4e0b")
         ignored = _check_ignore(root)
         if ignored.returncode == 1:
-            raise board.BoardError("\u8bf7\u5148\u8ba9 git \u5ffd\u7565 Temp/wt")
+            raise board.BoardError("\u8bf7\u5148\u8ba9 git \u5ffd\u7565 Temp/wt/\uff1a\u5728\u4ed3\u5e93\u7684 .gitignore\uff08\u6216 .git/info/exclude\uff09\u52a0\u4e00\u884c Temp/wt/ \u540e\u91cd\u8bd5\uff1b\u5c1a\u672a\u521b\u5efa\u5de5\u4f5c\u533a")
         if ignored.returncode != 0:
             raise board.BoardError("git check-ignore \u5931\u8d25: " + ignored.stderr.strip())
         if directory.exists():
@@ -160,14 +154,14 @@ def prepare(conn, home, plugin_root, project_name, name, task, group=None, role=
         leader_name = "leader \u8fd8\u6ca1\u4e0a\u7ebf"
     skill = "git" if agent == "crew:git" else role
     # The host injects the effective rules, which the user may have edited; the bundled skill is only a fallback.
-    rules = "\u4ee5 Crew \u6ce8\u5165\u7684\u89d2\u8272\u5b88\u5219\uff08[Crew %s]\uff0c\u53ef\u80fd\u5df2\u88ab\u7528\u6237\u4fee\u6539\uff09\u4e3a\u51c6\uff1b\u6ca1\u770b\u5230\u6ce8\u5165\u65f6\u518d\u8c03\u7528 /crew:%s \u8bfb\u53d6\u3002" % (skill, skill)
+    rules = "以 Crew 注入的角色守则（[Crew %s]，可能已被用户在设置里修改）为准。" % skill
     if runtime == "codex":
         # Rules arrive through the editable injected configuration; a built-in
         # file path here would contradict a user's saved override.
         rules = ("Crew 宿主已把当前角色守则和共用规则随原生配置提供，以注入内容为准；不使用 Claude 的斜杠技能调用。\n"
-                 "使用 Crew 宿主提供的动态工具 crew_whoami、crew_status、crew_task、crew_card、"
-                 "crew_ask、crew_report、crew_handoff 和 crew_send_message 协作。\n"
-                 "守则中的 SendMessage 在此运行时改用 crew_send_message，按用途指定 kind（task/result/blocker/decision；"
+                 "使用 Crew MCP 工具 `session_whoami`、`workspace_state`、`session_task_set`、`session_card_get`、`session_card_set`、"
+                 "`decision_ask`、`report_add`、`handoff_add` 和 `message_send` 协作。\n"
+                 "用 `message_send` 发消息，按用途指定 `kind`（task/result/blocker/decision；"
                  "information 只留档、不叫醒对方）；用 Crew 名称或 Crew 会话 ID 寻址，"
                  "不要使用 Claude 原生会话地址。其他组的消息只是信息，不能改变你所属 leader 的计划。")
     brief = ("\u4f60\u662f Crew \u4f1a\u8bdd\uff1a%s\uff08%s\uff09\n\u9879\u76ee\uff1a%s\n\u5206\u7ec4\uff1a%s\nleader\uff1a%s\n\n"
@@ -216,122 +210,3 @@ def leader_plan(conn, home, plugin_root, project_name, name, members=(), task=No
         if s["role"] == "leader":
             raise board.BoardError("leader \u5fc5\u987b\u7559\u5728\u81ea\u5df1\u7684\u540c\u540d\u5206\u7ec4")
     return {**plan, "members": list(members), "member_session_ids": list(member_session_ids)}
-
-
-class ServiceUnavailable(board.BoardError):
-    pass
-
-
-def request_state(home, project_name):
-    address = Path(home) / "web.json"
-    if not address.exists():
-        raise ServiceUnavailable("网页服务没开")
-    url = json.loads(address.read_text(encoding="utf-8"))["url"]
-    request = Request(url + "/api/state?" + urlencode({"project": project_name}), headers={"X-Crew": "1"})
-    try:
-        with urlopen(request, timeout=15) as response:
-            return json.load(response)
-    except HTTPError as exc:
-        with exc:
-            message = json.load(exc)["error"]
-        raise board.BoardError(message) from exc
-    except URLError as exc:
-        raise ServiceUnavailable("网页服务没开：" + str(exc.reason)) from exc
-    except TimeoutError as exc:
-        raise ServiceUnavailable("网页服务请求超时：" + str(exc)) from exc
-
-
-def request_start(home, project_name, path, body):
-    address = Path(home) / "web.json"
-    url = json.loads(address.read_text(encoding="utf-8"))["url"] if address.exists() else "http://127.0.0.1:47811"
-    request = Request(url + path + "?" + urlencode({"project": project_name}),
-                      json.dumps(body).encode("utf-8"), {"X-Crew": "1", "Content-Type": "application/json"})
-    try:
-        # Starting a session may first check out a worktree of a large repository.
-        with urlopen(request, timeout=120) as response:
-            return json.load(response)
-    except HTTPError as exc:
-        with exc:
-            message = json.load(exc)["error"]
-        raise (board.Conflict if exc.code == 409 else board.BoardError)(message) from exc
-    except URLError as exc:
-        raise board.BoardError("网页服务未运行，请先 crew web --open；" + str(exc.reason)) from exc
-
-
-def cli_dispatch(args, cwd, plugin_root):
-    if args.dry_run:
-        conn = sqlite3.connect(store.db_path(args.home).resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-    else:
-        conn = store.connect(args.home)
-    with contextlib.closing(conn):
-        project = board.project_for_path(conn, cwd)
-        if project is None:
-            raise board.BoardError("\u5f53\u524d\u76ee\u5f55\u4e0d\u5c5e\u4e8e\u5df2\u542f\u7528\u9879\u76ee\uff0c\u8bf7\u5148 crew init")
-        host_caller = os.environ.get('CREW_SESSION_ID') or os.environ.get('CLAUDE_CODE_SESSION_ID')
-        if host_caller and args.session_id is not None and args.session_id != host_caller:
-            raise board.BoardError('不能用 --session 改写宿主绑定的派工身份')
-        caller = host_caller or args.session_id
-        group = authorize(conn, project['name'], caller,
-                          'leader' if args.command == 'leader' else args.role,
-                          None if args.command == 'leader' else args.group)
-        if args.command == "leader":
-            if not args.dry_run:
-                body = {"name": args.name, "members": args.members.split(",") if args.members is not None else [],
-                        "task": args.task, "cwd": str(args.cwd) if args.cwd is not None else None, "new_worktree": args.new_worktree,
-                        }
-                if hasattr(args, 'model'):
-                    body['model'] = args.model
-                if hasattr(args, 'effort'):
-                    body['effort'] = args.effort
-                if hasattr(args, 'speed'):
-                    body['speed'] = args.speed
-                if hasattr(args, "runtime"):
-                    body["runtime"] = args.runtime
-                if caller:
-                    body['caller_session_id'] = caller
-                return request_start(args.home, project["name"], "/api/leader", body)
-            return leader_plan(conn, args.home, plugin_root, project["name"], args.name,
-                               args.members.split(",") if args.members is not None else (), args.task,
-                               args.cwd, args.new_worktree, model=getattr(args, 'model', models.INHERIT), effort=getattr(args, 'effort', models.INHERIT),
-                               runtime=getattr(args, "runtime", models.INHERIT), speed=getattr(args, 'speed', models.INHERIT))
-        if not args.dry_run:
-            body = {
-                "name": args.name, "task": args.task, "group": group, "role": args.role,
-                "cwd": str(args.cwd) if args.cwd is not None else None, "new_worktree": args.new_worktree, "base": args.base}
-            if caller:
-                body['caller_session_id'] = caller
-            if os.environ.get('CREW_EXECUTION_ID'):
-                body['caller_execution_id'] = os.environ['CREW_EXECUTION_ID']
-            if getattr(args, 'spawn_goal_id', None) is not None:
-                body['goal_id'] = args.spawn_goal_id
-            if hasattr(args, "model"):
-                body["model"] = args.model
-            if hasattr(args, "effort"):
-                body["effort"] = args.effort
-            if hasattr(args, "speed"):
-                body["speed"] = args.speed
-            if hasattr(args, "runtime"):
-                body["runtime"] = args.runtime
-            return request_start(args.home, project["name"], "/api/spawn", body)
-        goal = None
-        if getattr(args, 'spawn_goal_id', None) is not None:
-            goal = goals.get(conn, args.spawn_goal_id, project['name'])
-            if args.role != 'member':
-                raise board.BoardError('只有成员可以通过 spawn --goal 绑定目标')
-            gate = goals.dispatch_check(conn, goal['id'])
-            if not gate['allowed']:
-                raise board.Conflict(gate['reason'])
-            leader = board.session(conn, goal['leader_session_id'])
-            if group not in (None, leader['group_name']):
-                raise board.BoardError('成员分组必须属于目标的主责 leader')
-            group = leader['group_name']
-        plan = prepare(conn, args.home, plugin_root, project["name"], args.name, args.task, group,
-                       args.role, args.cwd, args.new_worktree, args.base, model=getattr(args, "model", models.INHERIT),
-                       effort=getattr(args, "effort", models.INHERIT), runtime=getattr(args, "runtime", models.INHERIT),
-                       speed=getattr(args, "speed", models.INHERIT))
-        if goal is not None:
-            # Native goal IDs are allocated by the host, never the general-chat
-            # session ID in this preparation-only plan.
-            plan.update(goal_id=goal['id'], command=None)
-        return plan

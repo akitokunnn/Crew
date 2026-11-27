@@ -8,7 +8,8 @@ import threading
 import unittest
 from unittest import mock
 import tests
-from crew import goals, store, web
+from tests.ops_helpers import ai_call
+from crew import goals, runtimes, store, web
 from test_shell import ShellFixture, PLUGIN, NOW
 import test_assistant_http as assistant_helpers
 from test_codex_runtime import FakeClient
@@ -34,8 +35,9 @@ class V2JourneyTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, value)
         return value
 
-    def agent(self, sid, action, data):
-        return self.post('/api/goals/agent', {'actor_session_id': sid, 'action': action, 'data': data})
+    def agent(self, sid, action, data, execution_id=None):
+        return ai_call(self.server.service, self.conn, sid, 'goal.' + action, data,
+                       execution_id=execution_id, runtime=runtimes.get(self.conn, sid)['runtime'])
 
     def complete_turn(self, key, runtime):
         running = self.server.service.chat.processes[key]
@@ -68,27 +70,28 @@ class V2JourneyTests(ShellFixture, unittest.TestCase):
             patch = mock.patch('crew.codex_runtime._ObservedClient', Client)
             patch.start(); self.addCleanup(patch.stop)
         idea = '我最近打算健身，简单给我一个打卡 App 吧'
-        opened = self.post('/api/leader', {'task': idea, 'runtime': runtime})
+        opened = self.post('/api/op/leader.create', {'task': idea, 'runtime': runtime})
         sid = opened['session_id']
         self.assertEqual(goals.list_goals(self.conn, 'demo'), [], 'Discussion itself does not create/execute a task')
         self.complete_turn(sid, runtime)
-        consent = self.post('/api/chat/send', {'session_id': sid, 'text': '先做每日打卡和本周记录，可以开始。', 'message_id': 'fitness-consent'})
+        consent = self.post('/api/op/chat.send', {'session_id': sid, 'text': '先做每日打卡和本周记录，可以开始。', 'message_id': 'fitness-consent'})
         self.complete_turn(sid, runtime)
         task = self.agent(sid, 'create', {'title': '健身打卡初版', 'request': idea,
-            'acceptance': [{'id': 'daily', 'title': '能记录今天并查看本周打卡'}],
+            'acceptance': ['能记录今天并查看本周打卡'],
             'source': {'message_id': consent['message_id']}})
         gid = task['id']
+        criterion = task['requirements']['acceptance'][0]['id']
         item = self.agent(sid, 'work.add', {'goal_id': gid, 'key': 'checkin', 'title': '实现每日打卡',
                                          'acceptance': '按钮能记录并展示本周结果'})
-        started = self.post('/api/chat/send', {'session_id': sid, 'goal_id': gid, 'text': '按已确认范围执行', 'message_id': 'fitness-work'})
-        duplicate = self.post('/api/chat/send', {'session_id': sid, 'goal_id': gid, 'text': '按已确认范围执行', 'message_id': 'fitness-work'})
+        started = self.post('/api/op/chat.send', {'session_id': sid, 'goal_id': gid, 'text': '按已确认范围执行', 'message_id': 'fitness-work'})
+        duplicate = self.post('/api/op/chat.send', {'session_id': sid, 'goal_id': gid, 'text': '按已确认范围执行', 'message_id': 'fitness-work'})
         self.assertEqual(started['execution_id'], duplicate['execution_id'])
-        stage = self.agent(sid, 'report.publish', {'goal_id': gid, 'request_id': 'stage-1', 'report': self.report()})
+        stage = self.agent(sid, 'report.publish', {'goal_id': gid, 'request_id': 'stage-1', 'report': self.report(criterion=criterion)})
         self.assertEqual(goals.get(self.conn, gid)['status'], 'running')
         self.assertFalse(stage['pending_finish'])
         self.agent(sid, 'work.update', {'goal_id': gid, 'key': 'checkin', 'version': item['version'],
             'status': 'done', 'note': '工作流演练中的假载体产物，未调用真实 AI'})
-        finished = self.agent(sid, 'finish', {'goal_id': gid, 'report': self.report('awaiting_acceptance')})
+        finished = self.agent(sid, 'finish', {'goal_id': gid, 'report': self.report('awaiting_acceptance', criterion)})
         self.assertTrue(finished['pending_finish'])
         self.complete_turn(started['execution_id'], runtime)
         deadline = time.monotonic() + 4
@@ -96,31 +99,37 @@ class V2JourneyTests(ShellFixture, unittest.TestCase):
             self.server.service.chat.goal_controller.sync(self.conn); time.sleep(.02)
         current = goals.get(self.conn, gid)
         self.assertEqual(current['status'], 'awaiting_acceptance')
-        self.post('/api/goals/action', {'goal_id': gid, 'action': 'accept', 'version': current['version'], 'note': '隔离流程已核对'})
+        self.post('/api/op/goal.accept', {'goal_id': gid, 'version': current['version'], 'note': '隔离流程已核对'})
         self.assertEqual(goals.get(self.conn, gid)['status'], 'completed')
         accepted = goals.get(self.conn, gid)
         review = goals.acceptance_review(self.conn, gid)
-        followup = self.post('/api/chat/send', {'session_id': sid, 'goal_id': gid, 'text': '再增加连续打卡天数', 'message_id': 'fitness-feedback'})
+        followup = self.post('/api/op/chat.send', {'session_id': sid, 'goal_id': gid, 'text': '再增加连续打卡天数', 'message_id': 'fitness-feedback'})
         self.assertEqual(goals.get(self.conn, gid), accepted, 'A message alone must not revoke delivery or acceptance')
         self.assertEqual(goals.acceptance_review(self.conn, gid), review)
-        action = {'actor_session_id': sid, 'execution_id': followup['execution_id']}
-        revised = self.post('/api/goals/agent', {**action, 'action': 'amend', 'data': {
-            'goal_id': gid, 'text': '再增加连续打卡天数', 'expected_version': accepted['version']}})
+        execution_id = followup['execution_id']
+        revised = self.agent(sid, 'amend', {
+            'goal_id': gid, 'text': '再增加连续打卡天数', 'expected_version': accepted['version']}, execution_id)
         self.assertEqual((revised['current_round'], revised['status']), (1, 'running'))
-        work = self.post('/api/goals/agent', {**action, 'action': 'work.add', 'data': {
-            'goal_id': gid, 'key': 'streak', 'title': '增加连续打卡天数', 'acceptance': '连续日期显示正确天数'}})
-        self.post('/api/goals/agent', {**action, 'action': 'work.update', 'data': {
-            'goal_id': gid, 'key': 'streak', 'version': work['version'], 'status': 'done', 'note': '隔离假载体模拟核验'}})
-        self.post('/api/goals/agent', {**action, 'action': 'finish', 'data': {'goal_id': gid, 'report': self.report('awaiting_acceptance')}})
+        work = self.agent(sid, 'work.add', {
+            'goal_id': gid, 'key': 'streak', 'title': '增加连续打卡天数', 'acceptance': '连续日期显示正确天数'}, execution_id)
+        self.agent(sid, 'work.update', {
+            'goal_id': gid, 'key': 'streak', 'version': work['version'], 'status': 'done', 'note': '隔离假载体模拟核验'}, execution_id)
+        self.agent(sid, 'finish', {'goal_id': gid, 'report': self.report('awaiting_acceptance', criterion)}, execution_id)
         self.complete_turn(followup['execution_id'], runtime)
         self.server.service.chat.goal_controller.sync(self.conn)
         self.assertEqual(goals.get(self.conn, gid)['status'], 'awaiting_acceptance')
         self.assertEqual(goals.report_review(self.conn, gid, review['report_id']), review)
-        code, detail, _ = self.request('/api/goal?project=demo&id=' + gid)
+        code, detail, _ = self.request('/api/op/goal.get?project=demo&id=' + gid)
         self.assertEqual(code, 200, detail)
         self.assertEqual(len(detail['reports']), 3)
         self.assertTrue(all(report['round'] == 1 for report in detail['reports']))
         self.assertEqual(goals.get(self.conn, gid)['original_request'], idea)
+
+    # goal.create 的 AI 参数仅允许字符串数组，无法保留调用者给定的验收编号。
+    def test_leader_can_preserve_supplied_acceptance_ids(self):
+        task = self.agent('s3', 'create', {'title': '测量', 'request': '测量延迟',
+                          'acceptance': [{'id': 'latency', 'title': '取得实测值'}]})
+        self.assertEqual(task['requirements']['acceptance'], [{'id': 'latency', 'title': '取得实测值'}])
 
     def test_fitness_closed_loop_on_cc(self):
         self.fitness('claude')
@@ -131,17 +140,17 @@ class V2JourneyTests(ShellFixture, unittest.TestCase):
     def test_streaming_research_keeps_unknown_result_and_precise_deadline(self):
         request = '分辨 A、B、重叠发言的片段；截止结果必须在整段流式结束后400ms内返回'
         task = self.agent('s3', 'create', {'title': '流式说话人分段研究', 'request': request,
-            'acceptance': [{'id': 'latency', 'title': request}], 'constraints': ['不得将模拟结果视为真实声纹达标']})
+            'acceptance': [request], 'constraints': ['不得将模拟结果视为真实声纹达标']})
         item = self.agent('s3', 'work.add', {'goal_id': task['id'], 'key': 'measure',
             'title': '准备带重叠标注的音频并测量最终截止延迟', 'acceptance': request})
-        self.post('/api/chat/send', {'session_id': 's3', 'goal_id': task['id'], 'text': '先评估可行性', 'message_id': 'research-start'})
+        self.post('/api/op/chat.send', {'session_id': 's3', 'goal_id': task['id'], 'text': '先评估可行性', 'message_id': 'research-start'})
         self.agent('s3', 'work.update', {'goal_id': task['id'], 'key': 'measure', 'version': item['version'],
             'status': 'blocked', 'note': '缺少获得授权且有重叠片段标签的测试数据'})
-        report = self.report(criterion='latency', status='unverified')
+        report = self.report(criterion=task['requirements']['acceptance'][0]['id'], status='unverified')
         report.update(summary='尚不能证明说话人分段和400ms截止要求可达标。',
                       delivered=['待验证的实验方案'], unresolved=['缺少真实标注数据，尚未实测延迟'])
         self.agent('s3', 'report.publish', {'goal_id': task['id'], 'request_id': 'research-stage', 'report': report})
-        code, detail, _ = self.request('/api/goal?project=demo&id=' + task['id'])
+        code, detail, _ = self.request('/api/op/goal.get?project=demo&id=' + task['id'])
         self.assertEqual(code, 200, detail)
         self.assertEqual(detail['goal']['request'], request)
         self.assertEqual(detail['work_items'][0]['status'], 'blocked')

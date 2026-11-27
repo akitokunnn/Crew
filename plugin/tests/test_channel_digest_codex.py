@@ -9,7 +9,7 @@ import threading
 import unittest
 from unittest import mock
 
-from crew import board, channel, channel_digest, settings
+from crew import board, change_feed, channel, channel_digest, settings
 import test_channel
 from test_channel_digest import CARD
 
@@ -83,7 +83,7 @@ class CodexDigestTests(unittest.TestCase):
                                side_effect=AssertionError('No Claude is installed'))
         discovery.start(); no_claude.start()
         self.addCleanup(discovery.stop); self.addCleanup(no_claude.stop)
-        manager = channel_digest.Manager(self.home, threading.Lock(), self.factory)
+        manager = channel_digest.Manager(self.home, threading.Lock(), change_feed.Notifier(), self.factory)
         self.addCleanup(manager.close)
         return manager
 
@@ -138,7 +138,6 @@ class CodexDigestTests(unittest.TestCase):
         self.assertTrue(start['ephemeral'])
         self.assertEqual(start['sandbox'], 'read-only')
         self.assertEqual(start['approvalPolicy'], 'never')
-        self.assertEqual(start['dynamicTools'], [])
         self.assertEqual(start['environments'], [])
         self.assertNotIn('model', start)
         self.assertEqual(start['config']['web_search'], 'disabled')
@@ -198,14 +197,13 @@ class CodexDigestTests(unittest.TestCase):
     def test_native_actions_and_approval_requests_fail_instead_of_publishing_card(self):
         self.post()
         manager = self.manager()
-        for mode, reason in (('action', '请求了工具'), ('approval', '请求了授权'), ('native-action', '请求了动作')):
+        for mode, reason in (('approval', '请求了授权'), ('native-action', '请求了动作')):
             with self.subTest(mode=mode):
                 self.mode = mode
                 manager.start(self.conn, 'demo'); self.finish(manager)
                 self.assertIsNone(channel.digest(self.conn, 'demo'))
                 self.assertIn(reason, manager.state('demo')['digest_error'])
         replies = {call['id']: call['result'] for call in self.calls() if 'method' not in call and 'result' in call}
-        self.assertFalse(replies['forbidden-tool']['success'])
         self.assertEqual(replies['forbidden-approval']['decision'], 'decline')
 
     def test_fixed_markdown_headings_remain_required(self):

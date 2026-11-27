@@ -1,13 +1,17 @@
-"""Codex board tool authorization uses temporary boards, never native runtimes."""
+"""Codex operation authorization against temporary boards and fake carriers."""
 import tests  # Install the production-service connection guard.
-import base64
+from test_core import operation_service
+from tests.ops_helpers import ai_call, agent_caller
+from crew.ops import executor, mcp, registry, tokens
+from crew.ops.errors import OpError
 import json
+import base64
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from crew import board, codex_tools, decision_briefs, documents, goals, report_preview, runtimes, store, todo
+from crew import board, decision_briefs, documents, goals, report_preview, runtimes, store, todo
 
 
 class CodexToolsTests(unittest.TestCase):
@@ -30,93 +34,81 @@ class CodexToolsTests(unittest.TestCase):
         self.join("foreign-crew", "outsider", project="other")
         for sid in ('codex-crew', 'leader-crew', 'peer-leader'):
             runtimes.set(self.conn, sid, 'codex')
-        self.tools = codex_tools.CodexTools(self.home, "codex-crew")
-        self.leader = codex_tools.CodexTools(self.home, "leader-crew")
+        self.service = operation_service(self, self.root / 'first')
 
     def join(self, sid, name, role="member", group=None, project="first"):
         root = self.root / project
         return board.join(self.conn, sid, project, name, root, str(root), "main", role=role,
                           group_name=group, cc_name="native-" + sid)
 
-    def call(self, name, args=None, tools=None, success=True, **transport):
-        result = (tools or self.tools)({"tool": name, "arguments": {} if args is None else args,
-                                       **transport})
-        self.assertIs(result["success"], success, result)
-        self.assertEqual(len(result["contentItems"]), 1)
-        self.assertEqual(result["contentItems"][0]["type"], "inputText")
-        return json.loads(result["contentItems"][0]["text"])
+    def call(self, name, args=None, sid='codex-crew', **kwargs):
+        return ai_call(self.service, self.conn, sid, name, args, runtime='codex', **kwargs)
+
+    def rejected(self, name, args=None, **kwargs):
+        with self.assertRaises((OpError, board.BoardError, ValueError)) as caught:
+            self.call(name, args, **kwargs)
+        return caught.exception
+
+    def preview(self, sid, receipt):
+        caller, grants = agent_caller(self.conn, sid, runtime='codex')
+        with mock.patch.object(self.service.chat.goal_controller, 'agent_action', return_value=receipt) as host:
+            result, _ = mcp.call_tool(self.service, caller, grants, 'goal_report_preview', {'report_id': 'saved'})
+        host.assert_called_once_with('report.preview', {'report_id': 'saved'}, sid, execution_id=None)
+        return result
 
     def test_codex_leader_says_and_reads_the_channel_but_members_cannot(self):
         from crew import channel
         asked = channel.post(self.conn, 'first', board.HUMAN, '你们看下这个', ['chief'], source='web')
-        posted = self.call('crew_say', {'text': '能修，细节私聊', 'reply_to': asked['id'], 'detail': True}, tools=self.leader)
+        posted = self.call('channel.post', {'text': '能修，细节私聊', 'reply_to': asked['id'], 'detail': True}, sid='leader-crew')
         self.assertEqual((posted['speaker_name'], posted['reply_to'], posted['detail']), ('chief', asked['id'], True))
         self.assertEqual(self.conn.execute('SELECT await_reply FROM channel_mentions').fetchone()[0], 0)
-        too_long = self.call('crew_say', {'text': '长' * 151}, tools=self.leader, success=False)
-        self.assertIn('交流区像群聊一样说短话', too_long['error']['message'])
-        read = self.call('crew_channel', {}, tools=self.leader)
+        too_long = self.rejected('channel.post', {'text': '长' * 151}, sid='leader-crew')
+        self.assertIn('交流区像群聊一样说短话', str(too_long))
+        read = self.call('channel.consume', {}, sid='leader-crew')
         self.assertIsNone(read['card'])
         self.assertEqual([post['body'] for post in read['posts']], ['你们看下这个', '能修，细节私聊'])
         self.assertIn('回复 #%d 用户' % asked['id'], read['posts'][1]['heading'])
-        for name, args in (('crew_say', {'text': 'hi'}), ('crew_channel', {})):
-            result = self.call(name, args, success=False)
-            self.assertIn('交流区只给 leader 用', result['error']['message'])
+        for name, args in (('channel.post', {'text': 'hi'}), ('channel.consume', {})):
+            result = self.rejected(name, args)
+            self.assertEqual(result.code, 'forbidden')
 
-    def test_stop_tool_uses_bound_actor_and_explicit_host_stop_endpoint(self):
-        with mock.patch('crew.spawn.request_start', return_value={'ok': True, 'stopped': True}) as request:
-            self.call('crew_stop', {'target': 'builder'})
-        self.assertEqual(request.call_args.args[2:], ('/api/session/stop', {
-            'session_id': 'codex-crew', 'caller_session_id': 'codex-crew'}))
-        self.call('crew_stop', {'target': 'builder', 'caller_session_id': 'peer-leader'}, success=False)
+    def test_stop_uses_bound_actor(self):
+        with mock.patch.object(self.service.chat, 'stop_identity', return_value={'stopped': True}) as stop:
+            self.assertTrue(self.call('session.stop', {'target': 'builder'})['stopped'])
+            stop.assert_called_once_with('codex-crew', caller_session_id='codex-crew')
+            self.rejected('session.stop', {'target': 'builder', 'caller_session_id': 'peer-leader'})
+            self.assertEqual(stop.call_count, 1)
 
-    def test_archive_tool_binds_leader_and_rejects_member_cross_group_and_spoofing(self):
-        with mock.patch('crew.spawn.request_start', return_value={'ok': True}) as request:
-            self.call('crew_archive', {'target': 'builder'}, tools=self.leader)
-            self.assertEqual(request.call_args.args[2:], ('/api/session/archive', {
-                'session_id': 'codex-crew', 'caller_session_id': 'leader-crew'}))
-            request.reset_mock()
-            self.call('crew_archive', {'target': 'reviewer'}, success=False)
-            self.call('crew_archive', {'target': 'peer-worker'}, tools=self.leader, success=False)
-            self.call('crew_archive', {'target': 'builder', 'caller_session_id': 'peer-leader'}, tools=self.leader, success=False)
-            request.assert_not_called()
+    def test_archive_binds_leader_and_rejects_member_cross_group_and_spoofing(self):
+        self.rejected('session.archive', {'target': 'reviewer'})
+        self.rejected('session.archive', {'target': 'peer-worker'}, sid='leader-crew')
+        self.rejected('session.archive', {'target': 'builder', 'caller_session_id': 'peer-leader'}, sid='leader-crew')
+        self.call('session.archive', {'target': 'builder'}, sid='leader-crew')
+        self.assertTrue(board.is_archived(self.conn, 'codex-crew'))
+        self.assertFalse(board.is_archived(self.conn, 'peer-member'))
 
     def test_report_preview_returns_the_host_png_as_a_native_image_for_leader_and_member(self):
         image = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=')
         for sid in ('leader-crew', 'codex-crew'):
-            image_path = report_preview.image_directory(self.home, sid, create=True) / 'synthetic.png'
-            image_path.write_bytes(image)
-            receipt = {'ok':True, 'preview':{'id':'synthetic', 'path':str(image_path),
-                'width':1, 'height':1, 'console_errors':[], 'visual_verification':'not_performed'}}
-            calls = []
-            def host(action, data, actor, execution_id=None):
-                calls.append((action, data, actor, execution_id))
-                return receipt
-            tool = codex_tools.CodexTools(self.home, sid, goal_handler=host)
-            result = tool({'tool':'crew_goal', 'arguments':{'action':'report.preview', 'goal_id':'synthetic-goal',
-                'data':{'document_html':'<!doctype html><h1>Synthetic preview</h1>', 'viewport':'mobile'}}})
-            self.assertTrue(result['success'], result)
-            self.assertEqual(json.loads(result['contentItems'][0]['text']), receipt)
-            native_image = result['contentItems'][1]
-            self.assertEqual(set(native_image), {'type','imageUrl'})
-            self.assertEqual(native_image['type'], 'inputImage')
-            self.assertEqual(base64.b64decode(native_image['imageUrl'].removeprefix('data:image/png;base64,')), image)
-            self.assertEqual(calls, [('report.preview', {'goal_id':'synthetic-goal',
-                'document_html':'<!doctype html><h1>Synthetic preview</h1>', 'viewport':'mobile'}, sid, None)])
+            path = report_preview.image_directory(self.home, sid, create=True) / 'synthetic.png'
+            path.write_bytes(image)
+            receipt = {'ok': True, 'preview': {'id': 'synthetic', 'path': str(path)}}
+            result = self.preview(sid, receipt)
+            self.assertFalse(result['isError'], result)
+            self.assertEqual(result['structuredContent'], receipt)
+            images = [item for item in result['content'] if item['type'] == 'image']
+            self.assertEqual([base64.b64decode(item['data']) for item in images], [image])
 
     def test_report_preview_requires_its_host_and_keeps_render_or_attachment_failures(self):
-        missing = self.call('crew_goal', {'action':'report.preview', 'data':{'document_html':'<h1>Draft</h1>'}}, success=False)
-        self.assertEqual(missing['error']['code'], 'goal_host_unavailable')
-        host_failure = {'ok':False, 'error':'Crew desktop closed during rendering', 'status':'unavailable'}
-        tool = codex_tools.CodexTools(self.home, 'codex-crew', goal_handler=lambda *args, **kwargs:host_failure)
-        failed = self.call('crew_goal', {'action':'report.preview', 'data':{'report_id':'saved'}}, tools=tool, success=False)
-        self.assertEqual(failed, host_failure)
+        failure = {'ok': False, 'error': 'Crew desktop closed during rendering', 'status': 'unavailable'}
+        failed = self.preview('codex-crew', failure)
+        self.assertTrue(failed['isError'])
+        self.assertEqual(json.loads(failed['content'][0]['text']), failure)
         path = report_preview.image_directory(self.home, 'codex-crew') / 'missing.png'
-        receipt = {'ok':True, 'preview':{'id':'captured', 'path':str(path)}}
-        tool = codex_tools.CodexTools(self.home, 'codex-crew', goal_handler=lambda *args, **kwargs:receipt)
-        result = self.call('crew_goal', {'action':'report.preview', 'data':{'report_id':'saved'}}, tools=tool)
-        self.assertEqual(result['preview'], receipt['preview'])
-        self.assertIn('missing.png', result['input_image_error'])
-        self.assertIn('view_image', result['image_instruction'])
+        receipt = {'ok': True, 'preview': {'id': 'captured', 'path': str(path)}}
+        value = self.preview('codex-crew', receipt)
+        self.assertEqual(value['structuredContent']['preview'], receipt['preview'])
+        self.assertIn('missing.png', value['content'][1]['text'])
 
     def test_report_preview_image_cannot_escape_its_bound_identity_directory(self):
         for path in (self.home / 'report-previews' / 'root.png',
@@ -125,56 +117,38 @@ class CodexToolsTests(unittest.TestCase):
             with self.subTest(path=path):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b'Another artifact must not be returned to this actor')
-                tool = codex_tools.CodexTools(self.home, 'codex-crew', goal_handler=lambda *args, **kwargs:
-                    {'ok':True, 'preview':{'id':'not-owned', 'path':str(path)}})
-                result = self.call('crew_goal', {'action':'report.preview', 'data':{'report_id':'saved'}},
-                                   tools=tool, success=False)
-                self.assertEqual(result['error']['code'], 'preview_image_forbidden')
+                result = self.preview('codex-crew', {'ok': True, 'preview': {'id': 'not-owned', 'path': str(path)}})
+                self.assertTrue(result['isError'], result)
 
     def test_spawn_tool_supplies_only_host_bound_goal_execution_identity(self):
         goal = goals.create(self.conn, 'first', 'leader-crew', 'Tool spawning', 'Finite request', ['Done'])
         goals.transition(self.conn, goal['id'], 'running')
         execution = goals.create_execution(self.conn, goal['id'], 'leader-crew', runtime='codex')
-        tool = codex_tools.CodexTools(self.home, 'leader-crew', execution_id=execution['id'])
-        with mock.patch('crew.spawn.request_start', return_value={'ok': True, 'session_id': 'new-member'}) as request:
-            self.call('crew_spawn', {'name': 'new-member', 'task': 'Finite member task'}, tools=tool)
-        self.assertEqual(request.call_args.args[2:], ('/api/spawn', {
-            'name': 'new-member', 'task': 'Finite member task', 'role': 'member',
-            'caller_session_id': 'leader-crew', 'caller_execution_id': execution['id']}))
+        with mock.patch('crew.web_api.sessions.post_spawn', return_value={'ok': True}) as spawn:
+            self.call('execution.spawn', {'name': 'new-member', 'task': 'Finite member task'},
+                      sid='leader-crew', execution_id=execution['id'])
+        self.assertEqual(spawn.call_args.args[2], {'role': 'member', 'name': 'new-member',
+            'task': 'Finite member task', 'caller_session_id': 'leader-crew', 'caller_execution_id': execution['id']})
 
     def test_spawn_tool_from_the_general_chat_names_the_task_and_brain(self):
-        tool = codex_tools.CodexTools(self.home, 'leader-crew')
-        with mock.patch('crew.spawn.request_start', return_value={'ok': True, 'session_id': 'part'}) as request:
-            self.call('crew_spawn', {'name': '推理接入', 'task': 'Finite part', 'goal_id': 'goal-1',
-                                     'runtime': 'codex', 'model': 'gpt-test', 'effort': 'low'}, tools=tool)
-        self.assertEqual(request.call_args.args[2:], ('/api/spawn', {
-            'name': '推理接入', 'task': 'Finite part', 'role': 'member', 'caller_session_id': 'leader-crew',
-            'goal_id': 'goal-1', 'runtime': 'codex', 'model': 'gpt-test', 'effort': 'low'}))
+        args = {'name': '推理接入', 'task': 'Finite part', 'goal_id': 'goal-1',
+                'runtime': 'codex', 'model': 'gpt-test', 'effort': 'low'}
+        with mock.patch('crew.web_api.sessions.post_spawn', return_value={'ok': True}) as spawn:
+            self.call('execution.spawn', args, sid='leader-crew')
+        self.assertEqual(spawn.call_args.args[2], {**args, 'role': 'member', 'caller_session_id': 'leader-crew'})
 
     def test_member_spawn_is_denied_locally_before_the_host_request(self):
-        with mock.patch('crew.spawn.request_start') as request:
-            result = self.call('crew_spawn', {'name': 'nested', 'task': 'Finite task'}, success=False)
-        self.assertIn('只有本项目当前 leader', result['error']['message'])
-        request.assert_not_called()
-
-    def test_specs_use_the_app_server_wire_shape_and_are_independent_copies(self):
-        specs = codex_tools.tool_specs()
-        self.assertGreaterEqual(len(specs), 9)
-        self.assertEqual(len(specs), len({s["name"] for s in specs}))
-        for spec in specs:
-            self.assertEqual(set(spec), {"type", "name", "description", "inputSchema"})
-            self.assertEqual(spec["type"], "function")
-            self.assertIs(spec["inputSchema"]["additionalProperties"], False)
-        specs[0]["inputSchema"]["properties"]["session_id"] = {"type": "string"}
-        self.assertNotIn("session_id", codex_tools.tool_specs()[0]["inputSchema"]["properties"])
+        with mock.patch('crew.web_api.sessions.post_spawn') as spawn:
+            self.assertEqual(self.rejected('execution.spawn', {'name': 'nested', 'task': 'Finite task'}).code, 'forbidden')
+        spawn.assert_not_called()
 
     def test_native_ids_and_transport_fields_cannot_change_identity(self):
-        data = self.call("crew_whoami", threadId="foreign-crew", session_id="foreign-crew",
-                         home=str(self.root / "other-home"), project="other")
+        self.rejected('session.whoami', {'session_id': 'foreign-crew', 'project': 'other'})
+        data = self.call("session.whoami")
         self.assertEqual(data["session_id"], "codex-crew")
         self.assertEqual(data["leader"]["session_id"], "leader-crew")
         self.assertFalse((self.root / "other-home").exists())
-        snapshot = self.call("crew_status", threadId="native-codex-thread")
+        snapshot = self.call("workspace.state")
         chief = next(g for g in snapshot["groups"] if g["name"] == "chief")
         self.assertEqual({s["session_id"] for s in chief["members"]},
                          {"codex-crew", "claude-crew", "leader-crew"})
@@ -182,31 +156,30 @@ class CodexToolsTests(unittest.TestCase):
         self.assertEqual(snapshot["project"]["name"], "first")
 
     def test_task_and_card_change_only_the_bound_session_and_read_saved_values(self):
-        self.call("crew_task", {"text": "Implement Codex"}, threadId="claude-crew")
+        self.call("session.task.set", {"text": "Implement Codex"})
         self.assertEqual(board.session(self.conn, "codex-crew")["task"], "Implement Codex")
         self.assertIsNone(board.session(self.conn, "claude-crew")["task"])
-        first = self.call("crew_card", {"scope": "runtime", "done_when": "mixed team works"})
-        second = self.call("crew_card", {"scope": "runtime and events"})
+        first = self.call("session.card.set", {"scope": "runtime", "done_when": "mixed team works"})
+        second = self.call("session.card.set", {"scope": "runtime and events"})
         self.assertEqual(first["card"]["done_when"], second["card"]["done_when"])
         self.assertEqual(second["card"], board.card(self.conn, "codex-crew"))
         self.assertIsNone(board.card(self.conn, "claude-crew"))
 
     def test_ask_returns_the_actual_persisted_question_number(self):
         foreign = board.ask(self.conn, "foreign-crew", "Other project question")
-        asked = self.call("crew_ask", {"question": "Ship this?", "options": ["yes", "later"],
+        asked = self.call("decision.ask", {"question": "Ship this?", "options": ["yes", "later"],
                                        "recommendation": "later", "blocking": True})
         self.assertGreater(asked["id"], foreign)
         self.assertEqual(asked["session_id"], "codex-crew")
         self.assertEqual(asked["options"], ["yes", "later"])
         self.assertEqual(asked["blocking"], 1)
         self.assertEqual(asked, board.decisions(self.conn, "first")[0])
-        self.assertEqual(self.call("crew_decisions"), [asked])
+        self.assertEqual(self.call("decision.list"), [asked])
 
     def test_write_exception_is_failed_without_a_fictitious_question_id(self):
         with mock.patch.object(board, "ask", side_effect=board.BoardError("invalid question")):
-            data = self.call("crew_ask", {"question": "Proceed?"}, success=False)
-        self.assertIn("error", data)
-        self.assertNotIn("id", data)
+            data = self.rejected("decision.ask", {"question": "Proceed?"})
+        self.assertIn("invalid question", str(data))
         self.assertEqual(board.decisions(self.conn, "first"), [])
 
     def structured(self):
@@ -217,95 +190,91 @@ class CodexToolsTests(unittest.TestCase):
 
     def test_dynamic_ask_can_save_a_real_structured_choice(self):
         brief = self.structured()
-        asked = self.call("crew_ask", {"question": "原始上下文保持原样", "recommendation": "等待用户验收后发布", "brief": brief})
+        asked = self.call("decision.ask", {"question": "原始上下文保持原样", "recommendation": "等待用户验收后发布", "brief": brief})
         self.assertEqual(asked["brief"], brief)
         self.assertEqual(asked["options"], [item["label"] for item in brief["options"]])
         self.assertEqual(decision_briefs.get(self.conn, asked["id"]), brief)
-        self.assertEqual(self.call("crew_decisions"), [asked])
+        self.assertEqual(self.call("decision.list"), [asked])
 
     def test_dynamic_structured_ask_rejects_bad_content_and_nested_identity_forgery(self):
         malformed = self.structured()
         malformed["session_id"] = "foreign-crew"
-        self.call("crew_ask", {"question": "x", "brief": malformed}, success=False)
+        self.rejected("decision.ask", {"question": "x", "brief": malformed})
         markers = self.structured()
         markers["options"] = [{"label": "A", "consequence": "first"}, {"label": "B", "consequence": "second"}]
-        self.call("crew_ask", {"question": "x", "brief": markers}, success=False)
+        self.rejected("decision.ask", {"question": "x", "brief": markers})
         missing = self.structured()
         del missing["why_user"]
-        self.call("crew_ask", {"question": "x", "brief": missing}, success=False)
+        self.rejected("decision.ask", {"question": "x", "brief": missing})
         self.assertEqual(board.decisions(self.conn, "first"), [])
 
     def test_dynamic_revision_keeps_the_id_and_checks_the_actual_current_leader(self):
         number = board.ask(self.conn, "codex-crew", "unclear original", ["A", "B"])
-        peer = codex_tools.CodexTools(self.home, "peer-leader")
         args = {"id": number, "question": "明确问题", "brief": self.structured(), "recommendation": "等待用户验收后发布"}
-        self.call("crew_decision_revise", args, tools=peer, success=False, threadId="leader-crew")
-        revised = self.call("crew_decision_revise", args, tools=self.leader, threadId="foreign-crew")
+        self.rejected("decision.revise", args, sid='peer-leader')
+        revised = self.call("decision.revise", args, sid='leader-crew')
         self.assertEqual(revised["id"], number)
         self.assertEqual(revised["session_id"], "codex-crew")
         self.assertEqual(revised["brief"], self.structured())
         foreign = board.ask(self.conn, "foreign-crew", "foreign question")
-        self.call("crew_decision_revise", {**args, "id": foreign}, tools=self.leader, success=False)
+        self.rejected("decision.revise", {**args, "id": foreign}, sid='leader-crew')
         self.assertEqual(board.decisions(self.conn, "other")[0]["question"], "foreign question")
         self.assertEqual(len(board.decisions(self.conn, "first")), 1)
 
     def test_dynamic_manual_actions_keep_human_completion_separate_from_agent_withdrawal(self):
-        added = self.call("crew_todo_add", {"title": "Connect device", "steps": "Plug in cable",
-                                             "verification": "Device is listed", "blocking": True}, threadId="claude-crew")
+        added = self.call("todo.add", {"title": "Connect device", "steps": "Plug in cable",
+                                             "verification": "Device is listed", "blocking": True})
         self.assertEqual(added["session_id"], "codex-crew")
         self.assertEqual(added["status"], "open")
-        self.assertEqual(self.call("crew_todo_list"), [added])
-        peer = codex_tools.CodexTools(self.home, "peer-leader")
-        self.call("crew_todo_withdraw", {"id": added["id"], "reason": "not needed"}, tools=peer, success=False)
-        self.call("crew_todo_resolve", {"id": added["id"], "status": "done"}, success=False)
-        withdrawn = self.call("crew_todo_withdraw", {"id": added["id"], "reason": "Solved automatically"}, tools=self.leader)
+        self.assertEqual(self.call("todo.list"), [added])
+        self.rejected("todo.withdraw", {"id": added["id"], "reason": "not needed"}, sid='peer-leader')
+        self.rejected("todo.resolve", {"id": added["id"], "status": "done"})
+        withdrawn = self.call("todo.withdraw", {"id": added["id"], "reason": "Solved automatically"}, sid='leader-crew')
         self.assertEqual(withdrawn["todo"]["status"], "withdrawn")
-        self.assertEqual(self.call("crew_todo_list"), [])
-        self.assertEqual(self.call("crew_todo_list", {"all": True})[0]["id"], added["id"])
+        self.assertEqual(self.call("todo.list"), [])
+        self.assertEqual(self.call("todo.list", {"all": True})[0]["id"], added["id"])
 
     def test_dynamic_manual_actions_reject_foreign_access_and_model_selected_identity(self):
         foreign = todo.add(self.conn, "foreign-crew", "Other project", "Do it", "Check result")
-        self.assertEqual(self.call("crew_todo_list"), [])
-        self.call("crew_todo_withdraw", {"id": foreign["id"], "reason": "Not ours"}, tools=self.leader, success=False)
-        self.call("crew_todo_add", {"title": "forged", "steps": "x", "verification": "x", "session_id": "foreign-crew"}, success=False)
-        self.call("crew_todo_list", {"project": "other"}, success=False)
+        self.assertEqual(self.call("todo.list"), [])
+        self.rejected("todo.withdraw", {"id": foreign["id"], "reason": "Not ours"}, sid='leader-crew')
+        self.rejected("todo.add", {"title": "forged", "steps": "x", "verification": "x", "session_id": "foreign-crew"})
+        self.rejected("todo.list", {"project": "other"})
         self.assertEqual(todo.get(self.conn, "other", foreign["id"])["status"], "open")
 
     def test_dynamic_identity_shows_runtime_without_using_it_as_a_credential(self):
         runtimes.set(self.conn, "codex-crew", "codex", "native-thread")
         runtimes.set(self.conn, 'leader-crew', 'claude')
-        identity = self.call("crew_whoami", threadId="unrelated-native-thread")
+        identity = self.call("session.whoami")
         self.assertEqual(identity["runtime"], "codex")
         self.assertEqual(identity["leader"]["runtime"], "claude")
         self.assertEqual(identity["session_id"], "codex-crew")
 
     def test_old_native_tool_callback_is_inactive_after_switch_to_claude(self):
-        self.call('crew_task', {'text':'before switch'})
+        token = tokens.issue(self.conn, session_id='codex-crew', runtime='codex', now=store.now_iso())
+        self.call('session.task.set', {'text': 'before switch'})
         runtimes.set(self.conn, 'codex-crew', 'claude')
-        before=self.conn.total_changes
-        with mock.patch('crew.store.connect', side_effect=AssertionError('inactive callback cannot migrate or write')):
-            result=self.call('crew_task', {'text':'late old thread'}, success=False)
-        self.assertEqual(result['error']['code'],'inactive_runtime')
-        self.assertEqual(self.conn.total_changes,before)
-        self.assertEqual(board.session(self.conn,'codex-crew')['task'],'before switch')
+        with self.assertRaises(OpError):
+            caller, grants = tokens.caller(self.conn, token)
+            executor.call(self.service, caller, 'session.task.set', {'text': 'late old thread'}, grants=grants, request_id='late')
+        self.assertEqual(board.session(self.conn, 'codex-crew')['task'], 'before switch')
 
     def test_document_registration_uses_bound_identity_and_does_not_change_user_pin(self):
         path = self.root / "first" / "handoff.md"
         path.write_text("# Verified deliverable", encoding="utf-8")
-        saved = self.call("crew_doc_add", {"path": str(path), "title": "Runtime guide", "summary": "How to use both tools",
-                                          "kind": "guide", "important": True},
-                          threadId="foreign-crew", session_id="foreign-crew", project="other", home=str(self.root / "wrong-home"))
+        saved = self.call("document.register", {"path": str(path), "title": "Runtime guide", "summary": "How to use both tools",
+                                          "kind": "guide", "important": True})
         self.assertEqual(saved["session_id"], "codex-crew")
         self.assertEqual(saved["leader_session_id"], "leader-crew")
         self.assertEqual(saved["project"], "first")
         self.assertEqual(saved["kind"], "guide")
         self.assertTrue(saved["ai_important"])
-        self.assertEqual(self.call("crew_doc_list"), [saved])
+        self.assertEqual(self.call("document.list"), [saved])
         documents.pin(self.conn, "first", saved["id"], False)
-        resubmitted = self.call("crew_doc_add", {"path": str(path), "title": "Runtime guide", "summary": "The checked runtime guide", "important": True})
+        resubmitted = self.call("document.register", {"path": str(path), "title": "Runtime guide", "summary": "The checked runtime guide", "important": True})
         self.assertFalse(resubmitted["user_important"])
         self.assertFalse(resubmitted["important"])
-        self.call("crew_doc_pin", {"id": saved["id"], "important": True}, success=False)
+        self.rejected("document.pin", {"id": saved["id"], "important": True})
         self.assertEqual(path.read_text(encoding="utf-8"), "# Verified deliverable")
         self.assertFalse((self.root / "wrong-home").exists())
 
@@ -314,11 +283,10 @@ class CodexToolsTests(unittest.TestCase):
         other = goals.create(self.conn, 'first', 'leader-crew', 'Other task', 'Different work', ['Checked'])
         goals.assign(self.conn, goal['id'], 'codex-crew', 'Write the guide')
         execution = goals.create_execution(self.conn, goal['id'], 'codex-crew', runtime='codex')
-        tools = codex_tools.CodexTools(self.home, 'codex-crew', execution_id=execution['id'])
         path = self.root / 'first' / 'task-guide.md'
         path.write_text('Verified guide', encoding='utf-8')
-        saved = self.call('crew_doc_add', {'path':str(path), 'title':'Task guide', 'summary':'Checked steps'}, tools=tools)
-        self.assertEqual(self.call('crew_doc_list', tools=tools), [saved])
+        saved = self.call('document.register', {'path':str(path), 'title':'Task guide', 'summary':'Checked steps'}, execution_id=execution['id'])
+        self.assertEqual(self.call('document.list', execution_id=execution['id']), [saved])
         self.assertEqual(documents.list(self.conn, 'first', goal_id=other['id']), [])
         self.assertEqual(documents.list(self.conn, 'first', goal_id=goal['id']), [saved])
 
@@ -329,16 +297,16 @@ class CodexToolsTests(unittest.TestCase):
         own_doc = documents.register(self.conn, "codex-crew", str(own), title="Own report", summary="The caller's checked work")
         documents.register(self.conn, "peer-member", str(peer), title="Peer report", summary="The peer's checked work")
         documents.register(self.conn, "foreign-crew", str(foreign), title="Other project report", summary="A separate project's work")
-        self.assertEqual(self.call("crew_doc_list", {"leader": "chief"}), [own_doc])
-        self.assertEqual(self.call("crew_doc_list", {"leader": "leader-crew"}), [own_doc])
+        self.assertEqual(self.call("document.list", {"leader": "chief"}), [own_doc])
+        self.assertEqual(self.call("document.list", {"leader": "leader-crew"}), [own_doc])
         for target in ("foreign-crew", "outsider", "builder", "native-leader-crew"):
-            self.call("crew_doc_list", {"leader": target}, success=False)
+            self.rejected("document.list", {"leader": target})
         new = self.root / "first" / "fresh.md"; new.write_text("indexed", encoding="utf-8")
         board.report(self.conn, "codex-crew", "Delivered [Fresh](fresh.md)")
         board.report(self.conn, "foreign-crew", "Delivered [Other](foreign.md)")
-        scan = self.call("crew_doc_refresh", threadId="foreign-crew", home=str(self.root / "wrong-home"))
+        scan = self.call("document.refresh")
         self.assertGreaterEqual(scan["indexed"], 1)
-        self.assertEqual({row["path"] for row in self.call("crew_doc_list")}, {str(own), str(peer), str(new)})
+        self.assertEqual({row["path"] for row in self.call("document.list")}, {str(own), str(peer), str(new)})
         self.assertEqual(len(documents.list(self.conn, "other")), 1)
 
     def test_document_tools_reject_forged_authority_invalid_kind_and_path_escape(self):
@@ -349,95 +317,90 @@ class CodexToolsTests(unittest.TestCase):
                      {"path": str(own), "important": 1}, {"path": str(outside)}, {"path": "../other/outside.md"},
                      {"path": "https://example.com/report.md"}, {"path": "missing.md"}):
             with self.subTest(args=args):
-                rejected = self.call("crew_doc_add", {"title": "Valid title", "summary": "A useful summary", **args}, success=False)
+                rejected = self.rejected("document.register", {"title": "Valid title", "summary": "A useful summary", **args})
                 if args.get("path") in (str(outside), "../other/outside.md", "https://example.com/report.md", "missing.md"):
-                    self.assertEqual(rejected["error"]["code"], "board_error")
+                    self.assertIsInstance(rejected, board.BoardError)
         for args in ({"path": str(own)}, {"path": str(own), "title": "Title"},
                      {"path": str(own), "title": " ", "summary": "Summary"}):
-            self.call("crew_doc_add", args, success=False)
-        self.call("crew_doc_list", {"project": "other"}, success=False)
-        self.call("crew_doc_refresh", {"home": str(self.root)}, success=False)
+            self.rejected("document.register", args)
+        self.rejected("document.list", {"project": "other"})
+        self.rejected("document.refresh", {"home": str(self.root)})
         self.assertEqual(documents.list(self.conn, "first"), [])
 
     def test_only_the_own_group_leader_can_answer(self):
-        number = self.call("crew_ask", {"question": "Choose internal format?"})["id"]
-        self.call("crew_answer", {"id": number, "text": "json"}, success=False)
-        peer = codex_tools.CodexTools(self.home, "peer-leader")
-        self.call("crew_answer", {"id": number, "text": "json"}, tools=peer, success=False)
+        number = self.call("decision.ask", {"question": "Choose internal format?"})["id"]
+        self.rejected("decision.answer", {"id": number, "text": "json"})
+        self.rejected("decision.answer", {"id": number, "text": "json"}, sid='peer-leader')
         self.assertEqual(board.decisions(self.conn, "first")[0]["status"], "open")
-        answered = self.call("crew_answer", {"id": number, "text": "json"}, tools=self.leader)
+        answered = self.call("decision.answer", {"id": number, "text": "json"}, sid='leader-crew')
         self.assertEqual(answered["status"], "answered")
         self.assertEqual(answered["answered_by"], "leader-crew")
-        self.assertEqual(self.call("crew_decisions"), [])
-        self.assertEqual(self.call("crew_decisions", {"all": True}), [answered])
+        self.assertEqual(self.call("decision.list"), [])
+        self.assertEqual(self.call("decision.list", {"all": True}), [answered])
 
     def test_question_original_leader_can_answer_after_member_moves_but_new_leader_cannot(self):
-        number=self.call('crew_ask',{'question':'Original group decision'})['id']
+        number=self.call('decision.ask',{'question':'Original group decision'})['id']
         board.roster(self.conn,'first','move','peer',session_ids=['codex-crew'])
-        peer=codex_tools.CodexTools(self.home,'peer-leader')
-        self.call('crew_answer',{'id':number,'text':'wrong group'},tools=peer,success=False)
-        saved=self.call('crew_answer',{'id':number,'text':'original scope'},tools=self.leader)
+        self.rejected('decision.answer',{'id':number,'text':'wrong group'},sid='peer-leader')
+        saved=self.call('decision.answer',{'id':number,'text':'original scope'},sid='leader-crew')
         self.assertEqual(saved['answered_by'],'leader-crew')
         self.assertEqual(saved['leader_session_id'],'leader-crew')
 
     def test_cross_project_decision_answer_and_withdraw_are_denied(self):
         number = board.ask(self.conn, "foreign-crew", "Foreign decision")
-        for tool, args, handler in (("crew_answer", {"id": number, "text": "yes"}, self.leader),
-                                    ("crew_withdraw", {"id": number}, self.tools)):
-            self.call(tool, args, tools=handler, success=False)
+        for tool, args, handler in (("decision.answer", {"id": number, "text": "yes"}, 'leader-crew'),
+                                    ("decision.withdraw", {"id": number}, 'codex-crew')):
+            self.rejected(tool, args, sid=handler)
         self.assertEqual(board.decisions(self.conn, "other")[0]["status"], "open")
 
     def test_withdraw_is_own_question_only(self):
-        own = self.call("crew_ask", {"question": "Own?"})["id"]
+        own = self.call("decision.ask", {"question": "Own?"})["id"]
         colleague = board.ask(self.conn, "claude-crew", "Colleague?")
-        self.call("crew_withdraw", {"id": colleague}, success=False)
-        result = self.call("crew_withdraw", {"id": own})
+        self.rejected("decision.withdraw", {"id": colleague})
+        result = self.call("decision.withdraw", {"id": own})
         self.assertEqual(result["status"], "withdrawn")
 
     def test_handoffs_use_crew_identity_and_are_limited_to_the_project(self):
-        result = self.call("crew_handoff", {"to": "reviewer", "text": "Review runtime changes"})
+        result = self.call("handoff.add", {"to": "reviewer", "text": "Review runtime changes"})
         self.assertEqual(result["to_target"], "claude-crew")
         runtimes.set(self.conn, 'claude-crew', 'codex')
-        reviewer = codex_tools.CodexTools(self.home, "claude-crew")
-        self.assertEqual(self.call("crew_handoffs", tools=reviewer), [result])
+        self.assertEqual(self.call("handoff.list", sid='claude-crew'), [result])
         self.assertEqual(board.handoffs(self.conn, "claude-crew"), [result])
-        self.call("crew_handoff", {"to": "chief", "text": "Group handoff"})
-        self.call("crew_handoff", {"to": "*", "text": "Project handoff"})
+        self.call("handoff.add", {"to": "chief", "text": "Group handoff"})
+        self.call("handoff.add", {"to": "*", "text": "Project handoff"})
         for target in ("foreign-crew", "outsider", "native-claude-crew"):
-            self.call("crew_handoff", {"to": target, "text": "Forbidden"}, success=False)
+            self.rejected("handoff.add", {"to": target, "text": "Forbidden"})
         self.assertEqual(len(board.project_handoffs(self.conn, "first")), 3)
         self.assertEqual(board.handoffs(self.conn, "foreign-crew"), [])
 
     def test_handoff_to_crew_id_is_readable_and_actually_delivered_to_the_recipient(self):
-        saved = self.call("crew_handoff", {"to": "claude-crew", "text": "Check the Codex event mapping"})
+        saved = self.call("handoff.add", {"to": "claude-crew", "text": "Check the Codex event mapping"})
         self.assertEqual(saved["to_target"], "claude-crew")
         runtimes.set(self.conn, 'claude-crew', 'codex')
-        recipient = codex_tools.CodexTools(self.home, "claude-crew")
-        pending = self.call("crew_handoffs", tools=recipient)
+        pending = self.call("handoff.list", sid='claude-crew')
         self.assertEqual([h["body"] for h in pending], ["Check the Codex event mapping"])
-        self.assertEqual(self.call("crew_handoffs"), [])
+        self.assertEqual(self.call("handoff.list"), [])
         self.assertEqual(board.deliver(self.conn, "foreign-crew")["handoffs"], [])
         delivered = board.deliver(self.conn, "claude-crew")
         self.assertEqual(delivered["handoffs"], [saved])
         self.assertEqual(delivered["handoffs"][0]["from_session"], "codex-crew")
-        self.assertEqual(self.call("crew_handoffs", tools=recipient), [])
+        self.assertEqual(self.call("handoff.list", sid='claude-crew'), [])
         self.assertEqual(board.deliver(self.conn, "claude-crew")["handoffs"], [])
 
     def test_reports_are_saved_under_the_sender_and_cannot_read_other_projects(self):
         board.report(self.conn, "foreign-crew", "private other project report")
-        report = self.call("crew_report", {"text": "runtime done; events next"})
+        report = self.call("report.add", {"text": "runtime done; events next"})
         self.assertEqual(report["session_id"], "codex-crew")
         self.assertEqual(report, board.reports(self.conn, "first")[0])
-        self.assertEqual(self.call("crew_reports", {"group": "chief"}), [report])
-        self.assertEqual(self.call("crew_reports"), [report])
-        self.call("crew_reports", {"group": "outsider"}, success=False)
+        self.assertEqual(self.call("report.list", {"group": "chief"}), [report])
+        self.assertEqual(self.call("report.list"), [report])
+        self.rejected("report.list", {"group": "outsider"})
 
     def test_send_routes_by_crew_identity_with_host_attributed_sender(self):
         sender = mock.Mock(return_value={"ok": True, "queued": True, "message_id": "m-1"})
-        tools = codex_tools.CodexTools(self.home, "codex-crew", send_message=sender)
-        result = self.call("crew_send_message", {"to": "reviewer", "text": "Review please"},
-                           tools=tools, threadId="foreign-crew")
-        sender.assert_called_once_with("codex-crew", "claude-crew", "Review please", kind='information')
+        self.service.chat.send_message = sender
+        result = self.call("message.send", {"to": "reviewer", "text": "Review please"})
+        sender.assert_called_once_with("codex-crew", "claude-crew", "Review please", None, execution_id=None, reply_to=None, kind='information')
         self.assertEqual(result["from_session_id"], "codex-crew")
         self.assertEqual(result["to_session_id"], "claude-crew")
         self.assertTrue(result["receipt"]["queued"])
@@ -446,88 +409,116 @@ class CodexToolsTests(unittest.TestCase):
 
     def test_reply_passes_original_message_identity_to_the_host(self):
         sender = mock.Mock(return_value={'ok':True,'queued':True,'message_id':'reply'})
-        tools = codex_tools.CodexTools(self.home,'codex-crew',send_message=sender)
-        self.call('crew_send_message',{'to':'reviewer','text':'Actual result','kind':'result','reply_to':'original-message'},tools=tools)
-        sender.assert_called_once_with('codex-crew','claude-crew','Actual result',kind='result',reply_to='original-message')
+        self.service.chat.send_message = sender
+        self.call('message.send',{'to':'reviewer','text':'Actual result','kind':'result','reply_to':'original-message'})
+        sender.assert_called_once_with('codex-crew','claude-crew','Actual result', None, execution_id=None, kind='result',reply_to='original-message')
 
     def test_send_rejects_foreign_or_native_address_without_invoking_callback(self):
         sender = mock.Mock(return_value={"ok": True})
-        tools = codex_tools.CodexTools(self.home, "codex-crew", send_message=sender)
+        self.service.chat.send_message = sender
         for target in ("foreign-crew", "outsider", "native-claude-crew", "codex-crew"):
-            self.call("crew_send_message", {"to": target, "text": "No"}, tools=tools, success=False)
+            self.rejected("message.send", {"to": target, "text": "No"})
         sender.assert_not_called()
 
     def test_missing_failed_or_ambiguous_message_receipts_do_not_claim_success(self):
-        self.call("crew_send_message", {"to": "reviewer", "text": "Hello"}, success=False)
-        for receipt in (None, True, {}, {"ok": False}, {"ok": "true"}):
-            with self.subTest(receipt=receipt):
-                tools = codex_tools.CodexTools(self.home, "codex-crew", send_message=lambda *a: receipt)
-                self.call("crew_send_message", {"to": "reviewer", "text": "Hello"}, tools=tools,
-                          success=False)
-        tools = codex_tools.CodexTools(self.home, "codex-crew", send_message=mock.Mock(side_effect=OSError("secret")))
-        result = self.call("crew_send_message", {"to": "reviewer", "text": "Hello"}, tools=tools,
-                           success=False)
-        self.assertNotIn("secret", str(result))
-        # The router raised: the outcome is unknown, so the tool must not claim it was never accepted.
-        self.assertIn("delivery_unknown", str(result))
-        self.assertIn("outcome unknown", str(result))
-        self.assertIn("do not resend at once", str(result))
+        args = {'to': 'reviewer', 'text': 'Hello'}
+        for receipt in (None, True, {}, {'ok': False}, {'ok': 'true'}):
+            with self.subTest(receipt=receipt), mock.patch.object(self.service.chat, 'send_message', return_value=receipt):
+                self.assertEqual(self.rejected('message.send', args).code, 'unknown_outcome')
+        with mock.patch.object(self.service.chat, 'send_message', side_effect=OSError('secret')):
+            error = self.rejected('message.send', args)
+        self.assertEqual(error.code, 'unknown_outcome')
+        self.assertNotIn('secret', str(error))
+        self.assertIn('不要立刻重发', str(error))
 
     def test_descriptions_state_real_scope_without_duplicating_role_rules(self):
-        specs = {spec["name"]: spec["description"] for spec in codex_tools.tool_specs()}
-        self.assertIn("Current leaders only", specs["crew_rename"])
-        self.assertIn("Members cannot use it", specs["crew_rename"])
-        self.assertIn("general conversation it is registered to this workspace only", specs["crew_doc_add"])
-        self.assertNotIn("binds it to your current task", specs["crew_doc_add"])
-        self.assertNotIn("Ordinary Q&A", specs["crew_goal"])
-        self.assertIn("follows the injected role rules", specs["crew_goal"])
-        self.assertIn("self-contained document_html", specs["crew_goal"])
-        self.assertIn("[Crew final_report] for writing and preview", specs["crew_goal"])
-        self.assertNotIn("report.publish", specs["crew_goal"])
+        self.assertIn('只给 leader', registry.get('session.rename').ai_description)
+        self.assertIn('只登记到工作区', registry.get('document.register').ai_description)
+        finish = registry.get('goal.finish').description
+        self.assertIn('document_html', finish)
+        self.assertIn('[Crew final_report]', finish)
+
+    def test_finish_declares_report_as_an_object(self):
+        # A real Haiku run sent the report as JSON text or as top-level fields five times in a row.
+        report = registry.operations()['goal.finish'].params['properties'].get('report', {})
+        self.assertEqual(report['type'], 'object')
+        self.assertEqual(report['required'], ['outcome', 'summary', 'acceptance'])
+        self.assertEqual(report['properties']['document_html']['maxLength'], 512 * 1024)
+        self.assertEqual(report['properties']['acceptance']['items']['required'], ['criterion_id', 'status'])
+        self.assertIn('不是 JSON 字符串', report['description'])
+        # Codex once wrote the words 工作区根目录 as the folder; the field says what a path looks like.
+        self.assertIn('根目录填 .', report['properties']['folder']['description'])
+        for value in ('{"outcome": "awaiting_acceptance"}', None):
+            args = {'outcome': 'awaiting_acceptance'} if value is None else {'report': value}
+            with self.subTest(report=value):
+                self.assertEqual(self.rejected('goal.finish', args).code, 'invalid_arguments')
+
+    def test_goal_create_declares_the_leader_field(self):
+        # A real Haiku global assistant first omitted the leader and had to guess the field name.
+        leader = registry.operations()['goal.create'].ai_params['properties']['leader_session_id']
+        self.assertIn('全局助手必填', leader['description'])
+
+    def test_work_items_declare_their_fields(self):
+        # A real Haiku run sent version "1" (text) four times and could never mark its work done.
+        operations = registry.operations()
+        add, update = operations['goal.work.add'].params, operations['goal.work.update'].params
+        self.assertEqual(add['required'], ['key', 'title', 'acceptance'])
+        self.assertEqual(update['required'], ['key', 'version'])
+        self.assertEqual(update['properties']['version']['type'], 'integer')
+        self.assertEqual(update['properties']['status']['enum'], ['planned', 'doing', 'blocked', 'done', 'cancelled'])
+        error = self.rejected('goal.work.update', {'key': 'W1', 'version': '1', 'status': 'done', 'note': 'ok'})
+        self.assertEqual(error.code, 'invalid_arguments')
+        self.assertIn('version', str(error))
 
     def test_unknown_tools_and_bad_inputs_do_not_mutate_the_board(self):
-        for name, args in (("shell", {"command": "anything"}), ("crew_task", {"text": ""}),
-                           ("crew_task", {"text": "x", "session_id": "claude-crew"}),
-                           ("crew_card", {"scope": "x", "home": "somewhere"}),
-                           ("crew_task", {"text": "x", "project": "other"}),
-                           ("crew_ask", {"question": "x", "blocking": "false"}),
-                           ("crew_ask", {"question": "x", "options": [1]}),
-                           ("crew_ask", {"question": "x", "options": [" "]}),
-                           ("crew_answer", {"id": True, "text": "x"}),
-                           ("crew_send_message", {"to": "reviewer", "text": "x", "role": "leader"}),
-                           ("crew_task", []), ("crew_task", "{broken"), ("crew_task", "null")):
+        for name, args in (("shell", {"command": "anything"}), ("session.task.set", {"text": ""}),
+                           ("session.task.set", {"text": "x", "session_id": "claude-crew"}),
+                           ("session.card.set", {"scope": "x", "home": "somewhere"}),
+                           ("session.task.set", {"text": "x", "project": "other"}),
+                           ("decision.ask", {"question": "x", "blocking": "false"}),
+                           ("decision.ask", {"question": "x", "options": [1]}),
+                           ("decision.ask", {"question": "x", "options": [" "]}),
+                           ("decision.answer", {"id": True, "text": "x"}),
+                           ("message.send", {"to": "reviewer", "text": "x", "role": "leader"})):
             with self.subTest(name=name, args=args):
-                self.call(name, args, success=False)
+                self.rejected(name, args)
+        caller, grants = agent_caller(self.conn, 'codex-crew', runtime='codex')
+        for invalid in ([], '{broken', 'null'):
+            result, _ = mcp.call_tool(self.service, caller, grants, 'session_task_set', invalid)
+            self.assertTrue(result['isError'])
+            self.assertEqual(json.loads(result['content'][0]['text'])['error']['code'], 'invalid_arguments')
         self.assertIsNone(board.session(self.conn, "codex-crew")["task"])
         self.assertEqual(board.decisions(self.conn, "first"), [])
         self.assertIsNone(board.card(self.conn, "codex-crew"))
-        self.assertFalse(self.tools(None)["success"])
-        self.assertFalse(self.tools({"name": "crew_whoami"})["success"])
 
-    def test_json_encoded_arguments_are_supported_without_accepting_identity_fields(self):
-        result = self.call("crew_task", json.dumps({"text": "encoded"}))
-        self.assertEqual(result["task"], "encoded")
-        self.call("crew_task", json.dumps({"text": "forged", "session_id": "claude-crew"}), success=False)
 
     def test_rebind_is_required_if_project_membership_is_changed_outside_tools(self):
+        token = tokens.issue(self.conn, session_id='codex-crew', runtime='codex', now=store.now_iso())
         self.conn.execute("UPDATE sessions SET project='other' WHERE session_id='codex-crew'")
-        result = self.call("crew_task", {"text": "escaped"}, success=False)
-        self.assertEqual(result["error"]["code"], "forbidden")
-        self.assertIsNone(board.session(self.conn, "codex-crew")["task"])
+        with self.assertRaises(OpError):
+            caller, grants = tokens.caller(self.conn, token)
+            executor.call(self.service, caller, 'session.task.set', {'text': 'escaped'}, grants=grants, request_id='stale')
+        self.assertIsNone(board.session(self.conn, 'codex-crew')['task'])
 
     def test_archived_sender_or_recipient_cannot_use_message_tools(self):
         sender = mock.Mock(return_value={"ok": True})
-        tools = codex_tools.CodexTools(self.home, "codex-crew", send_message=sender)
+        self.service.chat.send_message = sender
         board.set_status(self.conn, "claude-crew", "closed")
-        self.call("crew_send_message", {"to": "reviewer", "text": "Hello"}, tools=tools, success=False)
+        self.rejected("message.send", {"to": "reviewer", "text": "Hello"})
         sender.assert_not_called()
-        board.set_status(self.conn, "codex-crew", "closed")
-        self.call("crew_task", {"text": "Should fail"}, success=False)
+        token = tokens.issue(self.conn, session_id='codex-crew', runtime='codex', now=store.now_iso())
+        board.set_status(self.conn, 'codex-crew', 'closed')
+        with self.assertRaises(OpError):
+            tokens.caller(self.conn, token)
 
     def test_role_is_rechecked_after_construction(self):
         number = board.ask(self.conn, "codex-crew", "Internal format?")
+        token = tokens.issue(self.conn, session_id='leader-crew', runtime='codex', now=store.now_iso())
         self.conn.execute("UPDATE sessions SET role='member' WHERE session_id='leader-crew'")
-        self.call("crew_answer", {"id": number, "text": "json"}, tools=self.leader, success=False)
+        with self.assertRaises(OpError):
+            caller, grants = tokens.caller(self.conn, token)
+            executor.call(self.service, caller, 'decision.answer', {'id': number, 'text': 'json'},
+                          grants=grants, request_id='after-demotion')
         self.assertEqual(board.decisions(self.conn, "first")[0]["status"], "open")
 
 

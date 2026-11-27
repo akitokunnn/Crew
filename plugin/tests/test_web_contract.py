@@ -1,5 +1,8 @@
 """New web contracts exercised with temporary storage and fake model processes."""
 import tests  # Install the production-service connection guard.
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
+import uuid
 import datetime as dt
 import json
 import os
@@ -14,7 +17,8 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
-from crew import session_ops, board, codex_runtime, decision_flow, goals, remote_routes, store, themes, usage, web
+from crew.web_api import routes
+from crew import frontend_root, session_ops, board, codex_runtime, decision_flow, goals, remote_routes, store, themes, usage, web
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import assistant
 
@@ -34,11 +38,15 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         poll = mock.patch.object(web.Service, "_poll_notices", return_value=None)
         poll.start()
         self.addCleanup(poll.stop)
+        # Usage scan steps are run explicitly too, so scan counts and scan times are deterministic.
+        usage_poll = mock.patch.object(web.Service, "_poll_usage", return_value=None)
+        usage_poll.start()
+        self.addCleanup(usage_poll.stop)
         executable = mock.patch("crew.chat.shutil.which", return_value="C:/fixture/claude.exe")
         executable.start()
         self.addCleanup(executable.stop)
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project,
-            agents_provider=self.provider, claude_root=self.claude, codex_root=self.codex,
+            agents_provider=self.provider, claude_root=self.claude, codex_root=self.codex, vscode_state_db=self.vscode_state_db,
             runs_file=self.runs, now=lambda: self.clock, process_factory=self.process_factory,
             notification_client=mock.Mock(), lock_status=lambda: False)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": .01})
@@ -59,7 +67,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         if query:
             path += "?" + urlencode(query)
         payload = None if data is None else json.dumps(data).encode("utf-8")
-        request = Request(self.url + path, payload, {"X-Crew": "1"})
+        request = Request(self.url + path, payload, {"X-Crew": "1", "X-Crew-Request-Id": uuid.uuid4().hex})
         try:
             response = self.opener.open(request, timeout=5)
         except HTTPError as exc:
@@ -70,12 +78,17 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def state(self, project="demo"):
         query = {} if project is None else {"project": project}
-        code, state, _ = self.request("/api/state", **query)
+        code, state, _ = self.request("/api/op/workspace.state", **query)
         self.assertEqual(code, 200, state)
         return state
 
+    def scanned_state(self, project="demo"):
+        """One background usage scan step, then the page's read."""
+        self.service.scan_usage()
+        return self.state(project)
+
     def start_leader(self, name="background-leader"):
-        code, created, _ = self.request("/api/leader", {"name": name, "task": "Coordinate work"})
+        code, created, _ = self.request("/api/op/leader.create", {"name": name, "task": "Coordinate work"})
         self.assertEqual(code, 200, created)
         return created["session_id"], self.processes[-1]
 
@@ -83,9 +96,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         expected = {"project", "projects", "now", "agents_error", "notification", "leaders",
                     "members", "decisions", "candidates", "attention", "limits", "vscode_error", "models", "efforts", "channel", "themes",
                     "runtimes", "todos", "todo_count", "goals", "ai", "native_approvals", "sounds", "git_assistant", "git_branches",
-                    "domains"}
-        state = self.state()
+                    "domains", "usage_scanned_at", "usage_error"}
+        state = self.scanned_state()
         self.assertEqual(set(state), expected)
+        self.assertEqual(state["usage_scanned_at"], self.clock.isoformat())
+        self.assertIsNone(state["usage_error"])
         self.assertEqual(state["domains"], {"version": 0, "paths": {}})
 
         self.assertEqual(set(state["project"]), {"name", "display_name", "root", "theme"})
@@ -98,7 +113,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(state['native_approvals'], [])
         leader = state["leaders"][0]
         self.assertEqual(set(leader), {"session_id", "name", "goal", "status", "busy", "running", "web_chat",
-            "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "member_ids",
+            "cc_name", "last_seq", "last_reply_id", "read_seq", "unread", "pending", "notices_pending", "channel_queued_id", "member_ids",
             "model", "effort", "speed", "applied", "activity", "context", "where", "codex", "codex_older", "dispatches",
             "pinned", "runtime", "trust", "runtime_switch", "active_goal_id", "active_goal_ids", "active_execution_id",
             "member_defaults", "color", "avatar_version"})
@@ -116,8 +131,12 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(leader["dispatches"], [])
         self.assertIsNone(state['git_assistant'])
         self.assertNotIn('is_git_admin', leader)
-        landing = self.state(None)
+        self.clock += dt.timedelta(seconds=59)
+        landing = self.scanned_state(None)
         self.assertEqual(set(landing), expected)
+        self.assertEqual(landing["usage_scanned_at"], state["usage_scanned_at"])
+        self.clock += dt.timedelta(seconds=1)
+        self.assertEqual(self.scanned_state()["usage_scanned_at"], self.clock.isoformat())
         self.assertIsNone(landing["project"])
         self.assertIsNone(landing['git_assistant'])
         self.assertEqual(landing["channel"], {"unread": 0, "latest_id": 0, "digesting": False, "digest_error": None, "digest_id": None})
@@ -125,14 +144,14 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             self.assertEqual(landing[key], [])
 
     def test_claude_api_budget_replaces_subscription_quota_until_cleared(self):
-        code, error, _ = self.request("/api/claude-budget", {"budget": {"amount_usd": -1, "cycle": "monthly", "start": None}})
+        code, error, _ = self.request("/api/op/claude_budget.set", {"budget": {"amount_usd": -1, "cycle": "monthly", "start": None}})
         self.assertEqual(code, 400, error)
-        code, saved, _ = self.request("/api/claude-budget", {"budget": {"amount_usd": 200, "cycle": "monthly", "start": None}})
+        code, saved, _ = self.request("/api/op/claude_budget.set", {"budget": {"amount_usd": 200, "cycle": "monthly", "start": None}})
         self.assertEqual(code, 200, saved)
         budget = self.state()["limits"]["claude"]["budget"]
         self.assertEqual(budget, saved["budget"])
         self.assertEqual((budget["amount_usd"], budget["spent_usd"], budget["remaining_usd"]), (200.0, 0.0, 200.0))
-        code, cleared, _ = self.request("/api/claude-budget", {"budget": None})
+        code, cleared, _ = self.request("/api/op/claude_budget.set", {"budget": None})
         self.assertEqual((code, cleared), (200, {"budget": None}))
         self.assertIsNone(self.state()["limits"]["claude"]["budget"])
 
@@ -140,32 +159,28 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])
         board.join(self.conn, 'foreign-lead', 'demo', 'foreign', self.project, self.project, 'main', role='leader')
         for caller in ('s1', 's3', 'foreign-lead'):
-            code, result, _ = self.request('/api/session/delete', {'session_id': 's1', 'caller_session_id': caller}, project='demo')
-            self.assertEqual(code, 400, result)
+            with self.assertRaises(OpError) as denied:
+                ai_call(self.service, self.conn, caller, 'session.delete', {'session_id': 's1'})
+            self.assertEqual(denied.exception.code, 'forbidden')
             self.assertFalse(board.is_archived(self.conn, 's1'))
-        for path in ('/api/session/archive',):
-            for caller in ('s1', 'foreign-lead'):
-                with self.subTest(path=path, caller=caller):
-                    code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': caller}, project='demo')
-                    self.assertEqual(code, 400, result)
-                    self.assertFalse(board.is_archived(self.conn, 's1'))
-            goal = goals.create(self.conn, 'demo', 's3', 'Work', 'Request', ['Works'])
-            goals.assign(self.conn, goal['id'], 's1', 'Work')
-            execution = goals.create_execution(self.conn, goal['id'], 's1', runtime='claude')
-            goals.set_execution_status(self.conn, execution['id'], 'running')
-            code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
-            self.assertEqual(code, 409, result)
-            self.assertIn('先等执行结束', result['error'])
-            goals.set_execution_status(self.conn, execution['id'], 'idle')
-            with mock.patch.object(self.service.chat, 'busy', return_value=True):
-                code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
-                self.assertEqual(code, 409, result)
-            code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
-            self.assertEqual(code, 200, result)
-            self.assertTrue(board.is_archived(self.conn, 's1'))
-            session_ops.restore(self.conn, 's1')
+        for caller in ('s1', 'foreign-lead'):
+            with self.subTest(caller=caller), self.assertRaises((OpError, board.BoardError)):
+                ai_call(self.service, self.conn, caller, 'session.archive', {'target': 's1'})
+            self.assertFalse(board.is_archived(self.conn, 's1'))
+        goal = goals.create(self.conn, 'demo', 's3', 'Work', 'Request', ['Works'])
+        goals.assign(self.conn, goal['id'], 's1', 'Work')
+        execution = goals.create_execution(self.conn, goal['id'], 's1', runtime='claude')
+        goals.set_execution_status(self.conn, execution['id'], 'running')
+        with self.assertRaisesRegex(board.Conflict, '先等执行结束'):
+            ai_call(self.service, self.conn, 's3', 'session.archive', {'target': 's1'})
+        goals.set_execution_status(self.conn, execution['id'], 'idle')
+        with mock.patch.object(self.service.chat, 'busy', return_value=True), self.assertRaises(board.Conflict):
+            ai_call(self.service, self.conn, 's3', 'session.archive', {'target': 's1'})
+        ai_call(self.service, self.conn, 's3', 'session.archive', {'target': 's1'})
+        self.assertTrue(board.is_archived(self.conn, 's1'))
+        session_ops.restore(self.conn, 's1')
         # Owner UI retains its existing authority over an ungrouped member.
-        code, result, _ = self.request('/api/session/archive', {'session_id': 's2'}, project='demo')
+        code, result, _ = self.request('/api/op/session.archive', {'session_id': 's2'}, project='demo')
         self.assertEqual(code, 200, result)
 
     def test_delete_removes_crew_and_native_conversations_and_takes_the_whole_group(self):
@@ -196,7 +211,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.provider.return_value = [*self.provider.return_value,
                                       {'sessionId': member, 'name': 'cc-worker', 'status': 'idle', 'cwd': str(self.project)}]
         self.service.refresh_agents()
-        code, result, _ = self.request('/api/session/delete', {'session_id': lead}, project='demo')
+        code, result, _ = self.request('/api/op/session.delete', {'session_id': lead}, project='demo')
         self.assertEqual(code, 409, result)
         self.assertIn('「worker」还开在 VS Code', result['error'])
         self.assertFalse(board.is_archived(self.conn, lead))
@@ -205,11 +220,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.provider.return_value = self.provider.return_value[:-1]
         self.service.refresh_agents()
         with mock.patch('crew.session_delete.delete_codex') as delete_codex:
-            code, result, _ = self.request('/api/session/delete', {'session_id': codex}, project='demo')
+            code, result, _ = self.request('/api/op/session.delete', {'session_id': codex}, project='demo')
             self.assertEqual(code, 200, result)
             self.assertEqual((result['deleted'], result['errors']), ([codex], []))
             self.assertEqual(delete_codex.call_args.args[0], ['thread-coder-0001'])
-            code, result, _ = self.request('/api/session/delete', {'session_id': lead}, project='demo')
+            code, result, _ = self.request('/api/op/session.delete', {'session_id': lead}, project='demo')
             self.assertEqual(code, 200, result)
             self.assertEqual((sorted(result['deleted']), result['errors']), (sorted([lead, member]), []))
             self.assertEqual(delete_codex.call_count, 1)
@@ -227,11 +242,10 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])
         board.join(self.conn, 'foreign-lead', 'demo', 'foreign', self.project, self.project, 'main', role='leader')
         for caller in ('s1', 'foreign-lead'):
-            code, result, _ = self.request('/api/group/close', {'group': 'lead', 'caller_session_id': caller}, project='demo')
-            self.assertEqual(code, 400, result)
+            with self.assertRaises((OpError, board.BoardError)):
+                ai_call(self.service, self.conn, caller, 'group.close', {'group': 'lead'})
             self.assertIsNone(self.conn.execute("SELECT closed_at FROM groups WHERE name='lead'").fetchone()[0])
-        code, result, _ = self.request('/api/group/close', {'group': 'lead', 'caller_session_id': 's3'}, project='demo')
-        self.assertEqual(code, 200, result)
+        ai_call(self.service, self.conn, 's3', 'group.close', {'group': 'lead'})
         self.assertEqual(self.conn.execute("SELECT session_id FROM events WHERE kind='leader:close'").fetchone()[0], 's3')
 
     def test_leader_archive_checks_external_native_goal_ownership_for_both_carriers(self):
@@ -245,16 +259,16 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                 goals.set_execution_status(self.conn, execution['id'], 'idle')
                 if runtime == 'claude':
                     with mock.patch.object(self.service.chat, '_external_agents', return_value=[{'sessionId': 'external-claude', 'status': 'busy'}]):
-                        code, result, _ = self.request('/api/session/archive', {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
-                        self.assertEqual(code, 409, result)
+                        with self.assertRaises(board.Conflict):
+                            ai_call(self.service, self.conn, 's3', 'session.archive', {'target': 's1'})
                 else:
                     from crew.codex_runtime import RuntimeLease
                     journal = self.service.chat.journal(execution['id'])
                     journal.set_status('working')
                     lease = RuntimeLease(self.home, execution['id']).acquire()
                     try:
-                        code, result, _ = self.request('/api/session/archive', {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
-                        self.assertEqual(code, 409, result)
+                        with self.assertRaises(board.Conflict):
+                            ai_call(self.service, self.conn, 's3', 'session.archive', {'target': 's1'})
                     finally:
                         lease.release()
                     journal.set_status('idle')
@@ -262,7 +276,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def test_goal_card_exact_shape_matches_create_list_state_and_detail_without_starting_work(self):
         before = len(self.processes)
-        code, response, _ = self.request('/api/goals/create', {'leader_session_id':'s3', 'title':'验证交付',
+        code, response, _ = self.request('/api/op/goal.create', {'leader_session_id':'s3', 'title':'验证交付',
             'request':'完成原始输入要求', 'acceptance':['具体 example 达标']})
         self.assertEqual(code,200,response)
         self.assertEqual(set(response),{'goal'})
@@ -289,25 +303,26 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual((goal['assignments'][0]['session_id'],goal['assignments'][0]['status']),('s3','assigned'))
         self.assertEqual(set(goal['rounds'][0]),{'goal_id','number','requirement_version','status','outcome','reason','opened_at','ended_at'})
         self.assertEqual(self.state()['goals'],[goal])
-        self.assertEqual(self.request('/api/goals',project='demo')[:2],(200,{'goals':[goal]}))
-        code, detail, _ = self.request('/api/goal',project='demo',id=goal['id'])
-        self.assertEqual(code,200,detail);self.assertEqual(set(detail),{'goal','executions','context','reports','documents','acceptance_review','previous_acceptance_review','work_items'})
+        self.assertEqual(self.request('/api/op/goal.list',project='demo')[:2],(200,{'goals':[goal],'waiting':{}}))
+        code, detail, _ = self.request('/api/op/goal.get',project='demo',id=goal['id'])
+        self.assertEqual(code,200,detail);self.assertEqual(set(detail),{'goal','waiting','executions','context','reports','documents','acceptance_review','previous_acceptance_review','work_items'})
+        self.assertIsNone(detail['waiting'])
         self.assertEqual(detail['goal'],goal);self.assertEqual(detail['executions'],[]);self.assertEqual(detail['reports'],[])
         self.assertEqual(detail['documents'],[]); self.assertIsNone(detail['acceptance_review'])
         self.assertEqual(len(self.processes),before)
 
     def test_project_theme_api_persists_choice_and_rejects_invalid_theme(self):
         before = self.state()["project"]
-        self.assertEqual(self.request("/api/project/theme", {"project": "demo", "theme": "wisteria"})[:2],
+        self.assertEqual(self.request("/api/op/workspace.theme.set", {"project": "demo", "theme": "wisteria"})[:2],
                          (200, {"ok": True, "theme": "wisteria"}))
         selected = self.state()
         self.assertEqual(selected["project"], {**before, "theme": "wisteria"})
         self.assertEqual(selected["projects"], [{"name": "demo", "display_name": None, "theme": "wisteria"}])
         self.assertEqual(self.state(None)["projects"], [{"name": "demo", "display_name": None, "theme": "wisteria"}])
         self.assertEqual(board.project(self.conn, "demo")["theme"], "wisteria")
-        code, response, _ = self.request("/api/project/theme", {"project": "demo", "theme": "neon"})
+        code, response, _ = self.request("/api/op/workspace.theme.set", {"project": "demo", "theme": "neon"})
         self.assertEqual(code, 400)
-        self.assertIn("主题", response["error"])
+        self.assertIn("arguments.theme", response["error"])
         self.assertEqual(self.state()["project"]["theme"], "wisteria")
 
     def test_members_project_cards_recent_progress_codex_and_three_locations(self):
@@ -320,7 +335,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         for index in range(7):
             at = (self.clock + dt.timedelta(seconds=index)).isoformat()
             board.report(self.conn, "s1", "progress-" + str(index), now=at)
-        code, created, _ = self.request("/api/spawn", {"name": "background", "task": "Implement", "group": "lead"})
+        code, created, _ = self.request("/api/op/execution.spawn", {"name": "background", "task": "Implement", "group": "lead"})
         self.assertEqual(code, 200, created)
         records = []
         for identity, start, end in (("recent", -7200, -3600), ("older", -100000, -90000), ("running", -60, None)):
@@ -336,7 +351,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                           ended_at=None, exit_code=None,pid=os.getpid(),pid_created=codex_runtime.process_identity(os.getpid()))
         records.append(leader_run)
         self.write(self.runs, records)
-        state = self.state()
+        state = self.scanned_state()
         self.assertEqual([row["id"] for row in state["leaders"][0]["codex"]], ["leader-run"])
         members = {member["session_id"]: member for member in state["members"]}
         self.assertEqual({sid: row["where"] for sid, row in members.items()},
@@ -411,8 +426,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.conn.execute("INSERT INTO decision_holds(decision_id,held_at) VALUES(?,?)", (legacy, NOW))
         for path in ("/api/decision/hold", "/api/decision/unhold"):
             with self.subTest(path=path):
-                self.assertNotIn(path, web.POST_PATHS)
-                self.assertNotIn(path, remote_routes.POST_PATHS)
+                self.assertNotIn(path, routes.post_paths())
+                self.assertFalse(remote_routes.permitted("POST", path, (), "browser"))
                 self.assertEqual(self.request(path, {"id": legacy})[0], 404)
         state = self.state()
         self.assertEqual({row["id"] for row in state["decisions"]}, {active, legacy})
@@ -426,7 +441,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             with self.subTest(session_id=sid):
                 decision = board.ask(self.conn, sid, "Question for " + sid, now=NOW)
                 before = {row["id"] for row in board.pending_notices(self.conn, "s3")}
-                self.assertEqual(self.request("/api/answer", {"id": decision, "text": "Stop here"})[:2],
+                self.assertEqual(self.request("/api/op/decision.answer", {"id": decision, "text": "Stop here"})[:2],
                                  (200, {"ok": True, "routed_to": "lead"}))
                 notices = [row for row in board.pending_notices(self.conn, "s3") if row["id"] not in before]
                 self.assertEqual(len(notices), 1)
@@ -521,7 +536,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         with mock.patch.object(Path, "read_text", autospec=True, side_effect=track):
             self.state()
             self.state()
-            self.assertEqual(self.request("/api/chat/history", project="demo", session_id="s3")[0], 200)
+            self.assertEqual(self.request("/api/op/chat.history", project="demo", session_id="s3")[0], 200)
             self.assertEqual(reads, [], "Unchanged journal must not be read by either projection")
             with journal.path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps({"seq": 3, "type": "assistant", "id": "new-answer", "content": [
@@ -531,7 +546,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             self.assertEqual(changed["leaders"][0]["unread"], 2)
             self.assertIn("updated failure", [row["detail"] for row in changed["attention"]])
             self.state()
-            self.assertEqual(self.request("/api/chat/history", project="demo", session_id="s3")[0], 200)
+            self.assertEqual(self.request("/api/op/chat.history", project="demo", session_id="s3")[0], 200)
             self.assertEqual(reads, [journal.path])
 
     def test_codex_limit_uses_latest_machine_snapshot_and_expired_is_null(self):
@@ -546,7 +561,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                     "credits": {"balance": "0"}, "plan_type": "pro"}}})
         # Quotas are account wide even when the recording belongs to another directory.
         self.rollout("outside", str(self.root / "other"), records=records)
-        limits = self.state()["limits"]
+        limits = self.scanned_state()["limits"]
         self.assertEqual(limits["codex"], {"used_percent": 42, "resets_at": "2026-10-21T09:00:00.000Z",
                                         "captured_at": "2026-10-21T07:59:00.000Z", "expired": False})
         self.clock += dt.timedelta(hours=1)
@@ -560,7 +575,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
     def test_claude_crew_week_state_shape_and_usage_contract(self):
         self.week_limit((self.clock + dt.timedelta(days=1)).isoformat())
         self.main_file([assistant("crew-leader")], session="s3")
-        crew = self.state(None)["limits"]["claude"]["seven_day"]["crew"]
+        crew = self.scanned_state(None)["limits"]["claude"]["seven_day"]["crew"]
         self.assertEqual(set(crew), {"cost_usd", "points", "low", "high", "usd_per_point",
                                      "usd_per_point_range", "since"})
         self.assertAlmostEqual(crew["cost_usd"], 0.01275)
@@ -569,7 +584,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertAlmostEqual(crew["high"], 0.01275 / 16)
         self.assertEqual((crew["usd_per_point"], crew["usd_per_point_range"], crew["since"]),
                          (20, [16, 27], "2026-10-15T08:00:00.000Z"))
-        code, report, _ = self.request("/api/usage", project="demo")
+        code, report, _ = self.request("/api/op/usage.report", project="demo")
         self.assertEqual(code, 200, report)
         self.assertEqual(report["summary"]["claude_limits"]["seven_day"]["crew"], crew)
         [week] = report["claude_weeks"]
@@ -581,42 +596,42 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         path = self.main_file([assistant("first-crew-request")], session="s3")
         with mock.patch.object(usage, "crew_weekly", wraps=usage.crew_weekly) as estimate, \
                 mock.patch.object(usage, "scan", wraps=usage.scan) as scan:
-            first = self.state()["limits"]["claude"]["seven_day"]["crew"]
+            first = self.scanned_state()["limits"]["claude"]["seven_day"]["crew"]
             self.write(path, [assistant("second-crew-request", seconds=20, tool="second-tool")], append=True)
             self.clock += dt.timedelta(seconds=59)
-            self.assertEqual(self.state()["limits"]["claude"]["seven_day"]["crew"], first)
+            self.assertEqual(self.scanned_state()["limits"]["claude"]["seven_day"]["crew"], first)
             self.assertEqual((scan.call_count, sum(not call.kwargs['receipts_only'] for call in scan.call_args_list), estimate.call_count), (2, 1, 1))
             self.clock += dt.timedelta(seconds=1)
-            updated = self.state()["limits"]["claude"]["seven_day"]["crew"]
+            updated = self.scanned_state()["limits"]["claude"]["seven_day"]["crew"]
             self.assertAlmostEqual(updated["cost_usd"], first["cost_usd"] * 2)
             self.assertEqual((scan.call_count, sum(not call.kwargs['receipts_only'] for call in scan.call_args_list), estimate.call_count), (3, 2, 2))
 
     def test_claude_crew_missing_unknown_or_expired_window_is_omitted(self):
-        self.assertIsNone(self.state()["limits"]["claude"]["seven_day"])
+        self.assertIsNone(self.scanned_state()["limits"]["claude"]["seven_day"])
         for reset, percent in ((None, 25), ((self.clock + dt.timedelta(days=1)).isoformat(), None),
                                (self.clock.isoformat(), 25)):
             with self.subTest(reset=reset, percent=percent):
                 self.week_limit(reset, percent)
                 self.service.scanned_at = None
-                self.assertNotIn("crew", self.state()["limits"]["claude"]["seven_day"])
+                self.assertNotIn("crew", self.scanned_state()["limits"]["claude"]["seven_day"])
 
     def test_claude_crew_expiry_and_new_window_do_not_reuse_previous_cache(self):
         self.week_limit((self.clock + dt.timedelta(seconds=5)).isoformat())
         with mock.patch.object(usage, "crew_weekly", wraps=usage.crew_weekly) as estimate:
-            self.assertIn("crew", self.state()["limits"]["claude"]["seven_day"])
+            self.assertIn("crew", self.scanned_state()["limits"]["claude"]["seven_day"])
             self.clock += dt.timedelta(seconds=6)
-            self.assertNotIn("crew", self.state()["limits"]["claude"]["seven_day"])
+            self.assertNotIn("crew", self.scanned_state()["limits"]["claude"]["seven_day"])
             self.week_limit((self.clock + dt.timedelta(days=7)).isoformat())
-            self.assertNotIn("crew", self.state()["limits"]["claude"]["seven_day"])
+            self.assertNotIn("crew", self.scanned_state()["limits"]["claude"]["seven_day"])
             self.assertEqual(estimate.call_count, 1)
             self.clock += dt.timedelta(seconds=54)
-            self.assertIn("crew", self.state()["limits"]["claude"]["seven_day"])
+            self.assertIn("crew", self.scanned_state()["limits"]["claude"]["seven_day"])
             self.assertEqual(estimate.call_count, 2)
 
     def test_claude_crew_unpriced_request_keeps_null_contract(self):
         self.week_limit((self.clock + dt.timedelta(days=1)).isoformat())
         self.main_file([assistant("unpriced-crew-request", model="unpriced")], session="s3")
-        crew = self.state()["limits"]["claude"]["seven_day"]["crew"]
+        crew = self.scanned_state()["limits"]["claude"]["seven_day"]["crew"]
         for field in ("cost_usd", "points", "low", "high"):
             self.assertIsNone(crew[field], field)
         self.assertEqual(crew["usd_per_point_range"], [16, 27])
@@ -661,8 +676,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.processes, [])
 
     def test_workers_start_and_close_stops_all_background_threads(self):
-        lifecycle = web.Service(self.root / "lifecycle-home", PLUGIN, cwd=self.project,
-            agents_provider=self.provider, claude_root=self.claude, codex_root=self.codex,
+        lifecycle = web.Service(self.root / "lifecycle-home", PLUGIN, cwd=self.project, isolated_sources=True,
+            agents_provider=self.provider, claude_root=self.claude, codex_root=self.codex, vscode_state_db=self.vscode_state_db,
             runs_file=self.runs, now=lambda: self.clock, process_factory=self.process_factory,
             notification_client=mock.Mock(), lock_status=lambda: False)
         self.addCleanup(lifecycle.close)
@@ -743,7 +758,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                 question = "Question for " + sid
                 decision = board.ask(self.conn, sid, question, now=NOW)
                 before = {row["id"] for row in board.pending_notices(self.conn, "s3")}
-                code, response, _ = self.request("/api/answer", {"id": decision, "text": "Use option A"})
+                code, response, _ = self.request("/api/op/decision.answer", {"id": decision, "text": "Use option A"})
                 self.assertEqual((code, response), (200, {"ok": True, "routed_to": routed}))
                 notices = [row for row in board.pending_notices(self.conn, "s3") if row["id"] not in before]
                 if routed is None:
@@ -767,13 +782,13 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(member["cc_name"], "cc-one-resumed")
         self.assertEqual(board.session(self.conn, "s1")["cc_name"], "cc-one")
         decision = board.ask(self.conn, "s1", "Continue with the new process", now=NOW)
-        code, response, _ = self.request("/api/answer", {"id": decision, "text": "Continue"})
+        code, response, _ = self.request("/api/op/decision.answer", {"id": decision, "text": "Continue"})
         self.assertEqual((code, response), (200, {"ok": True, "routed_to": "lead"}))
         notice = board.pending_notices(self.conn, "s3")[0]
         self.assertIn("SendMessage 地址：cc-one-resumed", notice["text"])
 
     def test_usage_export_requires_an_explicit_type(self):
-        code, response, _ = self.request("/api/usage/export", project="demo", period="all")
+        code, response, _ = self.request("/api/op/usage.export", project="demo", period="all")
         self.assertEqual(code, 400)
         self.assertEqual(response, {"error": "导出类型必须是 sessions / daily / codex / requests"})
 
@@ -785,9 +800,9 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         board.join(self.conn, "foreign", "other", "foreign", other, other, "main", now=NOW)
         for rejected in ("s1", "missing", "foreign"):
             with self.subTest(session_id=rejected):
-                self.assertEqual(self.request("/api/chat/interrupt", {"session_id": rejected})[0], 400)
+                self.assertEqual(self.request("/api/op/chat.interrupt", {"session_id": rejected})[0], 400)
         before = len(process.stdin.getvalue().splitlines())
-        self.assertEqual(self.request("/api/chat/interrupt", {"session_id": sid})[:2], (200, {"ok": True}))
+        self.assertEqual(self.request("/api/op/chat.interrupt", {"session_id": sid})[:2], (200, {"ok": True}))
         lines = process.stdin.getvalue().splitlines()
         self.assertEqual(len(lines), before + 1)
         control = json.loads(lines[-1])
@@ -795,10 +810,10 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual((control["type"], control["request"]), ("control_request", {"subtype": "interrupt"}))
         self.assertEqual(uuid.UUID(control["request_id"]).version, 4)
         self.service.chat.journal(sid).set_status("idle")
-        self.assertEqual(self.request("/api/chat/interrupt", {"session_id": sid})[0], 409)
+        self.assertEqual(self.request("/api/op/chat.interrupt", {"session_id": sid})[0], 409)
         process.finish()
         self.assertTrue(self.service.chat.processes[sid].reader_done.wait(3))
-        self.assertEqual(self.request("/api/chat/interrupt", {"session_id": sid})[0], 400)
+        self.assertEqual(self.request("/api/op/chat.interrupt", {"session_id": sid})[0], 400)
         self.assertEqual(len(process.stdin.getvalue().splitlines()), before + 1)
 
     def test_every_entry_page_asset_is_served_by_the_real_http_handler(self):
@@ -835,7 +850,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                 self.assertTrue(content)
                 self.assertEqual(headers["Content-Type"], media)
                 self.assertEqual(headers["Cache-Control"], "public, max-age=604800")
-        for path in ("/", "/app.js", "/chat.js", "/channel.js", "/themes.js", "/style.css", "/vendor/markdown-it.min.js", "/api/state"):
+        for path in ("/", "/app.js", "/chat.js", "/channel.js", "/themes.js", "/style.css", "/vendor/markdown-it.min.js", "/api/op/workspace.state"):
             with self.subTest(path=path):
                 code, _, headers = self.request(path, raw=True)
                 self.assertEqual(code, 200)
@@ -896,7 +911,7 @@ class GitCiScheduleTests(unittest.TestCase):
 
 class FrontendThemeContractTests(unittest.TestCase):
     def test_theme_assets_settings_and_project_list_contract(self):
-        assets = PLUGIN / "crew" / "web"
+        assets = frontend_root.resolve(PLUGIN)
         index = (assets / "index.html").read_text(encoding="utf-8")
         app = (assets / "app.js").read_text(encoding="utf-8")
         css = (assets / "style.css").read_text(encoding="utf-8")
@@ -904,10 +919,12 @@ class FrontendThemeContractTests(unittest.TestCase):
         self.assertLess(index.index('src="/themes.js"'), index.index('src="/app.js"'))
         for contract in ('data-act="project-theme"', 'class="theme-swatches"',
                          'aria-pressed="${state.project.theme === item.id}"',
-                         'api("/api/project/theme", {project:state.project.name, theme:button.dataset.themeId})',
-                         'CrewTheme.projectStyle(state.themes, item.theme)',
+                         'api("/api/op/workspace.theme.set", {project:state.project.name, theme:button.dataset.themeId})',
                          'addEventListener("change", applyTheme)'):
             self.assertIn(contract, app)
+        # The "/" project list lives in its own module; each workspace card keeps its saved theme colour.
+        entry = (assets / "workspace-entry.js").read_text(encoding="utf-8")
+        self.assertIn('style="${CrewTheme.projectStyle(themes, item.theme)}"', entry)
         self.assertIn('.dot.working{background:var(--working)', css)
         self.assertIn('.st.working{color:var(--working-text)}', css)
         self.assertIn('.m-lead .body a{color:var(--accent-text)', css)
@@ -950,7 +967,7 @@ assert.equal(values.get("--accent"), themes[3].dark["--accent"]);
 component.apply(themes, null, "light");
 assert.equal(root.dataset.projectTheme, "celadon");
 '''
-        result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web" / "themes.js"),
+        result = subprocess.run(["node", "-e", script, str(frontend_root.resolve(PLUGIN) / "themes.js"),
                                  json.dumps(themes.THEMES)],
                                 capture_output=True, text=True, encoding="utf-8", timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -994,7 +1011,7 @@ vm.runInContext(fs.readFileSync(process.argv[1],'utf8'),sandbox);sandbox.CrewGit
 const flush=async()=>{for(let index=0;index<20;index++)await Promise.resolve();};
 const calls=[],listeners=new Map();
 const page={scrollTop:0};
-const host=require(path.resolve(process.argv[1],'../../../tests/git_ui_host.cjs'))({scroll:page,handlers:listeners});
+const host=require(process.argv[2])({scroll:page,handlers:listeners});
 const visible={session_id:'visible',name:'侧栏 leader'},hidden={session_id:'hidden',name:'归档 leader'};
 const other={session_id:'other',name:'另一位 leader'};
 const latest={sha:'a'.repeat(40),subject:'修复 <script>alert("title")</script> & 校验',author:'作者',time:'2026-11-09T00:55:00Z'};
@@ -1018,6 +1035,7 @@ const fixture={enabled:true,repository:'Demo',config:{base:'develop',integration
   integration:null,branches,requests,merged_hidden:11,last_fetch_at:null,pull_requests_at:'2026-11-09T00:58:00Z'};
 const colors=new Map([['侧栏 leader','#137f6d'],['归档 leader','#8844aa'],['另一位 leader','#a06020']]);
 const settings={project:'demo',root:'C:\\fixture\\demo\\',state:{git_assistant:assistant},chatAccess:()=>({readonly:false}),
+  contextControls:()=>'',replace:(element,markup)=>{element.innerHTML=markup;},
   api:async(route,body)=>{assert.equal(body,undefined);calls.push(route);return JSON.parse(JSON.stringify(fixture));},toast(){},
   leader:id=>id===visible.session_id?visible:undefined,
   avatar:(name,size)=>`<i data-avatar="${name}" data-size="${size}"></i>`,tint:name=>{assert(colors.has(name));return colors.get(name);}};
@@ -1114,10 +1132,11 @@ const refresh=async()=>{const button={dataset:{gitAct:'refresh'}};listeners.get(
   assert.deepEqual(sections(partly).map(group=>group[1]),['已进 dev_live，待实测 <span>1</span>']);
   assert(partly.includes('没有待进 dev_live、待推送的分支</p>'));assert(!partly.includes('git-lite-clear-title'));
   assert(partly.includes('<p class="git-lite-hidden">另有 4 个分支已合入并推送，不再显示</p>'));
-  assert(calls.every(route=>route==='/api/git'));sandbox.CrewGit.unmount();
+  assert(calls.every(route=>route==='/api/op/git.overview'));sandbox.CrewGit.unmount();
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
-        result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web" / "git.js")],
+        result = subprocess.run(["node", "-e", script, str(frontend_root.resolve(PLUGIN) / "git.js"),
+                                 str(Path(__file__).resolve().parent / "git_ui_host.cjs")],
                                 capture_output=True, text=True, encoding="utf-8", timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -1132,14 +1151,19 @@ const fs = require("node:fs"), path = require("node:path"), vm = require("node:v
 const folder = process.argv[1];
 const listeners = new Map();
 const document = {visibilityState:"visible", addEventListener:(name, fn) => listeners.set(name, fn), removeEventListener:(name, fn) => { if (listeners.get(name) === fn) listeners.delete(name); }};
-const sandbox = {document, matchMedia:() => ({matches:false}), setTimeout, clearTimeout, atob};
+const sandbox = {document, matchMedia:() => ({matches:false, addEventListener() {}, removeEventListener() {}}), setTimeout, clearTimeout, atob};
 sandbox.window = sandbox;
 vm.createContext(sandbox);
-for (const file of ["vendor/markdown-it.min.js", "chat.js", "channel.js"]) vm.runInContext(fs.readFileSync(path.join(folder, file), "utf8"), sandbox);
+for (const file of ["vendor/markdown-it.min.js", "browser-utils.js", "chat.js", "channel.js"]) vm.runInContext(fs.readFileSync(path.join(folder, file), "utf8"), sandbox);
 const flush = async () => { for (let index = 0; index < 12; index++) await Promise.resolve(); };
 function element() {
   let html = "", buttons = [];
-  return {hidden:false, disabled:false, value:"", style:{}, textContent:"", scrollHeight:26,
+  const classes = new Set(), attributes = new Map();
+  return {hidden:false, disabled:false, value:"", style:{}, textContent:"", scrollHeight:26, dataset:{},
+    classList:{toggle:(name, on) => on ? classes.add(name) : classes.delete(name), contains:name => classes.has(name)},
+    toggleAttribute:(name, on) => on ? attributes.set(name, "") : attributes.delete(name),
+    setAttribute:(name, value) => attributes.set(name, value), removeAttribute:name => attributes.delete(name),
+    addEventListener() {}, focus() {}, querySelector:() => null,
     get innerHTML() { return html; },
     set innerHTML(value) {
       html = value;
@@ -1155,20 +1179,25 @@ function fixture() {
   const inner = element(), older = element(), targets = element(), input = element(), send = element(), form = element();
   const original = Object.getOwnPropertyDescriptor(inner, "innerHTML");
   Object.defineProperty(inner, "innerHTML", {get:original.get, set(value) { original.set.call(inner, value); scroll.scrollHeight = 40 + [...value.matchAll(/data-channel-id=/g)].length * 100; }});
-  const nodes = {".channel-pin":element(), ".channel-scroll":scroll, ".channel-inner":inner, ".channel-older":older, ".channel-targets":targets, textarea:input, ".channel-send":send, form};
+  const nodes = {".cx-pin":element(), ".cx-scroll":scroll, ".cx-inner":inner, ".cx-older":older, ".cx-targets":targets, textarea:input, ".cx-send":send, form};
+  for (const selector of [".cx-digest-btn", ".cx-pendingbar", ".cx-composer-wrap", ".cx-replybar", ".cx-aside", ".cx-members", ".cx-pending", ".cx-count", ".cx-backdrop", ".cx-pop", ".cx-room"]) nodes[selector] = element();
+  Object.assign(scroll, {addEventListener() {}});
+  inner.querySelector = () => null;
+  nodes[".cx-pin"].addEventListener = () => {};
   const host = {innerHTML:"", querySelector:selector => nodes[selector]};
-  const state = {project:{name:"demo"}, leaders:[{session_id:"git",name:"Git"},{session_id:"design",name:"Design"}], channel:{latest_id:25,digest_id:null,digesting:false,digest_error:null}};
-  const message = (id, body = "发言 " + id, speaker = "git") => ({id, speaker_session_id:speaker, speaker_name:speaker === "user" ? "用户" : "Git", body, mentions:[], created_at:"2026-10-23T08:30:00Z"});
+  const state = {project:{name:"demo"}, leaders:[{session_id:"git",name:"Git",where:"bg",busy:false},{session_id:"design",name:"Design",where:"offline",busy:false}], channel:{latest_id:25,unread:0,digest_id:null,digesting:false,digest_error:null}};
+  const message = (id, body = "发言 " + id, speaker = "git") => ({id, speaker_session_id:speaker, speaker_name:speaker === "user" ? "用户" : "Git", body, mentions:[], notified:[], reply:null, created_at:"2026-10-23T08:30:00Z"});
   const messages = Array.from({length:25}, (_, index) => message(index + 1));
   const calls = [], toasts = [], reads = [];
   let interloper = false;
   const api = async (route, data) => {
     calls.push({route, data});
-    if (route === "/api/channel/read") return {read_id:data.id, unread:0, latest_id:messages[messages.length - 1].id};
-    if (route === "/api/channel") {
+    if (route === "/api/op/channel.mark_read") return {read_id:data.id, unread:0, latest_id:messages[messages.length - 1].id};
+    if (route === "/api/op/war_room.list") return {rooms:[]};
+    if (route === "/api/op/channel.post") {
       if (interloper) messages.push(message(messages.length + 1, "发送期间到达的发言"));
       const posted = message(messages.length + 1, data.body, "user");
-      posted.mentions = data.to.map(name => ({session_id:state.leaders.find(item => item.name === name).session_id, name}));
+      posted.mentions = data.to.map(name => ({session_id:state.leaders.find(item => item.name === name).session_id, name, delivery:"queued", queued_at:new Date().toISOString()}));
       messages.push(posted);
       return {message:posted};
     }
@@ -1177,29 +1206,32 @@ function fixture() {
     const eligible = messages.filter(item => item.id < before);
     return {messages:eligible.slice(-20), has_more:eligible.length > 20, latest_id:messages[messages.length - 1].id, digest:null};
   };
-  const mount = () => sandbox.CrewChannel.mount({host, digestButton:element(), state, api, toast:text => toasts.push(text), onRead:result => reads.push(result.read_id)});
-  const select = id => { const button = targets.querySelectorAll().find(item => item.dataset.channelTo === id); targets.onclick({target:button}); };
-  return {...nodes, scroll, inner, older, targets, input, send, form, state, messages, message, calls, toasts, reads, mount, select, setInterloper:() => { interloper = true; }};
+  const avatar = name => `<span class="av">${name.slice(0, 1)}</span>`;
+  const mount = () => sandbox.CrewChannel.mount({host, state, api, avatar, toast:text => toasts.push(text), onRead:result => reads.push(result.read_id)});
+  const click = (wanted, node) => host.onclick({target:{closest:selector => selector === wanted ? node : null}});
+  const select = id => click("[data-channel-to]", targets.querySelectorAll().find(item => item.dataset.channelTo === id));
+  return {...nodes, scroll, inner, older, targets, input, send, form, state, messages, message, calls, toasts, reads, mount, select, click, setInterloper:() => { interloper = true; }};
 }
 '''
         script = bootstrap + "\n(async () => {\n" + scenario + "\n})().catch(error => { console.error(error); process.exitCode = 1; });"
-        result = subprocess.run(["node", "-e", script, str(PLUGIN / "crew" / "web")],
+        result = subprocess.run(["node", "-e", script, str(frontend_root.resolve(PLUGIN))],
                                 capture_output=True, text=True, encoding="utf-8", timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_channel_assets_navigation_and_shared_markdown_renderer(self):
-        assets = PLUGIN / "crew" / "web"
+        assets = frontend_root.resolve(PLUGIN)
         index = (assets / "index.html").read_text(encoding="utf-8")
         app = (assets / "app.js").read_text(encoding="utf-8")
         self.assertLess(index.index('src="/chat.js"'), index.index('src="/channel.js"'))
-        self.assertLess(index.index('src="/channel.js"'), index.index('src="/app.js"'))
+        self.assertLess(index.index('src="/channel.js"'), index.index('src="/war-room.js"'))
+        self.assertLess(index.index('src="/war-room.js"'), index.index('src="/app.js"'))
         self.assertLess(app.index('data-view="all"'), app.index('data-view="channel"'))
         self.assertIn('state.channel.unread', app)
         self.assertIn('"channel", "adopt"', app)
         self.run_component(r'''
 const f = fixture();
 f.messages[24].body = '**标题：**正文\n\n<script>alert(1)</script>\n\n[链接](https://example.com)';
-f.messages[24].mentions = [{session_id:"design", name:'<Design>"'}];
+f.messages[24].mentions = [{session_id:"design", name:'<Design>"', delivery:"queued", queued_at:new Date().toISOString()}];
 f.messages[24].speaker_name = '<Git>"';
 f.mount(); await flush();
 const html = f.inner.innerHTML;
@@ -1208,7 +1240,7 @@ assert(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
 assert(!html.includes('<script>'));
 assert(html.includes('target="_blank" rel="noopener noreferrer"'));
 assert(html.includes('&lt;Git&gt;&quot;'));
-assert(html.includes('class="channel-mention">@&lt;Design&gt;&quot;'));
+assert(html.includes('<span class="cx-dl-name">@&lt;Design&gt;&quot;</span>'));
 assert.deepEqual(f.reads, [25]);
 assert(!f.older.hidden);
 sandbox.CrewChannel.unmount();
@@ -1227,18 +1259,18 @@ f.input.oncompositionstart(); f.input.onkeydown(enter({}));
 f.input.oncompositionend(); f.input.onkeydown(enter({isComposing:true}));
 f.input.onkeydown(enter({keyCode:229})); f.input.onkeydown(enter({shiftKey:true}));
 await flush();
-assert.equal(f.calls.filter(item => item.route === "/api/channel").length, 0);
+assert.equal(f.calls.filter(item => item.route === "/api/op/channel.post").length, 0);
 assert.equal(prevented, 0);
 f.input.onkeydown(enter({})); await flush();
-const posted = f.calls.find(item => item.route === "/api/channel");
+const posted = f.calls.find(item => item.route === "/api/op/channel.post");
 assert.deepEqual(JSON.parse(JSON.stringify(posted.data)), {project:"demo", body:"**确认**发布", to:["Git", "Design"]});
 assert.equal(prevented, 1);
 assert.equal(f.input.value, "");
 assert.equal(f.targets.querySelectorAll().filter(item => item.pressed === "true").length, 0);
 assert(f.send.disabled);
-assert(f.inner.innerHTML.includes('channel-user'));
+assert(f.inner.innerHTML.includes('cx-user'));
 assert(f.inner.innerHTML.includes('<strong>确认</strong>发布'));
-assert.equal(f.toasts[0], "已发到 Leader 交流区，点名的 Git、Design 会被叫醒");
+assert.equal(f.toasts[0], "已发到 Leader 交流区，Git、Design空闲时收到，送达情况看徽章");
 sandbox.CrewChannel.unmount();
 ''')
 
@@ -1246,8 +1278,8 @@ sandbox.CrewChannel.unmount();
         self.run_component(r'''
 const f = fixture(); f.mount(); await flush();
 assert(!f.inner.innerHTML.includes('data-channel-id="1"'));
-f.scroll.scrollTop = 0; f.older.onclick(); await flush();
-assert(f.calls.some(item => item.route === "/api/channel?limit=20&before=6"));
+f.scroll.scrollTop = 0; f.click(".cx-older", f.older); await flush();
+assert(f.calls.some(item => item.route === "/api/op/channel.list?limit=20&before=6"));
 assert(f.inner.innerHTML.includes('data-channel-id="1"'));
 assert(f.older.hidden);
 assert.equal(f.scroll.scrollTop, 500);

@@ -1,4 +1,5 @@
 """Leader wake permissions and channel HTTP with isolated storage and fake processes."""
+import uuid
 import tests  # Install the production-service connection guard.
 import json
 from contextlib import closing
@@ -9,6 +10,13 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
+from tests.ops_helpers import ai_call
+from test_core import operation_service
+from crew.ops import registry
+from crew.ops.schema import validate
+from crew.ops import scopes
+from crew.ops.caller import HUMAN
+from crew.ops.errors import OpError
 from crew import board, channel, messaging, session_ops, store, web
 from test_shell import NOW, PLUGIN, ShellFixture
 import test_channel_digest as digest_fixture
@@ -57,7 +65,7 @@ class LeaderWakeTests(ShellFixture, unittest.TestCase):
         self.assertEqual(result['message'], '已排进对方的通知，对方空闲时送达')
         notice = board.pending_notices(self.conn, 's3')[0]
         self.assertEqual(notice['source'], 'crew')
-        self.assertEqual(notice['text'], 'leader「git」（git）找你：核对分支。回复用 SendMessage，地址「cc-git」，或 crew say --to git。')
+        self.assertEqual(notice['text'], 'leader「git」（git）找你：核对分支。回复用 SendMessage，地址「cc-git」，或用 Crew 工具 `channel_post`（`text` 填回复，`to` 列表填「git」）。')
 
     def test_member_cannot_wake(self):
         with self.assertRaisesRegex(board.BoardError, '只有同项目的 leader'):
@@ -75,12 +83,12 @@ class LeaderWakeTests(ShellFixture, unittest.TestCase):
         self.assertEqual(notice['source'], 'crew')
         self.assertIn('组员「one」（lead）找你：核对分支', notice['text'])
         self.assertIn('地址「cc-radar」', notice['text'])
-        self.assertNotIn('crew say --to one', notice['text'])
+        self.assertNotIn('`channel_post`', notice['text'])
 
     def test_member_can_queue_own_leader_when_its_reply_address_is_unknown(self):
         board.update_cc_name(self.conn, 's1', None, now=NOW)
         self.wake('s3', 's1')
-        self.assertIn('crew who one', board.pending_notices(self.conn, 's3')[0]['text'])
+        self.assertIn('`session_who` 查地址（`target` 填「one」）', board.pending_notices(self.conn, 's3')[0]['text'])
 
     def test_member_cannot_wake_other_leader_or_member(self):
         for target, caller in [('other', 's1'), ('s2', 's1'), ('s3', 's2')]:
@@ -95,14 +103,13 @@ class LeaderWakeTests(ShellFixture, unittest.TestCase):
             self.wake('s3', 's1')
         self.assertEqual(board.pending_notices(self.conn, 's3'), [])
 
-    def test_member_cli_wake_uses_same_queue_endpoint(self):
-        result = {'ok': True, 'notice_id': 1, 'message': '已排进对方的通知，对方空闲时送达'}
-        with mock.patch('crew.spawn.request_start', return_value=result) as request:
-            code, output, errors = self.run_cli(['--session', 's1', 'wake', 'lead', '帮我确认'])
-        self.assertEqual(code, 0, errors)
-        self.assertEqual(request.call_args.args[2], '/api/wake')
-        self.assertEqual(request.call_args.args[3]['caller_session_id'], 's1')
-        self.assertIn('已排进对方的通知', output)
+    # message.send 查接收者时 ctx.conn 为空，成员联系 leader 未进入队列。
+    def test_member_message_to_leader_is_queued(self):
+        service = operation_service(self, self.project)
+        result = ai_call(service, self.conn, 's1', 'message.send', {'to': 'lead', 'text': '帮我确认', 'kind': 'blocker'})
+        self.assertEqual(result['from_session_id'], 's1')
+        self.assertEqual(result['to_session_id'], 's3')
+        self.assertEqual(result['receipt']['status'], 'queued')
 
     def test_human_leader_target_errors_with_web_instruction(self):
         with self.assertRaisesRegex(board.BoardError, 'leader 直接在网页上和它聊'):
@@ -149,15 +156,9 @@ class LeaderWakeTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.processes, [])
         self.assertEqual(board.pending_notices(self.conn, 'other'), [])
 
-    def test_cli_leader_wake_formats_notice_result(self):
-        result = {'ok': True, 'notice_id': 1, 'message': '已排进对方的通知，对方空闲时送达'}
-        with mock.patch('crew.spawn.request_start', return_value=result):
-            code, output, errors = self.run_cli(['--session', 'other', 'wake', 'lead', '核对'])
-        self.assertEqual(code, 0, errors)
-        self.assertEqual(output.strip(), '已排进对方的通知，对方空闲时送达')
 
 
-class ChannelHttpTests(ShellFixture, unittest.TestCase):
+class ChannelHttpFixture(ShellFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
         poll = mock.patch.object(web.Service, '_poll_notices', return_value=None)
@@ -183,7 +184,7 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
         if query:
             path += '?' + urlencode(query)
         payload = None if data is None else json.dumps(data).encode('utf-8')
-        request = Request(self.server.url + path, payload, {'X-Crew': '1'})
+        request = Request(self.server.url + path, payload, {'X-Crew': '1', 'X-Crew-Request-Id': uuid.uuid4().hex})
         try:
             response = self.opener.open(request, timeout=5)
         except HTTPError as exc:
@@ -192,28 +193,32 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
             return response.status, json.load(response)
 
     def state(self):
-        code, result = self.request('/api/state', project='demo')
+        code, result = self.request('/api/op/workspace.state', project='demo')
         self.assertEqual(code, 200, result)
         return result
 
-    def test_member_wakes_only_own_leader_through_http(self):
-        code, result = self.request('/api/wake', {'name': 'lead', 'text': '请处理我的汇报',
-                                                'caller_session_id': 's1'}, project='demo')
-        self.assertEqual(code, 200, result)
-        self.assertIn('已排进对方的通知', result['message'])
-        self.assertIn('组员「one」', board.pending_notices(self.conn, 's3')[0]['text'])
-        code, result = self.request('/api/wake', {'name': 'two', 'text': '不能叫醒同伴',
-                                                'caller_session_id': 's1'}, project='demo')
+class ChannelHttpTests(ChannelHttpFixture):
+    # 用户与设备调用不能冒用调用会话身份：执行器在进入处理函数前拒绝。
+    def test_wake_argument_schema_rejects_caller_identity(self):
+        registry.operations()
+        with self.assertRaises(OpError):
+            scopes.human_payload(registry.get('session.wake'), HUMAN, {'name': 'lead', 'text': '核对', 'caller_session_id': 's1'})
+
+    def test_human_contact_with_leader_is_directed_to_chat(self):
+        code, result = self.request('/api/op/session.wake', {'name': 'lead', 'text': '请处理我的汇报'}, project='demo')
         self.assertEqual(code, 400, result)
-        self.assertIn('组员只能叫醒自己的 leader', result['error'])
+        self.assertIn('leader 直接在网页上和它聊', result['error'])
+        self.assertEqual(board.pending_notices(self.conn, 's3'), [])
 
     def test_user_post_and_mention(self):
-        code, result = self.request('/api/channel', {'body': '**用户安排**\n核对 develop', 'to': ['lead']}, project='demo')
+        code, result = self.request('/api/op/channel.post', {'body': '**用户安排**\n核对 develop', 'to': ['lead']}, project='demo')
         self.assertEqual(code, 200, result)
         message = result['message']
         self.assertEqual(message['speaker_session_id'], board.HUMAN)
         self.assertEqual(message['speaker_name'], '用户')
-        self.assertEqual(message['mentions'], [{'session_id': 's3', 'name': 'lead', 'replied': False}])
+        self.assertEqual([{key: item[key] for key in ('session_id', 'name', 'replied', 'delivery', 'queued_at')}
+                          for item in message['mentions']],
+                         [{'session_id': 's3', 'name': 'lead', 'replied': False, 'delivery': 'queued', 'queued_at': NOW}])
         notice = board.pending_notices(self.conn, 's3')[0]
         self.assertEqual(notice['source'], 'web')
         self.assertIn('用户点名你', notice['text'])
@@ -237,25 +242,25 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
 
     def test_digest_http_no_new_concurrent_and_success_fields(self):
         manager = self.digest_process(digest_fixture.FakeProcess())
-        code, result = self.request('/api/channel/digest', {'project': 'demo'})
+        code, result = self.request('/api/op/channel.digest.start', {'project': 'demo'})
         self.assertEqual(code, 400)
         self.assertIn('没有新发言需要整理', result['error'])
-        self.assertIsNone(self.request('/api/channel', project='demo')[1]['digest'])
+        self.assertIsNone(self.request('/api/op/channel.list', project='demo')[1]['digest'])
         post = channel.post(self.conn, 'demo', 's3', '待整理全文', now=NOW)
         gate = threading.Event()
         process = digest_fixture.FakeProcess(gate=gate)
         manager.process_factory.return_value = process
         try:
-            self.assertEqual(self.request('/api/channel/digest', {'project': 'demo'}), (200, {'ok': True}))
+            self.assertEqual(self.request('/api/op/channel.digest.start', {'project': 'demo'}), (200, {'ok': True}))
             self.assertTrue(process.entered.wait(5))
             self.assertTrue(self.state()['channel']['digesting'])
-            code, result = self.request('/api/channel/digest', {'project': 'demo'})
+            code, result = self.request('/api/op/channel.digest.start', {'project': 'demo'})
             self.assertEqual(code, 400)
             self.assertIn('正在整理', result['error'])
         finally:
             gate.set()
         self.finish_digest(manager)
-        card = self.request('/api/channel', project='demo')[1]['digest']
+        card = self.request('/api/op/channel.list', project='demo')[1]['digest']
         self.assertEqual((card['body'], card['upto_message_id']), (digest_fixture.CARD, post['id']))
         self.assertEqual(self.state()['channel'], {'unread': 1, 'latest_id': post['id'], 'digesting': False,
                                                   'digest_error': None, 'digest_id': card['id']})
@@ -263,15 +268,15 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
     def test_digest_http_failure_reason_and_manual_retry(self):
         manager = self.digest_process(digest_fixture.FakeProcess(code=8, errors='真实鉴权错误'))
         channel.post(self.conn, 'demo', 's3', '待整理', now=NOW)
-        self.assertEqual(self.request('/api/channel/digest', {'project': 'demo'})[0], 200)
+        self.assertEqual(self.request('/api/op/channel.digest.start', {'project': 'demo'})[0], 200)
         self.finish_digest(manager)
         state = self.state()['channel']
         self.assertFalse(state['digesting'])
         self.assertIn('RuntimeError: 退出码 8；stderr: 真实鉴权错误', state['digest_error'])
         self.assertIsNone(state['digest_id'])
-        self.assertIsNone(self.request('/api/channel', project='demo')[1]['digest'])
+        self.assertIsNone(self.request('/api/op/channel.list', project='demo')[1]['digest'])
         manager.process_factory.return_value = digest_fixture.FakeProcess()
-        self.assertEqual(self.request('/api/channel/digest', {'project': 'demo'})[0], 200)
+        self.assertEqual(self.request('/api/op/channel.digest.start', {'project': 'demo'})[0], 200)
         self.finish_digest(manager)
         self.assertIsNone(self.state()['channel']['digest_error'])
 
@@ -289,7 +294,7 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
 
     def test_digest_project_body_query_conflict_is_rejected(self):
         board.init_project(self.conn, 'another', self.root / 'another', now=NOW)
-        code, result = self.request('/api/channel/digest', {'project': 'another'}, project='demo')
+        code, result = self.request('/api/op/channel.digest.start', {'project': 'another'}, project='demo')
         self.assertEqual(code, 400)
         self.assertIn('项目不一致', result['error'])
 
@@ -297,37 +302,37 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
         first = channel.post(self.conn, 'demo', 's3', 'first\n全文', now=NOW)
         second = channel.post(self.conn, 'demo', 's3', 'second', now=NOW)
         self.assertEqual(self.state()['channel'], {'unread': 2, 'latest_id': second['id'], 'digesting': False, 'digest_error': None, 'digest_id': None})
-        code, result = self.request('/api/channel', project='demo', limit=1)
+        code, result = self.request('/api/op/channel.list', project='demo', limit=1)
         self.assertEqual(code, 200, result)
         self.assertEqual([item['id'] for item in result['messages']], [second['id']])
         self.assertTrue(result['has_more'])
-        code, earlier = self.request('/api/channel', project='demo', before=second['id'], limit=1)
+        code, earlier = self.request('/api/op/channel.list', project='demo', before=second['id'], limit=1)
         self.assertEqual(code, 200, earlier)
         self.assertEqual(earlier['messages'][0]['body'], 'first\n全文')
         self.assertFalse(earlier['has_more'])
-        code, read = self.request('/api/channel/read', {'id': second['id']}, project='demo')
+        code, read = self.request('/api/op/channel.mark_read', {'id': second['id']}, project='demo')
         self.assertEqual(code, 200, read)
         self.assertEqual(read, {'read_id': second['id'], 'unread': 0, 'latest_id': second['id']})
         self.assertEqual(self.state()['channel']['unread'], 0)
-        self.request('/api/channel/read', {'id': first['id']}, project='demo')
+        self.request('/api/op/channel.mark_read', {'id': first['id']}, project='demo')
         self.assertEqual(self.state()['channel']['unread'], 0)
 
     def test_unknown_mention_and_invalid_read_fail_without_write(self):
-        code, _ = self.request('/api/channel', {'body': 'hello', 'to': ['missing']}, project='demo')
+        code, _ = self.request('/api/op/channel.post', {'body': 'hello', 'to': ['missing']}, project='demo')
         self.assertEqual(code, 400)
         self.assertEqual(channel.messages(self.conn, 'demo')['messages'], [])
-        code, _ = self.request('/api/channel/read', {'id': -1}, project='demo')
+        code, _ = self.request('/api/op/channel.mark_read', {'id': -1}, project='demo')
         self.assertEqual(code, 400)
 
     def test_json_project_routes_and_conflicting_project_is_rejected(self):
         board.init_project(self.conn, 'another', self.root / 'another', now=NOW)
-        code, result = self.request('/api/channel', {'project': 'another', 'body': '另一个项目'})
+        code, result = self.request('/api/op/channel.post', {'project': 'another', 'body': '另一个项目'})
         self.assertEqual(code, 200, result)
         self.assertEqual(result['message']['project'], 'another')
         self.assertEqual(channel.messages(self.conn, 'demo')['messages'], [])
-        code, result = self.request('/api/channel/read', {'project': 'another', 'id': result['message']['id']})
+        code, result = self.request('/api/op/channel.mark_read', {'project': 'another', 'id': result['message']['id']})
         self.assertEqual(code, 200, result)
-        code, _ = self.request('/api/channel', {'project': 'another', 'body': '冲突'}, project='demo')
+        code, _ = self.request('/api/op/channel.post', {'project': 'another', 'body': '冲突'}, project='demo')
         self.assertEqual(code, 400)
 
     def test_notice_send_has_no_write_transaction_and_allows_other_writers(self):
@@ -365,7 +370,7 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
             channel.post(self.conn, 'demo', 's3', 'leader ping', to=['receiver'], now=NOW)
             service.deliver_notices()
             self.assertEqual(len(board.pending_notices(self.conn, sid)), 1)
-            code, result = self.request('/api/channel', {'body': '大家看一下', 'to': ['*']}, project='demo')
+            code, result = self.request('/api/op/channel.post', {'body': '大家看一下', 'to': ['*']}, project='demo')
             self.assertEqual(code, 200, result)
             self.assertFalse(messaging.stopped(self.conn, sid))
             service.deliver_notices()
@@ -405,7 +410,7 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
             sid = service.chat.start(self.conn, 'demo', 'receiver', '协调', role='leader', now=NOW)['session_id']
         service.chat.journal(sid).set_status('idle')
         channel.post(self.conn, 'demo', 's3', 'leader ping', to=['receiver'], now=NOW)
-        code, result = self.request('/api/channel', {'body': '你和 lead 看下这个', 'to': ['receiver']}, project='demo')
+        code, result = self.request('/api/op/channel.post', {'body': '你和 lead 看下这个', 'to': ['receiver']}, project='demo')
         self.assertEqual(code, 200, result)
         post = result['message']
         service.deliver_notices()
@@ -413,13 +418,18 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
         self.assertTrue(shown[-1]['id'].startswith('channel:%d:' % post['id']))
         self.assertEqual((shown[-1]['text'], shown[-1]['sender'], shown[-1]['source']), ('你和 lead 看下这个', 'user', 'crew'))
         sent = self.processes[-1].stdin.getvalue()
-        self.assertIn('crew say --reply-to %d' % post['id'], sent)
+        self.assertIn('reply_to=%d' % post['id'], sent)
         self.assertNotIn('leader ping', sent)
         # The leader's own ping waits for the next free turn, in an ordinary Crew batch.
         self.assertEqual([n['text'] for n in board.pending_notices(self.conn, sid)][0].count('leader ping'), 1)
         service.deliver_notices()
         self.assertEqual(len(board.pending_notices(self.conn, sid)), 1)
         self.assertEqual(channel.messages(self.conn, 'demo')['messages'][-1]['id'], post['id'])
+        service.chat.journal(sid).set_status('idle')
+        service.deliver_notices()
+        # Idle alone is no proof the leader answered: the pointer waits for its turn to finish.
+        self.assertEqual(channel.messages(self.conn, 'demo')['messages'][-1]['id'], post['id'])
+        service.chat.journal(sid).emit('turn_result', status='completed', success=True)
         service.chat.journal(sid).set_status('idle')
         service.deliver_notices()
         stub = channel.messages(self.conn, 'demo')['messages'][-1]
@@ -440,3 +450,73 @@ class ChannelHttpTests(ShellFixture, unittest.TestCase):
         self.assertIn('ordinary', summary)
         self.assertNotIn('must remain', summary)
 
+
+
+class DeliveryHttpTests(ChannelHttpFixture):
+    """Delivery states behind the channel page: who waits and why, and the user's replies."""
+
+    def managed_leader(self):
+        service = self.server.service
+        with mock.patch('crew.chat.shutil.which', return_value='claude.exe'):
+            sid = service.chat.start(self.conn, 'demo', 'receiver', '协调', role='leader', now=NOW)['session_id']
+        service.chat.journal(sid).set_status('idle')
+        return service, sid
+
+    def test_user_replies_to_a_leader_post_and_its_author_is_told(self):
+        question = channel.post(self.conn, 'demo', 's3', '要不要先冻结 develop？', now=NOW)
+        code, result = self.request('/api/op/channel.post', {'body': '先别冻结', 'reply_to': question['id']}, project='demo')
+        self.assertEqual(code, 200, result)
+        message = result['message']
+        self.assertEqual(message['reply']['id'], question['id'])
+        self.assertEqual([(item['session_id'], item['delivery']) for item in message['notified']], [('s3', 'queued')])
+        [notice] = board.pending_notices(self.conn, 's3')
+        self.assertIn('用户回复了你的交流区发言 #%d' % question['id'], notice['text'])
+
+    def test_failed_turn_never_gets_a_private_reply_pointer(self):
+        service, sid = self.managed_leader()
+        code, result = self.request('/api/op/channel.post', {'body': '进度？', 'to': ['receiver']}, project='demo')
+        self.assertEqual(code, 200, result)
+        service.deliver_notices()
+        journal = service.chat.journal(sid)
+        journal.emit('turn_result', status='failed', success=False)
+        journal.set_status('idle')
+        service.deliver_notices()
+        journal.emit('turn_result', status='completed', success=True)
+        service.deliver_notices()
+        latest = channel.messages(self.conn, 'demo')['messages'][-1]
+        self.assertEqual(latest['id'], result['message']['id'])
+        self.assertEqual(latest['mentions'][0]['delivery'], 'delivered')
+
+    def test_leader_running_elsewhere_shows_why_its_mention_waits(self):
+        service = self.server.service
+        self.assertTrue(service.agents_ready.wait(3))
+        with service.agents_lock:
+            service.agents = [{'sessionId': 's3', 'name': 'lead'}]
+        code, result = self.request('/api/op/channel.post', {'body': '看一下', 'to': ['lead']}, project='demo')
+        self.assertEqual(code, 200, result)
+        service.deliver_notices()
+        mention = channel.messages(self.conn, 'demo')['messages'][-1]['mentions'][0]
+        self.assertEqual((mention['delivery'], mention['waiting']), ('queued', 'external'))
+        self.assertEqual(len(board.pending_notices(self.conn, 's3')), 1)
+
+    def test_batch_claim_is_recorded_before_the_input_is_written(self):
+        service, sid = self.managed_leader()
+        channel.post(self.conn, 'demo', 's3', 'ping', to=['receiver'], now=NOW)
+        seen = []
+
+        def send(session, text, **kwargs):
+            seen.append(tuple(self.conn.execute('SELECT batch_id,sent_at FROM leader_notices WHERE session_id=?',
+                                                (sid,)).fetchone()))
+            raise OSError('fixture send failed')
+
+        with mock.patch.object(service.chat, 'send', side_effect=send):
+            service.deliver_notices()
+        [(batch_id, sent_at)] = seen
+        self.assertTrue(batch_id.startswith('leader-notices:'))
+        self.assertIsNone(sent_at)
+        # Retrying reuses the same batch rather than building a second one.
+        with mock.patch.object(service.chat, 'send', side_effect=send):
+            service.deliver_notices()
+        self.assertEqual(seen[1], (batch_id, None))
+        batches = [event for event in service.chat.journal(sid).events if event['type'] == 'leader_notice_batch']
+        self.assertEqual([event['id'] for event in batches], [batch_id])

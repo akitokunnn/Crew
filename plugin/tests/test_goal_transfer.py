@@ -1,15 +1,16 @@
 """Handing a task to another leader: records, waiting for running turns, notices and the handoff material."""
+import tests
+import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import tests
-import io
-import os
-from contextlib import redirect_stderr, redirect_stdout
-
-from crew import board, cli, goal_actions, goal_runtime, goal_work, goals
-from tests.test_goal_actions import Host
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
+from crew import board, goal_runtime, goal_work, goals, web
 from tests.test_goals import GoalFixture
+
+PLUGIN = Path(__file__).resolve().parents[1]
 
 
 class FakeManager:
@@ -89,7 +90,8 @@ class GoalTransferTests(TransferFixture):
         self.assertEqual(len(notice), 1)
         self.assertEqual(notice[0]['wake'], 1)
         self.assertIn('Half measured', notice[0]['text'])
-        self.assertIn('crew goal start ' + goal['id'], notice[0]['text'])
+        self.assertIn('goal_start', notice[0]['text'])
+        self.assertIn('goal_id=' + goal['id'], notice[0]['text'])
         self.assertEqual(self.notices('chief-id'), [])  # The giver asked for it itself.
         self.assertTrue(goals.dispatch_check(self.conn, goal['id'])['allowed'])
         # The new leader can now run and staff the task from its own group.
@@ -194,39 +196,26 @@ class ControllerTransferTests(TransferFixture):
 class GoalTransferActionTests(TransferFixture):
     def setUp(self):
         super().setUp()
-        self.host = Host(self.home)
+        self.service = web.Service(self.home, PLUGIN, cwd=self.root, agents_provider=lambda: [],
+                                   process_factory=mock.Mock(side_effect=AssertionError('unexpected model launch')),
+                                   isolated_sources=True)
+        self.addCleanup(self.service.close)
 
-    def dispatch(self, action, data, actor='chief-id', execution=None):
-        return goal_actions.dispatch(self.home, actor, execution, action, data, self.host)
-
-    def invoke_cli(self, args, environment=None):
-        output, errors = io.StringIO(), io.StringIO()
-        with mock.patch.dict(os.environ, environment or {}, clear=False), redirect_stdout(output), redirect_stderr(errors):
-            code = cli.main(['--home', str(self.home), '--session', 'chief-id', *args], agents_provider=lambda: [], cwd=self.root)
-        return code, output.getvalue(), errors.getvalue()
-
-    def test_tool_and_cli_route_the_handover_through_the_shared_action(self):
+    def test_transfer_operation_hands_over_running_goal_and_checks_owner(self):
         goal = self.goal()
         goals.transition(self.conn, goal['id'], 'running')
         execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime='claude')
         goals.set_execution_status(self.conn, execution['id'], 'running')
-        result = self.dispatch('transfer', {'goal_id': goal['id'], 'to': 'next', 'text': 'Notes'}, execution=execution['id'])
+        controller = self.service.chat.goal_controller
+        with mock.patch.object(controller, 'sync', autospec=True) as sync:
+            result = ai_call(self.service, self.conn, 'chief-id', 'goal.transfer',
+                             {'goal_id': goal['id'], 'to': 'next', 'text': 'Notes'}, execution_id=execution['id'])
+            self.assertTrue(any(goal['id'] in call.args for call in sync.call_args_list))
         self.assertTrue(result['pending_transfer'])
         self.assertIn('next', result['message'])
-        self.assertIn(('sync', goal['id']), self.host.calls)
-        with self.assertRaises(board.BoardError):
-            self.dispatch('transfer', {'goal_id': goal['id'], 'to': 'next'}, actor='member-id')
-
-        from crew import spawn
-        with mock.patch.object(spawn, 'request_start', return_value={'ok': True}) as request:
-            code, _, errors = self.invoke_cli(['goal', 'transfer', goal['id'], '--to', 'next', '--text', 'Notes'],
-                                              {'CREW_SESSION_ID': 'chief-id'})
-        self.assertEqual(code, 0, errors)
-        body = request.call_args.args[-1]
-        self.assertEqual((body['action'], body['data']['to'], body['data']['text'], body['data']['goal_id']),
-                         ('transfer', 'next', 'Notes', goal['id']))
+        with self.assertRaises(OpError):
+            ai_call(self.service, self.conn, 'member-id', 'goal.transfer', {'goal_id': goal['id'], 'to': 'next'})
 
 
 if __name__ == '__main__':
-    import unittest
     unittest.main()

@@ -1,6 +1,6 @@
 "use strict";
 const test = require("node:test"), assert = require("node:assert/strict"), fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
-const source = fs.readFileSync(path.join(__dirname,"../crew/web/workspace-settings-ui.js"),"utf8");
+const source = fs.readFileSync(path.join(__dirname,"../../frontend/workspace-settings-ui.js"),"utf8");
 const plain = value => JSON.parse(JSON.stringify(value));
 const snapshot = extra => ({project:{name:"stable-project",display_name:"显示名称",root:"C:/work/old",theme:"green"},revision:7,directory_change:null,
   sessions:[{session_id:"leader",name:"负责人",cwd:"C:/work/old",worktree:null,running:true,busy:true},{session_id:"member",name:"成员",cwd:"C:/work/old/src",worktree:null,running:false,busy:false}],goals_count:3,...extra});

@@ -1,7 +1,7 @@
 "use strict";
 const {test}=require("node:test"),assert=require("node:assert/strict"),vm=require("node:vm"),fs=require("node:fs"),path=require("node:path");
 const {webcrypto}=require("node:crypto");
-const source=fs.readFileSync(path.join(__dirname,"../crew/web/browser-utils.js"),"utf8");
+const source=fs.readFileSync(path.join(__dirname,"../../frontend/browser-utils.js"),"utf8");
 test("shortcut labels follow the browser client platform",()=>{
   const sandbox={window:{},navigator:{userAgentData:{platform:"macOS"}}};
   vm.runInNewContext(source,sandbox);

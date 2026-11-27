@@ -27,13 +27,13 @@ class ProductIdentityTests(unittest.TestCase):
 
     def test_store_and_cli_default_to_crew_home_without_creating_it(self):
         self.assertEqual(store.default_home(), self.root / '.crew')
-        self.assertEqual(cli.parser().parse_args(['status']).home, self.root / '.crew')
+        self.assertEqual(cli.parser().parse_args(['doctor']).home, self.root / '.crew')
         self.assertFalse((self.root / '.crew').exists())
 
     def test_cli_and_hook_preserve_explicit_environment_home(self):
         selected = self.root / 'selected-home'
         os.environ['CREW_HOME'] = str(selected)
-        self.assertEqual(cli.parser().parse_args(['status']).home, selected)
+        self.assertEqual(cli.parser().parse_args(['doctor']).home, selected)
         with mock.patch('sys.stdin', io.StringIO('{}')), mock.patch('crew.hooks.handle', return_value=(0, None)) as handle:
             self.assertEqual(hooks.main(['session-start']), 0)
         self.assertEqual(handle.call_args.args[2], selected)

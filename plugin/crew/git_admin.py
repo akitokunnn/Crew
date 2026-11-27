@@ -67,7 +67,7 @@ def input_context(conn, session_id, previous_revision, plugin_root):
     if config is None:
         return None, '【Crew 当前 Git 管理；覆盖此前配置】Git 助手已停用。你不再因旧绑定拥有 Git 助手职责；Git 操作遵守项目当前规则。'
     admin = board.session(conn, config['admin_session_id']) if config['admin_session_id'] else None
-    command = 'crew_git(action="policy")' if runtimes.get(conn, session_id)['runtime'] == 'codex' else 'crew git policy'
+    command = '`git_policy_get`'
     text = ('【Crew 当前 Git 管理；覆盖此前配置】本项目 Git 助手为「%s」（%s），主干 %s，本地集成分支 %s。'
             '合并规则有更新，操作前用 %s 读取全文，遵守项目文件与远端分支保护。' %
             (admin['crew_name'] if admin else '未绑定', config['admin_session_id'], config['base'],
@@ -76,9 +76,9 @@ def input_context(conn, session_id, previous_revision, plugin_root):
         text += ('你现在负责项目规则授权的推送、PR 与合并，按 Crew 注入的 Git 助手守则执行；'
                  '发版分支由用户自己处理，本地集成分支不推送。')
     else:
-        text += ('推送、开 PR、合并交给 Git 助手，用 crew git request "<改动、验证、后续>" [--blocking]'
-                 '（Codex crew_git 的 request；确有后续阻塞才加 data.blocking=true）。'
-                 '需要商量时 crew send "%s" "<内容>" --kind task（Codex crew_send_message，kind=task）。发版分支由用户自己处理。' %
+        text += ('推送、开 PR、合并交给 Git 助手。用 Crew 工具 `git_request_add` 申请，'
+                 '`description` 写改动、验证和后续，确有后续阻塞时才设 `blocking=true`。'
+                 '需要商量时用 `message_send`（`to` 填「%s」，`text` 填消息，`kind=task`）。发版分支由用户自己处理。' %
                  (admin['crew_name'] if admin else '未绑定'))
     return current, text
 
@@ -133,14 +133,23 @@ def enable(conn, home, plugin_root, project_name, launcher, base=None, integrati
         'speed': configured.get('speed') if runtime == 'codex' and configured['runtime'] in (None, runtime) else None}
     runtime = selected['runtime']
     task = behavior_prompts.text(conn, 'git_task', project=project_name, values={
-        'policy_command': 'crew_git(action="policy", data={"text":"规则正文"})' if runtime == 'codex' else 'crew git policy --set',
-        'requests_command': 'crew_git(action="requests")，处理后用 action="resolve"' if runtime == 'codex' else 'crew git requests'})
-    result = launcher(conn, project_name, "Git 助手", task, group="git", role="leader",
-                      new_worktree="crew/git-admin-" + uuid.uuid4().hex[:8], base=base, now=now,
-                      model=selected['model'], effort=selected['effort'], agent="crew:git", runtime=runtime,
-                      speed=selected['speed'])
-    return board.enable_git(conn, project_name, base, integration, now=now,
-                            admin_session_id=result["session_id"])
+        'policy_command': 'Crew 工具 `git_policy_set`（参数 `text` 填规则正文）',
+        'requests_command': '`git_requests_list` 查看，再用 `git_request_resolve`'})
+    # The native's MCP token takes its role from this row when it starts, so the board names the
+    # administrator as soon as the session exists; a start that fails leaves Git disabled.
+    started = False
+    try:
+        launcher(conn, project_name, "Git 助手", task, group="git", role="leader",
+                 new_worktree="crew/git-admin-" + uuid.uuid4().hex[:8], base=base, now=now,
+                 model=selected['model'], effort=selected['effort'], agent="crew:git", runtime=runtime,
+                 speed=selected['speed'],
+                 _registered=lambda session_id: board.enable_git(conn, project_name, base, integration, now=now,
+                                                                 admin_session_id=session_id))
+        started = True
+    finally:
+        if not started:
+            conn.execute("DELETE FROM git_management WHERE project=?", (project_name,))
+    return board.git_config(conn, project_name)
 
 
 @board.atomic

@@ -256,7 +256,7 @@ class MemberPageStateTests(MemberNativeFixture, unittest.TestCase):
         self.url = self.server.url
 
     def member_state(self, sid):
-        code, state, _ = self.request('/api/state?project=demo')
+        code, state, _ = self.request('/api/op/workspace.state?project=demo')
         self.assertEqual(code, 200, state)
         return next(item for item in state['members'] if item['session_id'] == sid)
 
@@ -273,7 +273,7 @@ class MemberPageStateTests(MemberNativeFixture, unittest.TestCase):
         self.assertEqual([(item['goal_id'], item['execution_id'], item['active']) for item in state['execution_records']],
                          [(second['id'], other, True), (first['id'], key, True)])
         self.assertEqual(state['execution_records'][0]['title'], 'Arithmetic B')
-        code, history, _ = self.request('/api/chat/history?project=demo&session_id=%s&goal_id=%s' % (sid, first['id']))
+        code, history, _ = self.request('/api/op/chat.history?project=demo&session_id=%s&goal_id=%s' % (sid, first['id']))
         self.assertEqual(code, 200, history)
         self.assertEqual(history['execution_id'], key)
         self.assertIn('1 + 1 = 2.', json.dumps(history['events'], ensure_ascii=False))

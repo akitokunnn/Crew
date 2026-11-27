@@ -46,7 +46,7 @@ class LeaderFinishReminderTests(MemberNativeFixture, unittest.TestCase):
         sent = self.reminders(key)
         self.assertEqual(len(sent), 1)
         self.assertIn('收尾检查', sent[0]['text'])
-        self.assertIn('crew goal finish', sent[0]['text'])
+        self.assertIn('goal_finish', sent[0]['text'])
         self.assertEqual(sent[0]['source'], 'crew')
         self.remind(key, 120)
         self.assertEqual(len(self.reminders(key)), 1, 'the pending reminder is not sent twice')

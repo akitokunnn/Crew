@@ -33,7 +33,7 @@ class OperationsChatTests(unittest.TestCase):
                  'partial': '', 'request_id': identity, 'selected': self.selected,
                  'backend_root': str(self.backend)}
         _atomic_json(operations_chat.directory(self.home) / 'state.json', state)
-        chat.Journal(operations_chat.directory(self.home) / 'messages.jsonl').emit(
+        chat.Journal(operations_chat.directory(self.home) / 'messages.jsonl', None).emit(
             'message', id=identity, role='user', text='为什么后台无法连接？')
         return state
 
@@ -138,7 +138,7 @@ class OperationsChatTests(unittest.TestCase):
             ('request-1', '为什么后台无法连接？'),
             ('request-1-reply', state['partial']),
             ('request-2', '继续诊断')])
-        events = chat.Journal(operations_chat.directory(self.home) / 'messages.jsonl').events
+        events = chat.Journal(operations_chat.directory(self.home) / 'messages.jsonl', None).events
         self.assertEqual(sum(event.get('id') == 'request-1-reply' for event in events), 1)
 
     def test_failed_spawn_after_crashed_worker_does_not_duplicate_recovered_partial(self):
@@ -154,7 +154,7 @@ class OperationsChatTests(unittest.TestCase):
         value = operations_chat.snapshot(self.home)
         self.assertEqual([item['id'] for item in value['messages']], ['request-1', 'request-1-reply'])
         self.assertEqual(value['messages'][-1]['text'], state['partial'])
-        events = chat.Journal(operations_chat.directory(self.home) / 'messages.jsonl').events
+        events = chat.Journal(operations_chat.directory(self.home) / 'messages.jsonl', None).events
         self.assertEqual(sum(event.get('id') == 'request-1-reply' for event in events), 1)
 
     def test_worker_persists_result_and_only_passes_diagnostic_context(self):
@@ -203,7 +203,7 @@ class OperationsChatTests(unittest.TestCase):
 
     def test_history_payload_is_bounded_without_rewriting_or_removing_durable_messages(self):
         path = operations_chat.directory(self.home) / 'messages.jsonl'
-        journal = chat.Journal(path)
+        journal = chat.Journal(path, None)
         for index in range(150):
             journal.emit('message', id=str(index), role='user', text='message-' + str(index))
         before = path.read_bytes()
@@ -221,7 +221,7 @@ class OperationsChatTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(value, ensure_ascii=False).encode('utf-8')), 512 * 1024)
         self.assertTrue(all(row['truncated'] and len(row['text']) == 64000 for row in value['messages']))
         self.assertEqual(path.read_bytes(), before)
-        self.assertEqual(len(chat.Journal(path).events[-1]['text']), 70000)
+        self.assertEqual(len(chat.Journal(path, None).events[-1]['text']), 70000)
 
     def test_ai_settings_are_readable_and_editable_without_http_or_real_catalog_discovery(self):
         catalog = [{'id': 'codex', 'available': True, 'models': [{'id': 'fixture-only-model'}]}]

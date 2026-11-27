@@ -44,8 +44,7 @@ class GoalDiscussionNativeTests(GoalFixture):
                         return codex_guard.check(self.home, 'chief-id', payload, execution['id'])
                     output = io.StringIO()
                     with redirect_stderr(output):
-                        code, _ = hooks.handle('guard', payload, self.home, PLUGIN,
-                            {'CREW_SESSION_ID': 'chief-id', 'CREW_EXECUTION_ID': execution['id']})
+                        code, _ = hooks.handle('guard', payload, self.home, PLUGIN)
                     return output.getvalue() if code else None
 
                 self.assertIsNone(check('Bash', {'command': 'pwd'}))
@@ -62,12 +61,48 @@ class GoalDiscussionNativeTests(GoalFixture):
                 self.assertEqual(goals.get_execution(self.conn, execution['id'])['requirement_version'], changed['requirement_version'])
                 self.assertEqual(goals.report_review(self.conn, accepted['id'], report['id'])['note'], 'Keep this review.')
 
+    def test_user_rejection_turns_an_open_discussion_into_the_tasks_work(self):
+        # Real Haiku run (2026-11-27): the user asked about the report inside the task, then clicked
+        # 需修改; the change landed in the still-open discussion, where amend, work items and edits were refused.
+        (self.home / 'blacklist.txt').write_text('', encoding='utf-8')
+        for runtime in ('claude', 'codex'):
+            with self.subTest(runtime=runtime):
+                runtimes.set(self.conn, 'chief-id', runtime)
+                goal = self.goal()
+                goals.transition(self.conn, goal['id'], 'running')
+                report = goals.save_report(self.conn, goal['id'], self.report('awaiting_acceptance'))
+                ready = goals.transition(self.conn, goal['id'], 'awaiting_acceptance')
+                execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime=runtime,
+                                                   discussion_message_id='question-' + runtime)
+                native = 'rejected-native-' + runtime
+                goals.bind_native(self.conn, execution['id'], runtime, native)
+                changed = goals.review_acceptance(self.conn, goal['id'], False, note='Change the label.',
+                                                  expected_version=ready['version'], report_id=report['id'],
+                                                  notify_rejection=False)
+                self.assertIsNone(goals.discussion(self.conn, execution['id']))
+                self.assertEqual(goals.get_execution(self.conn, execution['id'])['requirement_version'],
+                                 changed['requirement_version'])
+                goals.transition(self.conn, goal['id'], 'running')
+                goals.set_execution_status(self.conn, execution['id'], 'running')
+                payload = {'hook_event_name': 'PreToolUse', 'session_id': native, 'cwd': str(self.root)}
+                if runtime == 'codex':
+                    blocked = codex_guard.check(self.home, 'chief-id', {**payload, 'tool_name': 'apply_patch', 'tool_input': {
+                        'command': '*** Begin Patch\n*** Add File: sample.txt\n+hello\n*** End Patch\n'}}, execution['id'])
+                else:
+                    output = io.StringIO()
+                    with redirect_stderr(output):
+                        code, _ = hooks.handle('guard', {**payload, 'tool_name': 'Write', 'tool_input': {
+                            'file_path': str(self.root / 'sample.txt'), 'content': 'hello'}}, self.home, PLUGIN)
+                    blocked = output.getvalue() if code else None
+                self.assertIsNone(blocked)
+                goals.set_execution_status(self.conn, execution['id'], 'completed')
+
     def test_native_response_preserves_delivery_and_then_uses_fresh_requirement_after_amend(self):
         accepted, report, execution = self.prepared('codex')
-        journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'))
+        journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'), None)
         with mock.patch('crew.codex_runtime._ObservedClient', FakeClient):
             running = codex_runtime.CodexRunning(self.home, PLUGIN, board.session(self.conn, 'chief-id'),
-                {'agent': None}, {'model': None, 'effort': None}, journal, None, execution=execution)
+                {'agent': None}, {'model': None, 'effort': None}, journal, execution=execution)
         def close():
             running.close()
             self.assertTrue(running.reader_done.wait(2))
@@ -92,10 +127,10 @@ class GoalDiscussionNativeTests(GoalFixture):
 
     def test_discussion_command_approval_keeps_guard_and_edit_requires_amend(self):
         accepted, _, execution = self.prepared('codex')
-        journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'))
+        journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'), None)
         with mock.patch('crew.codex_runtime._ObservedClient', FakeClient):
             running = codex_runtime.CodexRunning(self.home, PLUGIN, board.session(self.conn, 'chief-id'),
-                {'agent': None}, {'model': None, 'effort': None}, journal, None, execution=execution)
+                {'agent': None}, {'model': None, 'effort': None}, journal, execution=execution)
         def close():
             running.close()
             self.assertTrue(running.reader_done.wait(2))

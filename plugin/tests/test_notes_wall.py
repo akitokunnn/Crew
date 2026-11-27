@@ -10,7 +10,10 @@ import threading
 import unittest
 from unittest import mock
 
-from crew import board, codex_tools, personal, personal_actions, settings, store, web
+from tests.ops_helpers import agent_caller, ai_call
+from crew.ops import mcp
+from crew.ops.errors import OpError
+from crew import board, personal, settings, store, web
 from crew.web_api import personal as api
 import test_chat_http
 from test_codex_runtime import FakeClient
@@ -307,12 +310,18 @@ class AssistantNotesTests(NotesFixture):
     def setUp(self):
         super().setUp()
         self.sid = personal.ensure_assistant(self.conn, self.home)['session_id']
+        self.service = web.Service(self.home, PLUGIN, cwd=self.root, agents_provider=lambda: [],
+                                   process_factory=mock.Mock(side_effect=AssertionError('unexpected model launch')),
+                                   isolated_sources=True)
+        self.addCleanup(self.service.close)
         self.events = [{'type': 'message', 'id': 'user-1', 'seq': 7, 'role': 'user', 'source': 'human',
                         'text': '帮我整理想法', 'at': T0}]
 
-    def dispatch(self, action, data, request_id='assistant-1', message_id='user-1'):
-        return personal_actions.dispatch(self.home, self.sid, action,
-            {'data': data, 'message_id': message_id, 'request_id': request_id}, read_events=lambda _: self.events)
+    def dispatch(self, action, data, request_id=None, message_id='user-1'):
+        args = {'data': data} if action in personal.WRITE_ACTIONS else data
+        with mock.patch.object(self.service.chat, 'history', return_value={'events': self.events}):
+            return ai_call(self.service, self.conn, self.sid, action, args,
+                           request_id=request_id, message_id=message_id)
 
     def test_reads_filter_notes_get_one_and_register_tags(self):
         self.workspace('fitness')
@@ -334,9 +343,9 @@ class AssistantNotesTests(NotesFixture):
         self.assertEqual((page['total'], page['offset'], page['next_offset'], page['stale_days'], len(page['notes'])), (3, 1, None, 14, 2))
         with self.assertRaisesRegex(board.BoardError, 'untagged'):
             self.dispatch('notes.list', {'untagged': True, 'tags': ['x']})
-        with self.assertRaisesRegex(board.BoardError, '只支持参数'):
+        with self.assertRaisesRegex(OpError, 'state'):
             self.dispatch('notes.list', {'state': 'open'})
-        got = self.dispatch('notes.get', {'note_id': a['id']})['note']
+        got = self.dispatch('note.get', {'note_id': a['id']})['note']
         self.assertEqual((got['id'], got['tags'], got['discussions']['count']), (a['id'], ['x', 'y'], 0))
         tags = self.dispatch('tags.list', {})
         self.assertEqual({tag['name'] for tag in tags['tags']}, {'x', 'y', 'legacy'})
@@ -346,11 +355,11 @@ class AssistantNotesTests(NotesFixture):
         note = self.capture('原话')
         with self.assertRaisesRegex(board.BoardError, '原始用户消息'):
             self.dispatch('note.annotate', {'note_id': note['id'], 'text': '结论'}, message_id='invented')
-        result = self.dispatch('note.annotate', {'note_id': note['id'], 'text': '结论'})
+        result = self.dispatch('note.annotate', {'note_id': note['id'], 'text': '结论'}, request_id='annotate')
         summary = result['result']['note']['summaries'][0]
         self.assertEqual((summary['text'], summary['source']), ('结论', {'type': 'assistant', 'session_id': self.sid, 'seq': 7}))
         self.assertEqual(result['source']['message_id'], 'user-1')
-        self.assertTrue(self.dispatch('note.annotate', {'note_id': note['id'], 'text': '结论'})['duplicate'])
+        self.assertTrue(self.dispatch('note.annotate', {'note_id': note['id'], 'text': '结论'}, request_id='annotate')['replayed'])
         self.assertTrue(self.dispatch('note.annotate', {'note_id': note['id'], 'text': '结论'}, request_id='retry-key')['duplicate'])
         self.assertEqual(len(self.get(note['id'])['summaries']), 1)
         version = self.get(note['id'])['version']
@@ -393,15 +402,16 @@ class AssistantNotesTests(NotesFixture):
     def test_contract_actions_are_registered_and_described_for_cc_and_codex(self):
         writes = ['note.capture', 'note.update', 'note.annotate', 'note.archive', 'note.restore', 'note.pin', 'note.snooze',
                   'note.merge', 'note.bulk', 'tag.create', 'tag.rename', 'tag.merge', 'tag.recolor', 'tag.remove']
-        reads = ['notes.list', 'notes.get', 'tags.list']
-        self.assertTrue(set(writes) <= personal.WRITE_ACTIONS)
-        self.assertTrue(set(reads) <= personal_actions.READ_ACTIONS)
-        skill = (PLUGIN / 'skills' / 'assistant' / 'SKILL.md').read_text(encoding='utf-8')
-        tool = next(spec for spec in codex_tools._SPECS if spec['name'] == 'crew_personal')['description']
+        reads = ['notes.list', 'note.get', 'tags.list']
+        for runtime in ('claude', 'codex'):
+            caller, grants = agent_caller(self.conn, self.sid, runtime=runtime)
+            tools = {item['name']: item for item in mcp.list_tools(caller, grants, exposure='all')}
+            for action in writes + reads:
+                with self.subTest(runtime=runtime, action=action):
+                    tool = tools[action.replace('.', '_')]
+                    self.assertTrue(tool['description'].strip())
+                    self.assertEqual(tool['annotations']['readOnlyHint'], action in reads)
         context = personal.assistant_context(self.conn, self.sid)
-        for action in writes + reads:
-            self.assertIn(action, skill, action)
-            self.assertIn(action, tool, action)
         self.assertTrue(set(writes) <= set(context['write_actions']))
         self.assertIn('[Crew assistant]', context['instructions'])
 
@@ -421,51 +431,51 @@ class NotesHttpFixture(ShellFixture):
         self.assertTrue(self.server.service.agents_ready.wait(5))
         self.url = 'http://127.0.0.1:%d' % self.server.server_port
 
-    def post(self, path, action, data, request_id):
-        return self.request(path, {'action': action, 'data': data, 'request_id': request_id})
+    def post(self, operation, data, request_id):
+        return self.request('/api/op/' + operation, {'data': data}, request_id=request_id)
 
     def capture(self, request_id='idea', **data):
-        code, value, _ = self.post('/api/personal/notes', 'capture', {'text': '健身打卡 App', 'title': '打卡',
+        code, value, _ = self.post('note.capture', {'text': '健身打卡 App', 'title': '打卡',
                                    'tags': ['生活'], **data}, request_id)
         self.assertEqual(code, 200, value)
         return value['note']
 
     def discuss(self, sid, note, message_id):
-        return self.request('/api/chat/send', {'session_id': sid, 'text': '帮我把这个想法想清楚',
+        return self.request('/api/op/chat.send', {'session_id': sid, 'text': '帮我把这个想法想清楚',
                                                'message_id': message_id, 'note_id': note['id']})
 
 
 class NotesWallHttpTests(NotesHttpFixture, unittest.TestCase):
     def test_note_and_tag_routes_follow_contract_and_rename_collision_is_409_with_merge_detail(self):
         note = self.capture()
-        code, listing, _ = self.request('/api/personal/notes?include_archived=1')
+        code, listing, _ = self.request('/api/op/notes.list?include_archived=1')
         self.assertEqual((code, listing['stale_days'], listing['notes'][0]['id']), (200, 14, note['id']), listing)
-        code, error, _ = self.request('/api/personal/notes', {'action': 'capture', 'request_id': 'flat', 'text': '旧格式'})
+        code, error, _ = self.request('/api/op/note.capture', {'text': '旧格式'})
         self.assertEqual(code, 400, error)
-        code, tags, _ = self.request('/api/personal/tags')
+        code, tags, _ = self.request('/api/op/tags.list')
         self.assertEqual((code, [tag['name'] for tag in tags['tags']], len(tags['palette'])), (200, ['生活'], 10), tags)
-        code, created, _ = self.post('/api/personal/tags', 'create', {'name': '运动', 'color': 'c4'}, 'tag-create')
+        code, created, _ = self.post('tag.create', {'name': '运动', 'color': 'c4'}, 'tag-create')
         self.assertEqual(code, 200, created)
-        code, conflict, _ = self.post('/api/personal/tags', 'rename', {'name': '生活', 'new_name': '运动', 'expected_version': 1}, 'tag-rename')
+        code, conflict, _ = self.post('tag.rename', {'name': '生活', 'new_name': '运动', 'expected_version': 1}, 'tag-rename')
         self.assertEqual(code, 409, conflict)
         self.assertEqual((conflict['merge_required'], conflict['target'], conflict['affected']), (True, '运动', 1))
         self.assertIn('合并', conflict['error'])
-        code, merged, _ = self.post('/api/personal/tags', 'merge', {'from': ['生活'], 'into': '运动'}, 'tag-merge')
+        code, merged, _ = self.post('tag.merge', {'from': ['生活'], 'into': '运动'}, 'tag-merge')
         self.assertEqual((code, merged['affected']), (200, 1), merged)
-        code, pinned, _ = self.post('/api/personal/notes', 'pin', {'note_id': note['id'], 'expected_version': 2, 'pinned': True}, 'pin')
+        code, pinned, _ = self.post('note.pin', {'note_id': note['id'], 'expected_version': 2, 'pinned': True}, 'pin')
         self.assertEqual(code, 200, pinned)
-        code, stale, _ = self.post('/api/personal/notes', 'pin', {'note_id': note['id'], 'expected_version': 2, 'pinned': False}, 'pin-2')
+        code, stale, _ = self.post('note.pin', {'note_id': note['id'], 'expected_version': 2, 'pinned': False}, 'pin-2')
         self.assertEqual(code, 409, stale)
         self.assertNotIn('merge_required', stale)
         self.assertEqual(self.processes, [])
 
     def test_discussing_a_note_injects_server_context_and_records_the_message_once(self):
-        code, opened, _ = self.request('/api/assistant/open', {})
+        code, opened, _ = self.request('/api/op/assistant.open', {})
         self.assertEqual(code, 200, opened)
         sid = opened['session_id']
         note = self.capture()
         self.assertEqual(self.processes, [])
-        code, error, _ = self.request('/api/chat/send', {'session_id': sid, 'text': '聊聊', 'note_id': 'missing'})
+        code, error, _ = self.request('/api/op/chat.send', {'session_id': sid, 'text': '聊聊', 'note_id': 'missing'})
         self.assertEqual(code, 400, error)
         self.assertEqual(self.processes, [])
         code, sent, _ = self.discuss(sid, note, 'discuss-1')
@@ -483,7 +493,7 @@ class NotesWallHttpTests(NotesHttpFixture, unittest.TestCase):
         self.assertEqual(code, 200, again)
         self.assertTrue(again['duplicate'])
         self.assertEqual(again['note']['discussions']['count'], 1)
-        code, wrong, _ = self.request('/api/chat/send?project=demo', {'session_id': 's3', 'text': '聊聊', 'note_id': note['id']})
+        code, wrong, _ = self.request('/api/op/chat.send?project=demo', {'session_id': 's3', 'text': '聊聊', 'note_id': note['id']})
         self.assertEqual(code, 400, wrong)
         self.assertIn('全局助手', wrong['error'])
 
@@ -502,7 +512,7 @@ class CodexDiscussionTests(NotesHttpFixture, unittest.TestCase):
             self.addCleanup(patch.stop)
 
     def test_codex_assistant_receives_the_same_note_context(self):
-        code, opened, _ = self.request('/api/assistant/open', {})
+        code, opened, _ = self.request('/api/op/assistant.open', {})
         self.assertEqual(code, 200, opened)
         sid = opened['session_id']
         note = self.capture()

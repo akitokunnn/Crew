@@ -24,12 +24,12 @@ def card(conn, value):
     req = value['requirements']
     available = conn.execute('SELECT 1 FROM goal_reports WHERE goal_id=?', (value['id'],)).fetchone()
     brief = None
-    report = conn.execute('SELECT id,data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? '
+    report = conn.execute('SELECT id,requirement_version,data_json,created_at FROM goal_reports WHERE goal_id=? AND round=? '
                           'ORDER BY version DESC LIMIT 1', (value['id'], value['current_round'])).fetchone()
     supplements = [] if report is None else [dict(row) for row in conn.execute(
         'SELECT version,change_text AS text,actor,created_at AS at FROM goal_requirements '
         'WHERE goal_id=? AND version>? AND created_at>? ORDER BY version',
-        (value['id'], json.loads(report['data_json'])['requirement_version'], report['created_at']))]
+        (value['id'], report['requirement_version'], report['created_at']))]
     if value['status'] == 'awaiting_acceptance':
         if report is not None:
             data = json.loads(report['data_json'])
@@ -61,6 +61,21 @@ def card(conn, value):
             'last_activity_at': max(value['updated_at'], activity or value['updated_at']), 'ended_at': ended_at}
 
 
+def waiting(value, approvals):
+    """What a task is waiting on that its card cannot show, or None: native approvals held in this host's
+    executions (only the running service knows them) and why a submitted delivery is not up for acceptance yet."""
+    held = [{key: item.get(key) for key in ('id', 'kind', 'command', 'paths', 'session_id', 'created_at')}
+            for item in approvals if item.get('goal_id') == value['id']]
+    if held:
+        note = ('执行在等你确认 %d 个权限请求（命令或改文件），在“等你确认”里批准或拒绝后才会继续' % len(held)
+                + ('；交付已提交，处理后转为待验收' if value['finish_pending'] else ''))
+    elif value['finish_pending'] and value['working_count'] and value['status'] == 'running':
+        note = '交付已提交，等执行这一轮实际结束后自动转为待验收'
+    else:
+        return None
+    return {'approvals': held, 'note': note}
+
+
 def context(conn, identity, execution_id=None):
     result = goal_context.inspect(conn, identity, execution_id)
     result['items'] = [{**item, 'status': 'active' if item['state'] == 'active' else
@@ -74,7 +89,7 @@ def context(conn, identity, execution_id=None):
     return result
 
 
-def detail(conn, project, identity, *, context_state=None):
+def detail(conn, project, identity, *, context_state=None, approvals=()):
     value = goals.get(conn, identity, project)
     executions = [goals.get_execution(conn, row['id']) for row in conn.execute(
         'SELECT id FROM goal_executions WHERE goal_id=? ORDER BY round,generation', (identity,))]
@@ -90,7 +105,8 @@ def detail(conn, project, identity, *, context_state=None):
     reports = [report_entry(project, {**value, 'latest_report_version': latest}, row, root) for row in conn.execute(
         'SELECT id,round,requirement_version,version,outcome,data_json,created_at FROM goal_reports WHERE goal_id=? '
         'ORDER BY round DESC,version DESC', (identity,))]
-    return {'goal': card(conn, value), 'executions': executions, 'work_items': goal_work.items(conn, identity),
+    goal = card(conn, value)
+    return {'goal': goal, 'waiting': waiting(goal, approvals), 'executions': executions, 'work_items': goal_work.items(conn, identity),
             'context': context(conn, identity, current[-1]['id'] if current else None), 'reports': reports,
             'documents': documents.list(conn, project, goal_id=identity),
             'acceptance_review': goals.acceptance_review(conn, identity),

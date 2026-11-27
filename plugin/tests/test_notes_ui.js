@@ -2,7 +2,7 @@
 const {test} = require("node:test");
 const assert = require("node:assert/strict");
 const vm = require("node:vm"), fs = require("node:fs"), path = require("node:path");
-const web = file => fs.readFileSync(path.join(__dirname, "../crew/web", file), "utf8");
+const web = file => fs.readFileSync(path.join(__dirname, "../../frontend", file), "utf8");
 // Same realm as the assertions, so arrays and objects compare structurally.
 globalThis.window = {};
 vm.runInThisContext(web("notes-model.js"));
@@ -107,13 +107,14 @@ function assistantPage(hash, notes) {
     document: {documentElement: {dataset: {}}, addEventListener() {}, createElement: stub, createTextNode: text => ({text}), getElementById: id => { if (!nodes.has(id)) nodes.set(id, stub()); return nodes.get(id); }},
     fetch: async (url, options) => {
       calls.push({url, method: options.method});
-      const value = url === "/api/assistant/state" ? {assistant: {session_id: "assistant"}, projects: [], todos: [], goals: [], sounds: {}, now: "now"}
-        : url.startsWith("/api/personal/notes") ? {notes, stale_days: 14} : {};
+      const value = url === "/api/op/assistant.state" ? {assistant: {session_id: "assistant"}, projects: [], todos: [], goals: [], sounds: {}, now: "now"}
+        : url.startsWith("/api/op/notes.list") ? {notes, stale_days: 14} : {};
       return {ok: true, status: 200, json: async () => value};
     },
     CrewSound: {observe() {}}, CrewPersonalNotes: {create: () => ({open() {}})},
     CrewChat: {initFiles() {}, unmount() {}, update() {}, mount: options => chat.mounts.push(options), setNote: (value, prefill) => chat.notes.push([value, prefill])}};
   sandbox.window = sandbox;
+  vm.runInNewContext(web("browser-utils.js"), sandbox);
   vm.runInNewContext(web("assistant.js"), sandbox);
   return {sandbox, nodes, calls, replaced, listeners, chat};
 }
@@ -124,8 +125,8 @@ test("assistant page attaches the idea from #note, prefills without sending, and
   await settle(); await settle();
   assert.equal(page.chat.mounts.length, 1);
   assert.deepEqual(JSON.parse(JSON.stringify(page.chat.notes)), [[{id: "n-7", title: "想法墙"}, "帮我把这个想法想清楚"]]);
-  assert(page.calls.some(call => call.url === "/api/personal/notes?include_archived=1" && call.method === "GET"));
-  assert(!page.calls.some(call => call.url === "/api/chat/send"), "opening an idea never sends a message");
+  assert(page.calls.some(call => call.url === "/api/op/notes.list?include_archived=1" && call.method === "GET"));
+  assert(!page.calls.some(call => call.url === "/api/op/chat.send"), "opening an idea never sends a message");
   page.chat.mounts[0].onNoteCleared();
   assert.deepEqual(page.replaced, ["/assistant.html"]);
 
@@ -140,5 +141,5 @@ test("assistant page without #note reads no ideas", async () => {
   const page = assistantPage("", []);
   await settle(); await settle();
   assert.equal(page.chat.notes.length, 0);
-  assert(!page.calls.some(call => call.url.startsWith("/api/personal/notes")));
+  assert(!page.calls.some(call => call.url.startsWith("/api/op/notes.list") || call.url.startsWith("/api/op/note.")));
 });

@@ -1,8 +1,24 @@
-#settings-page{height:100%;min-height:0}#native-settings-root{height:100%;min-height:0;flex:1}body:has(#settings-page:not([hidden])) main{overflow:hidden}
-#native-settings-root .tools-page,#native-settings-root .admin-page{min-height:0;background:transparent}#native-settings-root .tools-header,#native-settings-root .admin-header{padding:0 0 20px;border:0;background:transparent}#native-settings-root .tools-header>div,#native-settings-root .admin-header{display:none}#native-settings-root .tools-header{justify-content:flex-end}#native-settings-root .tools-content,#native-settings-root .admin-content{padding:0;max-width:none}#native-settings-root .cs-native-health{margin-top:24px}#native-settings-root .cs-sidebar{flex-basis:205px}#native-settings-root .cs-header{padding-top:29px}
-:root[data-theme=dark]{color-scheme:dark;--bg:#202020;--surface:#272727;--text:#e6e6e6;--text-2:#aaa;--line:#3c3c3c;--muted:#a1a1a1;--sidebar:#252525;--accent:#83b7aa;color:var(--text);background:var(--bg)}
-:root[data-theme=dark] main,:root[data-theme=dark] .workspace-header{background:var(--bg)}:root[data-theme=dark] .brand,:root[data-theme=dark] .nav{color:var(--text)}:root[data-theme=dark] .nav:hover,:root[data-theme=dark] .nav.active{background:#363636;color:var(--text)}:root[data-theme=dark] .secondary,:root[data-theme=dark] .project-row,:root[data-theme=dark] .projects,:root[data-theme=dark] .create-panel,:root[data-theme=dark] input{background:var(--surface);border-color:var(--line);color:var(--text)}:root[data-theme=dark] .project{border-bottom-color:var(--line);color:var(--text)}:root[data-theme=dark] .project-row:hover,:root[data-theme=dark] .project-row:focus-within,:root[data-theme=dark] .secondary:hover{background:#323232}:root[data-theme=dark] .project-avatar{background:var(--bg);border-color:var(--line)}:root[data-theme=dark] .project-row:hover .project-avatar{background:var(--surface);border-color:var(--line)}:root[data-theme=dark] .project-row:hover .arrow{color:var(--text)}:root[data-theme=dark] .project-action:hover,:root[data-theme=dark] .project-settings:hover{background:var(--line);color:var(--text)}:root[data-theme=dark] main h2,:root[data-theme=dark] .panel-heading h2,:root[data-theme=dark] .create-panel label{color:var(--text)}
-@media(max-width:1100px){#native-settings-root .cs-sidebar{flex-basis:205px}#native-settings-root .cs-header{padding-right:24px;padding-left:24px}#native-settings-root .cs-content{padding-right:24px;padding-left:24px}}
-@media(max-width:650px){#native-settings-root .cs-sidebar{flex-basis:auto}}
-:root[data-theme=dark] .remote-banner{border-color:#3d4f5f;background:#232b31;color:var(--text)}:root[data-theme=dark] .remote-banner[data-tone=warning]{border-color:#7a6232;background:#2e281c}:root[data-theme=dark] .remote-banner[data-tone=error]{border-color:#6a3c3c;background:#2f2323}:root[data-theme=dark] .remote-banner-text p,:root[data-theme=dark] .remote-repair label{color:var(--muted)}:root[data-theme=dark] .remote-banner-text .remote-banner-note{color:var(--text)}:root[data-theme=dark] .remote-banner-text .remote-banner-note.is-error{color:#f0a8a8}:root[data-theme=dark] .remote-banner .primary{background:#e6e6e6;border-color:#e6e6e6;color:#1e1e1e}
-:root[data-theme=dark] .admin-stat,:root[data-theme=dark] .admin-incidents,:root[data-theme=dark] .admin-actions{background:var(--surface);border-color:var(--line)}:root[data-theme=dark] .admin-stat h2,:root[data-theme=dark] .admin-stat p,:root[data-theme=dark] .admin-actions p,:root[data-theme=dark] .admin-details,:root[data-theme=dark] .admin-details dt,:root[data-theme=dark] .admin-incident time{color:var(--muted)}:root[data-theme=dark] .admin-stat strong,:root[data-theme=dark] .admin-incident p,:root[data-theme=dark] .admin-details dd{color:var(--text)}:root[data-theme=dark] #admin-state[data-state=healthy]{color:#86c3ab}:root[data-theme=dark] #admin-state[data-state=degraded],:root[data-theme=dark] #admin-state[data-state=failed]{color:#e3a58f}
+/* Host for the injected settings UI (frontend/settings-ui.css). It draws its own Studio sidebar
+   and floating body, so on wide windows the home sheet steps aside and both sit on the canvas;
+   below 651px settings is a single column and stays inside the home sheet. */
+#settings-page{height:100%;min-height:0}
+#native-settings-root{height:100%;min-height:0;flex:1}
+main:has(>#settings-page:not([hidden])){overflow:hidden}
+@media(min-width:651px){main:has(>#settings-page:not([hidden])){height:100%;margin:0;border:0;border-radius:0;background:transparent;box-shadow:none}}
+#native-settings-root .crew-settings{background:transparent}
+#native-settings-root .cs-sidebar{flex-basis:205px}
+#native-settings-root :is(.tools-page,.admin-page){min-height:0;background:transparent}
+#native-settings-root :is(.tools-header,.admin-header){position:static;padding:0 0 16px;border:0;background:transparent;backdrop-filter:none}
+#native-settings-root .tools-header>div,#native-settings-root .admin-header{display:none}
+#native-settings-root .tools-header{justify-content:flex-end}
+#native-settings-root :is(.tools-content,.admin-content){padding:0;max-width:none}
+#native-settings-root .cs-native-health{margin-top:24px}
+@media(max-width:1100px){#native-settings-root :is(.cs-header,.cs-content){padding-right:22px;padding-left:22px}}
+@media(max-width:650px){#native-settings-root .cs-sidebar{flex-basis:auto}#native-settings-root :is(.cs-header,.cs-content){padding-right:16px;padding-left:16px}}
+/* Desktop appearance panel: display mode, font size and the first-run guide entry. */
+.hs-appearance{display:grid;gap:12px}
+.hs-font{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin-top:12px}
+.hs-font input{flex:1 1 200px;min-width:0;max-width:420px;accent-color:var(--accent)}
+.hs-font output{min-width:42px;font-size:12px;font-variant-numeric:tabular-nums;color:var(--text-2)}
+.hs-font .cs-button,.hs-guide{margin:0}
+.hs-guide{margin-top:12px}

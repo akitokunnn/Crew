@@ -110,6 +110,8 @@ def _save(conn, decision_id, brief, now=None):
                  "options_json=excluded.options_json,updated_at=excluded.updated_at",
                  (decision_id, brief["title"], brief["context"], brief["why_user"], brief["recommendation_reason"],
                   brief["impact"], json.dumps(brief["options"], ensure_ascii=False), store.now_iso() if now is None else now))
+    from . import snapshot_values
+    snapshot_values.touch_decision(conn, decision_id)
 
 
 def _decision(conn, decision_id):
@@ -154,6 +156,8 @@ def revise(conn, session_id, decision_id, question=INHERIT, options=INHERIT, rec
     validated = validate(candidate, options=options, recommendation=recommendation)
     conn.execute("UPDATE decisions SET question=?,options=?,recommendation=? WHERE id=?",
                  (question, json.dumps(builtins.list(options), ensure_ascii=False), recommendation, decision_id))
+    from . import snapshot_values
+    snapshot_values.touch_decision(conn, decision_id)
     _save(conn, decision_id, validated, now)
     board._event(conn, "decision:revise", before["project"], session_id,
                  {"id": decision_id, "before": before, "question": question, "brief": validated}, now)
@@ -179,9 +183,9 @@ def queue_review(conn, decision_id, now=None):
                                or board.is_archived(conn, leader["session_id"]))):
         leader = None
     notice = ("请重新审阅这项旧拍板（内部 ID：%s），不要另发重复题。\n原问题：%s\n"
-              "确实需要用户选择时，用 crew decision revise %s 原位补清：一事一问的短标题、背景、为什么必须由用户决定、"
+              "确实需要用户选择时，用 Crew 工具 `decision_revise`（`id=%s`）原位补清：一事一问的短标题、背景、为什么必须由用户决定、"
               "推荐方案和理由、影响，以及各个完整行动选项的后果。选项不能只写①②或 A/B。"
-              "若其实是用户亲手操作，转为 crew todo add，写清步骤与确认方法，再撤回原题。"
+              "若其实是用户亲手操作，用 `todo_add` 登记，写清步骤与确认方法，再撤回原题。"
               "若信任模式已经授权自主决定，由 AI 自行作出有理由的建议并登记，不能默认选第一项。"
               "请保留原 ID，不要让用户在多个重复题之间选择。" %
               (decision_id, decision["question"], decision_id))

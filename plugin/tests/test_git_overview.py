@@ -1,12 +1,12 @@
 """Branch ownership uses an isolated board and a real temporary Git worktree."""
 import tests  # Install the production-service connection guard.
 import contextlib
-import io
-import json
 import subprocess
 from unittest import mock
 
-from crew import board, cli, codex_tools, git_overview, git_view, goals, runtimes, session_ops, store
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
+from crew import board, git_overview, git_view, goals, runtimes, session_ops, store
 from test_core import CoreCase, NOW
 
 
@@ -291,29 +291,18 @@ class GitOverviewTests(CoreCase):
             git_overview.adopt(self.conn, self.project, None, 'topic', 'chief')
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM branch_claims').fetchone()[0], 0)
 
-    def test_cli_lists_unowned_branches_and_adopts_for_caller(self):
+    def test_leader_lists_unowned_branches_and_adopts_for_self(self):
         self.leader('heir', 'Heir')
-
-        def run(*argv, sid='heir'):
-            out, err = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                code = cli.main(['--home', str(self.home), '--session', sid, *argv], cwd=self.root)
-            return code, out.getvalue(), err.getvalue()
-
-        code, out, _ = run('git', 'branches')
-        self.assertEqual(code, 0)
-        self.assertIn('topic', out)
-        self.assertIn('没人认领', out)
-        listed = json.loads(run('git', 'branches', '--json')[1])
-        self.assertEqual([(item['name'], item['owners']) for item in listed['branches']], [('topic', [])])
-        self.assertEqual(run('git', 'adopt', 'topic')[:2], (0, '已认领 topic，归 Heir 管\n'))
-        self.assertIn('Heir', run('git', 'branches')[1])
+        listed = self.agent('git.branches.list', sid='heir')['branches']
+        self.assertEqual([(item['name'], item['owners']) for item in listed], [('topic', [])])
+        self.agent('git.adopt', {'branch': 'topic'}, sid='heir')
+        self.assertEqual(self.owners(), [{'session_id': 'heir', 'name': 'Heir'}])
         self.member('worker', 'Worker', 'Heir')
-        code, _, err = run('git', 'adopt', 'topic', sid='worker')
-        self.assertEqual(code, 1)
-        self.assertIn('在岗的 leader', err)
+        with self.assertRaises(OpError) as denied:
+            self.agent('git.adopt', {'branch': 'topic'}, sid='worker')
+        self.assertEqual(denied.exception.code, 'forbidden')
 
-    def test_cli_and_codex_branch_lists_carry_integration_remote_pr_and_uncommitted_work(self):
+    def test_codex_branch_list_carries_integration_remote_pr_and_uncommitted_work(self):
         self.leader('heir', 'Heir')
         runtimes.set(self.conn, 'heir', 'codex')
         # A merged branch whose worktree still has source edits is listed and adoptable, like the MIB proactive-* ones.
@@ -327,15 +316,7 @@ class GitOverviewTests(CoreCase):
         git_view._pull_requests[git_view._root(self.root)] = {'at': NOW, 'open': {'topic': {
             'number': 9, 'url': 'https://github.com/example/demo/pull/9', 'draft': False, 'base': 'main', 'ci': 'success'}}}
         self.addCleanup(git_view._pull_requests.clear)
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            self.assertEqual(cli.main(['--home', str(self.home), '--session', 'heir', 'git', 'branches'], cwd=self.root), 0)
-        text = out.getvalue()
-        self.assertIn('topic · 1 个提交未合入 main，其中 1 个未进 trial · 只在本地 · PR #9', text)
-        self.assertIn('drafts · 已合入 main · 只在本地 · 1 个未提交改动', text)
-        self.assertFalse([line for line in text.splitlines() if line.startswith('trial ')])
-        result = codex_tools.CodexTools(self.home, 'heir')({'tool': 'crew_git', 'arguments': {'action': 'branches', 'data': {}}})
-        listed = json.loads(result['contentItems'][0]['text'])
+        listed = ai_call(self.operations, self.conn, 'heir', 'git.branches.list', runtime='codex')
         self.assertEqual(listed['integration'], 'trial')
         items = {item['name']: item for item in listed['branches']}
         self.assertEqual(set(items), {'topic', 'drafts'})
@@ -351,19 +332,16 @@ class GitOverviewTests(CoreCase):
         for sid in ('heir', 'worker'):
             runtimes.set(self.conn, sid, 'codex')
 
-        def call(sid, action, data=None):
-            result = codex_tools.CodexTools(self.home, sid)({'tool': 'crew_git', 'arguments': {
-                'action': action, 'data': {} if data is None else data}})
-            return result['success'], json.loads(result['contentItems'][0]['text'])
+        def call(sid, name, args=None):
+            return ai_call(self.operations, self.conn, sid, name, args, runtime='codex')
 
-        ok, listed = call('worker', 'branches')
-        self.assertTrue(ok)
+        listed = call('worker', 'git.branches.list')
         self.assertEqual([(item['name'], item['owners']) for item in listed['branches']], [('topic', [])])
-        ok, error = call('worker', 'adopt', {'branch': 'topic'})
-        self.assertFalse(ok)
-        self.assertIn('在岗的 leader', error['error']['message'])
-        ok, adopted = call('heir', 'adopt', {'branch': 'topic'})
-        self.assertTrue(ok, adopted)
+        with self.assertRaises(OpError) as denied:
+            call('worker', 'git.adopt', {'branch': 'topic'})
+        self.assertEqual(denied.exception.code, 'forbidden')
+        adopted = call('heir', 'git.adopt', {'branch': 'topic'})
         self.assertEqual(adopted['adopted']['leader'], {'session_id': 'heir', 'name': 'Heir'})
         self.assertEqual(self.owners(), [{'session_id': 'heir', 'name': 'Heir'}])
-        self.assertFalse(call('heir', 'adopt', {})[0])
+        with self.assertRaises(OpError):
+            call('heir', 'git.adopt')

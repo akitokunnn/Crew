@@ -25,17 +25,18 @@ class AssistantHttpTests(ShellFixture, unittest.TestCase):
         self.url = 'http://127.0.0.1:%d' % self.server.server_port
 
     def open_assistant(self):
-        code, value, _ = self.request('/api/assistant/open', {})
+        code, value, _ = self.request('/api/op/assistant.open', {})
         self.assertEqual(code, 200, value)
         return value['session_id']
 
+    # The history adapter currently drops the URL query before the handler parses the session ID.
     def test_open_and_state_share_one_global_session_and_never_launch_ai(self):
         before = self.conn.execute('SELECT COUNT(*) FROM projects').fetchone()[0]
         sid = self.open_assistant()
-        code, value, _ = self.request('/api/assistant/open', {'context_project': 'demo'})
+        code, value, _ = self.request('/api/op/assistant.open', {'context_project': 'demo'})
         self.assertEqual(code, 200, value)
         self.assertEqual(value['session_id'], sid)
-        code, snapshot, _ = self.request('/api/assistant/state')
+        code, snapshot, _ = self.request('/api/op/assistant.state')
         self.assertEqual(code, 200, snapshot)
         self.assertIsNone(snapshot['project'])
         self.assertEqual(snapshot['assistant']['session_id'], sid)
@@ -44,35 +45,35 @@ class AssistantHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.processes, [])
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM projects').fetchone()[0], before)
         self.assertIsNone(board.session(self.conn, sid)['project'])
-        code, value, _ = self.request('/api/chat/history?' + urlencode({'session_id': sid}))
+        code, value, _ = self.request('/api/op/chat.history?' + urlencode({'session_id': sid}))
         self.assertEqual(code, 200, value)
         self.assertFalse(value['busy'])
-        code, _, _ = self.request('/api/chat/history?' + urlencode({'project': 'demo', 'session_id': sid}))
+        code, _, _ = self.request('/api/op/chat.history?' + urlencode({'project': 'demo', 'session_id': sid}))
         self.assertEqual(code, 400)
 
     def test_explicit_message_uses_shared_chat_delivery_and_keeps_identity(self):
         sid = self.open_assistant()
         body = {'session_id': sid, 'text': '帮我看看各个项目的近况', 'message_id': 'assistant-http-message'}
-        code, value, _ = self.request('/api/chat/send', body)
+        code, value, _ = self.request('/api/op/chat.send', body)
         self.assertEqual(code, 200, value)
         self.assertTrue(value['ok'])
         self.assertEqual(len(self.processes), 1)
-        code, again, _ = self.request('/api/chat/send', body)
+        code, again, _ = self.request('/api/op/chat.send', body)
         self.assertEqual(code, 200, again)
         self.assertEqual(again['message_id'], value['message_id'])
         history = self.server.service.chat.history(sid)
         self.assertEqual(len([event for event in history['events'] if event.get('id') == value['message_id']]), 1)
         self.finish_turn(sid, self.processes[0])
-        code, result, _ = self.request('/api/chat/read', {'session_id': sid, 'seq': 1})
+        code, result, _ = self.request('/api/op/chat.read', {'session_id': sid, 'seq': 1})
         self.assertEqual(code, 200, result)
-        code, result, _ = self.request('/api/session/stop', {'session_id': sid})
+        code, result, _ = self.request('/api/op/session.stop', {'session_id': sid})
         self.assertEqual(code, 200, result)
         self.assertEqual(self.open_assistant(), sid)
 
     def test_first_discussion_needs_only_its_initial_message(self):
         names = []
         for text in ('我想做一个健身打卡 App', '研究流式音频说话人分段，整段结束后400ms内返回'):
-            code, value, _ = self.request('/api/leader?project=demo', {'task': text})
+            code, value, _ = self.request('/api/op/leader.create?project=demo', {'task': text})
             self.assertEqual(code, 200, value)
             person = board.session(self.conn, value['session_id'])
             names.append(person['crew_name'])
@@ -80,63 +81,94 @@ class AssistantHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(names, ['新对话', '新对话 2'])
 
     def test_new_page_assets_are_served_by_the_actual_backend(self):
-        for path in ('/assistant.html', '/assistant.js', '/assistant.css', '/workspace-home.js', '/workspace-home.css',
-                     '/personal-notes-ui.js', '/personal-notes-ui.css', '/behavior-prompts-ui.js', '/behavior-prompts-ui.css'):
+        for path in ('/app-data.js', '/assistant.html', '/assistant.js', '/assistant.css', '/workspace-home.js', '/workspace-home.css',
+                     '/workspace-entry.js', '/workspace-entry.css',
+                     '/global-rail.js', '/voice.html', '/voice.js', '/voice.css', '/mindmap.js', '/mindmap-model.js', '/mindmap.css', '/personal-notes-ui.js', '/personal-notes-ui.css', '/behavior-prompts-ui.js', '/behavior-prompts-ui.css', '/channel.css', '/war-room.js', '/war-room.css',
+                     '/restructure-ui.js', '/restructure-ui.css'):
             code, content, _ = self.request(path, raw=True)
             self.assertEqual(code, 200, path)
             self.assertGreater(len(content), 30)
 
     def test_quick_note_capture_edit_and_start_keep_original_and_never_duplicate_leader(self):
-        body = {'action': 'capture', 'request_id': 'fitness-idea',
-                'data': {'text': '简单的健身打卡 App', 'tags': ['生活'], 'project': 'demo'}}
-        code, captured, _ = self.request('/api/personal/notes', body)
+        body = {'data': {'text': '简单的健身打卡 App', 'tags': ['生活'], 'project': 'demo'}}
+        code, captured, _ = self.request('/api/op/note.capture', body, request_id='fitness-idea')
         self.assertEqual(code, 200, captured)
         note = captured['note']
-        code, again, _ = self.request('/api/personal/notes', body)
+        code, again, _ = self.request('/api/op/note.capture', body, request_id='fitness-idea')
         self.assertEqual(code, 200, again)
         self.assertEqual(again['note']['id'], note['id'])
-        self.assertTrue(again['duplicate'])
+        self.assertTrue(again['replayed'])
         self.assertEqual(self.processes, [])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM sessions WHERE project IS NULL").fetchone()[0], 0)
-        code, updated, _ = self.request('/api/personal/notes', {'action': 'update', 'request_id': 'fitness-edited',
-            'data': {'note_id': note['id'], 'expected_version': note['version'], 'text': '健身打卡 App，先做每日打卡',
-                     'tags': ['生活'], 'project': 'demo', 'state': 'open'}})
+        code, updated, _ = self.request('/api/op/note.update', {'data': {'note_id': note['id'], 'expected_version': note['version'], 'text': '健身打卡 App，先做每日打卡',
+                     'tags': ['生活'], 'project': 'demo', 'state': 'open'}}, request_id='fitness-edited')
         self.assertEqual(code, 200, updated)
         self.assertEqual(updated['note']['original_text'], body['data']['text'])
-        code, listing, _ = self.request('/api/personal/notes?project=demo')
+        code, listing, _ = self.request('/api/op/notes.list?project=demo')
         self.assertEqual(code, 200, listing)
         self.assertEqual(len(listing['notes']), 1)
-        start = {'note_id': note['id'], 'project': 'demo', 'request_id': 'fitness-start'}
-        code, started, _ = self.request('/api/personal/notes/start', start)
+        start = {'note_id': note['id'], 'project': 'demo'}
+        code, started, _ = self.request('/api/op/note.start', start, request_id='fitness-start')
         self.assertEqual(code, 200, started)
-        code, repeated, _ = self.request('/api/personal/notes/start', start)
+        code, repeated, _ = self.request('/api/op/note.start', start, request_id='fitness-start')
         self.assertEqual(code, 200, repeated)
         self.assertEqual(started['session_id'], repeated['session_id'])
         self.assertEqual(len(self.processes), 1)
         # A lost response can be explicitly associated with the already-created
         # discussion, without replaying the idea into the running conversation.
         self.conn.execute("UPDATE personal_note_leaders SET status='unknown',error='response lost' WHERE note_id=?", (note['id'],))
-        code, recovery, _ = self.request('/api/personal/notes/recovery?note_id=' + note['id'])
+        code, recovery, _ = self.request('/api/op/note.recovery.get?note_id=' + note['id'])
         self.assertEqual(code, 200, recovery)
         self.assertIn(started['session_id'], [person['session_id'] for person in recovery['leaders']])
-        code, recovered, _ = self.request('/api/personal/notes/recovery', {'note_id': note['id'],
-            'session_id': started['session_id'], 'request_id': 'fitness-recovered', 'reason': '已经核对原讨论'})
+        code, recovered, _ = self.request('/api/op/note.recover', {'note_id': note['id'],
+            'session_id': started['session_id'], 'reason': '已经核对原讨论'}, request_id='fitness-recovered')
         self.assertEqual(code, 200, recovered)
         self.assertEqual(recovered['model_calls'], 0)
         self.assertEqual(len(self.processes), 1)
 
     def test_prompt_settings_are_versioned_and_save_without_starting_execution(self):
-        code, config, _ = self.request('/api/behavior-prompts?scope=project&identity=demo')
+        code, config, _ = self.request('/api/op/prompt.list?scope=project&identity=demo')
         self.assertEqual(code, 200, config)
         item = next(row for row in config['items'] if row['key'] == 'summary')
-        body = {'action': 'save', 'scope': 'project', 'identity': 'demo', 'key': 'summary',
+        body = {'scope': 'project', 'identity': 'demo', 'key': 'summary',
                 'expected_version': item['version'], 'content': '先写结论，再列尚未验证的内容。'}
-        code, saved, _ = self.request('/api/behavior-prompts', body)
+        code, saved, _ = self.request('/api/op/prompt.save', body)
         self.assertEqual(code, 200, saved)
         self.assertFalse(saved['started'])
         self.assertEqual(self.processes, [])
-        code, history, _ = self.request('/api/behavior-prompts?scope=project&identity=demo&key=summary&action=history')
+        code, history, _ = self.request('/api/op/prompt.history?scope=project&identity=demo&key=summary')
         self.assertEqual(code, 200, history)
         self.assertEqual(len(history['history']), 1)
-        code, _, _ = self.request('/api/behavior-prompts', {**body, 'content': '旧版本不能覆盖别人刚保存的修改'})
+        code, _, _ = self.request('/api/op/prompt.save', {**body, 'content': '旧版本不能覆盖别人刚保存的修改'})
         self.assertEqual(code, 409)
+
+
+class MindmapHttpTests(ShellFixture, unittest.TestCase):
+    """The mind map's four operations are wired into the real backend's route tables."""
+    request = AssistantHttpTests.request
+    close_server = AssistantHttpTests.close_server
+
+    def setUp(self):
+        ShellFixture.setUp(self)
+        self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project,
+            agents_provider=lambda: [], claude_root=self.claude, codex_root=self.codex,
+            runs_file=self.runs, now=lambda: store.parse_iso(NOW), process_factory=self.process_factory)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .02})
+        self.thread.start()
+        self.addCleanup(self.close_server)
+        self.url = 'http://127.0.0.1:%d' % self.server.server_port
+
+    def test_snapshot_edit_preview_and_convert_are_served(self):
+        code, snapshot, _ = self.request('/api/op/mindmap.get')
+        self.assertEqual(code, 200, snapshot)
+        self.assertEqual(snapshot['version'], 0)
+        code, edited, _ = self.request('/api/op/mindmap.edit', {
+            'ops': [{'op': 'create', 'id': 'root-topic', 'label': '下一版', 'parent_id': None}], 'base_version': 0})
+        self.assertEqual(code, 200, edited)
+        self.assertEqual(edited['map']['version'], 1)
+        code, stale, _ = self.request('/api/op/mindmap.edit', {
+            'ops': [{'op': 'label', 'id': 'root-topic', 'label': '旧版本'}], 'base_version': 0})
+        self.assertEqual(code, 409, stale)
+        for path in ('/api/op/mindmap.preview', '/api/op/mindmap.convert'):
+            code, refused, _ = self.request(path, {})
+            self.assertEqual(code, 400, (path, refused))

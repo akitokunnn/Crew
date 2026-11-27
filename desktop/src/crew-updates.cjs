@@ -149,7 +149,7 @@ class CrewUpdates {
       health = this.state.backend;
       const target = this.state.target;
       this._phase('preparing', '正在等待已接受的任务完成…');
-      prepared = await this.request(this.backend.url, '/api/admin/update/prepare', { instance_id: health.instance_id }, 15000);
+      prepared = await this.request(this.backend.url, '/api/op/admin.update.prepare', { instance_id: health.instance_id }, 15000);
       lock.assert();
       if (!this.queued || this.closed) { this._phase('idle', '已取消等待更新。'); return this.snapshot(); }
       if (prepared.status === 'busy') {
@@ -189,7 +189,7 @@ class CrewUpdates {
       Object.assign(this.state, { phase: 'error', error: error.message, message: stopped ? '后台切换未完成，请查看系统管理员；备份已保留。' : '更新未完成，备份（若已创建）已保留。' }); this._emit();
     } finally {
       if (prepared?.gate_id && !stopped) {
-        try { await this.request(this.backend.url, '/api/admin/update/cancel', { instance_id: health.instance_id, gate_id: prepared.gate_id }); }
+        try { await this.request(this.backend.url, '/api/op/admin.update.cancel', { instance_id: health.instance_id, gate_id: prepared.gate_id }); }
         catch (error) { this.state.error = [this.state.error, '解除更新准备失败：' + error.message].filter(Boolean).join('；'); this._emit(); }
       }
       if (lock) await lock.release();
@@ -207,11 +207,11 @@ class CrewUpdates {
     const lock = await this._lock();
     let health, prepared, kept = false;
     const reopen = async () => {
-      if (prepared?.gate_id) await this.request(this.backend.url, '/api/admin/update/cancel', { instance_id: health.instance_id, gate_id: prepared.gate_id });
+      if (prepared?.gate_id) await this.request(this.backend.url, '/api/op/admin.update.cancel', { instance_id: health.instance_id, gate_id: prepared.gate_id });
     };
     try {
       health = await this._health();
-      prepared = await this.request(this.backend.url, '/api/admin/update/prepare', { instance_id: health.instance_id }, 15000);
+      prepared = await this.request(this.backend.url, '/api/op/admin.update.prepare', { instance_id: health.instance_id }, 15000);
       lock.assert();
       if (prepared.status === 'busy') return { ok: false, reasons: prepared.reasons || [] };
       if (!prepared.ok || prepared.instance_id !== health.instance_id || prepared.pid !== health.pid || !prepared.gate_id) throw new Error('后台更新准备结果无效，请重新检查。');

@@ -20,7 +20,7 @@ class ChatLoadingTests(unittest.TestCase):
         self.manager = self.case.server.service.chat
 
     def history(self, **params):
-        code, value, _ = self.case.request('/api/chat/history?' + urlencode({
+        code, value, _ = self.case.request('/api/op/chat.history?' + urlencode({
             'project': 'demo', 'session_id': 's3', **params}))
         self.assertEqual(code, 200, value)
         return value
@@ -58,7 +58,7 @@ class ChatLoadingTests(unittest.TestCase):
         self.assertEqual((len(page['events']), page['first_seq'], page['has_more']), (5000, 2, True))
         for params in ({'tail': 0}, {'tail': -1}, {'tail': 5001}, {'tail': '1.5'}, {'tail': ''},
                        {'tail': 1, 'before': 0}, {'tail': 1, 'before': 'bad'}):
-            code, error, _ = self.case.request('/api/chat/history?' + urlencode({
+            code, error, _ = self.case.request('/api/op/chat.history?' + urlencode({
                 'project': 'demo', 'session_id': 's3', **params}))
             self.assertEqual(code, 400, (params, error))
 
@@ -73,7 +73,7 @@ class ChatLoadingTests(unittest.TestCase):
         goal = self.case.goal()
         empty = self.stream_headers(goal_id=goal['id'])
         self.assertEqual((empty['X-Crew-Execution-Id'], empty['X-Crew-Latest-Seq']), ('', '0'))
-        code, receipt, _ = self.case.request('/api/chat/send?project=demo', {
+        code, receipt, _ = self.case.request('/api/op/chat.send?project=demo', {
             'session_id': 's3', 'goal_id': goal['id'], 'text': 'Use the fake carrier'})
         self.assertEqual(code, 200, receipt)
         selected = receipt['execution_id']
@@ -104,7 +104,7 @@ class ChatLoadingTests(unittest.TestCase):
 class ProjectionCacheTests(unittest.TestCase):
     def test_projections_reuse_signature_and_invalidate_on_self_and_external_append_or_replacement(self):
         with tempfile.TemporaryDirectory() as directory:
-            journal = chat.Journal(Path(directory) / 'events.jsonl')
+            journal = chat.Journal(Path(directory) / 'events.jsonl', None)
             journal.emit('text', id='answer', text='Saved reply')
             journal.emit('turn_result', status='completed', success=True)
 

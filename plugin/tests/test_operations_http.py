@@ -28,11 +28,11 @@ class OperationsHttpTests(ShellFixture, unittest.TestCase):
 
     def test_settings_page_assets_and_snapshot_do_not_start_a_native_turn(self):
         with mock.patch('crew.operations_chat.subprocess.Popen', side_effect=AssertionError('no model')):
-            code, data, _ = self.request('/api/admin/chat')
+            code, data, _ = self.request('/api/op/ops_chat.get', {})
             self.assertEqual(code, 200)
             self.assertEqual(data['messages'], [])
             self.assertFalse(data['busy'])
-            code, data, _ = self.request('/api/admin/config')
+            code, data, _ = self.request('/api/op/ops_config.get', {})
             self.assertEqual(code, 200)
             self.assertFalse(data['configured'])
             for asset in ('operations-ui.js', 'operations-ui.css'):
@@ -42,50 +42,50 @@ class OperationsHttpTests(ShellFixture, unittest.TestCase):
     def test_configuration_is_saved_and_invalid_enabled_policy_returns_real_error(self):
         value = {'enabled': False, 'repository': '', 'reproduce': [], 'verify': [],
                  'timeout_seconds': 180, 'merge_ref': ''}
-        code, saved, _ = self.request('/api/admin/config', value)
+        code, saved, _ = self.request('/api/op/ops_config.save', value)
         self.assertEqual(code, 200, saved)
         self.assertEqual(saved['policy'], value)
-        code, failed, _ = self.request('/api/admin/config', {**value, 'enabled': True})
+        code, failed, _ = self.request('/api/op/ops_config.save', {**value, 'enabled': True})
         self.assertEqual(code, 400, failed)
         self.assertIn('绝对路径', failed['error'])
-        code, latest, _ = self.request('/api/admin/config')
+        code, latest, _ = self.request('/api/op/ops_config.get', {})
         self.assertEqual(latest['policy'], value)
 
     def test_send_and_interrupt_route_without_a_project_or_business_session(self):
         result = {'messages': [], 'busy': True, 'error': None, 'working_since': 'fixture'}
         with mock.patch('crew.operations_chat.send', return_value=result) as send:
             body = {'text': '后台为什么断线？', 'message_id': 'fixture-id'}
-            code, data, _ = self.request('/api/admin/chat/send', body)
+            code, data, _ = self.request('/api/op/ops_chat.send', body)
             self.assertEqual((code, data), (200, result))
             send.assert_called_once_with(self.home, PLUGIN, body)
         with mock.patch('crew.operations_chat.interrupt', return_value=result) as stop:
-            code, data, _ = self.request('/api/admin/chat/interrupt', {})
+            code, data, _ = self.request('/api/op/ops_chat.interrupt', {})
             self.assertEqual((code, data), (200, result))
             stop.assert_called_once_with(self.home)
 
     def test_connection_preview_is_read_only_and_prepare_requires_live_instance_and_lock(self):
         sid, process = self.start_leader()
-        code, plan, _ = self.request('/api/admin/connection/plan')
+        code, plan, _ = self.request('/api/op/admin.connection.plan', {})
         self.assertEqual(code, 200, plan)
         self.assertTrue(any(item['session_id'] == sid and item['running'] for item in plan['sessions']))
         self.assertIsNone(process.poll())
         body = {'instance_id': self.server.service.instance_id}
-        code, denied, _ = self.request('/api/admin/connection/prepare', body)
+        code, denied, _ = self.request('/api/op/admin.connection.prepare', body)
         self.assertEqual(code, 409, denied)
         self.assertIn('切换锁', denied['error'])
         self.assertIsNone(process.poll())
         lock = updater.update_lock(self.home)
         self.assertTrue(lock.acquire())
         try:
-            code, denied, _ = self.request('/api/admin/connection/prepare', {'instance_id': 'old-instance'})
+            code, denied, _ = self.request('/api/op/admin.connection.prepare', {'instance_id': 'old-instance'})
             self.assertEqual(code, 409, denied)
             self.assertIsNone(process.poll())
-            code, prepared, _ = self.request('/api/admin/connection/prepare', body)
+            code, prepared, _ = self.request('/api/op/admin.connection.prepare', body)
             self.assertEqual(code, 200, prepared)
             self.assertEqual(prepared['instance_id'], body['instance_id'])
             self.assertIsNotNone(process.poll())
             self.assertEqual(self.server.service.chat.paused(), prepared['gate_id'])
-            code, cancelled, _ = self.request('/api/admin/update/cancel',
+            code, cancelled, _ = self.request('/api/op/admin.update.cancel',
                 {**body, 'gate_id': prepared['gate_id']})
             self.assertEqual(code, 200, cancelled)
         finally:
@@ -97,7 +97,7 @@ class OperationsHttpTests(ShellFixture, unittest.TestCase):
         self.assertTrue(lock.acquire())
         try:
             with mock.patch('crew.operations.read_operations', return_value={'active_worker': {'pid': 1}}):
-                code, denied, _ = self.request('/api/admin/connection/prepare',
+                code, denied, _ = self.request('/api/op/admin.connection.prepare',
                                               {'instance_id': self.server.service.instance_id})
             self.assertEqual(code, 409, denied)
             self.assertIn('运维修复', denied['error'])

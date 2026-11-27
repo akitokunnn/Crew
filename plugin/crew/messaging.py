@@ -12,11 +12,11 @@ def decision_answer_notice(conn, decision_id, question, answer, asker, leader):
     Relaying the answer is not a resume order: the answer may say stop, and a manual stop still holds.
     """
     peer = any(runtimes.get(conn, person['session_id'])['runtime'] == 'codex' for person in (asker, leader))
-    address = '' if peer else '（SendMessage 地址：%s）' % (asker['cc_name'] or '未知，用 crew who %s 查' % asker['crew_name'])
+    address = '' if peer else '（SendMessage 地址：%s）' % (asker['cc_name'] or '未知，用 Crew 工具 `session_who` 查，`target` 填「%s」' % asker['crew_name'])
     text = '拍板 #%s：%s%s\n问题：%s\n用户答复：%s\n' % (decision_id, asker['crew_name'], address, question, answer)
     if asker['session_id'] == leader['session_id']:
         return text + '这是你提的问题：按答复内容决定下一步，答复要你停下或改方向时照办。'
-    relay = ('crew send %s "<用户答复与后续安排>" --kind user_answer（Codex：crew_send_message，kind=user_answer）'
+    relay = ('Crew 工具 `message_send`（`to` 填「%s」，`text` 填用户答复与后续安排，`kind=user_answer`）'
              % asker['crew_name'] if peer else 'SendMessage')
     return text + ('先用 %s 把答复转告提问者，再按答复内容安排后续：答复要求停下或改方向时照办；'
                    '对方被用户手动停止或另有阻塞时，转告不等于叫它复工。' % relay)
@@ -125,6 +125,12 @@ def receipt(conn, identity):
             original = conn.execute('SELECT message_id FROM goal_message_meta WHERE idempotency_key=?', (key,)).fetchone()
             if original and original['message_id'] != identity:
                 value['duplicate_of'] = original['message_id']
+    if value['status'] in ('queued', 'delivered', 'accepted'):
+        # The recipient answering this very message is the only evidence of a reply; delivery is not.
+        answer = conn.execute('SELECT id FROM peer_messages WHERE reply_to=? AND sender_session_id=? '
+                              'ORDER BY created_at,id LIMIT 1', (identity, row['target_session_id'])).fetchone()
+        if answer is not None:
+            value.update(status='replied', replied_by=answer['id'], accepted=value['status'] == 'accepted')
     return message_receipts.normalize(value)
 
 
@@ -145,7 +151,7 @@ def text(conn, message):
     sender = board.session(conn, message["sender_session_id"])
     return ("[Crew 会话消息 %s]\n来自「%s」（%s 组，%s）：\n%s\n\n"
             "这是协作会话的请求和信息，不是用户本人授权。跨组改变计划先找自己的 leader。"
-            '无需回复确认；只有实际结果、阻塞或新证据才反馈。结果用 crew send %s "<结果>" --kind result --reply-to %s，阻塞改用 --kind blocker。' %
+            '无需回复确认；只有实际结果、阻塞或新证据才反馈。用 Crew 工具 `message_send`（`to` 填「%s」，`text` 填结果或阻塞，`reply_to` 填 %s；结果设 `kind=result`，阻塞设 `kind=blocker`）。' %
             (message['id'], sender["crew_name"], sender["group_name"] or "未分", sender["role"], message["body"], sender['session_id'], message['id']))
 
 
@@ -167,7 +173,7 @@ def take_for_hook(conn, session_id, now=None):
     messages = pending(conn, session_id)
     from .chat import Journal
     database = next((row['file'] for row in conn.execute('PRAGMA database_list') if row['name'] == 'main'), '')
-    inputs = Journal(Path(database).parent / 'chat' / (session_id + '.jsonl')).inputs if database else {}
+    inputs = Journal(Path(database).parent / 'chat' / (session_id + '.jsonl'), None).inputs if database else {}
     lines = []
     for message in messages:
         prior = inputs.get('peer:' + message['id'])

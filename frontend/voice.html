@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>语音 · 助手 · Crew</title>
+  <link rel="icon" href="/logo.svg">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/voice.css">
+  <script src="/voice.js" defer></script>
+</head>
+<body class="voice-page vtl-empty" data-state="idle">
+  <div class="vp">
+    <!-- 页头：返回助手 / 标题 / 引擎与状态 -->
+    <header class="vh">
+      <a class="vh-back" href="/assistant.html" aria-label="返回助手">
+        <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5"/></svg><span>助手</span>
+      </a>
+      <div class="vh-title"><h1>语音</h1><span class="vh-proto">原型 · 假数据</span></div>
+      <div class="vh-status" id="status" role="status">
+        <i class="vs-dot" aria-hidden="true"></i><span id="st-engine">模拟演示</span><span class="vs-sep" aria-hidden="true">·</span><span id="st-state">空闲</span>
+      </div>
+    </header>
+
+    <!-- 非安全上下文提示（http 局域网） -->
+    <div class="vnotice" id="notice" hidden>
+      <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.9v3.6M8 10.9v.1"/></svg>
+      <p>当前是 http 局域网地址，浏览器不允许使用麦克风，已切到模拟演示。正式版会通过 HTTPS 连接。</p>
+      <button class="vnotice-x" id="notice-x" type="button" aria-label="关闭说明">
+        <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>
+      </button>
+    </div>
+
+    <!-- 声场：随状态与电平呼吸的同心环 -->
+    <section class="stage" aria-hidden="true"><canvas id="field"></canvas></section>
+
+    <!-- 当前这一句 -->
+    <section class="now" aria-live="polite">
+      <div class="now-who" id="now-who"><span class="who-n">助手</span></div>
+      <p class="now-text" id="now-text">我在。<br>想听今天的汇报，还是派个活？</p>
+    </section>
+
+    <!-- 更早的对话与卡片 -->
+    <section class="vtl" id="vtl" aria-label="对话记录"><div class="vtl-in" id="vtl-in">
+      <div class="vtl-try" id="vtl-try"><span>可以这样说</span><q>汇报一下今天各个工作区的进度</q><q>让官网改版的 Leader 把首屏改成深色</q></div>
+    </div></section>
+  </div>
+
+  <!-- 底部悬浮胶囊：语音控制台 -->
+  <div class="dock" id="dock" data-state="idle" data-mode="hold">
+    <div class="dock-l">
+      <div class="vseg" role="radiogroup" aria-label="说话方式">
+        <button type="button" role="radio" aria-checked="true" data-mode="hold" aria-label="按住说话">按住</button>
+        <button type="button" role="radio" aria-checked="false" data-mode="duplex" aria-label="免提（全双工）">免提<i class="live-dot" aria-hidden="true"></i></button>
+      </div>
+      <span class="dock-hint" id="dock-hint" aria-live="polite"></span>
+    </div>
+    <button class="mic" id="mic" type="button" aria-label="按住说话">
+      <span class="mic-ring" aria-hidden="true"></span>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3.2" width="6" height="11" rx="3"/><path d="M5.6 11.2a6.4 6.4 0 0 0 12.8 0M12 17.6v3.2M8.8 20.8h6.4"/></svg>
+    </button>
+    <div class="dock-r" id="dock-r">
+      <span class="meter" id="meter" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+      <button class="dbtn" id="btn-stop" type="button" hidden>
+        <svg class="i sm" viewBox="0 0 16 16" aria-hidden="true"><rect x="4.6" y="4.6" width="6.8" height="6.8" rx="1.6"/></svg><span class="lb">打断</span>
+      </button>
+      <button class="dbtn hang" id="btn-hang" type="button" aria-label="挂断" hidden>
+        <svg class="i sm" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.3 9.6c3.2-3 8.2-3 11.4 0l-1.5 1.8-2.4-.9V8.8a7.4 7.4 0 0 0-3.6 0v1.7l-2.4.9z"/></svg><span class="lb">挂断</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="vtoast" id="toast" role="status" hidden></div>
+</body>
+</html>

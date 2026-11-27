@@ -12,6 +12,10 @@ from unittest import mock
 from crew import board, runtimes, settings, store
 
 
+class Rollback(Exception):
+    """Raised inside a caller's board transaction to roll it back."""
+
+
 def choice(runtime=None, model=None, effort=None, speed=None):
     return {'runtime': runtime, 'model': model, 'effort': effort, 'speed': speed}
 
@@ -76,10 +80,11 @@ class SettingsTests(unittest.TestCase):
         with closing(store.connect(self.home)) as conn:
             existing = json.loads(conn.execute('SELECT ai_json FROM ai_settings').fetchone()[0])
             self.assertEqual(set(existing), {'default','digest','git','operations'})
-            conn.execute('BEGIN IMMEDIATE')
-            settings.save(conn, {**settings.get(conn), 'leader': None})
-            self.assertIsNone(settings.get(conn)['leader'])
-            conn.rollback()
+            # The caller's board transaction owns the write; rolling it back keeps the saved choice.
+            with self.assertRaises(Rollback), board.transaction(conn):
+                settings.save(conn, {**settings.get(conn), 'leader': None})
+                self.assertIsNone(settings.get(conn)['leader'])
+                raise Rollback
         self.assertEqual(settings.get(self.home)['leader'], choice('claude', 'leader-model', 'high'))
 
     def test_explicit_task_is_whole_override_not_cross_runtime_model_or_effort_merge(self):
@@ -123,13 +128,13 @@ class SettingsTests(unittest.TestCase):
         original = {'default': choice('claude'), 'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': None, 'operations': None}
         settings.save(self.home, original)
         with closing(store.connect(self.home)) as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            with mock.patch.object(store, 'connect', side_effect=AssertionError('No nested connection')):
-                settings.save(conn, {'default': choice('codex', 'uncommitted-model')})
-                self.assertEqual(settings.resolve(conn, 'git', self.installed('codex')), choice('codex', 'uncommitted-model'))
-                self.assertTrue(conn.in_transaction)
-            self.assertEqual(settings.get(self.home), original)
-            conn.rollback()
+            with self.assertRaises(Rollback), board.transaction(conn):
+                with mock.patch.object(store, 'connect', side_effect=AssertionError('No nested connection')):
+                    settings.save(conn, {'default': choice('codex', 'uncommitted-model')})
+                    self.assertEqual(settings.resolve(conn, 'git', self.installed('codex')), choice('codex', 'uncommitted-model'))
+                    self.assertTrue(conn.in_transaction)
+                self.assertEqual(settings.get(self.home), original)
+                raise Rollback
             self.assertEqual(settings.load(conn), original)
             with board.transaction(conn):
                 settings.save(conn, {'default': choice('codex')})

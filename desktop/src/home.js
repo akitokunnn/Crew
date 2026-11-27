@@ -35,6 +35,23 @@ function icon(paths) {
   for (const value of paths) { const path = document.createElementNS(node.namespaceURI, 'path'); path.setAttribute('d', value); node.append(path); }
   return node;
 }
+// The Crew mark in the project's theme colour (rect uses currentColor), as in the web workspace switcher.
+function projectLogo() {
+  const ns = 'http://www.w3.org/2000/svg', node = document.createElementNS(ns, 'svg');
+  node.setAttribute('viewBox', '0 0 24 24'); node.setAttribute('aria-hidden', 'true');
+  const tile = document.createElementNS(ns, 'rect'); tile.setAttribute('width', '24'); tile.setAttribute('height', '24'); tile.setAttribute('rx', '6.5'); tile.setAttribute('fill', 'currentColor');
+  const ring = document.createElementNS(ns, 'path'); ring.setAttribute('d', 'M14.26 8.54 A4.90 4.90 0 1 0 14.26 15.46'); ring.setAttribute('fill', 'none'); ring.setAttribute('stroke', 'var(--on-accent)'); ring.setAttribute('stroke-width', '3'); ring.setAttribute('stroke-linecap', 'round');
+  const point = document.createElementNS(ns, 'circle'); point.setAttribute('cx', '17.4'); point.setAttribute('cy', '16.4'); point.setAttribute('r', '1.75'); point.setAttribute('fill', 'var(--on-accent)');
+  node.append(tile, ring, point); return node;
+}
+// Long roots shrink from the middle: the leading folders take the ellipsis, the last folder stays readable.
+function projectPath(root, note) {
+  const element = document.createElement('small'); element.className = 'project-path';
+  const cut = root.search(/[^\\/]+[\\/]?$/);
+  const head = document.createElement('span'); head.className = 'path-head'; head.textContent = root.slice(0, cut);
+  const tail = document.createElement('span'); tail.className = 'path-tail'; tail.textContent = root.slice(cut) + note;
+  element.append(head, tail); return element;
+}
 async function refresh() {
   $('projects').setAttribute('aria-busy', 'true');
   $('service').textContent = '正在连接…';
@@ -56,18 +73,18 @@ async function refresh() {
       empty.append(heading, document.createTextNode('打开文件夹，或新建一个工作区。')); $('projects').append(empty);
     }
     for (const project of state.projects) {
-      const row = document.createElement('div'); row.className = 'project-row';
+      const row = document.createElement('div'); row.className = 'project-row'; if (project.theme) row.dataset.themeId = project.theme;
       const button = document.createElement('button'); button.className = 'project'; button.type = 'button';
       const label = project.display_name || project.name;
       button.title = project.root; button.setAttribute('aria-label', '在标签页打开工作区 ' + label);
       const avatar = document.createElement('span'); avatar.className = 'project-avatar';
-      avatar.append(icon(['M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z']));
+      avatar.append(projectLogo());
       const info = document.createElement('span'); info.className = 'project-info';
       const name = document.createElement('strong'); name.textContent = label;
-      const root = document.createElement('small'); root.textContent = project.root; info.append(name, root);
-      if (project.directory_state && project.directory_state.status !== 'ready') { row.classList.add('project-missing'); root.textContent += project.directory_state.status === 'missing' ? ' · 找不到目录，点击重新定位' : ' · 无法访问：' + project.directory_state.error; }
-      const arrow = document.createElement('span'); arrow.className = 'arrow'; arrow.append(icon(['m9 5 7 7-7 7']));
-      button.append(avatar, info, arrow);
+      const missing = project.directory_state && project.directory_state.status !== 'ready';
+      if (missing) row.classList.add('project-missing');
+      info.append(name, projectPath(project.root, !missing ? '' : project.directory_state.status === 'missing' ? ' · 找不到目录，点击重新定位' : ' · 无法访问：' + project.directory_state.error));
+      button.append(avatar, info);
       button.addEventListener('click', () => action(() => openWorkspace(project.name)));
       const settings = document.createElement('button'); settings.type = 'button'; settings.className = 'project-settings';
       settings.title = '工作区设置 · ' + label; settings.setAttribute('aria-label', settings.title); settings.dataset.projectSettings = project.name;
@@ -204,6 +221,18 @@ $('refresh').addEventListener('click', () => action(refresh));
 // Shortcut into “设置 → 后台与运维 → 连接与目录”: add a LAN host here, or preview switching back from one.
 $('connection-switch').addEventListener('click', () => { void window.CrewHomeSettings.show('backend', {launch:remote ? 'local' : 'pair'}); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('create-panel').hidden && !busy) closeCreate(); });
+// First-run guide: its last step hands over to the same open / create flows as the menu and tray.
+function openOnboarding() {
+  return window.CrewOnboarding.open({onWorkspace:next => { homeActions.push(next); void flushHomeActions(); },
+    onClose:() => { if (!busy && $('create-panel').hidden) $('existing').focus({preventScroll:true}); }});
+}
+window.CrewHomeOnboarding = {open:openOnboarding};
+async function maybeOnboard(state) {
+  // Only this computer's own first start, before any workspace exists, asks the backend at all.
+  if (remote || state.pendingAction || state.projects.length) return;
+  const {status} = await window.crewDesktop.onboardingGet();
+  if (window.CrewOnboarding.shouldOpen({remote, projects:state.projects.length, pendingAction:state.pendingAction || null, status})) openOnboarding();
+}
 async function finishStartup(state) {
   await window.crewDesktop.ready({ projects: state.projects.length, nodeAvailable: typeof require !== 'undefined',
     bridgeMethods: Object.keys(window.crewDesktop), title: document.title });
@@ -301,7 +330,7 @@ function applyConnection(state) {
   if (recovered && homeReady) void action(refresh);
 }
 if (remote) window.crewDesktop.onConnection(applyConnection);
-(remote ? window.crewDesktop.connection().then(applyConnection) : Promise.resolve()).then(refresh).then(finishStartup, async error => {
+(remote ? window.crewDesktop.connection().then(applyConnection) : Promise.resolve()).then(refresh).then(async state => { await finishStartup(state); await maybeOnboard(state); }, async error => {
   failure(error);
   // The persistent picker must still receive native menu actions after a failed first refresh.
   await finishStartup({ projects:[] });

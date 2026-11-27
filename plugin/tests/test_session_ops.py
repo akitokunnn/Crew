@@ -8,9 +8,8 @@ LATER = "2026-10-22T09:00:00.000Z"
 
 
 class SessionOpsTests(CoreCase):
-    def start(self, sid="s1", source="resume", name="one", role="member", group=None):
+    def start(self, sid="s1", source="resume"):
         return hooks.handle("session-start", self.data(sid, source=source), self.home, self.fake_plugin,
-                            {"CREW_NAME": name, "CREW_ROLE": role, **({"CREW_GROUP": group} if group else {})},
                             git_provider=lambda cwd: (store.norm_path(self.root), "main"), now=LATER)
 
     def leader(self):
@@ -23,7 +22,7 @@ class SessionOpsTests(CoreCase):
                 session_ops.restore(self.conn, "s1", now=NOW)
                 session_ops.archive(self.conn, "s1", removed=removed, now=NOW)
                 for source in ("startup", "resume", "compact"):
-                    code, output = self.start(source=source, name="stale")
+                    code, output = self.start(source=source)
                     self.assertEqual(code, 0)
                     self.assertNotIn("crew join", output["hookSpecificOutput"]["additionalContext"])
                 for event, extra in (("user-prompt-submit", {"prompt": "late"}),
@@ -40,7 +39,7 @@ class SessionOpsTests(CoreCase):
         self.leader()
         session_ops.archive(self.conn, "s1", now=NOW)
         session_ops.close_group(self.conn, "demo", "lead", with_members=True, now=NOW)
-        self.start(name="lead", role="leader", group="lead")
+        self.start()
         self.assertEqual(board.groups(self.conn, "demo")[0]["closed_at"], NOW)
         self.assertIsNone(board.session(self.conn, "s1")["group_name"])
 
@@ -59,10 +58,10 @@ class SessionOpsTests(CoreCase):
         self.assertEqual([item["id"] for item in deliveries["answers"]], [question])
         self.assertEqual([item["id"] for item in deliveries["handoffs"]], [handoff])
 
-    def test_explicit_join_readopts_removed_session_and_rejects_stale_environment(self):
+    def test_explicit_join_readopts_removed_session_after_restart(self):
         session_ops.archive(self.conn, "s1", removed=True, now=NOW)
         board.join(self.conn, "s1", "demo", "returned", self.root, self.root, "main", now=LATER)
-        self.start(name="one")
+        self.start()
         current = board.session(self.conn, "s1")
         self.assertEqual((current["crew_name"], current["status"], current["ended_at"]), ("returned", "idle", None))
         self.assertFalse(board.is_archived(self.conn, "s1"))
@@ -92,10 +91,10 @@ class SessionOpsTests(CoreCase):
         self.assertEqual(board.session(self.conn, "s2")["group_name"], "new")
         targets = dict(self.conn.execute("SELECT id,to_target FROM handoffs"))
         self.assertEqual(targets, {delivered: "lead", pending: "new"})
-        # Even reusing the old group must not make a member's stale CREW_GROUP move it.
+        # Reusing the old name must not move members back when their hooks run.
         board.join(self.conn, "s3", "demo", "lead", self.root, self.root, "main", role="leader", now=LATER)
-        self.start(name="lead", role="leader", group="lead")
-        self.start("s2", name="two", group="lead")
+        self.start()
+        self.start("s2")
         self.assertEqual((board.session(self.conn, "s1")["crew_name"], board.session(self.conn, "s1")["group_name"]), ("new", "new"))
         self.assertEqual(board.session(self.conn, "s2")["group_name"], "new")
 

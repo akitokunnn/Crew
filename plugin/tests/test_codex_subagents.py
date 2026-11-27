@@ -131,7 +131,7 @@ class NativeChildHttpTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
         self.addCleanup(close)
         def state():
-            with urlopen('http://127.0.0.1:%d/api/state?project=demo' % server.server_port, timeout=10) as response:
+            with urlopen('http://127.0.0.1:%d/api/op/workspace.state?project=demo' % server.server_port, timeout=10) as response:
                 return json.loads(response.read())
         return server, state
 
@@ -166,7 +166,7 @@ class NativeChildHttpTests(unittest.TestCase):
         self.assertEqual(tasks['failed']['detail'], '隔离验收失败')
         with closing(store.connect(self.home)) as conn:
             self.assertEqual(len(board.sessions(conn, 'demo')), before)
-        replayed = chat.Journal(running.journal.path)
+        replayed = chat.Journal(running.journal.path, None)
         self.assertEqual({task['status'] for task in replayed.subagents.values()}, set(tasks))
         self.assertEqual([name for name, _ in client.calls], ['thread/start', 'thread/name/set', 'turn/start'])
 
@@ -195,7 +195,7 @@ class NativeChildHttpTests(unittest.TestCase):
             goal = goals.create(conn, 'demo', 'worker', '隔离验收', '核对三条路径', ['可见子代理'])
             goals.transition(conn, goal['id'], 'running')
             execution = goals.create_execution(conn, goal['id'], 'worker', runtime='codex')
-        journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'))
+        journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'), None)
         running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {'agent': None},
             {'model': None, 'effort': None}, journal, None, execution=execution)
         self.addCleanup(running.close)
@@ -207,7 +207,7 @@ class NativeChildHttpTests(unittest.TestCase):
         client.emit('item/completed', item=collab('wait-resume', 'wait', states={'child-1': {'status': 'completed', 'message': None}}))
         task = state()['leaders'][0]['codex']
         self.assertEqual((len(task), task[0]['status']), (1, 'succeeded'))
-        tracker = codex_subagents.Events('native-1', chat.Journal(journal.path).subagents.values())
+        tracker = codex_subagents.Events('native-1', chat.Journal(journal.path, None).subagents.values())
         result = tracker.consume('turn/started', {'threadId': 'child-1', 'turn': {'id': 'new-turn'}})
         self.assertEqual(result[0]['status'], 'running')
 

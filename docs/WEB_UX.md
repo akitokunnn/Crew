@@ -14,6 +14,8 @@
 
 2026-11-02 音效：从外观移到独立的“音效”分类。leader 总会话与任务回复、全局助手回复、任务最终交付分别配置四种内置音效或关闭；总开关、音量与试听独立于 AI 设置。声音与配置由 `event_sounds.py`、`web/sounds.js`、`web/sound-settings-ui.js` 拥有，桌面和网页共用设置入口。只有含可见回复的成功原生终结事件、以及已完成收尾的最终报告生成新提示；流式片段、工具完成、压缩、失败、中断与阶段报告不生成这三类完成音效。设置修改有版本，晚到的旧轮询不会覆盖新保存值；读取历史、重载和多标签浏览不重复提醒。
 
+2026-11-26 前端架构与 Spatial Studio（高密度方向 C）基线：网页静态资源已从 `plugin/crew/web/` 抽离到顶层 `frontend/`（由 `plugin/crew/frontend_root.py` 和环境变量 `CREW_WEB_ROOT` 解析，`plugin/crew/web.py` 的 `STATIC` 显式白名单托管）。视觉统一采用高密度 Spatial Studio（`--studio-frame` 画布底、`--studio-sheet` 圆角浮层卡片、`--studio-glass` 粘性磨砂头栏、1px 精细描边与浅/深双套 token），并将上下文压缩圆环（`CrewContext.ring`）直接保留在 Leader 列表与 `#chat-head .right` 顶栏。在桌面端（`>760px`），`54px` 最左侧导航栏（`frontend/global-rail.js` + `frontend/app.js`）在工作区、全局助手（`/assistant.html`）、想法墙（`/notes.html`）、工作区入口（`/`）及设置浮层（`#settings-surface`，桌面左偏 `54px`）间全站常驻且位置像素对齐；通过 `localStorage`（`crew.mobile.project`、`crew.lastProjectRoute`）记住最近工作区，在助手/想法墙/设置点左侧 `Leader` / `主页` / `架构图` / `Git` 可一键跳回原工作区。左上角 `C.` 按钮展开「切换工作区」浮层（`#workspace-popover`），支持一键切换项目与打开工作区总览。为兼容桌面端 `desktop/src/tabs.cjs` 路由守卫，`/notes.html` 与 `/assistant.html` 链接严禁附带 `?query` 查询参数（只允许 `#hash`），工作区跳转使用 `/?project=<name>#...`。
+
 ## 全局系统管理员（桌面 0.1.1）
 
 桌面标题栏和首页左栏常驻“系统管理员”，覆盖本机同一 Crew home 下的所有工作区。它管理后台连接与恢复，不是 leader，不派发工程任务，也不运行模型。项目标签仍保留各自的对话与草稿。
@@ -41,7 +43,7 @@ leader 等同 Paperclip 里的 CEO：不写业务代码，只协调、派活、�
 
 ## 一个项目一个标签页
 
-项目比 leader 高一层，对应一个 VS Code 工作区窗口。右键“在这里启动 Crew”、`crew start` 或 `crew web --open` 打开 `/?project=名字`，页面里没有切换项目的入口；会话按所在目录（项目根和它下面的 worktree）归属，数据严格隔离。浏览器标签写成"(待拍板数) 项目 · Crew"，图标是本项目主题色的 Crew logo。裸地址列出各项目入口，各自显示保存的主题色。
+项目比 leader 高一层，对应一个工作区文件夹。右键“在这里启动 Crew”、`crew start`、`crew web --open` 或点击左侧栏左上角 `C.` 切换浮层可打开 `/?project=名字`，同时保留各工作区的数据隔离；桌面端点击浮层中的工作区链接时由 `desktop/src/tabs.cjs` 切到对应原生标签页。会话按所在目录（项目根和它下面的 worktree）归属，数据严格隔离。浏览器标签写成"(待拍板数) 项目 · Crew"，图标是本项目主题色的 Crew logo。裸地址 `/` 列出各项目入口，各自显示保存的主题色。
 
 ## 置顶
 

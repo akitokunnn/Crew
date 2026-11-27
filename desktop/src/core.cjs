@@ -98,9 +98,14 @@ function options(args, {launchSettingsPath, platform = process.platform} = {}) {
 async function send(origin, token, route, body, timeoutMs, signal) {
   if (!route.startsWith('/api/')) throw new Error('不支持的 Crew API');
   const deadline=AbortSignal.timeout(timeoutMs),requestSignal=signal?AbortSignal.any([signal,deadline]):deadline;
-  const response = await fetch(origin + route, { method: body === undefined ? 'GET' : 'POST',
-    headers: { 'X-Crew': '1', ...(token ? { Authorization:'Bearer ' + token } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-    body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error',
+  let post;
+  if (body !== undefined) {
+    const {request_id = crypto.randomUUID(), ...payload} = body;
+    post = {requestId:request_id, json:JSON.stringify(payload)};
+  }
+  const response = await fetch(origin + route, { method: post ? 'POST' : 'GET',
+    headers: { 'X-Crew': '1', ...(token ? { Authorization:'Bearer ' + token } : {}), ...(post ? { 'Content-Type':'application/json', 'X-Crew-Request-Id':post.requestId } : {}) },
+    body: post?.json, redirect: 'error',
     signal: requestSignal });
   if (token && remote?.token === token && response.status === 401) remote.onUnauthorized();
   let payload;
@@ -110,7 +115,7 @@ async function send(origin, token, route, body, timeoutMs, signal) {
     const error = new Error(`Crew 服务返回了无效内容 (${response.status})`); error.status = response.status; throw error;
   }
   if (!response.ok) {
-    const message=response.status===404&&route.startsWith('/api/workspace-data/')
+    const message=response.status===404&&route.startsWith('/api/op/data.')
       ? '当前后台版本尚不支持工作区数据功能。请在工具与更新中统一后台与插件，或退出旧 Crew 后重新打开新版。'
       : payload.error || `Crew 服务返回 ${response.status}`;
     const error = new Error(message); error.status = response.status; throw error;
@@ -179,7 +184,7 @@ function remoteHealth(value) {
 
 const DIRECTORY_STATES = ['ready', 'missing', 'error'];
 async function projects(base, includeRemoved = false) {
-  const data = await request(base, '/api/projects' + (includeRemoved ? '?include_removed=1' : ''));
+  const data = await request(base, '/api/op/workspace.list' + (includeRemoved ? '?include_removed=1' : ''));
   // Directory state comes from the backend that owns the folders (this computer or a LAN host).
   if (!Array.isArray(data.projects) || data.projects.some(item => !item || typeof item.name !== 'string' || !item.name ||
       typeof item.root !== 'string' || !item.root || (item.read_only !== true && !DIRECTORY_STATES.includes(item.directory_state?.status)))) {
@@ -231,6 +236,17 @@ async function materializeBackend(source, home) {
   await fs.cp(source, target, { recursive: true });
   await fs.writeFile(path.join(target, '.ready'), identity);
   return target;
+}
+
+async function resolveFrontendDir(backendDir, bundledFrontendDir) {
+  if (process.env.CREW_WEB_ROOT) return path.resolve(process.env.CREW_WEB_ROOT);
+  if (backendDir) {
+    const sibling = path.resolve(backendDir, '..', 'frontend');
+    try { if ((await fs.stat(sibling)).isDirectory()) return sibling; } catch (_) {}
+    const legacy = path.join(backendDir, 'crew', 'web');
+    try { if ((await fs.stat(legacy)).isDirectory()) return legacy; } catch (_) {}
+  }
+  return bundledFrontendDir || (backendDir ? path.join(backendDir, 'crew', 'web') : null);
 }
 
 class Backend {
@@ -286,7 +302,8 @@ class Backend {
     };
     const args = [script, '--home', this.config.home, '--port', String(this.config.port)];
     if (this.config.isolated || this.config.smoke) args.push('--isolated-sources');
-    const env = { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' };
+    const frontendDir = await resolveFrontendDir(this.config.backendDir, this.config.helperFrontendDir || this.config.bundledFrontendDir);
+    const env = { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', ...(frontendDir ? { CREW_WEB_ROOT: frontendDir } : {}) };
     this.child = this.spawn(this.config.python, args, { cwd: this.config.backendDir, windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'], env });
     this.owned = true;
@@ -387,16 +404,16 @@ function workspaceName(value) {
 // Folder checks, Git root resolution and folder creation run in the backend
 // that owns the folders, so this computer and a LAN host share one implementation.
 function existingWorkspace(directory, base, {newProject=false} = {}) {
-  return request(base, '/api/host/workspace/existing', { directory, new_project:newProject }, 30000);
+  return request(base, '/api/op/workspace.add_existing', { directory, new_project:newProject }, 30000);
 }
 
 function newWorkspace(parent, name, base) {
-  return request(base, '/api/host/workspace/new', { parent, name }, 30000);
+  return request(base, '/api/op/workspace.create_folder', { parent, name }, 30000);
 }
 
 function hostFolders(base, directory) {
   if (typeof directory !== 'string') throw new TypeError('文件夹路径必须是文本');
-  return request(base, '/api/host/folders?' + new URLSearchParams({ path:directory }), undefined, 15000);
+  return request(base, '/api/op/workspace.host_folders?' + new URLSearchParams({ path:directory }), undefined, 15000);
 }
 
 // A saved LAN host. Nothing runs or is stopped on this computer.
@@ -420,4 +437,4 @@ class RemoteBackend {
 }
 
 module.exports = { loopback, lanAddress, authorizeRemote, serviceOrigin, options, request, remoteRequest, download, pairDesktop, remoteHealth,
-  projects, hostFolders, Backend, RemoteBackend, workspaceName, existingWorkspace, newWorkspace, materializeBackend, connectionRefused };
+  projects, hostFolders, Backend, RemoteBackend, workspaceName, existingWorkspace, newWorkspace, materializeBackend, resolveFrontendDir, connectionRefused };

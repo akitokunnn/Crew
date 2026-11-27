@@ -16,9 +16,9 @@ class CleanupReviewTests(unittest.TestCase):
 
     def clean(self):
         c = self.case
-        code, preview = c.request('/api/maintenance/cleanup/preview?project=demo', {'project':'demo'})
+        code, preview = c.request('/api/op/maintenance.cleanup.preview?project=demo', {'project':'demo'})
         self.assertEqual(code, 200, preview)
-        code, started = c.request('/api/maintenance/cleanup?project=demo',
+        code, started = c.request('/api/op/maintenance.cleanup.run?project=demo',
             {'project':'demo', 'preview_id':preview['preview_id'], 'confirm':True})
         self.assertEqual(code, 200, started)
         deadline = time.monotonic() + 6
@@ -89,10 +89,10 @@ class CleanupReviewTests(unittest.TestCase):
 
     def test_malformed_context_selection_returns_input_error(self):
         c = self.case
-        code, preview = c.request('/api/maintenance/department/preview?project=demo',
+        code, preview = c.request('/api/op/maintenance.department.preview?project=demo',
             {'project':'demo', 'leader_session_id':'s3'})
         self.assertEqual(code, 200, preview)
-        code, response = c.request('/api/maintenance/department/compact?project=demo',
+        code, response = c.request('/api/op/maintenance.department.compact?project=demo',
             {'project':'demo', 'leader_session_id':'s3', 'preview_id':preview['preview_id'], 'targets':[[]]})
         self.assertEqual(code, 400, response)
 

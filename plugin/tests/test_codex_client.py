@@ -128,9 +128,7 @@ class CodexClientTests(unittest.TestCase):
     def test_handshake_persistent_thread_resume_and_settings(self):
         client, _ = self.make_client()
         self.assertEqual(client.initialization["userAgent"], "test-codex")
-        client.start_thread(cwd="/project", model="model-x", developerInstructions="Crew member", dynamicTools=[{
-            "type":"function", "name":"crew_send_message", "description":"Send Crew message",
-            "inputSchema":{"type":"object"}}])
+        client.start_thread(cwd="/project", model="model-x", developerInstructions="Crew member")
         self.assertEqual(client.thread_id, "thread-1")
         client.resume_thread("thread-1", cwd="/project")
         calls = client.request("test/calls")
@@ -140,7 +138,6 @@ class CodexClientTests(unittest.TestCase):
         self.assertFalse(start["ephemeral"])
         self.assertEqual(start["sandbox"], "workspace-write")
         self.assertEqual(start["approvalPolicy"], "on-request")
-        self.assertEqual(start["dynamicTools"][0]["type"], "function")
         resume = next(call["params"] for call in calls if call["method"] == "thread/resume")
         self.assertTrue(resume["excludeTurns"])
 
@@ -209,39 +206,6 @@ class CodexClientTests(unittest.TestCase):
         with self.assertRaises(codex_client.TurnError):
             client.wait_turn()
 
-    def test_dynamic_tool_uses_server_id_and_supports_reentrant_rpc(self):
-        seen = []
-        holder = {}
-
-        def tool(params):
-            seen.append(params)
-            self.assertTrue(holder["client"].list_models()["data"])
-            return {"contentItems":[{"type":"inputText", "text":"message delivered"}], "success":True}
-
-        client, _ = self.make_client(tool_handler=tool)
-        holder["client"] = client
-        client.start_thread()
-        client.start_turn("dynamic")
-        client.wait_turn()
-        self.assertEqual(seen[0]["arguments"]["to"], "leader")
-        response = next(c["reply"] for c in client.request("test/calls") if "reply" in c)
-        self.assertEqual(response["id"], "server-turn-1")
-        self.assertEqual(response["result"], {"contentItems":[{"type":"inputText", "text":"message delivered"}],
-                                               "success":True})
-
-    def test_tool_errors_are_returned_as_failed_tool_content(self):
-        def tool(_):
-            raise ValueError("Crew guard refused")
-
-        for handler in (None, tool):
-            with self.subTest(handler=handler):
-                client, _ = self.make_client(tool_handler=handler)
-                client.start_thread()
-                client.start_turn("dynamic")
-                client.wait_turn()
-                response = next(c["reply"]["result"] for c in client.request("test/calls") if "reply" in c)
-                self.assertFalse(response["success"])
-                self.assertEqual(response["contentItems"][0]["type"], "inputText")
 
     def test_default_approval_handling_grants_nothing(self):
         cases = {"item/commandExecution/requestApproval":{"decision":"decline"},

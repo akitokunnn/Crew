@@ -67,7 +67,7 @@ class Manager:
             raise ValueError('通道必须是 qq 或 lark')
         return channel
 
-    def channel_state(self, channel):
+    def channel_state(self, channel, conn=None):
         inbox = self.inboxes[channel]
         status = inbox.status()
         with inbox.lock:
@@ -77,20 +77,20 @@ class Manager:
                           secret_configured=inbox.credentials is not None,
                           enabled=status['enabled'], state=status['channel']['state'],
                           detail=status['channel']['detail'], bound=bound, error=status['error'],
-                          delivery=inbox.delivery_snapshot())
+                          delivery=inbox.delivery_snapshot(conn))
             if channel == 'lark':
                 result['domain'] = inbox.domain
             if not bound and inbox.enabled:
                 result['binding_code'] = inbox.config.get('binding_code')
             return result
 
-    def notification_status(self):
+    def notification_status(self, conn=None):
         result = self.inboxes['qq'].status()
         active = [inbox.status() for inbox in self.inboxes.values() if inbox.enabled]
         result.update(manual_away=self.manual_away, locked=any(item['locked'] for item in active),
                       away=self.manual_away or any(item['locked'] for item in active),
                       enabled=bool(active), error='；'.join(item['error'] for item in active if item['error']) or None)
-        result['channels'] = [self.channel_state(channel) for channel in CHANNELS]
+        result['channels'] = [self.channel_state(channel, conn) for channel in CHANNELS]
         result['target'] = self.notification_target
         for channel in result['channels']:
             channel.pop('binding_code', None)
@@ -111,6 +111,7 @@ class Manager:
             self.notification_target = data['target']
             for inbox in self.inboxes.values():
                 inbox.wake.set()
+        self.service.chat.changes.mark('notification', None, 'notification')
         return self.snapshot()
 
     def set_away(self, away):
@@ -120,6 +121,7 @@ class Manager:
             self.manual_away = away
             for inbox in self.inboxes.values():
                 inbox._set_away(away)
+        self.service.chat.changes.mark('notification', None, 'notification')
         return self.notification_status()
 
     def _stop(self, inbox):
@@ -134,6 +136,7 @@ class Manager:
             self.inboxes[channel] = inbox
             if channel == 'qq':
                 self.service.inbox = inbox
+        self.service.chat.changes.mark('notification', None, 'notification')
         inbox.start()
 
     def _reset_binding(self, inbox):

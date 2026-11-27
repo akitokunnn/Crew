@@ -152,8 +152,8 @@ function harness(options = {}) {
       newWorkspace:async (parent,name,base) => { calls.created = { parent, name, base }; return { name }; },
       hostFolders:async (base,directory) => ({ base, path:directory }),
       download:async (base,route,destination) => { calls.download = { base, route, destination }; return { path:destination }; },
-      request:async (base,route,body,timeoutMs) => options.request ? options.request(base,route,body,timeoutMs) : options.storageWrite&&route.startsWith('/api/workspace-data/')?options.storageWrite.promise:{} },
-    './storage.cjs':{ prepare:async (project,base,_choose,_progress,request) => {if(options.storageWrite)await request(base,'/api/workspace-data/open',{});return project;} },
+      request:async (base,route,body,timeoutMs) => options.request ? options.request(base,route,body,timeoutMs) : options.storageWrite&&route.startsWith('/api/op/data.')?options.storageWrite.promise:{} },
+    './storage.cjs':{ prepare:async (project,base,_choose,_progress,request) => {if(options.storageWrite)await request(base,'/api/op/data.open',{});return project;} },
     './chrome.cjs':{ windowOptions:() => ({}) }, './tabs.cjs':{ WorkspaceTabs:Tabs },
     './appearance.cjs':{ Appearance:class { async load() { return this.state(); } state() { return { mode:'system', dark:false, stored:false }; } async set(mode) { return { mode, dark:mode === 'dark', stored:true }; } } },
     './menu.cjs':require('../src/menu.cjs'), './login-shell.cjs':{ readLoginShellPath:() => options.loginPath.promise },
@@ -195,9 +195,9 @@ test('remote access IPC reads and changes the connected backend only from the tr
   assert.deepEqual(await h.invoke('desktop:remote-access-action',{action:'pair'}),{code:'123456',expires_at:'2026-11-01T12:05:00Z'});
   await assert.rejects(h.invoke('desktop:remote-access-action',{action:'revoke',device_id:'missing'}),/设备已被移除，请刷新列表/);
   assert.deepEqual(requests,[
-    {url:'/api/remote-access',method:'GET',body:null,crew:'1'},
-    {url:'/api/remote-access',method:'POST',body:{action:'pair'},crew:'1'},
-    {url:'/api/remote-access',method:'POST',body:{action:'revoke',device_id:'missing'},crew:'1'}
+    {url:'/api/op/remote_access.get',method:'GET',body:null,crew:'1'},
+    {url:'/api/op/remote_access.action',method:'POST',body:{action:'pair'},crew:'1'},
+    {url:'/api/op/remote_access.action',method:'POST',body:{action:'revoke',device_id:'missing'},crew:'1'}
   ]);
   const contents=h.windows[0].webContents;
   for(const channel of ['desktop:remote-access-read','desktop:remote-access-action']){
@@ -375,7 +375,7 @@ test('a portable executable check finishing after quit cannot schedule relaunch'
 test('tray restart relaunches Crew after the normal cleanup when nothing is working',async () => {
   const routes=[],h=harness({request:async (_base,route) => { routes.push(route); return {sessions:[{name:'lead',busy:false}]}; }});await h.boot();
   h.trays[0].menu.template.find(item => item.id==='tray-restart').click();await tick();
-  assert.deepEqual(routes,['/api/admin/connection/plan']);assert.equal(h.calls.dialogs,0);
+  assert.deepEqual(routes,['/api/op/admin.connection.plan']);assert.equal(h.calls.dialogs,0);
   assert.equal(h.calls.relaunch,1);assert.equal(h.calls.backendStop,1);assert.equal(h.calls.nativeQuit,1);
   assert.deepEqual(h.logs,[]);assert.deepEqual(h.shutdownErrors,[]);
 });
@@ -425,16 +425,16 @@ test('a LAN connection starts no local tools or report worker, and its token rea
   const h = harness({ remote:true }); await h.boot();
   assert.equal(h.calls.tools, undefined); assert.equal(h.calls.reportPreviews, undefined); assert.equal(h.calls.backendStart, 1);
   const { listener } = h.webRequests.headers, headers = {};
-  listener({ url:'http://192.168.1.20:47812/api/state?project=demo', requestHeaders:{ Accept:'*/*' } }, value => { headers.host = value.requestHeaders; });
-  listener({ url:'http://192.168.1.21:47812/api/state', requestHeaders:{ Accept:'*/*' } }, value => { headers.other = value.requestHeaders; });
+  listener({ url:'http://192.168.1.20:47812/api/op/workspace.state?project=demo', requestHeaders:{ Accept:'*/*' } }, value => { headers.host = value.requestHeaders; });
+  listener({ url:'http://192.168.1.21:47812/api/op/workspace.state', requestHeaders:{ Accept:'*/*' } }, value => { headers.other = value.requestHeaders; });
   listener({ url:'http://192.168.1.20:47813/', requestHeaders:{} }, value => { headers.port = value.requestHeaders; });
   assert.equal(headers.host.Authorization, 'Bearer ' + 't'.repeat(43));
   assert.deepEqual(headers.other, { Accept:'*/*' }); assert.deepEqual(headers.port, {});
   // Host file downloads ask where to save, starting in Downloads; other origins keep Electron's default.
   const saves = [], item = url => ({ getURL:() => url, getFilename:() => '方案.docx', setSaveDialogOptions:value => saves.push({ url, ...value }) });
-  h.webRequests['will-download']({}, item('http://192.168.1.20:47812/api/files/download?document_id=3'));
-  h.webRequests['will-download']({}, item('http://192.168.1.21:47812/api/files/download?document_id=3'));
-  assert.deepEqual(saves, [{ url:'http://192.168.1.20:47812/api/files/download?document_id=3', title:'下载到本机', defaultPath:path.join(FIXTURE_APP_DATA, '方案.docx') }]);
+  h.webRequests['will-download']({}, item('http://192.168.1.20:47812/api/op/files.download?document_id=3'));
+  h.webRequests['will-download']({}, item('http://192.168.1.21:47812/api/op/files.download?document_id=3'));
+  assert.deepEqual(saves, [{ url:'http://192.168.1.20:47812/api/op/files.download?document_id=3', title:'下载到本机', defaultPath:path.join(FIXTURE_APP_DATA, '方案.docx') }]);
   assert.deepEqual(plain(await h.invoke('desktop:connection')), { mode:'remote', id:'saved-host', name:'书房主机', url:'http://192.168.1.20:47812',
     host_version:'0.3.99', local_version:'0.3.17', auth_expired:false, error:null });
   h.app.quit(); await tick();
@@ -468,13 +468,13 @@ test('a local window keeps its native folder dialogs and refuses the LAN host pi
 });
 
 test('LAN settings read and save the host HTTP settings, and export downloads the host package to this computer', async () => {
-  const routes = [], h = harness({ remote:true, request:async (base, route, body) => { routes.push([base, route, body]); return route.endsWith('/export') ? { download_id:'abc123', cached_files:[] } : { ai:{} }; } });
+  const routes = [], h = harness({ remote:true, request:async (base, route, body) => { routes.push([base, route, body]); return route === '/api/op/data.export' ? { download_id:'abc123', cached_files:[] } : { ai:{} }; } });
   await h.boot();
   await h.invoke('desktop:settings-get'); await h.invoke('desktop:settings-save', { ai:{} });
   await h.invoke('desktop:storage-export', 'demo');
-  assert.deepEqual(plain(routes), [['http://192.168.1.20:47812', '/api/runtimes?refresh=1', null], ['http://192.168.1.20:47812', '/api/settings', null],
-    ['http://192.168.1.20:47812', '/api/settings', { ai:{} }], ['http://192.168.1.20:47812', '/api/workspace-data/export', { project:'demo' }]]);
-  assert.deepEqual(h.calls.download, { base:'http://192.168.1.20:47812', route:'/api/workspace-data/download?id=abc123', destination:'C:\\Users\\me\\demo.crewpack' });
+  assert.deepEqual(plain(routes), [['http://192.168.1.20:47812', '/api/op/runtimes.list?refresh=1', null], ['http://192.168.1.20:47812', '/api/op/settings.get', null],
+    ['http://192.168.1.20:47812', '/api/op/settings.save', { ai:{} }], ['http://192.168.1.20:47812', '/api/op/data.export', { project:'demo' }]]);
+  assert.deepEqual(h.calls.download, { base:'http://192.168.1.20:47812', route:'/api/op/data.download?id=abc123', destination:'C:\\Users\\me\\demo.crewpack' });
   h.app.quit(); await tick();
 });
 
@@ -491,7 +491,7 @@ test('a revoked device found at startup still opens the window and reports the l
   assert.equal(state.auth_expired, true); assert.equal(state.error, '授权已失效，请在主机上重新生成配对码');
   await assert.rejects(h.invoke('desktop:bootstrap'), /授权已失效/);
   await assert.rejects(h.invoke('desktop:admin-status'), /授权已失效/);
-  h.webRequests.completed.listener({ url:'http://192.168.1.20:47812/api/state', statusCode:401 });
+  h.webRequests.completed.listener({ url:'http://192.168.1.20:47812/api/op/workspace.state', statusCode:401 });
   assert.equal((await h.invoke('desktop:connection')).auth_expired, true);
   h.app.quit(); await tick();
 });

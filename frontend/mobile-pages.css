@@ -1,0 +1,362 @@
+/* 手机样式（≤760px，由 <link media> 加载，排在所有样式之后）。见 mobile.css 的设计基准。
+   范围：想法页、Git 助手、用量、弹窗（#backdrop / <dialog>）、右键菜单（#menu / .nw-menu）、设置界面。
+   原则：单列、左右 16px、正文 ≥15px、辅助 ≥12px、触控 ≥44px；菜单与对话框改成底部面板，设置改成全屏。 */
+
+@keyframes mp-sheet-up{from{transform:translateY(100%)}to{transform:none}}
+@keyframes mp-fade{from{opacity:0}to{opacity:1}}
+
+/* ======================= 想法页 ======================= */
+.notes-page{height:calc(100dvh - var(--m-bottom))}
+.nw-main{padding:var(--m-safe-t) var(--m-gutter) 28px;overscroll-behavior-y:contain}
+/* 大标题 + 右侧文字按钮；“助手”“工作区”由底部标签栏取代 */
+.nw-head{flex-wrap:nowrap;align-items:center;gap:8px;padding:14px 0 4px}
+.nw-head>div:first-child{min-width:0}
+.nw-head h1{font-size:28px;font-weight:500;letter-spacing:-.01em;line-height:1.2}
+.nw-head-acts{flex-wrap:nowrap;gap:6px}
+.nw-head-acts>a{display:none!important}
+.nw-head-acts .btn{min-height:var(--m-tap);padding:0 10px;border:1px solid var(--line);background:var(--hover);color:var(--accent-text);font-size:var(--m-fs-body);border-radius:var(--m-radius-sm)}
+.nw-head-acts .btn:active{background:color-mix(in srgb,var(--text) 9%,transparent)}
+.nw-badge{min-width:20px;height:20px;font-size:12px}
+
+/* 输入框吸附在顶部，滚动时一直可写 */
+.nw-capture{position:sticky;top:0;z-index:6;margin:0 calc(-1 * var(--m-gutter)) 2px;padding:8px var(--m-gutter) 10px;background:var(--bg)}
+.nw-capture-box{gap:8px;padding:5px 5px 5px 14px;border-radius:var(--m-radius);align-items:flex-end}
+.nw-capture textarea{font-size:16px;line-height:1.5;padding:8px 0;max-height:32dvh}
+.nw-capture-send{min-height:var(--m-tap);min-width:64px;justify-content:center;padding:0 16px;border-radius:var(--m-radius-sm);font-size:var(--m-fs-body)}
+.nw-capture-extra{font-size:var(--m-fs-meta);gap:8px;margin-top:8px}
+.nw-chip{min-height:32px;padding:0 2px 0 12px}
+.nw-chip button,.nw-tag-on button{min-width:32px;min-height:32px;font-size:16px}
+.nw-capture-status{font-size:var(--m-fs-meta)}
+.nw-suggest{left:var(--m-gutter);right:var(--m-gutter);max-width:none;max-height:40dvh;overflow:auto;border-radius:var(--m-radius-sm)}
+.nw-suggest li{min-height:var(--m-tap);padding:0 12px;font-size:var(--m-fs-body)}
+
+/* 筛选：一行横向滚动的 chip，不换行挤 */
+.nw-filters{flex-wrap:nowrap;gap:8px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;margin:0 calc(-1 * var(--m-gutter)) 4px;padding:2px var(--m-gutter) 8px;font-size:14px}
+.nw-filters::-webkit-scrollbar{display:none}
+/* 还有没露出来的筛选项时，那一侧渐隐，提示可以横滑；滑到头就不再渐隐（data-more 由 notes.js 按滚动位置标） */
+.nw-filters{--fade-start:0px;--fade-end:0px;-webkit-mask-image:linear-gradient(to right,transparent,#000 var(--fade-start),#000 calc(100% - var(--fade-end)),transparent);mask-image:linear-gradient(to right,transparent,#000 var(--fade-start),#000 calc(100% - var(--fade-end)),transparent)}
+.nw-filters[data-more~="start"]{--fade-start:40px}
+.nw-filters[data-more~="end"]{--fade-end:48px}
+.nw-filters>*,.nw-filter-tags>*{flex:none}
+.nw-filter-tags{flex-wrap:nowrap;gap:8px}
+.nw-filters .btn.sm,.nw-filters .nw-tag,.nw-filters .text-link,.nw-viewing{display:inline-flex;align-items:center;min-height:38px;padding:0 14px;border-radius:999px;font-size:14px;white-space:nowrap}
+.nw-filters .nw-tag-on,.nw-filters .nw-tag-missing{padding-right:4px}
+.nw-filters .text-link{padding:0 8px}
+.nw-viewing{padding-right:6px;gap:4px}
+.nw-viewing .text-link{min-height:38px}
+.nw-seg{border-radius:999px;flex:none}
+.nw-seg button{min-height:36px;padding:0 14px;font-size:14px}
+/* “全部满足 / 任一”只在选了两个以上标签时才有意义 */
+.nw-filters:not(:has(.nw-filter-tags>.nw-tag+.nw-tag)) .nw-seg[aria-label="多个标签时"]{display:none}
+.nw-filters select{-webkit-appearance:none;appearance:none;max-width:none;min-height:38px;padding:0 32px 0 14px;border-radius:999px;background:var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%23888' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;line-height:1.2;font-size:15px!important}
+/* 看哪一类想法最常用，排第一 */
+.nw-filters select[data-act="view"]{order:-1;border-color:var(--accent);color:var(--accent-text);font-weight:500}
+
+/* 卡片墙：单列 */
+.nw-section{margin-top:12px}
+.nw-band{font-size:var(--m-fs-meta);margin-bottom:8px}
+.nw-cards{columns:1}
+.nw-card{margin-bottom:10px;padding:14px 16px;gap:8px;border-color:var(--line);border-radius:var(--m-radius);font-size:var(--m-fs-body);background:var(--studio-card)}
+.nw-title{font-size:16px;font-weight:500;line-height:1.45}
+.nw-body{font-size:var(--m-fs-body);line-height:1.6;-webkit-line-clamp:5;line-clamp:5}
+.nw-expand{min-height:36px;font-size:14px}
+.nw-tags{gap:6px}
+.nw-tag{padding:2px 10px;font-size:13px;line-height:1.6}
+.nw-meta,.nw-state{font-size:var(--m-fs-meta)}
+.nw-dup{font-size:12px;padding:2px 8px}
+.nw-acts{gap:8px;margin-top:2px}
+.nw-acts .btn.sm{min-height:40px;padding:0 16px;border-radius:var(--m-radius-sm);font-size:var(--m-fs-body)}
+.nw-more-btn{width:var(--m-tap);height:var(--m-tap);margin-right:-10px;font-size:20px}
+/* 勾选框只在多选时出现 */
+.nw-check{top:12px;right:12px;left:auto;width:22px;height:22px;transform:none;opacity:0;pointer-events:none}
+.nw-selecting .nw-check,.nw-check:checked{opacity:1;pointer-events:auto}
+.nw-card-top{padding-right:0}
+.nw-selecting .nw-card-top{padding-right:30px}
+.nw-empty{padding:48px 8px}
+.nw-empty h2{font-size:var(--m-fs-section)}
+.nw-empty p{font-size:14px}
+.nw-loading,.nw-quiet{font-size:14px}
+.nw-error{font-size:14px;padding:12px 14px}
+
+/* 批量操作条：贴在标签栏上方 */
+.nw-bulk{left:var(--m-gutter);right:var(--m-gutter);bottom:calc(var(--m-bottom) + 10px);transform:none;max-width:none;justify-content:flex-start;gap:8px;padding:10px 12px;font-size:14px}
+.nw-bulk>span{flex-basis:100%;margin:0 0 2px}
+.nw-bulk .btn{min-height:40px;padding:0 14px;font-size:14px}
+.nw-selecting .toast{bottom:calc(var(--m-bottom) + 132px)!important}
+.notes-page.nw-selecting .nw-main{padding-bottom:150px}
+
+/* 卡片“⋯”菜单：底部动作面板 */
+body:has(>.nw-menu)::after{content:"";position:fixed;inset:0;z-index:69;background:rgba(0,0,0,.42);animation:mp-fade .2s ease}
+.nw-menu{left:0!important;right:0;top:auto!important;bottom:0;min-width:0;max-height:80dvh;overflow:auto;padding:8px 8px calc(10px + var(--m-safe-b));border-width:1px 0 0;border-radius:20px 20px 0 0;background:var(--surface);animation:mp-sheet-up .24s var(--ease)}
+.nw-menu::before{content:"";flex:none;align-self:center;width:38px;height:5px;margin:0 0 8px;border-radius:3px;background:var(--line-strong)}
+.nw-menu button{min-height:50px;padding:0 16px;border-radius:12px;font-size:16px}
+
+/* 想法页对话框：底部面板；回顾：全屏 */
+.nw-dialog,.nw-manage{width:100%;max-width:100%;margin:auto 0 0;max-height:92dvh;padding:20px var(--m-gutter) calc(18px + var(--m-safe-b));border-width:1px 0 0;border-radius:20px 20px 0 0;animation:mp-sheet-up .24s var(--ease)}
+.nw-dialog::backdrop{background:rgba(0,0,0,.42)}
+.nw-dialog>header{margin-bottom:12px}
+.nw-dialog>header .icon-btn{width:var(--m-tap);height:var(--m-tap);margin:-10px -10px 0 0;font-size:22px}
+.nw-dialog h2{font-size:19px;font-weight:500}
+.nw-dialog header p{font-size:14px}
+.nw-dialog h3{font-size:15px}
+.nw-dialog label{font-size:14px}
+.nw-dialog input:not([type=checkbox]):not([type=radio]),.nw-dialog select{min-height:var(--m-tap);padding:10px 12px}
+.nw-dialog textarea{padding:10px 12px}
+.nw-dialog-acts{gap:10px}
+.nw-dialog-acts .btn{flex:1 1 0;justify-content:center;min-height:48px;font-size:16px}
+.nw-form-status,.nw-form-error,.nw-quote,.nw-pre,.nw-plain,.nw-summary p{font-size:14px}
+.nw-confirm-text{font-size:var(--m-fs-body)}
+.nw-summary small,.nw-merge-pick small{font-size:var(--m-fs-meta)}
+.nw-merge-row{min-height:var(--m-tap);padding:10px 12px}
+.nw-tag-options li{min-height:var(--m-tap);padding:0 12px;font-size:var(--m-fs-body)}
+.nw-manage-list li{min-height:var(--m-tap)}
+.nw-manage-list .icon-btn{width:40px;height:40px}
+.nw-color summary{width:28px;height:28px;display:grid;place-items:center}
+.nw-palette{grid-template-columns:repeat(5,32px);gap:10px;padding:10px}
+.nw-palette .nw-swatch{width:32px;height:32px}
+.nw-review{height:100dvh;max-height:100dvh;margin:0;padding-top:calc(16px + var(--m-safe-t));border:0;border-radius:0;animation:none}
+.nw-review[open]{display:flex;flex-direction:column}
+.nw-review-stage{flex:1 1 auto;align-items:flex-start;min-height:0;overflow:auto}
+.nw-review-card .nw-card{padding:16px}
+.nw-review-card .nw-title{font-size:18px}
+.nw-review-done{font-size:14px}
+.nw-review-progress{font-size:var(--m-fs-meta)}
+.nw-review-keys{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}
+.nw-review-keys .btn{justify-content:center;min-height:48px;padding:0 6px;font-size:15px}
+.nw-review-keys kbd{display:none}
+
+/* ======================= Git 助手 ======================= */
+#git-view .git-head{min-height:0;gap:10px;padding:12px var(--m-gutter);padding-top:calc(12px + var(--m-safe-t))}
+#git-view .git-head>div:first-child{flex:1 1 100%}
+#git-view .git-head .title{font-size:var(--m-fs-title);font-weight:500}
+.git-heading-label{font-size:var(--m-fs-meta)}
+#git-view .git-head .sub{flex-wrap:wrap;gap:2px 8px;font-size:var(--m-fs-meta)}
+.git-read-meta{font-size:var(--m-fs-meta);margin-top:0}
+#git-view .git-head>.right{flex:1 1 100%;flex-wrap:nowrap;justify-content:stretch;gap:8px;margin:0}
+#git-view .git-head>.right>.btn{flex:1 1 0;justify-content:center;min-height:42px;padding:0 8px;font-size:14px}
+.git-assistant-summary{gap:4px 14px;padding:10px var(--m-gutter);font-size:var(--m-fs-meta)}
+.git-assistant-branches{flex-basis:100%;margin:0;font-size:14px}
+
+/* 仓库 / 对话 两栏改成分段切换（标记在 git.js，桌面隐藏） */
+.git-m-switch[hidden]{display:flex!important}
+.git-m-switch{position:relative;flex:none;margin:10px var(--m-gutter) 2px;padding:3px;gap:2px;border-radius:var(--m-radius-sm);background:var(--hover)}
+.git-m-switch input{position:absolute;opacity:0;width:1px;height:1px;pointer-events:none}
+.git-m-switch label{flex:1;display:grid;place-items:center;min-height:36px;border-radius:8px;color:var(--text-2);font-size:var(--m-fs-body);cursor:pointer}
+.git-m-switch input:checked+label{background:var(--surface);color:var(--text);font-weight:500;box-shadow:var(--shadow-sm)}
+.git-m-switch input:focus-visible+label{outline:2px solid var(--accent);outline-offset:-2px}
+#git-view:has(.git-m-switch) .git-body>.git-page{flex:1;max-height:none;border-bottom:0}
+#git-view:has(#git-m-pane-repo:checked) .git-body>#git-chat-host{display:none}
+#git-view:has(#git-m-pane-chat:checked) .git-body>.git-page{display:none}
+.git-operation-error .git-error{margin:8px var(--m-gutter)}
+
+.git-body>.git-page>.git-page-in,.git-page-in{padding:12px var(--m-gutter) 28px}
+.git-error{font-size:var(--m-fs-meta)}
+.git-lite-trunk{padding:14px 16px;border-radius:var(--m-radius);background:var(--studio-card)}
+.git-lite-trunk-label,.git-lite-trunk-note,.git-lite-hidden{font-size:var(--m-fs-meta)}
+.git-lite-trunk-number strong{font-size:28px}
+.git-lite-section h3{font-size:var(--m-fs-section)}
+.git-lite-cards{grid-template-columns:minmax(0,1fr)}
+.git-lite-card{padding:12px 14px;border-radius:var(--m-radius);font-size:14px;background:var(--studio-card)}
+.git-lite-branch{font-size:13px}
+.git-lite-count,.git-lite-request,.git-lite-facts{font-size:12px}
+.git-lite-clear{padding:16px;border-radius:var(--m-radius)}.git-lite-clear-title{font-size:15px}.git-lite-clear-note,.git-lite-clear-line{font-size:13px}
+.git-loading .note{font-size:14px}
+.git-enable-card{margin:16px var(--m-gutter) 24px;padding:20px;border-radius:var(--m-radius)}
+.git-enable-card p,.git-enable-card label{font-size:14px}
+.git-enable-card label span{font-size:12px}
+.git-enable-card select{min-height:var(--m-tap)}
+.git-enable-card form .btn{min-height:var(--m-tap);justify-self:stretch;justify-content:center;font-size:var(--m-fs-body)}
+
+/* Git 设置：全屏页 */
+.git-settings-dialog{width:100%;max-width:100%;height:100dvh;max-height:100dvh!important;margin:0;border:0;border-radius:0}
+.gits-header{padding:calc(12px + var(--m-safe-t)) var(--m-gutter) 12px}
+.gits-header>div>span{font-size:12px}
+.gits-header h2{font-size:var(--m-fs-title)}
+.gits-header .icon-btn{width:var(--m-tap);height:var(--m-tap)}
+.gits-body{padding:0 var(--m-gutter)}
+.gits-section h3{font-size:var(--m-fs-section)}
+.gits-section p,.gits-disable p,.gits-body label{font-size:14px}
+.gits-disable{flex-wrap:wrap}
+.gits-disable strong{font-size:var(--m-fs-body)}
+.gits-status{font-size:12px}
+.gits-footer{padding:10px var(--m-gutter) calc(10px + var(--m-safe-b))}
+.gits-footer>p{flex-basis:100%;font-size:var(--m-fs-meta)}
+.gits-footer>div{flex:1;margin-left:0}
+.gits-footer .btn{flex:1;justify-content:center;min-height:var(--m-tap);font-size:var(--m-fs-body)}
+.git-disable-dialog>div .btn{flex:1;justify-content:center;min-height:48px;font-size:16px}
+
+/* ======================= 用量 ======================= */
+.head.big:has(+.page .usage-tabs){height:auto;flex-wrap:wrap;gap:12px;padding:14px var(--m-gutter) 12px;padding-top:calc(14px + var(--m-safe-t))}
+.head.big:has(+.page .usage-tabs) .title{font-size:28px;font-weight:500}
+.head.big:has(+.page .usage-tabs) .sub{font-size:var(--m-fs-meta)}
+.head.big:has(+.page .usage-tabs)>.right{flex:1 1 100%;margin:0;gap:8px!important}
+.head.big:has(+.page .usage-tabs) .seg{flex:1}
+.head.big:has(+.page .usage-tabs) .btn{min-height:40px;padding:0 14px;font-size:14px}
+.page-in:has(>.usage-tabs){padding-top:4px;padding-bottom:28px}
+.page-in>.usage-tabs .seg,.head.big:has(+.page .usage-tabs) .seg{display:flex}
+.page-in>.usage-tabs .seg button,.head.big:has(+.page .usage-tabs) .seg button{flex:1;min-height:36px;font-size:14px}
+.usage-tabs{gap:8px;margin-bottom:12px}
+.usage-tabs .seg{flex:1 1 100%}
+.usage-tabs>span{font-size:var(--m-fs-meta)!important}
+/* 额度：inset grouped 列表，一行一个账户 */
+.qcards{gap:0;margin:12px 0 22px;overflow:hidden;border:1px solid var(--line);border-radius:var(--m-radius);background:var(--surface)}
+.qcard{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:12px;padding:12px 16px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:var(--studio-card)}
+.qcard:last-child{border-bottom:0}
+.qcard .lbl{font-size:var(--m-fs-body);color:var(--text);justify-content:flex-start;align-items:baseline;gap:10px}
+.qcard .lbl .qcard-edit{font-size:var(--m-fs-meta)}
+.qcard .lbl>span+span{display:none}
+.qcard .big{margin:0;font-size:22px;text-align:right}
+.qcard .big[style]{font-size:var(--m-fs-body)!important;font-weight:400;color:var(--text-3)}
+.qcard .big small{font-size:var(--m-fs-meta)}
+.qcard .bar,.qcard .quota-crew,.qcard .rs,.qcard .qcard-switch,.qcard .error-line{grid-column:1/-1}
+.qcard .bar{margin-top:8px}
+.qcard .rs{margin-top:6px;font-size:12px}
+/* 用量表格改成列表：第一行名称，第二行带标签的数字 */
+.utable{display:block;table-layout:auto;font-size:var(--m-fs-body);border-radius:var(--m-radius);background:var(--studio-card)}
+.utable thead{display:none}
+.utable tbody{display:block}
+.utable:not(:has(tbody tr))::after{content:"这段时间还没有记录";display:block;padding:16px;color:var(--text-3);font-size:14px}
+.utable tr{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px 12px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.utable tr:last-child{border-bottom:0}
+.utable td,.utable tr.sub td:first-child,.utable tr.cxr td:first-child{display:block;padding:0;border:0;text-align:left!important;font-size:var(--m-fs-body);background:none}
+.utable td:first-child{grid-column:1/-1;font-weight:500}
+.utable td.num::before{display:block;margin-bottom:1px;font-size:12px;font-weight:400;color:var(--text-3)}
+.utable tr.grp{background:var(--hover-2)}
+.utable tr.grp td{background:none}
+.utable tr.sub{padding-left:42px}
+.utable tr.cxr{padding-left:58px}
+.utable tr.sub td:first-child{font-weight:400}
+.utable .cell-name{width:100%;min-height:32px;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;gap:8px}
+.share{justify-content:flex-start}
+.share .b{display:block;width:44px}
+.usage-codex-count,.usage-sub{font-size:12px}
+.utable.weeks td.num[data-label]:nth-child(n)::before{content:attr(data-label)}
+.utable:has(thead th:nth-child(2).num) td:nth-child(2)::before{content:"Claude Token"}
+.utable:has(thead th:nth-child(2).num) td:nth-child(3)::before{content:"Claude 折合"}
+.utable:has(thead th:nth-child(2).num) td:nth-child(4)::before{content:"占比"}
+.utable:has(thead th:nth-child(4):last-child):has(thead th:nth-child(2):not(.num)) td:first-child{font-weight:400;font-size:var(--m-fs-meta);color:var(--text-3)}
+.utable:has(thead th:nth-child(4):last-child):has(thead th:nth-child(2):not(.num)) td:nth-child(2){grid-column:1/-1;font-weight:500}
+.utable:has(thead th:nth-child(4):last-child):has(thead th:nth-child(2):not(.num)) td:nth-child(3)::before{content:"Token"}
+.utable:has(thead th:nth-child(4):last-child):has(thead th:nth-child(2):not(.num)) td:nth-child(4)::before{content:"折合"}
+.utable:has(thead th:nth-child(5)) td:nth-child(2){grid-column:1/-1;margin-top:-4px;font-size:var(--m-fs-meta);color:var(--text-3)}
+.utable:has(thead th:nth-child(5)) td:first-child{overflow-wrap:anywhere}
+.utable:has(thead th:nth-child(5)) td:nth-child(3)::before{content:"输入"}
+.utable:has(thead th:nth-child(5)) td:nth-child(4)::before{content:"输出"}
+.utable:has(thead th:nth-child(5)) td:nth-child(5)::before{content:"合计"}
+.page-in>.note,.page-in>p.note,.page-in>.error-line{font-size:var(--m-fs-meta)}
+
+/* ======================= 对话框（#backdrop .modal）：底部面板 ======================= */
+.backdrop{align-items:flex-end;padding:0!important;background:rgba(0,0,0,.42);-webkit-backdrop-filter:none;backdrop-filter:none}
+.backdrop>.modal{width:100%!important;max-width:none;max-height:92dvh;padding:10px var(--m-gutter) calc(16px + var(--m-safe-b));border-width:1px 0 0;border-radius:20px 20px 0 0;overflow:auto;overscroll-behavior:contain;animation:mp-sheet-up .26s var(--ease)}
+.backdrop>.modal::before{content:"";display:block;width:38px;height:5px;margin:0 auto 14px;border-radius:3px;background:var(--line-strong)}
+.modal h3{font-size:19px;font-weight:500;line-height:1.35}
+.modal .d,.modal p{font-size:14px}
+.modal .field label,.modal .field-label{font-size:14px}
+.modal .field input,.modal .field textarea,.modal select{padding:11px 12px;border-radius:var(--m-radius-sm)}
+.modal .field input{min-height:var(--m-tap)}
+.modal details>summary{padding:10px 0;font-size:var(--m-fs-body)}
+.modal .leader-options>summary{min-height:40px;padding:0 14px;box-sizing:border-box}
+.model-options{gap:8px}
+.model-option{min-height:40px;padding:0 14px;border-radius:var(--m-radius-sm);font-size:14px}
+.runtime-option{padding:8px 14px}
+.runtime-option small,.runtime-tag{font-size:12px}
+.runtime-note,.runtime-error,.error-line{font-size:var(--m-fs-meta)}
+.runtime-refresh{min-height:40px;font-size:14px}
+.modal .acts{position:sticky;bottom:calc(-16px - var(--m-safe-b));z-index:1;gap:10px;margin:8px calc(-1 * var(--m-gutter)) calc(-16px - var(--m-safe-b));padding:12px var(--m-gutter) calc(16px + var(--m-safe-b));background:var(--surface-2);border-top:1px solid var(--line)}
+.modal .acts .btn{flex:1 1 0;justify-content:center;min-height:48px;font-size:16px}
+.modal .report-head .icon-btn,.modal .icon-btn[data-act="modal-close"]{width:var(--m-tap);height:var(--m-tap)}
+.rename-modal .acts{margin-top:12px;padding-top:12px}
+.trust-modal{width:100%}
+.trust-mode{min-height:var(--m-tap);padding:12px 14px;font-size:var(--m-fs-body)}
+
+/* ======================= 右键 / 长按菜单（#menu）：底部动作面板 ======================= */
+#overlay-root:has(>#menu.show)::before{content:"";position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.42);animation:mp-fade .2s ease}
+#menu{position:fixed;left:0!important;right:0;top:auto!important;bottom:0;z-index:61;min-width:0;max-width:none;max-height:82dvh;overflow-y:auto;overscroll-behavior:contain;padding:8px 8px calc(10px + var(--m-safe-b));border-width:1px 0 0;border-radius:20px 20px 0 0;background:var(--surface)}
+#menu.show{animation:mp-sheet-up .24s var(--ease)}
+#menu::before{content:"";display:block;width:38px;height:5px;margin:0 auto 8px;border-radius:3px;background:var(--line-strong)}
+.menu button{min-height:48px;gap:12px;padding:0 14px;border-radius:12px;font-size:16px}
+.menu .grow{flex:1}
+.menu .mtitle{padding:8px 14px 4px;font-size:var(--m-fs-meta)}
+.menu small{font-size:var(--m-fs-meta)}
+.menu-runtime{padding:6px 14px;font-size:var(--m-fs-meta)}
+.menu>.runtime-error{max-width:none;padding:4px 14px 8px}
+.menu-context>.context-hint,.menu .editor-handoff-note{padding:6px 14px;font-size:var(--m-fs-meta)}
+/* 子菜单：就地展开，不再浮在旁边 */
+.menu .sub-menu{position:static!important;left:auto!important;top:auto!important;display:block;min-width:0;max-height:none;margin:0 0 6px 14px;padding:2px 0 2px 8px;border:0;border-left:2px solid var(--line-strong);border-radius:0;box-shadow:none;background:none}
+.menu .sub-menu[hidden]{display:none}
+
+/* ======================= 设置界面：全屏 ======================= */
+#settings-surface{z-index:65}
+.crew-settings{flex-direction:column;font-size:var(--m-fs-body)}
+.cs-sidebar{flex:none;padding:calc(8px + var(--m-safe-t)) 0 0;border-right:0;border-bottom:1px solid var(--cs-line);background:var(--cs-bg)}
+.cs-brand,.cs-local,.cs-back{display:none}
+.cs-sidebar nav{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;padding:0 var(--m-gutter) 10px}
+.cs-sidebar nav::-webkit-scrollbar{display:none}
+.cs-sidebar nav button{flex:none;width:auto;min-height:40px;padding:0 16px;border:1px solid var(--cs-line);border-radius:999px;white-space:nowrap;font-size:15px}
+.cs-sidebar nav button:focus-visible{outline-offset:-3px}
+.cs-sidebar nav button.active{border-color:color-mix(in srgb,var(--cs-accent) 40%,transparent)}
+.cs-sidebar nav small,.cs-nav-icon{display:none!important}
+.cs-body{scrollbar-gutter:auto;overscroll-behavior:contain}
+.cs-header{position:sticky;top:0;z-index:2;align-items:center;gap:12px;padding:12px var(--m-gutter) 12px;background:var(--cs-bg)}
+.cs-eyebrow{display:none}
+.crew-settings .cs-header h1{margin:0;font-size:var(--m-fs-title);font-weight:500;line-height:1.3}
+.cs-subtitle{font-size:14px}
+.cs-close{width:var(--m-tap);height:var(--m-tap);margin-right:-8px;border-radius:50%;background:var(--cs-card)}
+.cs-content{padding:4px var(--m-gutter) 24px}
+.crew-settings h2{font-size:var(--m-fs-section);font-weight:500}
+.crew-settings h3{font-size:var(--m-fs-body)}
+.cs-card,.cs-task-list>.cs-card,.crew-settings .settings-section{padding:16px;border-radius:var(--m-radius)}
+.cs-card-heading p,.cs-section-heading p,.cs-connection-intro,.cs-tool-row p,.cs-empty p{font-size:14px}
+.cs-hint,.cs-follow,.cs-footnote,.cs-warning,.crew-settings .settings-hint,.cs-connection-guide,.cs-connection-steps li{font-size:var(--m-fs-meta)}
+.cs-badge{font-size:12px}
+.cs-fields{grid-template-columns:minmax(0,1fr)!important;gap:14px;margin-top:18px}
+.cs-fields label{font-size:14px}
+.cs-fields select,.cs-fields input{height:auto;min-height:48px;border-radius:var(--m-radius-sm)}
+.cs-choice button{min-height:36px;font-size:14px}
+.cs-inherit{min-height:40px;font-size:14px}
+.cs-inherit input{width:20px;height:20px}
+.cs-section-heading{margin:24px 0 12px}
+.cs-button{min-height:var(--m-tap);padding:0 16px;font-size:var(--m-fs-body)!important;border-radius:var(--m-radius-sm)}
+.cs-footer{flex-wrap:wrap;gap:8px;padding:10px var(--m-gutter) calc(10px + var(--m-safe-b))}
+.cs-status{flex-basis:100%;font-size:var(--m-fs-meta)}
+/* 没有改动也没有错误时，状态说明让位给内容 */
+.cs-footer:has([data-settings-action="save"]:disabled) .cs-status:not(.cs-error){display:none}
+.cs-footer>.cs-button{flex:1 1 0}
+.cs-status+.cs-button{margin-left:0}
+.cs-tool-row{flex-wrap:wrap;gap:10px;padding:16px 0}
+.cs-tool-row strong{font-size:var(--m-fs-body)}
+.cs-paths dt{font-size:var(--m-fs-meta)}
+.cs-paths dd{font-size:var(--m-fs-meta)}
+.cs-theme-options button{min-height:56px;padding:12px 8px;font-size:var(--m-fs-body)}
+.crew-settings .settings-section h4{font-size:var(--m-fs-body)}
+.cs-channel-picker{grid-template-columns:minmax(0,1fr)}
+.cs-channel-picker strong{font-size:var(--m-fs-body)}
+.cs-channel-picker small{font-size:12px}
+.cs-connection-steps{grid-template-columns:repeat(2,minmax(0,1fr))}
+.cs-secret-input button{font-size:14px}
+.cs-sound-row h3{font-size:var(--m-fs-body)}
+.cs-sound-row p,.cs-sound-actions p,.cs-sound-volume,.cs-custom-upload label{font-size:14px}
+.cs-sound-choice label,.cs-notification-routing label{font-size:var(--m-fs-meta)}
+.cs-notification-routing select,.cs-sound-choice select{min-height:48px}
+.cs-notification-routing label{min-width:0}
+/* 设置里的各面板：小字提到 12px 以上，横排控件改竖排 */
+.cs-notification-routing{flex-direction:column;align-items:stretch}
+.cs-notification-routing label{min-width:0}
+.cs-notification-routing .cs-button{width:100%}
+.co-chat-status,.st-legend,.st-category-copy .st-category-meta{font-size:12px}
+.crew-settings .sl-body{padding:4px 0 24px}
+.sl-toolbar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.sl-toolbar label{font-size:14px}
+.sl-search{grid-column:1/-1;min-width:0}
+.sl-toolbar select{max-width:none}
+.sl-toolbar input,.sl-toolbar select{min-height:var(--m-tap)}
+.sl-categories{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:16px calc(-1 * var(--m-gutter)) 10px;padding:0 var(--m-gutter)}
+.sl-categories::-webkit-scrollbar{display:none}
+.sl-categories button{flex:none;min-height:40px;border-color:var(--line);border-radius:999px;white-space:nowrap}
+.sl-categories button span{font-size:13px}
+.sl-scope,.sl-warning,.sl-result-heading{font-size:var(--m-fs-meta)}
+.sl-row-tags,.sl-row time,.sl-preview-path,.sl-preview-id,.sl-message>div{font-size:12px}
+.crew-settings code{font-size:12px}
+/* 顶部第一个 chip 已经显示“正在看哪一类”，重复的提示条不再占位 */
+.nw-filters .nw-viewing{display:none}
+.gits-header .icon-btn{font-size:26px}

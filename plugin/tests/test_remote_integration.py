@@ -1,5 +1,6 @@
 """Owner browser journeys through real Service/SQLite/HTTP and fake AI carriers."""
 import tests
+import uuid
 import base64
 import http.client
 import json
@@ -56,7 +57,7 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
             values['Cookie'] = self.cookie
         body = None if data is None else json.dumps(data, ensure_ascii=False).encode('utf-8')
         if body is not None:
-            values.update({'X-Crew': '1', 'Content-Type': 'application/json'})
+            values.update({'X-Crew': '1', 'X-Crew-Request-Id': uuid.uuid4().hex, 'Content-Type': 'application/json'})
         values.update(headers or {})
         connection = http.client.HTTPConnection(target.hostname, target.port, timeout=5)
         try:
@@ -68,14 +69,14 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
             connection.close()
 
     def start_remote(self):
-        status, result, _ = self.request('/api/remote-access', {'action': 'start', 'bind': '127.0.0.1', 'port': 0})
+        status, result, _ = self.request('/api/op/remote_access.action', {'action': 'start', 'bind': '127.0.0.1', 'port': 0})
         self.assertEqual(status, 200, result)
         self.assertTrue(result['enabled'])
         self.remote_url = 'http://127.0.0.1:' + str(result['port'])
         return result
 
     def login(self):
-        status, pair, _ = self.request('/api/remote-access', {'action': 'pair'})
+        status, pair, _ = self.request('/api/op/remote_access.action', {'action': 'pair'})
         self.assertEqual(status, 200, pair)
         status, result, headers = self.request('/remote/login', {'code': pair['code'], 'device_name': '隔离手机', 'kind': 'browser'},
                                               remote=True, authenticated=False)
@@ -83,14 +84,14 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         self.cookie = headers['Set-Cookie'].split(';', 1)[0]
         self.assertIn('HttpOnly', headers['Set-Cookie'])
         self.assertIn('SameSite=Strict', headers['Set-Cookie'])
-        snapshot = self.request('/api/remote-access')[1]
+        snapshot = self.request('/api/op/remote_access.get', {})[1]
         self.assertEqual(len(snapshot['devices']), 1)
         self.assertFalse(snapshot['pair_pending'])
         self.assertNotIn(pair['code'], json.dumps(snapshot))
         return snapshot['devices'][0]['id']
 
     def pair_desktop(self):
-        status, pair, _ = self.request('/api/remote-access', {'action': 'pair'})
+        status, pair, _ = self.request('/api/op/remote_access.action', {'action': 'pair'})
         self.assertEqual(200, status, pair)
         status, result, headers = self.request('/remote/login', {
             'code': pair['code'], 'kind': 'desktop', 'device_name': '隔离桌面',
@@ -135,18 +136,18 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
                 status, _, headers = self.request(path, remote=True, authenticated=False, raw=True)
                 self.assertEqual(status, 303)
                 self.assertTrue(headers['Location'].startswith('/remote/login?next='))
-        for path in ('/api/state?project=demo', '/api/chat/history?session_id=s3',
-                     '/api/chat/events?session_id=s3', '/api/chat/file?session_id=s3&name=private.png',
-                     '/api/files/content?session_id=s3&path=private.txt', '/api/goals/report?goal_id=private', '/app.js'):
+        for path in ('/api/op/workspace.state?project=demo', '/api/op/chat.history?session_id=s3',
+                     '/api/chat/events?session_id=s3', '/api/op/chat.file?session_id=s3&name=private.png',
+                     '/api/op/files.content?session_id=s3&path=private.txt', '/api/op/goal.report.view?goal_id=private', '/app.js'):
             with self.subTest(path=path):
                 self.assertEqual(self.request(path, remote=True, authenticated=False, raw=True)[0], 401)
         self.assertEqual(self.request('/remote/login', remote=True, raw=True)[0], 200)
         self.login()
-        self.assertEqual(self.request('/api/state?project=demo', remote=True)[0], 200)
+        self.assertEqual(self.request('/api/op/workspace.state?project=demo', remote=True)[0], 200)
         self.assertEqual(self.request('/?project=demo', remote=True, raw=True)[0], 200)
-        for path, body in (('/api/remote-access', None), ('/api/remote-access', {'action': 'stop'}),
-                           ('/api/admin/config', None), ('/api/settings', None),
-                           ('/api/goals/agent?project=demo', {'actor_session_id': 's3', 'action': 'start', 'data': {}})):
+        for path, body in (('/api/op/remote_access.get', {}), ('/api/op/remote_access.action', {'action': 'stop'}),
+                           ('/api/op/ops_config.get', {}), ('/api/op/settings.get', None),
+                           ('/api/op/goal.assign?project=demo', {'goal_id': 'other', 'to': 's1'})):
             with self.subTest(path=path, body=body):
                 self.assertEqual(self.request(path, body, remote=True)[0], 403)
         self.assertEqual(self.processes, [])
@@ -155,29 +156,36 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         self.start_remote()
         _, bearer = self.pair_desktop()
         # An independent contract list detects a route mistakenly dropped from the implementation.
-        get = ('/api/remote-access', '/api/admin/connection/plan', '/api/admin/chat', '/api/admin/config')
         post = (
-            '/api/remote-access', '/api/admin/update/prepare', '/api/admin/update/cancel',
-            '/api/admin/connection/prepare', '/api/admin/chat/send', '/api/admin/chat/interrupt',
-            '/api/admin/config', '/api/files/open', '/api/files/reveal', '/api/workspace-data/preview',
-            '/api/workspace-data/import', '/api/workspace-data/handoff', '/api/messages',
-            '/api/assistant/native-action', '/api/goals/report/folder',
+            '/api/op/remote_access.get', '/api/op/admin.connection.plan', '/api/op/ops_chat.get', '/api/op/ops_config.get',
+            '/api/op/remote_access.action', '/api/op/admin.update.prepare', '/api/op/admin.update.cancel',
+            '/api/op/admin.connection.prepare', '/api/op/ops_chat.send', '/api/op/ops_chat.interrupt',
+            '/api/op/ops_config.save', '/api/op/files.open', '/api/op/files.reveal', '/api/op/data.preview',
+            '/api/op/data.import', '/api/op/data.handoff', '/api/op/message.send',
+            '/api/op/goal.report.folder',
             '/api/report-preview/worker/register', '/api/report-preview/worker/next',
             '/api/report-preview/worker/result', '/api/report-preview/worker/close',
         )
-        for method, paths in (('GET', get), ('POST', post)):
-            for path in paths:
-                with self.subTest(method=method, path=path):
-                    body = {'probe': 'x' * (8 * 1024 * 1024)} if path == '/api/goals/report/folder' else {}
-                    status, value, _ = self.request(path, body if method == 'POST' else None,
-                                                    remote=True, origin=False, headers=bearer)
-                    self.assertEqual(403, status)
-                    self.assertEqual({'error': '此操作只能在主机上的 Crew 中进行'}, value)
+        for path in post:
+            with self.subTest(path=path):
+                status, value, _ = self.request(path, {}, remote=True, origin=False, headers=bearer)
+                self.assertEqual(403, status, value)
+                if path.startswith('/api/op/'):
+                    self.assertEqual('forbidden', value['code'])
+                else:
+                    self.assertIn('主机', value['error'])
         for body in (None, {}):
-            self.assertEqual(404, self.request('/api/not-yet-invented', body, remote=True, headers=bearer)[0])
-        status, result, _ = self.request('/api/goals/report/folder?project=demo', {})
+            self.assertEqual(404, self.request('/api/op/not.yet.invented', body, remote=True, headers=bearer)[0])
+        status, result, _ = self.request('/api/op/goal.report.folder?project=demo', {})
         self.assertEqual(400, status)
         self.assertIn('goal_id', result['error'])
+
+    def test_desktop_rejects_host_only_operation_before_reading_large_body(self):
+        self.start_remote()
+        _, bearer = self.pair_desktop()
+        status, error, _ = self.request('/api/op/goal.report.folder', {'probe': 'x' * (8 * 1024 * 1024)},
+                                        remote=True, origin=False, headers=bearer)
+        self.assertEqual(status, 403, error)
 
     def test_access_context_and_desktop_owner_routes_use_real_service(self):
         self.start_remote()
@@ -199,14 +207,15 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
             self.assertEqual({**remote, 'client': client, 'device_id': device, 'local_controls': controls,
                               'capabilities': flags}, context)
         workspace_id = self.server.service.storage.refresh('demo')['workspace_id']
-        for path in ('/api/storage', '/api/connections', '/api/settings', '/api/project/settings?project=demo',
-                     '/api/workspace-data/history?' + urlencode({'workspace_id': workspace_id})):
+        for path, args in (('/api/op/storage.get', {}), ('/api/op/connections.get', {}),
+                           ('/api/op/settings.get', None), ('/api/op/workspace.settings.get?project=demo', None),
+                           ('/api/op/data.history', {'workspace_id': workspace_id})):
             with self.subTest(path=path):
-                self.assertEqual(200, self.request(path, remote=True, origin=False, headers=bearer)[0])
-                self.assertEqual(403, self.request(path, remote=True)[0])
+                self.assertEqual(200, self.request(path, args, remote=True, origin=False, headers=bearer)[0])
+                self.assertEqual(403, self.request(path, args, remote=True)[0])
         body = {'target': 'none'}
-        self.assertEqual(200, self.request('/api/connections/preferences', body, remote=True, origin=False, headers=bearer)[0])
-        self.assertEqual(403, self.request('/api/connections/preferences', body, remote=True)[0])
+        self.assertEqual(200, self.request('/api/op/connections.preferences.set', body, remote=True, origin=False, headers=bearer)[0])
+        self.assertEqual(403, self.request('/api/op/connections.preferences.set', body, remote=True)[0])
 
     def test_desktop_stream_keeps_device_online_and_revocation_ends_stream(self):
         self.start_remote()
@@ -217,10 +226,10 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         query = {'project': 'demo', 'session_id': 's3'}
         _, response = self.event_stream(query, authorization=bearer)
         stamp[0] = 100
-        self.assertTrue(self.request('/api/remote-access')[1]['devices'][0]['online'])
-        self.assertEqual(200, self.request('/api/remote-access', {'action': 'revoke', 'device_id': device})[0])
+        self.assertTrue(self.request('/api/op/remote_access.get', {})[1]['devices'][0]['online'])
+        self.assertEqual(200, self.request('/api/op/remote_access.action', {'action': 'revoke', 'device_id': device})[0])
         self.assertEqual(b'', response.read())
-        self.assertEqual([], self.request('/api/remote-access')[1]['devices'])
+        self.assertEqual([], self.request('/api/op/remote_access.get', {})[1]['devices'])
         status, result, _ = self.request('/api/chat/events?' + urlencode(query), remote=True, headers=bearer)
         self.assertEqual(401, status)
         self.assertEqual('设备授权已失效，请在主机上重新生成配对码', result['error'])
@@ -229,15 +238,16 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         self.start_remote()
         self.login()
         _, bearer = self.pair_desktop()
-        path = '/api/host/folders?' + urlencode({'path': str(self.root)})
-        local = self.request(path)
-        desktop = self.request(path, remote=True, headers=bearer, origin=False)
+        path = '/api/op/workspace.host_folders'
+        args = {'path': str(self.root)}
+        local = self.request(path, args)
+        desktop = self.request(path, args, remote=True, headers=bearer, origin=False)
         self.assertEqual(200, local[0])
         self.assertEqual(local[:2], desktop[:2])
-        self.assertEqual(403, self.request(path, remote=True)[0])
-        self.assertEqual(400, self.request('/api/host/folders?path=relative', remote=True, headers=bearer)[0])
-        existing = '/api/host/workspace/existing'
-        new = '/api/host/workspace/new'
+        self.assertEqual(403, self.request(path, args, remote=True)[0])
+        self.assertEqual(400, self.request(path, {'path': 'relative'}, remote=True, headers=bearer)[0])
+        existing = '/api/op/workspace.add_existing'
+        new = '/api/op/workspace.create_folder'
         open_body = {'directory': str(self.project), 'new_project': False}
         new_body = {'parent': str(self.root), 'name': 'Host workspace'}
         self.assertEqual(403, self.request(existing, open_body, remote=True)[0])
@@ -249,7 +259,7 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         status, result, _ = self.request(existing, open_body)
         self.assertEqual(200, status, result)
         self.assertEqual('demo', result['name'])
-        statuses = {row['name']: row['directory_state'] for row in self.request('/api/projects')[1]['projects']}
+        statuses = {row['name']: row['directory_state'] for row in self.request('/api/op/workspace.list')[1]['projects']}
         self.assertEqual({'Host workspace': {'status': 'ready'}, 'demo': {'status': 'ready'}}, statuses)
 
     def scopes_round_trip(self, runtime):
@@ -265,14 +275,14 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         runtimes.set(self.conn, 's3', runtime)
         self.start_remote()
         self.login()
-        code, assistant, _ = self.request('/api/assistant/open', {}, remote=True)
+        code, assistant, _ = self.request('/api/op/assistant.open', {}, remote=True)
         self.assertEqual(code, 200, assistant)
         assistant_id = assistant['session_id']
         runtimes.set(self.conn, assistant_id, runtime)
         goal = self.goal()
-        inputs = [('general', '/api/chat/send?project=demo', {'session_id': 's3'}, '只讨论整体规划，不改动任务。'),
-                  ('task', '/api/chat/send?project=demo', {'session_id': 's3', 'goal_id': goal['id']}, '执行当前任务，保留这段原文。'),
-                  ('assistant', '/api/chat/send', {'session_id': assistant_id}, '整理全局事项，不发送到项目对话。')]
+        inputs = [('general', '/api/op/chat.send?project=demo', {'session_id': 's3'}, '只讨论整体规划，不改动任务。'),
+                  ('task', '/api/op/chat.send?project=demo', {'session_id': 's3', 'goal_id': goal['id']}, '执行当前任务，保留这段原文。'),
+                  ('assistant', '/api/op/chat.send', {'session_id': assistant_id}, '整理全局事项，不发送到项目对话。')]
         manager = self.server.service.chat
         keys = []
         stream_queries = []
@@ -287,7 +297,7 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
             self.assertEqual(code, 200, again)
             self.assertEqual(again['message_id'], first['message_id'])
             self.assertEqual(before, list(current.client.calls) if runtime == 'codex' else current.process.stdin.getvalue())
-            history = self.request('/api/chat/history?' + urlencode({**scope, **({'project': 'demo'} if label != 'assistant' else {})}), remote=True)[1]
+            history = self.request('/api/op/chat.history?' + urlencode({**scope, **({'project': 'demo'} if label != 'assistant' else {})}), remote=True)[1]
             messages = [event for event in history['events'] if event.get('id') == body['message_id']]
             self.assertEqual(len(messages), 1)
             self.assertEqual(messages[0]['text'], original)
@@ -334,7 +344,7 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         self.login()
         goal = self.goal()
         saved = goals.save_report(self.conn, goal['id'], self.report())
-        path = '/api/goals/report?' + urlencode({'project': 'demo', 'goal_id': goal['id'], 'report_id': saved['id']})
+        path = '/api/op/goal.report.view?' + urlencode({'project': 'demo', 'goal_id': goal['id'], 'report_id': saved['id']})
         code, report, headers = self.request(path, remote=True, raw=True)
         self.assertEqual(code, 200)
         self.assertEqual(report, saved['html'].encode('utf-8'))
@@ -342,25 +352,25 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         original = b'\x89PNG\r\n\x1a\nremote-image-evidence'
         body = {'session_id': 's3', 'text': '查看附件', 'message_id': 'remote-image',
                 'images': [{'media_type': 'image/png', 'data': base64.b64encode(original).decode('ascii')}]}
-        code, result, _ = self.request('/api/chat/send?project=demo', body, remote=True)
+        code, result, _ = self.request('/api/op/chat.send?project=demo', body, remote=True)
         self.assertEqual(code, 200, result)
-        history = self.request('/api/chat/history?project=demo&session_id=s3', remote=True)[1]
+        history = self.request('/api/op/chat.history?project=demo&session_id=s3', remote=True)[1]
         message = next(event for event in history['events'] if event.get('id') == 'remote-image')
-        path = '/api/chat/file?' + urlencode({'project': 'demo', 'session_id': 's3', 'name': message['images'][0]})
+        path = '/api/op/chat.file?' + urlencode({'project': 'demo', 'session_id': 's3', 'name': message['images'][0]})
         code, image, headers = self.request(path, remote=True, raw=True)
         self.assertEqual((code, image, headers['Content-Type']), (200, original, 'image/png'))
         self.assertEqual(self.request(path, remote=True, authenticated=False)[0], 401)
         (self.project / 'actual.txt').write_text('文件真实内容', encoding='utf-8')
-        path = '/api/files/content?' + urlencode({'project': 'demo', 'session_id': 's3', 'path': 'actual.txt', 'raw': 1})
+        path = '/api/op/files.content?' + urlencode({'project': 'demo', 'session_id': 's3', 'path': 'actual.txt', 'raw': 1})
         status, preview, _ = self.request(path, remote=True)
         self.assertEqual(status, 200, preview)
         self.assertEqual(preview['content'], '文件真实内容')
         (self.project / 'actual.png').write_bytes(original)
-        path = '/api/files/content?' + urlencode({'project': 'demo', 'session_id': 's3', 'path': 'actual.png', 'raw': 1})
+        path = '/api/op/files.content?' + urlencode({'project': 'demo', 'session_id': 's3', 'path': 'actual.png', 'raw': 1})
         self.assertEqual(self.request(path, remote=True, raw=True)[:2], (200, original))
         # Formats a phone cannot preview are downloaded as the original file.
         (self.project / '方案.docx').write_bytes(b'PK\x03\x04docx')
-        path = '/api/files/download?' + urlencode({'project': 'demo', 'session_id': 's3', 'path': '方案.docx'})
+        path = '/api/op/files.download?' + urlencode({'project': 'demo', 'session_id': 's3', 'path': '方案.docx'})
         code, content, headers = self.request(path, remote=True, raw=True)
         self.assertEqual((code, content, headers['Content-Type']), (200, b'PK\x03\x04docx', 'application/octet-stream'))
         self.assertIn("filename*=UTF-8''%E6%96%B9%E6%A1%88.docx", headers['Content-Disposition'])
@@ -382,31 +392,31 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         connection, response = self.event_stream({**query, 'after': 0}, after=first['seq'])
         self.assertEqual([self.read_event(response) for _ in expected], expected)
         start = time.monotonic()
-        self.assertEqual(self.request('/api/remote-access', {'action': 'revoke', 'device_id': device})[0], 200)
+        self.assertEqual(self.request('/api/op/remote_access.action', {'action': 'revoke', 'device_id': device})[0], 200)
         self.assertEqual(response.read(), b'')
         self.assertLess(time.monotonic() - start, 2)
         self.assertEqual(self.request('/api/chat/events?' + urlencode(query), remote=True)[0], 401)
-        self.assertEqual(self.request('/api/chat/history?' + urlencode(query))[1]['events'], journal.events)
+        self.assertEqual(self.request('/api/op/chat.history?' + urlencode(query))[1]['events'], journal.events)
 
     def test_remote_stop_keeps_local_listener_manager_and_business_journal_usable(self):
         self.start_remote()
         self.login()
-        code, receipt, _ = self.request('/api/chat/send?project=demo', {'session_id': 's3', 'text': '继续工作', 'message_id': 'before-stop'}, remote=True)
+        code, receipt, _ = self.request('/api/op/chat.send?project=demo', {'session_id': 's3', 'text': '继续工作', 'message_id': 'before-stop'}, remote=True)
         self.assertEqual(code, 200, receipt)
         manager = self.server.service.chat
         process = manager.processes['s3'].process
         before = list(manager.journal('s3').events)
         listener = self.server.service.remote_access.listener
-        self.assertEqual(self.request('/api/remote-access', {'action': 'stop'})[0], 200)
+        self.assertEqual(self.request('/api/op/remote_access.action', {'action': 'stop'})[0], 200)
         self.assertFalse(listener.thread.is_alive())
         self.assertIsNone(process.poll())
         self.assertTrue(manager.busy('s3'))
         self.assertEqual(manager.journal('s3').events, before)
         with self.assertRaises(OSError):
-            self.request('/api/state?project=demo', remote=True)
-        self.assertEqual(self.request('/api/state?project=demo')[0], 200)
+            self.request('/api/op/workspace.state?project=demo', remote=True)
+        self.assertEqual(self.request('/api/op/workspace.state?project=demo')[0], 200)
         self.finish_turn('s3', process)
-        code, receipt, _ = self.request('/api/chat/send?project=demo', {'session_id': 's3', 'text': '本机继续', 'message_id': 'after-stop'})
+        code, receipt, _ = self.request('/api/op/chat.send?project=demo', {'session_id': 's3', 'text': '本机继续', 'message_id': 'after-stop'})
         self.assertEqual(code, 200, receipt)
         self.assertTrue(any(event.get('id') == 'after-stop' for event in manager.journal('s3').events))
 
@@ -421,20 +431,20 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         path.write_text(json.dumps(config), encoding='utf-8')
         original = path.read_bytes()
         self.open_server()
-        self.assertEqual(self.request('/api/state?project=demo')[0], 200)
-        status, snapshot, _ = self.request('/api/remote-access')
+        self.assertEqual(self.request('/api/op/workspace.state?project=demo')[0], 200)
+        status, snapshot, _ = self.request('/api/op/remote_access.get', {})
         self.assertEqual(status, 200, snapshot)
         self.assertFalse(snapshot['enabled'])
         self.assertTrue(snapshot['configured_enabled'])
         self.assertTrue(snapshot['last_error'])
         self.assertEqual(path.read_bytes(), original)
-        self.assertEqual(self.request('/api/chat/send?project=demo', {'session_id': 's3', 'text': '本机仍可用'})[0], 200)
+        self.assertEqual(self.request('/api/op/chat.send?project=demo', {'session_id': 's3', 'text': '本机仍可用'})[0], 200)
 
     def test_backend_restart_preserves_paired_device_but_never_replays_chat(self):
         self.start_remote()
         self.login()
         body = {'session_id': 's3', 'text': '只发送这一次', 'message_id': 'before-restart'}
-        self.assertEqual(self.request('/api/chat/send?project=demo', body, remote=True)[0], 200)
+        self.assertEqual(self.request('/api/op/chat.send?project=demo', body, remote=True)[0], 200)
         process = self.server.service.chat.processes['s3'].process
         self.finish_turn('s3', process)
         process_count = len(self.processes)
@@ -442,11 +452,11 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         self.close_server()
         original = journal_path.read_bytes()
         self.open_server()
-        snapshot = self.request('/api/remote-access')[1]
+        snapshot = self.request('/api/op/remote_access.get', {})[1]
         self.assertTrue(snapshot['enabled'])
         self.remote_url = 'http://127.0.0.1:' + str(snapshot['port'])
         self.assertEqual(self.request('/api/access/context', remote=True)[0], 200)
-        history = self.request('/api/chat/history?project=demo&session_id=s3', remote=True)[1]
+        history = self.request('/api/op/chat.history?project=demo&session_id=s3', remote=True)[1]
         self.assertEqual(len([event for event in history['events'] if event.get('id') == body['message_id']]), 1)
         self.assertEqual(len(self.processes), process_count)
         self.assertEqual(self.server.service.chat.path('s3').read_bytes(), original)
@@ -465,18 +475,18 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(stream.read(), b'')
         self.assertFalse(listener.thread.is_alive())
         with self.assertRaises(OSError):
-            self.request('/api/state?project=demo', remote=True)
+            self.request('/api/op/workspace.state?project=demo', remote=True)
         with socket.create_connection(unrelated.getsockname(), timeout=2):
             peer, _ = unrelated.accept()
             peer.close()
 
     def test_explicit_browser_blocked_port_is_rejected_before_binding(self):
         with mock.patch('crew.remote_http.Listener', side_effect=AssertionError('A browser-blocked port must not be bound')):
-            status, error, _ = self.request('/api/remote-access', {'action': 'start', 'bind': '127.0.0.1', 'port': 6667})
+            status, error, _ = self.request('/api/op/remote_access.action', {'action': 'start', 'bind': '127.0.0.1', 'port': 6667})
         self.assertEqual(status, 400, error)
         self.assertIn('6667', error['error'])
-        self.assertFalse(self.request('/api/remote-access')[1]['enabled'])
-        self.assertEqual(self.request('/api/state?project=demo')[0], 200)
+        self.assertFalse(self.request('/api/op/remote_access.get', {})[1]['enabled'])
+        self.assertEqual(self.request('/api/op/workspace.state?project=demo')[0], 200)
 
     def test_remote_human_cannot_forge_peer_caller_or_adopt_native_through_leader(self):
         self.start_remote()
@@ -484,15 +494,15 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         before_sessions = self.conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]
         before_peers = self.conn.execute('SELECT COUNT(*) FROM peer_messages').fetchone()[0]
         before_launches = len(self.processes)
-        requests = [('/api/messages', {'caller_session_id': 's3', 'name': 's1',
+        requests = [('/api/op/message.send', {'caller_session_id': 's3', 'name': 's1',
                      'text': 'Remote must not impersonate a leader', 'message_id': 'remote-peer-forgery'})]
         for caller_field in ('caller_session_id', 'caller_execution_id'):
             for path, payload in (
-                    ('/api/spawn', {'name': 'not-spawned', 'task': 'not started', 'leader_session_id': 's3'}),
-                    ('/api/leader', {'name': 'not-created'}),
-                    ('/api/wake', {'session_id': 's1', 'text': 'not sent'}),
-                    ('/api/session/stop', {'session_id': 's1'}),
-                    ('/api/session/compact', {'session_id': 's3'})):
+                    ('/api/op/execution.spawn', {'name': 'not-spawned', 'task': 'not started', 'leader_session_id': 's3'}),
+                    ('/api/op/leader.create', {'name': 'not-created'}),
+                    ('/api/op/session.wake', {'session_id': 's1', 'text': 'not sent'}),
+                    ('/api/op/session.stop', {'session_id': 's1'}),
+                    ('/api/op/session.compact', {'session_id': 's3'})):
                 requests.append((path, {**payload, caller_field: 's3'}))
         for path, payload in requests:
             with self.subTest(path=path, payload=payload):
@@ -503,7 +513,7 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
             self.server.service.vscode_sessions['demo'] = [{'session_id': identity, 'title': 'Unowned native',
                                                            'cwd': str(self.project), 'mtime': 0}]
             self.server.service.vscode_hidden_ids = set()
-        status, error, _ = self.request('/api/leader?project=demo', {'name': 'not-adopting',
+        status, error, _ = self.request('/api/op/leader.create?project=demo', {'name': 'not-adopting',
             'candidate_members': [{'session_id': identity, 'name': 'not-adopted'}]}, remote=True)
         self.assertEqual(403, status, error)
         self.assertIsNone(self.conn.execute('SELECT 1 FROM sessions WHERE session_id=?', (identity,)).fetchone())
@@ -511,11 +521,11 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         self.assertEqual(before_peers, self.conn.execute('SELECT COUNT(*) FROM peer_messages').fetchone()[0])
         self.assertEqual(before_launches, len(self.processes))
         # The similarly named leader_session_id is a human-selected target.
-        status, result, _ = self.request('/api/spawn?project=demo', {'name': 'remote-member', 'task': 'one bounded task',
+        status, result, _ = self.request('/api/op/execution.spawn?project=demo', {'name': 'remote-member', 'task': 'one bounded task',
                                         'leader_session_id': 's3', 'role': 'member'}, remote=True)
         self.assertEqual(200, status, result)
         # The existing channel endpoint fixes its actor, ignoring alleged sender/source fields.
-        status, result, _ = self.request('/api/channel?project=demo', {'body': 'Human channel message',
+        status, result, _ = self.request('/api/op/channel.post?project=demo', {'body': 'Human channel message',
                                         'sender_session_id': 's3', 'source': 'crew'}, remote=True)
         self.assertEqual(200, status, result)
         self.assertEqual('user', result['message']['speaker_session_id'])
@@ -527,8 +537,8 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         outside.mkdir()
         before_sessions = self.conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]
         before_launches = len(self.processes)
-        for endpoint in ('leader', 'spawn'):
-            status, error, _ = self.request('/api/' + endpoint + '?project=demo',
+        for endpoint in ('leader.create', 'execution.spawn'):
+            status, error, _ = self.request('/api/op/' + endpoint + '?project=demo',
                 {'name': 'outside-' + endpoint, 'task': 'must not start', 'cwd': str(outside)}, remote=True)
             self.assertEqual(400, status, error)
             self.assertIn('root', error['error'])
@@ -562,7 +572,7 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         self.assertTrue(bad.closed)
         self.assertFalse(bad.started)
         self.login()
-        self.assertEqual(self.request('/api/state?project=demo', remote=True)[0], 200)
+        self.assertEqual(self.request('/api/op/workspace.state?project=demo', remote=True)[0], 200)
 
     def test_automatic_port_exhaustion_closes_rejected_allocations_and_keeps_local_available(self):
         rejected = []
@@ -572,13 +582,13 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
             rejected.append(candidate)
             return candidate
         with mock.patch('crew.remote_http.Listener', side_effect=allocation):
-            status, error, _ = self.request('/api/remote-access', {'action': 'start', 'bind': '127.0.0.1', 'port': 0})
+            status, error, _ = self.request('/api/op/remote_access.action', {'action': 'start', 'bind': '127.0.0.1', 'port': 0})
         self.assertEqual(status, 400, error)
         self.assertGreater(len(rejected), 1)
         self.assertLessEqual(len(rejected), web.MAX_BROWSER_PORT_ATTEMPTS)
         self.assertTrue(all(item.closed and not item.started for item in rejected))
-        self.assertFalse(self.request('/api/remote-access')[1]['enabled'])
-        self.assertEqual(self.request('/api/state?project=demo')[0], 200)
+        self.assertFalse(self.request('/api/op/remote_access.get', {})[1]['enabled'])
+        self.assertEqual(self.request('/api/op/workspace.state?project=demo')[0], 200)
 
 
 if __name__ == '__main__':

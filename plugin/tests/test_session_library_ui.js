@@ -1,6 +1,6 @@
 "use strict";
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const sandbox={window:{}};vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,'../crew/web/session-library.js'),'utf8'),sandbox);
+const sandbox={window:{}};vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,'../../frontend/session-library.js'),'utf8'),sandbox);
 const {matches}=sandbox.window.CrewSessionLibrary;
 const base={category:'available',runtime:'codex',running:null,title:'声纹识别旧方案',name:null,group:null,project_name:'MIB',cwd:'C:/MIB/Temp/speaker',native_id:'native-123'};
 const filter=extra=>({category:'available',runtime:'all',status:'all',query:'',...extra});

@@ -1,14 +1,13 @@
 """One explicit human operation can unblock several independent task executions."""
 import tests
 import contextlib
-import io
-import json
-import os
 import threading
 from types import SimpleNamespace
 from unittest import mock
 
-from crew import board, chat, cli, codex_tools, goal_links, goals, messaging, runtimes, store, todo
+from test_core import operation_service
+from tests.ops_helpers import ai_call
+from crew import board, chat, goal_links, goals, messaging, runtimes, store, todo
 from crew.goal_runtime import Controller
 from tests.test_runtimes import RuntimeFixture
 
@@ -22,7 +21,7 @@ class SharedTodoTests(RuntimeFixture):
         self.controller.send = mock.Mock(return_value={'accepted': True, 'delivery': 'started'})
 
     def journal(self, key):
-        return self.journals.setdefault(key, chat.Journal(self.home / 'test-todo-chats' / (key + '.jsonl')))
+        return self.journals.setdefault(key, chat.Journal(self.home / 'test-todo-chats' / (key + '.jsonl'), None))
 
     def target(self, person='member-id', runtime='claude', title='测试任务'):
         goal = goals.create(self.conn, 'demo', 'chief-id', title, '完整请求', ['可验证结果'])
@@ -123,24 +122,17 @@ class SharedTodoTests(RuntimeFixture):
         self.deliver(); self.deliver()
         self.assertEqual(self.controller.send.call_count, 2)
 
-    def test_cc_cli_and_codex_tool_share_actual_execution_association_and_receipts(self):
+    def test_claude_and_codex_share_actual_execution_association_and_receipts(self):
         first, one = self.target()
         second, two = self.target('other-id', 'codex')
-        output, errors = io.StringIO(), io.StringIO()
-        environment = {'CREW_HOME': str(self.home), 'CREW_SESSION_ID': 'member-id', 'CLAUDE_CODE_SESSION_ID': '',
-                       'CREW_EXECUTION_ID': one['id'], 'CREW_GOAL_ID': first['id']}
-        with mock.patch.dict(os.environ, environment), contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
-            code = cli.main(['todo', 'add', '连接设备', '--steps', '连接序号123设备', '--verify', '设备已连接',
-                             '--blocking', '--operation-key', 'device:serial-123:connect', '--json'], cwd=self.root)
-        self.assertEqual(code, 0, errors.getvalue())
-        item = json.loads(output.getvalue())
-        tool = codex_tools.CodexTools(self.home, 'other-id', execution_id=two['id'])
-        request = {'tool': 'crew_todo_add', 'arguments': {'title': '同一设备连接', 'steps': '原步骤仍有效',
-                   'verification': '已连接', 'operation_key': 'device:serial-123:connect', 'blocking': True}}
+        service = operation_service(self, self.root)
+        args = {'title': '连接设备', 'steps': '连接序号123设备', 'verification': '设备已连接',
+                'blocking': True, 'operation_key': 'device:serial-123:connect'}
+        item = ai_call(service, self.conn, 'member-id', 'todo.add', args, execution_id=one['id'])
         for _ in range(2):
-            reply = tool(request)
-            self.assertTrue(reply['success'], reply)
-            value = json.loads(reply['contentItems'][0]['text'])
+            value = ai_call(service, self.conn, 'other-id', 'todo.add',
+                            {**args, 'title': '同一设备连接', 'steps': '原步骤仍有效', 'verification': '已连接'},
+                            execution_id=two['id'], runtime='codex')
             self.assertEqual(value['id'], item['id']); self.assertTrue(value['duplicate'])
             self.assertEqual(value['title'], '连接设备')
         self.assertCountEqual(value['goal_ids'], [first['id'], second['id']])

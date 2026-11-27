@@ -9,6 +9,10 @@ param(
     [string]$Model,
     [string]$Effort,
     [switch]$Search,
+    # Crew session / execution that dispatched this run, from the Crew tool session_whoami.
+    # Passed explicitly: a Crew identity is never read from inherited environment variables.
+    [string]$CrewSession,
+    [string]$CrewExecution,
     [switch]$NoWatch
 )
 
@@ -116,8 +120,8 @@ $run = [ordered]@{
     run_id = [guid]::NewGuid().ToString()
     codex_thread_id = $env:CODEX_THREAD_ID
     claude_session_id = $sessionId
-    crew_session_id = $env:CREW_SESSION_ID
-    crew_execution_id = $env:CREW_EXECUTION_ID
+    crew_session_id = $(if ($CrewSession) { $CrewSession } else { $null })
+    crew_execution_id = $(if ($CrewExecution) { $CrewExecution } else { $null })
     task_file = $TaskPath
     workdir = $WorkDir
     mode = $Mode

@@ -13,7 +13,7 @@ import secrets
 import sqlite3
 import threading
 
-from . import board, guard, presentation, store
+from . import board, change_feed, guard, presentation, store
 
 
 PRESETS = {
@@ -60,7 +60,7 @@ def _write_index(home, index):
 def custom_presets(home):
     """Uploaded sounds whose file is still on disk; a removed file is no longer offered."""
     folder = _custom_dir(home)
-    return {'custom:' + key: {'name': item['name'], 'url': '/api/sounds/custom/file?id=custom:' + key, 'custom': True}
+    return {'custom:' + key: {'name': item['name'], 'url': '/api/op/sounds.custom.file?id=custom:' + key, 'custom': True}
             for key, item in _index(home).items() if (folder / (key + '.' + item['ext'])).is_file()}
 
 
@@ -113,6 +113,7 @@ def add_custom(home, data):
         (folder / (key + '.' + ext)).write_bytes(content)
         index[key] = {'name': name, 'ext': ext, 'created_at': store.now_iso()}
         _write_index(home, index)
+        _catalog_changed(home)
     return {'preset': {'id': 'custom:' + key, **custom_presets(home)['custom:' + key]}}
 
 
@@ -136,7 +137,15 @@ def delete_custom(conn, home, identity):
         item = index.pop(key)
         _write_index(home, index)
         (_custom_dir(home) / (key + '.' + item['ext'])).unlink(missing_ok=True)
+        with board.transaction(conn):
+            change_feed.touch(conn, 'sound_settings', None, 'sounds')
     return {'deleted': identity}
+
+
+def _catalog_changed(home):
+    """Uploaded sounds live in files; the snapshot's catalog still changes, so it is recorded on its own."""
+    with closing(store.connect(home)) as conn, board.transaction(conn):
+        change_feed.touch(conn, 'sound_settings', None, 'sounds')
 
 
 def custom_file(home, identity):
@@ -205,6 +214,7 @@ def save(conn, value, home):
     conn.execute('INSERT INTO sound_settings(singleton,preferences_json,updated_at) VALUES(1,?,?) '
                  'ON CONFLICT(singleton) DO UPDATE SET preferences_json=excluded.preferences_json,revision=sound_settings.revision+1,updated_at=excluded.updated_at',
                  (json.dumps(value, allow_nan=False), store.now_iso()))
+    change_feed.touch(conn, 'sound_settings', None, 'sounds')
     return value
 
 
@@ -233,8 +243,9 @@ def _reply_completion(events, cache_key):
     return latest
 
 
-def snapshot(conn, home, project, history, journal):
-    """history returns recorded events or None for a scope with no journal; no launch."""
+def events(conn, project, history, journal):
+    """Reply and delivery events a page may sound for; `history` returns recorded events or None for a
+    scope with no journal; no launch. `project` None lists every workspace (the entry page)."""
     scope = '' if project is None else ' AND s.project=?'
     params = () if project is None else (project,)
     sessions = list(conn.execute("SELECT s.session_id FROM sessions s WHERE s.role='leader' "
@@ -270,5 +281,10 @@ def snapshot(conn, home, project, history, journal):
                        'kind': kind, 'at': completion['at']})
     events.extend({'id': 'delivery:' + row['report_id'], 'scope': 'delivery:' + row['goal_id'],
                    'kind': 'delivery', 'at': row['finalized_at']} for row in deliveries)
+    return events
+
+
+def settings_value(conn, home):
+    """The sound fields every workspace shares: saved preferences, the catalog and missing custom sounds."""
     record = _record(conn)
-    return {**record, 'catalog': catalog(home), 'missing': missing(record['preferences'], home), 'events': events}
+    return {**record, 'catalog': catalog(home), 'missing': missing(record['preferences'], home)}

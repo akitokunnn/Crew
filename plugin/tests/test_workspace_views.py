@@ -4,6 +4,7 @@ import contextlib
 import csv
 import datetime as dt
 import io
+import uuid
 import json
 import os
 import threading
@@ -74,7 +75,7 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         if query:
             path += "?" + urlencode(query)
         payload = None if data is None else json.dumps(data).encode("utf-8")
-        request = Request(self.url + path, payload, {"X-Crew": "1"})
+        request = Request(self.url + path, payload, {"X-Crew": "1", 'X-Crew-Request-Id': uuid.uuid4().hex})
         try:
             response = self.opener.open(request, timeout=5)
         except HTTPError as exc:
@@ -84,7 +85,7 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
             return response.status, content if raw else json.loads(content), response.headers
 
     def state(self, project=None):
-        code, value, _ = self.request("/api/state", **({"project": project} if project else {}))
+        code, value, _ = self.request("/api/op/workspace.state", **({"project": project} if project else {}))
         self.assertEqual(code, 200, value)
         return value
 
@@ -105,7 +106,7 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         self.assertEqual(beta["project"]["name"], "beta")
         self.assertEqual(set(directory(beta)), {"beta-leader", "beta-main", "beta-peer"})
 
-        code, removed, _ = self.request("/api/session/archive", {"session_id": "alpha-peer"}, project="alpha")
+        code, removed, _ = self.request("/api/op/session.archive", {"session_id": "alpha-peer"}, project="alpha")
         self.assertEqual(code, 200, removed)
         alpha = self.state("alpha")
         self.assertNotIn("alpha-peer", directory(alpha))
@@ -113,17 +114,17 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         self.assertNotIn("removed_sessions", alpha)
         self.assertEqual(board.session(self.conn, "alpha-peer")["status"], "closed")
         self.assertEqual(set(directory(self.state("beta"))), set(directory(beta)))
-        self.assertEqual(self.request("/api/session/restore", {"session_id": "alpha-peer"}, project="beta")[0], 400)
-        self.assertEqual(self.request("/api/session/restore", {"session_id": "alpha-peer"}, project="alpha")[0], 200)
+        self.assertEqual(self.request("/api/op/session.restore", {"session_id": "alpha-peer"}, project="beta")[0], 400)
+        self.assertEqual(self.request("/api/op/session.restore", {"session_id": "alpha-peer"}, project="alpha")[0], 200)
         self.assertIn("alpha-peer", directory(self.state("alpha")))
         self.assertNotIn("removed_sessions", self.state("alpha"))
-        self.assertEqual(self.request("/api/session/archive", {"session_id": "alpha-peer"}, project="alpha")[0], 200)
+        self.assertEqual(self.request("/api/op/session.archive", {"session_id": "alpha-peer"}, project="alpha")[0], 200)
         self.assertNotIn("alpha-peer", directory(self.state("alpha")))
         archived = board.session(self.conn, "alpha-peer")
         self.assertEqual(archived["status"], "closed")
         self.assertIsNotNone(archived["ended_at"])
         self.assertNotIn("alpha-peer", {s["session_id"] for items in self.state("alpha")["candidates"].values() for s in items})
-        self.assertEqual(self.request("/api/session/restore", {"session_id": "alpha-peer"}, project="alpha")[0], 200)
+        self.assertEqual(self.request("/api/op/session.restore", {"session_id": "alpha-peer"}, project="alpha")[0], 200)
         self.assertIn("alpha-peer", directory(self.state("alpha")))
         self.assertEqual(set(directory(self.state("beta"))), set(directory(beta)))
 
@@ -141,6 +142,9 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
                               self.dispatch("failed-beta", "beta-main", self.beta, 11),
                               dict(self.dispatch("running-alpha", "alpha-peer", self.alpha / "running"), ended_at=None, exit_code=None,
                                    pid=os.getpid(),pid_created=codex_runtime.process_identity(os.getpid()))])
+        # Receipts and rollouts are read by the background scan's full step; run it before the page reads.
+        self.server.service.scanned_at = None
+        self.server.service.scan_usage()
         with mock.patch.object(self.server.service.chat, 'running', side_effect=lambda sid: sid == 'alpha-peer'):
             state = self.state("alpha")
         self.assertEqual(directory(state)['alpha-peer']['status'], 'waiting', 'A stale idle journal cannot erase a real waiting hook')
@@ -150,21 +154,21 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         self.assertEqual([i["session_id"] for i in items if i["kind"] == "waiting"], ["alpha-peer"])
         self.assertEqual([i["task_id"] for i in items if i["kind"] == "codex_failed"], ["failed-alpha"])
         self.assertNotIn("decision:" + str(foreign), {i["id"] for i in items})
-        code, usage_result, _ = self.request("/api/usage", project="alpha", period="all")
+        code, usage_result, _ = self.request("/api/op/usage.report", project="alpha", period="all")
         self.assertEqual(code, 200, usage_result)
         self.assertEqual({t["status"] for t in usage_result["codex"]}, {"failed", "running", "unknown"})
 
         dismissed = "codex:failed-alpha"
-        self.assertEqual(self.request("/api/attention/dismiss", {"id": dismissed}, project="alpha")[0], 200)
+        self.assertEqual(self.request("/api/op/attention.dismiss", {"id": dismissed}, project="alpha")[0], 200)
         hidden = self.state("alpha")
         self.assertNotIn(dismissed, {i["id"] for i in hidden["attention"]})
-        code, usage_result, _ = self.request("/api/usage", project="alpha", period="all")
+        code, usage_result, _ = self.request("/api/op/usage.report", project="alpha", period="all")
         self.assertEqual(code, 200, usage_result)
         self.assertEqual(next(t for t in usage_result["codex"] if t["run_id"] == "failed-alpha")["status"], "failed")
-        self.assertEqual(self.request("/api/attention/dismiss", {"id": dismissed, "dismiss": False}, project="alpha")[0], 200)
+        self.assertEqual(self.request("/api/op/attention.dismiss", {"id": dismissed, "dismiss": False}, project="alpha")[0], 200)
         self.assertIn(dismissed, {i["id"] for i in self.state("alpha")["attention"]})
-        self.assertEqual(self.request("/api/attention/dismiss", {"id": "decision:" + str(blocking)}, project="beta")[0], 400)
-        self.assertEqual(self.request("/api/answer", {"id": blocking, "text": "a"}, project="alpha")[0], 200)
+        self.assertEqual(self.request("/api/op/attention.dismiss", {"id": "decision:" + str(blocking)}, project="beta")[0], 400)
+        self.assertEqual(self.request("/api/op/decision.answer", {"id": blocking, "text": "a"}, project="alpha")[0], 200)
         after_answer = self.state("alpha")
         self.assertNotIn(blocking, {d["id"] for d in after_answer["decisions"]})
         saved = next(d for d in board.decisions(self.conn, "alpha", all=True) if d["id"] == blocking)
@@ -200,11 +204,14 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
             "utilization": {"five_hour": {"utilization": 9, "resets_at": reset.isoformat()}}},
             "unrelated_secret": "must-never-appear"}), encoding="utf-8")
         original_cache = cache.read_bytes()
+        # The usage page reads what the background scan stored; run its full step first.
+        self.server.service.scanned_at = None
+        self.server.service.scan_usage()
         results = {}
         for scope, project, requests, tokens in (("workspace", "alpha", 2, 3500),
                                                 ("workspace", "beta", 1, 4500), ("machine", "alpha", 4, 13500)):
             with self.subTest(scope=scope, project=project):
-                code, result, _ = self.request("/api/usage", scope=scope, project=project, period="all")
+                code, result, _ = self.request("/api/op/usage.report", scope=scope, project=project, period="all")
                 self.assertEqual(code, 200, result)
                 self.assertEqual(result["scope"], scope)
                 self.assertEqual(result["project"]["name"] if result["project"] else None, project if scope == "workspace" else None)
@@ -224,7 +231,7 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         for scope in ("workspace", "machine"):
             for what in ("sessions", "daily", "requests", "codex"):
                 with self.subTest(csv=what, scope=scope):
-                    code, content, headers = self.request("/api/usage/export", raw=True,
+                    code, content, headers = self.request("/api/op/usage.export", raw=True,
                         scope=scope, project="alpha", period="all", what=what)
                     self.assertEqual(code, 200, content)
                     self.assertTrue(content.startswith(b"\xef\xbb\xbf"))

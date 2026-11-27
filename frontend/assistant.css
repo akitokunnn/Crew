@@ -1,0 +1,123 @@
+.assistant-page{display:grid;grid-template-columns:var(--sb-w,54px) minmax(0,1fr) 280px;height:100dvh;overflow:hidden;background:var(--bg)}
+.assistant-main{display:flex;flex-direction:column;min-width:0;min-height:0}
+.assistant-main>.head{height:64px;flex:none;padding:12px 22px}
+.assistant-main h1{font-size:calc(18px * var(--fs));margin:0;font-weight:500;line-height:1.35}
+.assistant-main>.head .sub{margin:0;line-height:1.5}
+.assistant-chat{flex:1;display:flex;flex-direction:column;min-height:0;position:relative}
+.assistant-chat .col{max-width:840px}
+.assistant-chat .composer-wrap{max-width:896px;width:100%;align-self:center;box-sizing:border-box}
+.assistant-context{padding:18px 16px;overflow:auto;background:var(--studio-sheet);border:1px solid var(--studio-border)}
+.assistant-context h2{font-size:15px;margin:0 0 6px;font-weight:500}
+.assistant-context header p,.assistant-loading{font-size:12px;color:var(--text-3);line-height:1.7}
+.assistant-loading{padding:24px}
+.assistant-context section{margin-top:28px}
+.assistant-context h3{font-size:12px;font-weight:500;color:var(--text-2);margin-bottom:10px}
+.assistant-context a{display:block;color:var(--text);text-decoration:none;padding:9px 11px;border-radius:10px;background:var(--surface);margin-top:7px;line-height:1.5;font-size:13px;border:1px solid var(--line)}
+.assistant-context a:hover{border-color:var(--accent)}
+.assistant-context a small{display:block;color:var(--text-3);margin-top:4px;font-size:11px}
+.assistant-context .quiet{color:var(--text-3);font-size:12px;line-height:1.7}
+.assistant-error{margin:8px 24px;padding:12px 16px;background:var(--warn-soft);border:1px solid var(--warn-line);border-radius:8px;font-size:13px;white-space:pre-wrap}
+.assistant-error button{margin-left:12px}
+.assistant-page .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:100}
+/* Wider than a phone the assistant floats as sheets on the Studio canvas next to the global rail. */
+@media(min-width:761px){
+  .assistant-page{background:var(--studio-frame)}
+  .assistant-main{margin:8px 8px 8px 0;height:calc(100dvh - 16px);border-radius:16px;background:var(--studio-sheet);border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-sheet);overflow:hidden}
+  .assistant-main>.head{background:var(--studio-glass);backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px)}
+  .assistant-main h1{margin:0 0 2px}
+  .assistant-context{margin:8px 8px 8px 0;height:calc(100dvh - 16px);border-radius:16px;box-shadow:var(--studio-shadow-sheet)}
+  .assistant-context a{background:var(--studio-card)}
+}
+@media(max-width:940px){.assistant-page{grid-template-columns:var(--sb-w,54px) minmax(0,1fr)}.assistant-context{display:none}}
+@media(max-width:620px){.assistant-main>.head{height:auto;min-height:92px;padding:14px 16px;align-items:flex-start;flex-wrap:wrap;gap:10px}.assistant-main>.head .right{margin-left:0;flex-wrap:wrap}.assistant-main>.head .btn{min-height:40px}.assistant-main h1{font-size:19px}.assistant-main .sub{font-size:12px}.assistant-error{margin:6px 12px}.assistant-prompts-dialog{width:calc(100vw - 24px)}}
+
+.assistant-prompts-dialog{width:min(1000px,calc(100vw - 48px))}.assistant-prompts-dialog header{margin-bottom:22px}
+.assistant-chat .chat-note-chip{align-self:flex-start;display:inline-flex;align-items:center;gap:8px;max-width:100%;margin:2px 0 6px;padding:2px 9px;border:1px solid var(--accent);border-radius:7px;background:var(--accent-soft);color:var(--accent-text);font:inherit;font-size:12px;line-height:1.7;cursor:pointer}
+.assistant-chat .chat-note-chip>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.assistant-chat .chat-note-chip[hidden]{display:none}
+
+.assistant-confirmations{flex:none;margin:8px 22px 0;padding:14px 16px;border:1px solid var(--warn-line);border-radius:12px;background:var(--warn-soft);display:flex;flex-direction:column;gap:10px;max-height:40dvh;overflow:auto}
+.assistant-confirmations h2{font-size:13px;font-weight:500;margin:0;color:var(--text)}
+.assistant-confirmation{padding:10px 12px;border-radius:10px;background:var(--surface);border:1px solid var(--line);display:flex;flex-direction:column;gap:4px;min-width:0}
+.assistant-confirmation strong{font-size:13px;font-weight:500;line-height:1.5}
+.assistant-confirmation p{margin:0;font-size:12px;color:var(--text-2);line-height:1.6;overflow-wrap:anywhere}
+.assistant-confirmation .assistant-confirmation-args{color:var(--text-3)}
+.assistant-confirmation-actions{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+.assistant-confirmations[hidden]{display:none}
+@media(min-width:761px){.assistant-confirmation{background:var(--studio-card)}}
+@media(max-width:620px){.assistant-confirmations{margin:6px 12px 0}.assistant-confirmation-actions .btn{min-height:40px;flex:1}}
+
+/* Rich confirmation cards: an opening plan (campaign.launch) and a war-room budget raise, rendered from what they do. */
+.assistant-confirmation-rich{gap:6px}
+.assistant-confirmation .ac-note{color:var(--text)}
+.ac-detail{display:flex;flex-direction:column;gap:10px;margin-top:4px;min-width:0;font-size:12.5px;line-height:1.6;color:var(--text)}
+.ac-detail .ac-quiet{color:var(--text-2)}
+.ac-detail h4{margin:0 0 4px;font-size:12px;font-weight:600;color:var(--text-2)}
+.ac-cost{padding:10px 12px;border:1px solid color-mix(in srgb,var(--accent) 34%,transparent);border-radius:10px;background:var(--accent-softer)}
+.ac-cost h4{color:var(--accent-text)}
+.assistant-confirmation .ac-cost-note{margin:0 0 6px;font-size:13px;font-weight:500;color:var(--text)}
+.assistant-confirmation .ac-flag{display:inline-block;margin:0 0 6px;padding:1px 8px;border:1px solid var(--warn-line);border-radius:999px;background:var(--warn-soft);color:var(--text);font-weight:500}
+.ac-facts{display:grid;grid-template-columns:88px minmax(0,1fr);gap:5px 12px;margin:0}
+.ac-facts dt{color:var(--text-2)}
+.ac-facts dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.ac-facts dd small{display:block;color:var(--text-2);font-size:11.5px}
+.ac-facts b,.ac-row b{font-weight:600}
+.ac-carriers{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:3px}
+.ac-carriers li{display:flex;align-items:baseline;gap:6px}
+.ac-carriers li>span:not(.ac-rt){min-width:0;overflow-wrap:anywhere}
+.ac-carriers b{flex:none}
+.ac-rt,.ac-tag{flex:none;padding:0 6px;border-radius:999px;border:1px solid var(--line-strong);font-size:11px;line-height:1.6;color:var(--text-2)}
+.ac-rt[data-rt=codex]{color:var(--codex-accent);background:var(--codex-soft);border-color:color-mix(in srgb,var(--codex-accent) 26%,transparent)}
+.ac-rt[data-rt=claude]{color:var(--accent-text);background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 26%,transparent)}
+.ac-tag{margin-left:6px;color:var(--accent-text);border-color:color-mix(in srgb,var(--accent) 30%,transparent)}
+.ac-tag.stop{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 36%,transparent);background:color-mix(in srgb,var(--danger) 8%,transparent)}
+.ac-problems{padding:9px 12px;border:1px solid color-mix(in srgb,var(--danger) 40%,transparent);border-left:3px solid var(--danger);border-radius:10px;background:color-mix(in srgb,var(--danger) 8%,var(--surface))}
+.ac-problems strong{color:color-mix(in srgb,var(--danger) 70%,var(--text));font-weight:600}
+.ac-problems ul{margin:4px 0;padding-left:18px}
+.ac-problems small{display:block;color:var(--text-2);font-size:11.5px}
+.ac-build{display:flex;flex-direction:column}
+.ac-sec{border-top:1px solid var(--line)}
+.ac-sec>summary{display:flex;align-items:center;gap:6px;min-height:32px;cursor:pointer;list-style:none;font-weight:500;color:var(--text)}
+.ac-sec>summary::before{content:"";width:6px;height:6px;margin:0 3px 0 2px;border:solid var(--text-3);border-width:0 1.5px 1.5px 0;transform:rotate(-45deg);transition:transform .15s}
+.ac-sec[open]>summary::before{transform:rotate(45deg)}
+.ac-sec summary::-webkit-details-marker,.ac-brief summary::-webkit-details-marker,.ac-goal summary::-webkit-details-marker{display:none}
+.ac-count{padding:0 6px;border-radius:999px;background:var(--hover);color:var(--text-2);font-size:11px;font-weight:500}
+.ac-sec>.ac-facts{margin:0 0 8px 17px}
+.ac-list{list-style:none;margin:0 0 6px;padding:0 0 0 17px}
+.ac-list>li{padding:6px 0;border-top:1px dashed var(--line)}
+.ac-list>li:first-child{border-top:0;padding-top:0}
+.ac-row{display:flex;align-items:center;flex-wrap:wrap;gap:3px 6px;min-width:0}
+.ac-row small{margin-left:auto;color:var(--text-2);font-size:11.5px}
+.ac-model{color:var(--text-2)}
+/* A leader's own files when several share the workspace folder. */
+.ac-owns{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:4px 0 0;font-size:12px;color:var(--text-2)}
+.ac-owns code{padding:1px 6px;border-radius:6px;background:var(--hover);color:var(--text);font-size:11.5px;overflow-wrap:anywhere}
+.ac-row .ac-tag{margin-left:0}
+.ac-brief summary,.ac-goal summary{cursor:pointer;list-style:none}
+.ac-brief summary{display:block;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-2)}
+.ac-brief[open] summary{white-space:pre-wrap;overflow-wrap:anywhere}
+.ac-goal summary{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 8px}
+.ac-goal summary small{color:var(--text-2);font-size:11.5px}
+.ac-goal summary small::after{content:" · 展开";color:var(--accent-text)}
+.ac-goal[open] summary small::after{content:" · 收起"}
+.assistant-confirmation .ac-goal p{margin:4px 0 2px;color:var(--text);white-space:pre-wrap}
+.ac-goal ol{margin:0;padding-left:18px;color:var(--text-2)}
+.assistant-confirmation-rich .assistant-confirmation-actions{position:sticky;bottom:-14px;z-index:1;margin:4px -12px -10px;padding:8px 12px 10px;border-top:1px solid var(--line);border-radius:0 0 10px 10px;background:inherit}
+@media(max-width:620px){.ac-facts{grid-template-columns:minmax(0,1fr);gap:0}.ac-facts dt{margin-top:6px;font-size:11.5px}.ac-facts dt:first-child{margin-top:0}.ac-row small{margin-left:0;flex-basis:100%}.ac-list,.ac-sec>.ac-facts{padding-left:0;margin-left:0}}
+/* An opening plan is the costliest thing confirmed here: give the panel room so the cost part shows without scrolling. */
+.assistant-confirmations:has(.ac-cost){max-height:70dvh}
+
+/* An empty conversation: a few starting points, each only fills the composer. Same card language as the blank-workspace paths. */
+.chat-empty-guide{max-width:640px;margin:min(12vh,96px) auto 24px}
+.chat-empty-guide h2{margin:0;font-size:calc(17px * var(--fs));font-weight:600;letter-spacing:-.2px;color:var(--text)}
+.chat-empty-guide>p{margin:5px 0 16px;font-size:calc(13px * var(--fs));line-height:1.6;color:var(--text-2)}
+.chat-empty-prompts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.chat-empty-prompt{display:flex;align-items:flex-start;gap:12px;min-width:0;padding:14px;border:1px solid var(--studio-border);border-radius:14px;background:var(--studio-card);box-shadow:var(--studio-shadow-sm);color:var(--text);font:inherit;text-align:left;cursor:pointer;transition:border-color .15s,background .15s}
+.chat-empty-prompt:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--studio-border))}
+.chat-empty-prompt:active{background:var(--hover)}
+.chat-empty-mark{flex:none;display:grid;place-items:center;width:32px;height:32px;border-radius:10px;background:var(--accent-soft);color:var(--accent-text)}
+.chat-empty-mark svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.chat-empty-text{display:flex;flex-direction:column;gap:3px;min-width:0}
+.chat-empty-text strong{font-size:calc(14px * var(--fs));font-weight:600;line-height:1.45}
+.chat-empty-text span{font-size:calc(12.5px * var(--fs));line-height:1.55;color:var(--text-2);overflow-wrap:anywhere}
+@media(max-width:620px){.chat-empty-guide{margin-top:16px}.chat-empty-prompts{grid-template-columns:minmax(0,1fr);gap:8px}.chat-empty-prompt{padding:12px 14px;min-height:56px;align-items:center}}

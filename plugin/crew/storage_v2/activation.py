@@ -16,7 +16,7 @@ import sqlite3
 import stat
 import uuid
 
-from .. import board, settings, store
+from .. import board, change_feed, settings, store
 from .database import StorageConflict, StorageError, now_iso
 from .objects import ObjectStore, canonical_uuid
 from . import legacy
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS local_activation_receipts (
 """
 TABLES = ('agents', 'groups', 'group_memberships', 'conversations', 'messages', 'message_parts',
           'message_positions', 'tool_calls', 'tool_results', 'goals', 'goal_dependencies', 'goal_requirements', 'goal_rounds',
-          'goal_assignments', 'executions', 'reports', 'goal_acceptances', 'artifacts',
+          'goal_assignments', 'executions', 'reports', 'goal_report_versions', 'goal_acceptances', 'artifacts',
           'artifact_versions', 'artifact_links', 'blob_objects', 'context_items', 'context_versions',
           'decisions', 'decision_versions', 'decision_options', 'decision_answers', 'todos', 'workspace_feature_records')
 TERMINAL = ('completed', 'failed', 'cancelled')
@@ -488,19 +488,32 @@ class _Materializer:
 
     def reports_and_files(self):
         versions = {v['id']:v for v in self.data['artifact_versions']}
+        metadata = {row['report_id']: row for row in self.data['goal_report_versions']}
         counters = {}
-        for report in sorted(self.data['reports'],key=lambda r:(r['created_at'],r['id'])):
+        for report in sorted(self.data['reports'], key=lambda row: (row['created_at'], row['id'])):
             if report['kind']=='goal_delivery' and report['goal_round_id']:
-                rnd=self.rounds[report['goal_round_id']]; key=(rnd['goal_id'],rnd['number'])
-                counters[key]=counters.get(key,0)+1
+                rnd=self.rounds[report['goal_round_id']]
+                fields = metadata[report['id']]
+                if fields['format_version'] == 1:
+                    round_id = report['goal_round_id']
+                    version = counters.get(round_id, 0) + 1
+                    counters[round_id] = version
+                    requirement_version = rnd['requirement_version']
+                else:
+                    version, requirement_version = fields['version'], fields['requirement_version']
                 if report['html_artifact_version_id']:
                     rendered=self.cache(report['html_artifact_version_id']).read_text(encoding='utf-8')
                 else:
                     rendered='<!doctype html><meta charset="utf-8"><pre>'+html.escape(report['body_markdown'] or report['summary'])+'</pre>'
+                data_json = report['data_json']
+                document = json.loads(data_json)
+                if 'requirement_version' in document:
+                    del document['requirement_version']
+                    data_json = _json(document)
                 row=self.insert('goal_reports',dict(id=report['id'],goal_id=rnd['goal_id'],round=rnd['number'],
-                    requirement_version=rnd['requirement_version'],version=counters[key],
-                    outcome='progress' if json.loads(report['data_json']).get('outcome') == 'progress' else report['outcome'],
-                    data_json=report['data_json'],html=rendered,created_at=report['created_at']),'reports',report['id'])
+                    requirement_version=requirement_version,version=version,
+                    outcome='progress' if document.get('outcome') == 'progress' else report['outcome'],
+                    data_json=data_json,html=rendered,created_at=fields['created_at']),'reports',report['id'])
                 self.report_rows[report['id']]=row
                 self.conn.execute('INSERT INTO notification_messages(item_id,project,leader_session_id,kind,created_at,content,status) VALUES(?,?,?,?,?,?,?)',
                     ('goal-report:'+report['id'],self.project,report['author_agent_id'],'goal_report',self.stamp,'','archived'))
@@ -714,6 +727,10 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
         if unfinished: raise StorageConflict('Activation exists only in the legacy database; inspect its recorded backup before retrying')
         backup=_backup(conn,repo,legacy_home,activation)
         conn.execute('BEGIN IMMEDIATE');conn.execute('PRAGMA defer_foreign_keys=ON')
+        # Activation writes the live database like board.transaction does, so what it touches (the workspace
+        # list and field, through board.init_project) is recorded in this transaction, and a workspace reset
+        # makes a page already open on this workspace take a new snapshot (docs/EVENT_STREAM_DESIGN.md §5).
+        change_feed.begin(conn)
         try:
             workspace=_activation_guard(conn,workspace_id,prefix='portable.',legacy_home=legacy_home)
             data={table:_rows(conn,table,workspace_id) for table in TABLES}
@@ -787,7 +804,10 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
                 receipt=dict(conn.execute('SELECT * FROM portable.local_activation_receipts WHERE id=?',(activation,)).fetchone()),event=receipt)
             intent_path=legacy_home/'storage-v2-activation-intents'/(activation+'.json')
             _write_intent(intent_path,intent)
+            change_feed.touch(conn,'snapshot',project,project)
+            change_feed.flush(conn)
             conn.commit()
+            change_feed.end(conn)
             committed=True
             intent.update(phase='complete',completed_at=now_iso());_write_intent(intent_path,intent)
             return {'workspace_id':workspace_id,'project':board.project(conn,project),'status':'activated','backup':str(backup),
@@ -796,6 +816,8 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
                     'source_marker_replaced':source_marker is not None,'repairs':repairs}
         except BaseException:
             conn.rollback()
+            if not committed:
+                change_feed.end(conn)
             if committed or intent_path is not None:
                 # A prepared journal owns recovery after any possible partial
                 # commit. Do not delete files referenced by a committed side.
