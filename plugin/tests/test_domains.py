@@ -58,8 +58,9 @@ class DomainTreeTests(unittest.TestCase):
         return {item['session_id']: (item['domain_id'], item['lead']) for item in domains.snapshot(self.conn, 'demo')['leaders']}
 
     def test_tree_paths_layout_direction_and_version(self):
-        self.assertEqual(domains.snapshot(self.conn, 'demo'),
-                         {'project': 'demo', 'version': 0, 'direction': 'TB', 'parts': [], 'leaders': []})
+        initial = domains.snapshot(self.conn, 'demo')
+        self.assertEqual((initial['project'], initial['version'], initial['direction'], initial['parts'], initial['leaders']),
+                         ('demo', 0, 'TB', [], []))
         self.tree()
         self.apply({'op': 'move', 'items': [{'id': 'sense01', 'x': 12.34, 'y': -5}]},
                    {'op': 'collapse', 'id': 'sight01', 'collapsed': True}, {'op': 'rename', 'id': 'camera1', 'name': '  相机  标定 '},
@@ -72,7 +73,7 @@ class DomainTreeTests(unittest.TestCase):
         self.assertEqual(parts['camera1']['name'], '相机 标定')
         self.assertEqual(self.places(), {'vision': ('sight01', True), 'depth': ('sight01', False), 'cam': ('camera1', False)})
         sense, sight = {'id': 'sense01', 'name': '感知'}, {'id': 'sight01', 'name': '视觉'}
-        self.assertEqual(domains.summary(self.conn, 'demo'), {'version': 2, 'paths': {
+        self.assertEqual(domains.summary(self.conn, 'demo'), {'version': 2, 'canvas_wheel_zoom': False, 'paths': {
             'vision': [sense, sight], 'depth': [sense, sight], 'cam': [sense, sight, {'id': 'camera1', 'name': '相机 标定'}]}})
         self.assertEqual(domains.snapshot(self.conn, 'other')['parts'], [])
         # A direction change on a board nobody edited yet creates its record.
@@ -98,6 +99,42 @@ class DomainTreeTests(unittest.TestCase):
             self.apply({'op': 'lead', 'session_id': 'vision', 'lead': True})
         with self.assertRaises(sqlite3.IntegrityError):
             self.conn.execute('UPDATE domain_leaders SET lead=1 WHERE domain_id=?', ('sight01',))
+
+    def test_independent_leaders_drag_into_and_out_of_part_and_restore_coordinates(self):
+        self.tree()
+        before = domains.snapshot(self.conn, 'demo')
+        self.assertEqual([(item['session_id'], item['x'], item['y']) for item in before['independent']],
+                         [('voice', None, None)])
+        self.conn.execute("INSERT INTO domain_leaders(session_id,project,domain_id,updated_at) VALUES('voice','demo',NULL,?)",
+                          (NOW,))
+        self.assertEqual(domains.snapshot(self.conn, 'demo'), before)
+        position = {'op': 'assign', 'session_id': 'voice', 'domain_id': None, 'x': -40, 'y': 82.55}
+        pinned = self.apply(position)['version']
+        in_part = self.apply({'op': 'assign', 'session_id': 'voice', 'domain_id': 'sight01'},
+                             {'op': 'lead', 'session_id': 'voice', 'lead': True})['version']
+        self.assertEqual(self.places()['voice'], ('sight01', True))
+        self.assertEqual(self.places()['vision'], ('sight01', False))
+        self.assertEqual(domains.snapshot(self.conn, 'demo')['independent'], [])
+        with self.assertRaisesRegex(board.BoardError, 'y 坐标无效'):
+            self.apply({'op': 'lead', 'session_id': 'vision', 'lead': True},
+                       {'op': 'assign', 'session_id': 'voice', 'domain_id': None, 'x': 100})
+        self.assertEqual(self.places()['voice'], ('sight01', True))
+        out = self.apply(dict(position, x=300, y=-120))
+        self.assertNotIn('voice', self.places())
+        self.assertEqual([(item['x'], item['y']) for item in out['board']['independent']], [(300, -120)])
+        moved = self.apply(dict(position, x=320, y=-180))
+        preview = domains.rollback_preview(self.conn, 'demo', out['version'])
+        self.assertFalse(preview['rollback']['nothing'])
+        self.assertEqual([item['session_id'] for item in preview['rollback']['positioned']], ['voice'])
+        restored = domains.rollback(self.conn, 'demo', out['version'], moved['board']['version'], now=NOW)
+        self.assertEqual(restored['board']['independent'], out['board']['independent'])
+        result = domains.rollback(self.conn, 'demo', in_part, restored['board']['version'], now=NOW)
+        self.assertEqual(result['board']['independent'], [])
+        self.assertEqual(self.places()['voice'], ('sight01', True))
+        result = domains.rollback(self.conn, 'demo', pinned, result['board']['version'], now=NOW)
+        self.assertEqual([(item['x'], item['y']) for item in result['board']['independent']], [(-40, round(82.55, 1))])
+        self.assertEqual(self.places()['vision'], ('sight01', True))
+        self.assertTrue(domains.rollback_preview(self.conn, 'demo', pinned)['rollback']['nothing'])
 
     def test_deleting_a_part_moves_its_children_and_all_leaders_up_one_level(self):
         self.tree()
@@ -254,7 +291,7 @@ class DomainHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, body)
         self.assertEqual(body['board']['version'], 1)
         code, state = self.request('/api/op/workspace.state?project=demo')
-        self.assertEqual(state['domains'], {'version': 1, 'paths': {'s3': [{'id': 'sense01', 'name': '感知'}]}})
+        self.assertEqual(state['domains'], {'version': 1, 'canvas_wheel_zoom': False, 'paths': {'s3': [{'id': 'sense01', 'name': '感知'}]}})
         code, body = self.request('/api/op/domains.apply', {'project': 'demo', 'base_version': 0,
                                                    'ops': [{'op': 'rename', 'id': 'sense01', 'name': '旧'}]})
         self.assertEqual(code, 409)
@@ -270,7 +307,7 @@ class DomainHttpTests(ShellFixture, unittest.TestCase):
         for kind in ('browser', 'desktop'):
             self.assertTrue(remote_routes.permitted('GET', '/api/op/domains.get', (), kind))
             self.assertTrue(remote_routes.permitted('POST', '/api/op/domains.apply', (), kind))
-        for asset in ('/architecture.js', '/architecture.css'):
+        for asset in ('/architecture.js', '/architecture.css', '/canvas-core.js'):
             with self.subTest(asset=asset):
                 with self.opener.open(self.server.url + asset, timeout=5) as response:
                     self.assertEqual(response.status, 200)

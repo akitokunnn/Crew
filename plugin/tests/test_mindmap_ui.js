@@ -34,7 +34,7 @@ test("tree keeps sibling order, depth, branch and visibility follow the structur
 });
 
 test("layout runs left to right, centres parents on their children and never overlaps", () => {
-  const t = MM.tree(MAP), {pos, width, height} = MM.layout(t, size);
+  const t = MM.tree(MAP), {pos, bounds} = MM.layout(t, size);
   const a = pos.get("a"), a1 = pos.get("a1"), a2 = pos.get("a2"), root = pos.get("root"), solo = pos.get("solo");
   assert.equal(a.x, root.x + 100 + MM.GAP_X);
   assert.equal(a1.x, a.x + 100 + MM.GAP_X);
@@ -46,11 +46,36 @@ test("layout runs left to right, centres parents on their children and never ove
     const p = boxes[i], q = boxes[j];
     assert(!(p.x < q.x + q.w && q.x < p.x + p.w && p.y < q.y + q.h && q.y < p.y + p.h), "nodes overlap");
   }
-  assert(width >= a1.x + 100 && height >= solo.y + 30);
+  assert(bounds.x1 >= a1.x + 100 && bounds.y1 >= solo.y + 30);
   const tall = MM.layout(t, id => id === "a" ? {w: 100, h: 120} : size());
   assert(tall.pos.get("b").y >= tall.pos.get("a").y + 120, "a tall parent pushes the next sibling down");
   assert.equal(MM.wire({x: 0, y: 0, w: 100, h: 30}, {x: 144, y: 0, w: 100, h: 30}), "M100 15H144");
   assert.match(MM.wire({x: 0, y: 0, w: 100, h: 30}, {x: 144, y: 80, w: 100, h: 30}), /^M100 15H111Q118 15 118 22V88Q118 95 125 95H144$/);
+});
+
+test("pinned nodes keep mixed final coordinates and the wire and bounds follow them", () => {
+  const old = MM.layout(MM.tree(MAP), size);
+  const nodes = MAP.nodes.map(item => item.id === "a" ? {...item, x:-200, y:320} : {...item, x:null, y:null});
+  const {pos, bounds} = MM.layout(MM.tree({...MAP, nodes}), size);
+  assert.deepEqual(pos.get("a"), {x:-200, y:320, w:100, h:30});
+  assert.deepEqual(pos.get("a1"), old.pos.get("a1"));
+  assert.equal(bounds.x0, -200);
+  assert.equal(bounds.y1, 350);
+  assert.match(MM.wire(pos.get("root"), pos.get("a")), /-100 335$/);
+  const folded = nodes.map(item => item.id === "root" ? {...item, collapsed:true} : item);
+  assert(!MM.layout(MM.tree({...MAP, nodes:folded}), size).pos.has("a"));
+  assert.deepEqual(MM.layout(MM.tree({...MAP, nodes}), size).pos.get("a"), pos.get("a"));
+});
+
+test("an automatic node remains visible when a pinned node lands in its normal slot", () => {
+  const original = MM.layout(MM.tree(MAP), size).pos.get("a1");
+  const nodes = MAP.nodes.map(item => item.id === "b" ? {...item, x:original.x, y:original.y} : item);
+  const {pos} = MM.layout(MM.tree({...MAP, nodes}), size);
+  const occupied = pos.get("b"), automatic = pos.get("a1");
+  assert.deepEqual(occupied, original);
+  assert.equal(automatic.x, original.x);
+  assert(automatic.y >= occupied.y + occupied.h + MM.GAP_Y);
+  assert([pos.get("a2"), occupied].every(other => automatic.y >= other.y + other.h || automatic.y + automatic.h <= other.y));
 });
 
 test("keys move through the tree and structural edits become server ops", () => {
@@ -74,8 +99,8 @@ test("drops hang, insert or refuse, and a removal can be undone from its effect"
   assert.deepEqual(MM.dropOps(t, {id: "a2"}, "a", "child"), [{op: "move", id: "a2", parent_id: "a", index: 1}]);
   assert.equal(MM.dropOps(t, {id: "root"}, "a1", "child"), null, "never under its own descendant");
   assert.equal(MM.dropOps(t, {id: "a"}, "a", "after"), null);
-  assert.deepEqual(MM.rootOps(t, {id: "a"}), [{op: "move", id: "a", parent_id: null, index: 2}]);
-  assert.deepEqual(MM.rootOps(t, {id: "solo"}), [{op: "move", id: "solo", parent_id: null, index: 1}]);
+  assert.deepEqual(MM.rootOps(t, {id: "a"}, {x:-35, y:96}), [{op:"move", id:"a", x:-35, y:96}]);
+  assert.deepEqual(MM.rootOps(t, {note_id:"n1"}, {x:0, y:42}), [{op:"create", note_id:"n1", parent_id:null, index:2, x:0, y:42}]);
   assert.deepEqual(MM.undoRemove({id: "a", parent_id: "root", index: 0, children: ["a1", "a2"], note_id: null, label: "A", collapsed: true}), [
     {op: "create", id: "a", parent_id: "root", index: 0, label: "A"},
     {op: "move", id: "a1", parent_id: "a", index: 0}, {op: "move", id: "a2", parent_id: "a", index: 1},

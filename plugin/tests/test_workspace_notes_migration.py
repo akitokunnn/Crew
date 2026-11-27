@@ -46,7 +46,8 @@ class WorkspaceNotesMigrationTests(unittest.TestCase):
         self.home = self.base / 'old'
 
     def old(self, feature=True):
-        with mock.patch.object(store, '_migrate_workspace_notes'), closing(store.connect(self.home)) as conn:
+        with (mock.patch.object(store, '_migrate_workspace_notes'), mock.patch.object(store, '_migrate_mindmap_positions'),
+              closing(store.connect(self.home)) as conn):
             for project in ('A', 'B'):
                 path = self.base / project
                 path.mkdir()

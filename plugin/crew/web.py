@@ -227,7 +227,8 @@ STATIC['/global-rail.js'] = ('global-rail.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/voice.html': ('voice.html', 'text/html; charset=utf-8'),
                '/voice.js': ('voice.js', 'text/javascript; charset=utf-8'),
                '/voice.css': ('voice.css', 'text/css; charset=utf-8')})
-STATIC.update({'/mindmap.js': ('mindmap.js', 'text/javascript; charset=utf-8'),
+STATIC.update({'/canvas-core.js': ('canvas-core.js', 'text/javascript; charset=utf-8'),
+               '/mindmap.js': ('mindmap.js', 'text/javascript; charset=utf-8'),
                '/mindmap-model.js': ('mindmap-model.js', 'text/javascript; charset=utf-8'),
                '/mindmap.css': ('mindmap.css', 'text/css; charset=utf-8')})
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')

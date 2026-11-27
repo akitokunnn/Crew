@@ -40,11 +40,28 @@ def connect(home):
         _migrate_domain_members(conn)
         _migrate_project_themes(conn)
         _migrate_workspace_notes(conn, notes)
+        _migrate_mindmap_positions(conn)
         change_triggers.install(conn)
     except BaseException:
         conn.close()
         raise
     return conn
+
+
+def _migrate_mindmap_positions(conn):
+    def missing():
+        present = {row['name'] for row in conn.execute('PRAGMA table_info(personal_mindmap_nodes)')}
+        return [column for column in ('x', 'y') if column not in present]
+
+    if missing():
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            for column in missing():
+                conn.execute('ALTER TABLE personal_mindmap_nodes ADD COLUMN %s REAL' % column)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 def assign_project_themes(conn, at):

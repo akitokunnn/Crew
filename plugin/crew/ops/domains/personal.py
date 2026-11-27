@@ -104,12 +104,14 @@ route('mindmap.edit', '编辑想法思维导图', 'POST', '/api/personal/mindmap
       params=_object({
           'project': PROJECT,
           'ops': _field('array', '按顺序应用的 1 到 500 步导图编辑', items=_object({
-              'op': _field('string', '导图编辑动作', enum=['create', 'label', 'move', 'collapse', 'remove']),
-              'id': _field(['string', 'null'], '导图节点 ID，create 时可由服务生成，其余动作必填'),
+              'op': _field('string', '导图编辑动作，auto_layout 清除本图节点的手动坐标', enum=['create', 'label', 'move', 'collapse', 'remove', 'auto_layout']),
+              'id': _field(['string', 'null'], '导图节点 ID，create 时可由服务生成，auto_layout 不需要'),
               'note_id': _field('string', 'create 引用的已有想法 ID，与 label 二选一', minLength=1),
               'label': _field('string', 'create 或 label 设置的主题名称，合并空白后最多 40 字', minLength=1),
-              'parent_id': _field(['string', 'null'], 'create 或 move 必填的目标父节点 ID，null 表示根节点'),
+              'parent_id': _field(['string', 'null'], 'create 或换父、排序时的父节点 ID，null 表示根节点'),
               'index': _field(['integer', 'null'], 'create 或 move 的同级插入位置，从 0 开始，空值表示最后', minimum=0),
+              'x': _field('number', 'create 或 move 时的横坐标，与 y 一起提供', minimum=-1000000, maximum=1000000),
+              'y': _field('number', 'create 或 move 时的纵坐标，与 x 一起提供', minimum=-1000000, maximum=1000000),
               'collapsed': _field('boolean', 'collapse 时必填，指定是否折叠节点'),
           }, ['op'], description='按 op 指定的一步导图编辑'), minItems=1, maxItems=500),
           'base_version': _field('integer', '当前导图版本，用于检查预览后是否发生变更', minimum=0),

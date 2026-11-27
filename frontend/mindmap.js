@@ -5,7 +5,7 @@
 // The page (notes.js) owns notes, dialogs and the ⋯ menu; this view owns the map and asks the page for the rest.
 window.CrewMindmap = (() => {
   const MM = window.CrewMindmapModel;
-  const ZOOM_KEY = "crew.mindmap.zoom", MIN_ZOOM = .5, MAX_ZOOM = 1.6, SLOP = 5;
+  const clampZoom = z => Math.max(.12, Math.min(2, z));
   const icon = d => `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
   const ICON = {
     plus: '<path d="M12 5v14M5 12h14"/>', minus: '<path d="M5 12h14"/>', board: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M6.5 10v4a2 2 0 0 0 2 2H14"/>',
@@ -13,7 +13,7 @@ window.CrewMindmap = (() => {
     fold: '<path d="m7 9 5 5 5-5"/>', unfold: '<path d="m9 7 5 5-5 5"/>', rename: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
     up: '<path d="M12 19V5M6 11l6-6 6 6"/>', down: '<path d="M12 5v14M6 13l6 6 6-6"/>', left: '<path d="M19 12H5M11 6l-6 6 6 6"/>', right: '<path d="M5 12h14M13 6l6 6-6 6"/>',
     remove: '<path d="M5 12h14"/><circle cx="12" cy="12" r="9"/>', chat: '<path d="M4 5h16v11H9l-5 4z"/>', task: '<path d="M5 12l4 4 10-10"/>',
-    chevron: '<path d="m6 9 6 6 6-6"/>'
+    chevron: '<path d="m6 9 6 6 6-6"/>', fit: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'
   };
 
   function create(ctx) {
@@ -24,7 +24,8 @@ window.CrewMindmap = (() => {
     // armed: an idea picked from the tray by a tap, waiting for the node (or empty canvas) it goes to.
     // pendingAttach: an idea already recorded whose hanging failed; a retry only hangs it.
     let armed = null, pendingAttach = null, capturing = false, captureNote = "";
-    let zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number(localStorage.getItem(ZOOM_KEY) ?? 1))), suppressClick = false;
+    let camera = null, controls = null, marquee = new Set(), resizing = null;
+    const cameraKey = `crew.mindmap.camera.${ctx.project}`;
     const $ = selector => host.querySelector(selector);
     const note = id => ctx.byId(t.nodes.get(id).note_id);
     // Ideas are never deleted, so every idea node finds its note once the page has read them.
@@ -44,12 +45,13 @@ window.CrewMindmap = (() => {
       if (!map) return;
       t = MM.tree(map, draft);
       if (selected !== null && !t.nodes.has(selected)) selected = null;
+      for (const id of marquee) if (!t.nodes.has(id)) marquee.delete(id);
       if (picking) for (const id of [...picking]) if (!t.nodes.has(id)) picking.delete(id);
     }
     // Every edit goes to the server; a stale version re-reads before reporting.
-    async function edit(ops, label) {
+    async function edit(ops, label, baseVersion = map.version) {
       try {
-        const result = await client.edit(ops, map.version);
+        const result = await client.edit(ops, baseVersion);
         map = result.map; sync(); render();
         return result;
       } catch (failure) {
@@ -69,26 +71,30 @@ window.CrewMindmap = (() => {
         <section class="mm-stage" aria-label="想法导图">
           <div class="mm-bar"></div>
           <div class="mm-scroll" tabindex="0" role="tree" aria-label="想法导图，方向键移动，Tab 新建子主题，Enter 新建同级，空格折叠" aria-describedby="mm-hint">
-            <div class="mm-world"><div class="mm-plane"><svg class="mm-wires" aria-hidden="true"></svg><div class="mm-nodes"></div></div></div>
+            <div class="mm-plane"><svg class="mm-wires" aria-hidden="true"></svg><div class="mm-nodes"></div></div>
+            <div class="mm-marquee" hidden></div><div class="mm-menu" role="menu" data-canvas-wheel-native hidden></div>
           </div>
           <p class="mm-empty" hidden></p>
           <div class="mm-actions" role="toolbar" aria-label="节点操作" hidden></div>
-          <div class="mm-zoom" role="group" aria-label="缩放"><button type="button" data-mm="zoom-out" aria-label="缩小">${icon(ICON.minus)}</button><button type="button" class="mm-zoom-value" data-mm="zoom-reset" title="恢复 100%"></button><button type="button" data-mm="zoom-in" aria-label="放大">${icon(ICON.plus)}</button></div>
+          <div class="mm-zoom" role="group" aria-label="缩放"><button type="button" data-mm="zoom-out" aria-label="缩小">${icon(ICON.minus)}</button><button type="button" class="mm-zoom-value" data-mm="zoom-reset" title="恢复 100%"></button><button type="button" data-mm="zoom-in" aria-label="放大">${icon(ICON.plus)}</button><button type="button" data-mm="fit" aria-label="显示全部" title="显示全部">${icon(ICON.fit)}</button></div>
           <div class="mm-drop-label" hidden></div>
           <div class="mm-arm" role="status" hidden></div>
         </section>
       </div>`;
       const scroll = $(".mm-scroll");
       scroll.addEventListener("keydown", onKey);
-      scroll.addEventListener("wheel", onWheel, {passive: false});
-      scroll.addEventListener("scroll", () => ctx.closeMenu());
-      host.addEventListener("pointerdown", onPointerDown);
+      controls = CrewCanvas.attach({surface:scroll, input:$(".mm-shell"), camera:() => camera, setCamera, clamp:clampZoom,
+        wheelZoom:() => map.canvas_wheel_zoom, hit, editable:() => !picking && !draft && renaming === null && armed === null,
+        forcePan:() => false, start:startGesture, preview:previewGesture, commit:finishGesture,
+        cancel:rollbackGesture, menu:openCanvasMenu, settled:() => {}});
+      resizing = new ResizeObserver(() => { if (camera === null && layoutInfo) fit(); });
+      resizing.observe(scroll);
       // Hanging uses pointer events; a native drag of selected text would cancel them midway.
-      host.addEventListener("dragstart", event => event.preventDefault());
-      host.addEventListener("click", onClick);
-      host.addEventListener("dblclick", onDoubleClick);
-      host.addEventListener("change", onChange);
-      host.addEventListener("keydown", onTrayKey);
+      const shell = $(".mm-shell");
+      shell.addEventListener("dragstart", event => event.preventDefault());
+      shell.addEventListener("click", onClick);
+      shell.addEventListener("dblclick", onDoubleClick);
+      shell.addEventListener("keydown", onTrayKey);
       const box = $(".mm-capture-input");
       box.value = ctx.draft.get();
       box.addEventListener("input", () => { ctx.draft.set(box.value); resizeBox(); captureNote = ""; renderCapture(); });
@@ -126,7 +132,8 @@ window.CrewMindmap = (() => {
         return;
       }
       bar.className = "mm-bar";
-      bar.innerHTML = `<button type="button" class="btn sm" data-mm="new-root">${icon(ICON.plus)}主题</button><span class="mm-hint" id="mm-hint">拖想法进来或点选后放下 · Tab 子主题 · Enter 同级 · 空格折叠 · Alt+方向键调整层级</span><span class="mm-gap"></span><button type="button" class="btn sm" data-mm="convert" ${map && t.roots.length ? "" : "disabled"}>${icon(ICON.board)}转成架构图</button>`;
+      const wheel = map?.canvas_wheel_zoom ? "滚轮缩放" : "滚轮平移";
+      bar.innerHTML = `<button type="button" class="btn sm" data-mm="new-root">${icon(ICON.plus)}主题</button><span class="mm-hint" id="mm-hint">拖动节点 · ${wheel} · Tab 子主题 · Enter 同级</span><span class="mm-gap"></span>${hasPositions() ? '<button type="button" class="btn sm" data-mm="auto-layout">恢复自动排列</button>' : ""}<button type="button" class="btn sm" data-mm="convert" ${map && t.roots.length ? "" : "disabled"}>${icon(ICON.board)}转成架构图</button>`;
     }
     function trayNotes() {
       const placed = map ? onMap() : new Set(), view = ctx.view();
@@ -189,7 +196,8 @@ window.CrewMindmap = (() => {
       }
       const item = note(id), kids = node.children.length, hiddenKids = node.collapsed ? MM.descendants(t, id).length : 0;
       const branch = MM.branch(t, id), tone = branch === null ? "" : ` style="--bc:var(--tag-c${MM.parentList(t, branch).indexOf(branch) % 10}-fg)"`;
-      const classes = ["mm-node", level === 0 ? "root" : "", node.note_id === null ? "topic" : "idea", selected === id ? "sel" : "",
+      const isSelected = selected === id || marquee.has(id);
+      const classes = ["mm-node", level === 0 ? "root" : "", node.note_id === null ? "topic" : "idea", isSelected ? "sel" : "",
         item && !matchesFilters(item) ? "dim" : "",
         item && item.state !== "open" ? "muted" : "", picking?.has(id) ? "picked" : "", picking && pickCovered.has(id) && !picking.has(id) ? "inpick" : ""].filter(Boolean).join(" ");
       const badges = [];
@@ -205,7 +213,7 @@ window.CrewMindmap = (() => {
       const label = `${node.note_id === null ? "主题" : "想法"}：${nodeTitle(id)}${item?.tags.length ? `，标签 ${item.tags.join("、")}` : ""}${links.length ? "，已转成架构图" : ""}`;
       const fold = kids ? `<button type="button" class="mm-fold${node.collapsed ? " closed" : ""}" data-mm="fold" tabindex="-1" aria-label="${node.collapsed ? `展开 ${hiddenKids} 个下级` : "折叠下级"}" title="${node.collapsed ? `展开（${hiddenKids} 个下级）` : "折叠"}">${node.collapsed ? `+${hiddenKids}` : icon(ICON.minus)}</button>` : "";
       const check = picking ? `<span class="mm-check" aria-hidden="true">${picking.has(id) ? "✓" : ""}</span>` : "";
-      return `<div class="${classes}" data-node="${esc(id)}"${tone} role="treeitem" aria-level="${level + 1}" aria-label="${esc(label)}" aria-selected="${selected === id}"${kids ? ` aria-expanded="${!node.collapsed}"` : ""} tabindex="${selected === id ? 0 : -1}">`
+      return `<div class="${classes}" data-node="${esc(id)}"${tone} role="treeitem" aria-level="${level + 1}" aria-label="${esc(label)}" aria-selected="${isSelected}"${kids ? ` aria-expanded="${!node.collapsed}"` : ""} tabindex="${selected === id ? 0 : -1}">`
         + `${check}${item?.stale && item.state === "open" ? '<i class="mm-stale" title="超过回顾期没动" aria-hidden="true"></i>' : ""}<span class="mm-text">${esc(nodeTitle(id))}</span>${dots}${badges.join("")}${fold}</div>`;
     }
     let pickCovered = new Set();
@@ -222,28 +230,50 @@ window.CrewMindmap = (() => {
       const sizes = id => { const el = elements.get(id); return {w: el.offsetWidth, h: el.offsetHeight}; };
       layoutInfo = MM.layout(t, sizes);
       for (const [id, el] of elements) { const p = layoutInfo.pos.get(id); el.style.transform = `translate(${p.x}px,${p.y}px)`; }
-      wires.setAttribute("width", layoutInfo.width); wires.setAttribute("height", layoutInfo.height);
       wires.innerHTML = order.filter(id => t.nodes.get(id).parent_id !== null).map(id => {
         const branch = MM.branch(t, id), tone = MM.parentList(t, branch).indexOf(branch) % 10;
         return `<path class="${pickCovered.has(id) && pickCovered.has(t.nodes.get(id).parent_id) ? "picked" : ""}" style="--bc:var(--tag-c${tone}-fg)" d="${MM.wire(layoutInfo.pos.get(t.nodes.get(id).parent_id), layoutInfo.pos.get(id))}"/>`;
       }).join("");
-      applyZoom();
+      if (camera === null) {
+        const saved = localStorage.getItem(cameraKey);
+        if (saved === null) fit(); else setCamera(JSON.parse(saved), false);
+      } else applyCamera();
       const editor = $(".mm-input");
       if (editor) { editor.focus(); editor.select(); editor.addEventListener("keydown", onEditorKey); editor.addEventListener("blur", onEditorBlur); }
       else if (focusAfter && selected !== null) { focusAfter = false; focusNode(selected); }
     }
-    function applyZoom() {
-      if (!layoutInfo) return;
-      $(".mm-plane").style.transform = `scale(${zoom})`;
-      $(".mm-world").style.width = `${layoutInfo.width * zoom}px`;
-      $(".mm-world").style.height = `${layoutInfo.height * zoom}px`;
-      $(".mm-zoom-value").textContent = `${Math.round(zoom * 100)}%`;
+    const hasPositions = () => map && map.nodes.some(node => node.x !== null);
+    function applyCamera() {
+      const scroll = $(".mm-scroll");
+      $(".mm-plane").style.transform = CrewCanvas.transform(camera);
+      scroll.style.backgroundPosition = `${camera.x}px ${camera.y}px`;
+      scroll.style.backgroundSize = `${22 * camera.z}px ${22 * camera.z}px`;
+      $(".mm-zoom-value").textContent = `${Math.round(camera.z * 100)}%`;
+    }
+    function setCamera(value, save) {
+      camera = value; closeCanvasMenu(); ctx.closeMenu(); applyCamera();
+      if (save) localStorage.setItem(cameraKey, JSON.stringify(camera));
+    }
+    function fit() {
+      const rect = controls.rect();
+      if (!rect.width || !rect.height) return;
+      const pad = rect.width < 500 ? 18 : 28;
+      const bottom = rect.bottom - visibleBottom(rect) + pad;
+      if (layoutInfo.bounds) setCamera(CrewCanvas.fit(rect, layoutInfo.bounds, {left:pad, right:pad, top:pad, bottom}, clampZoom), true);
+      else setCamera({x:0, y:0, z:1}, false);
+    }
+    function visibleBottom(rect) {
+      const actions = $(".mm-actions");
+      return actions.hidden ? rect.bottom - 48 : actions.getBoundingClientRect().top;
     }
     function focusNode(id) {
       const el = host.querySelector(`.mm-node[data-node="${CSS.escape(id)}"]`);
       if (!el) return;
       el.focus({preventScroll: true});
-      el.scrollIntoView({block: "nearest", inline: "nearest"});
+      const rect = controls.rect(), box = el.getBoundingClientRect(), pad = 20;
+      const dx = box.left < rect.left + pad ? rect.left + pad - box.left : Math.min(0, rect.right - pad - box.right);
+      const dy = box.top < rect.top + pad ? rect.top + pad - box.top : Math.min(0, visibleBottom(rect) - pad - box.bottom);
+      if (dx || dy) setCamera({...camera, x:camera.x + dx, y:camera.y + dy}, true);
     }
     function renderActions() {
       const bar = $(".mm-actions");
@@ -265,7 +295,7 @@ window.CrewMindmap = (() => {
 
     // ---- actions ----------------------------------------------------------------------------------------------------
     function select(id, focus = true) {
-      selected = id; attachCapture = true;
+      marquee.clear(); selected = id; attachCapture = true;
       render(); ctx.onSelection();
       if (focus && id !== null) focusNode(id);
     }
@@ -312,10 +342,10 @@ window.CrewMindmap = (() => {
       await edit([{op: "collapse", id, collapsed: !node.collapsed}], node.collapsed ? "展开" : "折叠");
     }
     async function structural(ops, label) { if (!ops) return; focusAfter = true; await edit(ops, label); }
-    async function removeNode(id) {
+    async function removeNode(id, baseVersion = map.version) {
       const title = nodeTitle(id), siblings = MM.parentList(t, id), index = siblings.indexOf(id);
       const next = siblings[index + 1] ?? siblings[index - 1] ?? t.nodes.get(id).parent_id;
-      const result = await edit([{op: "remove", id}], "移出导图");
+      const result = await edit([{op: "remove", id}], "移出导图", baseVersion);
       if (!result) return;
       const effect = result.effects[0];
       selected = next !== undefined && t.nodes.has(next) ? next : null; focusAfter = selected !== null; render();
@@ -323,12 +353,12 @@ window.CrewMindmap = (() => {
         {label: "撤销", run: async () => { const undone = await edit(MM.undoRemove(effect), "撤销移出"); if (undone) select(effect.id); }});
     }
     // Puts an idea under the selected node (or as a new root) — the tray's 上图 and quick capture both use it.
-    async function place(noteId, parent = selected) {
+    async function place(noteId, parent = selected, position) {
       armed = null;
       const parent_id = parent !== null && t.nodes.has(parent) ? parent : null;
       if (parent_id !== null && t.nodes.get(parent_id).collapsed) await edit([{op: "collapse", id: parent_id, collapsed: false}], "展开");
       const index = parent_id === null ? t.roots.length : t.nodes.get(parent_id).children.length;
-      const result = await edit([{op: "create", note_id: noteId, parent_id, index}], "放进导图");
+      const result = await edit([{op:"create", note_id:noteId, parent_id, index, ...position}], "放进导图");
       if (result) { selected = result.effects[0].id; focusAfter = true; render(); ctx.onSelection(); }
       return result;
     }
@@ -338,7 +368,14 @@ window.CrewMindmap = (() => {
       if (event.isComposing || event.target.closest("input,select,textarea")) return;
       const key = event.key, alt = event.altKey, mod = event.ctrlKey || event.metaKey;
       if (!map || mod) return;
-      if (!alt && (key === "=" || key === "+" || key === "-" || key === "0")) { event.preventDefault(); setZoom(key === "0" ? 1 : zoom + (key === "-" ? -.1 : .1)); return; }
+      if (key === "Escape" && (controls.cancel() || !$(".mm-menu").hidden)) {
+        closeCanvasMenu(); $(".mm-scroll").focus({preventScroll:true}); event.preventDefault(); return;
+      }
+      if (event.target.closest(".mm-menu")) return;
+      if (key === "Home") { event.preventDefault(); fit(); return; }
+      if (!alt && (key === "=" || key === "+" || key === "-" || key === "0")) {
+        event.preventDefault(); controls.zoomCenter(key === "0" ? 1 / camera.z : key === "-" ? 1 / 1.2 : 1.2); return;
+      }
       if (picking) {
         if (key === "Escape") { event.preventDefault(); stopPicking(); }
         else if ((key === " " || key === "Enter") && selected !== null) { event.preventDefault(); togglePick(selected); }
@@ -346,6 +383,7 @@ window.CrewMindmap = (() => {
         return;
       }
       if (selected === null) {
+        if (key === "Escape" && marquee.size) { event.preventDefault(); select(null); }
         if (key.startsWith("Arrow") && t.roots.length) { event.preventDefault(); select(t.roots[0]); }
         return;
       }
@@ -359,22 +397,12 @@ window.CrewMindmap = (() => {
       else if (key === "F2") { event.preventDefault(); rename(selected); }
       else if (key === " ") { event.preventDefault(); void toggleFold(selected); }
       else if (key === "Delete" || key === "Backspace") { event.preventDefault(); void removeNode(selected); }
-      else if (key === "Escape") { event.preventDefault(); selected = null; render(); ctx.onSelection(); $(".mm-scroll").focus({preventScroll: true}); }
+      else if (key === "Escape") { event.preventDefault(); select(null); $(".mm-scroll").focus({preventScroll:true}); }
     }
     function moveSelection(event) {
       const next = MM.navigate(t, selected, event.key);
       event.preventDefault();
       if (next !== null && next !== undefined) select(next);
-    }
-    function onWheel(event) {
-      if (!(event.ctrlKey || event.metaKey)) return;
-      event.preventDefault();
-      setZoom(zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
-    }
-    function setZoom(value) {
-      zoom = Math.round(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value)) * 100) / 100;
-      localStorage.setItem(ZOOM_KEY, String(zoom));
-      applyZoom();
     }
     function onTrayKey(event) {
       if (event.key === "Escape" && armed !== null) { event.preventDefault(); armed = null; render(); return; }
@@ -384,23 +412,33 @@ window.CrewMindmap = (() => {
     }
 
     // ---- pointer: select, drag to hang ------------------------------------------------------------------------------
-    function onPointerDown(event) {
-      if (event.button !== 0 || event.pointerType === "touch" || picking || draft || renaming !== null) return;
-      if (event.target.closest("button,a,input,select")) return;
-      const nodeEl = event.target.closest(".mm-node"), trayEl = event.target.closest(".mm-tray-item");
-      if (!nodeEl && !trayEl) return;
-      const source = nodeEl ? {id: nodeEl.dataset.node} : {note_id: trayEl.dataset.note};
-      window.getSelection()?.removeAllRanges();
-      drag = {source, from: nodeEl || trayEl, x: event.clientX, y: event.clientY, active: false, pointer: event.pointerId};
-      window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp);
-      window.addEventListener("pointercancel", cancelDrag);
+    function hit(event) {
+      if (!map || event.target.closest("button,a,input,select,textarea,.mm-menu")) return null;
+      const scroll = event.target.closest(".mm-scroll");
+      const node = event.target.closest(".mm-node"), tray = event.target.closest(".mm-tray-item");
+      if (node) return {type:"node", source:{id:node.dataset.node}, from:node};
+      if (tray && event.button === 0 && !picking && !draft && renaming === null && armed === null) {
+        return {type:"node", source:{note_id:tray.dataset.note}, from:tray};
+      }
+      return scroll ? {type:event.pointerType === "mouse" ? "marquee" : null} : null;
     }
-    function onPointerMove(event) {
-      if (!drag || event.pointerId !== drag.pointer) return;
-      if (!drag.active) {
-        if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < SLOP) return;
-        drag.active = true;
+    function startGesture(done, event) {
+      closeCanvasMenu(); ctx.closeMenu();
+      if (done.pan) return;
+      if (done.type === "marquee") {
+        $(".mm-scroll").focus({preventScroll:true});
+        done.base = event.shiftKey ? new Set(marquee) : new Set();
+        if (event.shiftKey && selected !== null) done.base.add(selected);
+      } else {
+        const box = done.from.getBoundingClientRect();
+        done.baseVersion = map.version;
+        done.grab = done.source.id === undefined ? {x:12, y:12} : {x:done.x - box.left, y:done.y - box.top};
+      }
+    }
+    function previewGesture(done, event, dx, dy, first) {
+      if (done.type === "marquee") { previewMarquee(done, event); return; }
+      if (first) {
+        drag = done;
         drag.ghost = document.createElement("div");
         drag.ghost.className = "mm-ghost";
         drag.ghost.textContent = drag.source.id !== undefined ? nodeTitle(drag.source.id) : ctx.M.title(ctx.byId(drag.source.note_id));
@@ -408,10 +446,22 @@ window.CrewMindmap = (() => {
         drag.from.classList.add("dragging");
         host.classList.add("mm-dragging");
       }
-      event.preventDefault();
       drag.ghost.style.transform = `translate(${event.clientX + 12}px,${event.clientY + 10}px)`;
       drag.target = dropTarget(event);
       paintDrop(event);
+    }
+    function previewMarquee(done, event) {
+      const x0 = Math.min(done.x, event.clientX), y0 = Math.min(done.y, event.clientY);
+      const x1 = Math.max(done.x, event.clientX), y1 = Math.max(done.y, event.clientY);
+      const rect = controls.rect(), frame = $(".mm-marquee");
+      Object.assign(frame.style, {left:`${x0 - rect.left}px`, top:`${y0 - rect.top}px`, width:`${x1 - x0}px`, height:`${y1 - y0}px`});
+      frame.hidden = false;
+      done.picked = new Set(done.base);
+      for (const node of host.querySelectorAll(".mm-node")) {
+        const b = node.getBoundingClientRect(), id = node.dataset.node;
+        if (b.right >= x0 && b.left <= x1 && b.bottom >= y0 && b.top <= y1) done.picked.add(id);
+        node.classList.toggle("sel", done.picked.has(id));
+      }
     }
     function dropTarget(event) {
       const under = document.elementFromPoint(event.clientX, event.clientY);
@@ -419,55 +469,89 @@ window.CrewMindmap = (() => {
       if (nodeEl && host.contains(nodeEl)) {
         const id = nodeEl.dataset.node, zone = MM.dropZone(nodeEl.getBoundingClientRect(), event.clientY);
         const ops = MM.dropOps(t, source, id, zone);
-        return ops ? {kind: "node", id, zone, ops, el: nodeEl} : {kind: "invalid", el: nodeEl};
+        if (ops && source.id !== undefined) {
+          const target = layoutInfo.pos.get(id), own = layoutInfo.pos.get(source.id);
+          const position = zone === "child" ? {x:target.x + target.w + MM.GAP_X, y:target.y}
+            : {x:target.x, y:zone === "before" ? target.y - own.h - MM.GAP_Y : target.y + target.h + MM.GAP_Y};
+          const fixed = [...layoutInfo.pos].filter(([id]) => id !== source.id && Number.isFinite(t.nodes.get(id).x)).map(([, p]) => p);
+          position.y = MM.openY({...own, ...position}, fixed, zone === "before" ? -1 : 1);
+          Object.assign(ops[0], position);
+        }
+        return ops ? {kind:"node", id, zone, ops, el:nodeEl} : {kind:"invalid", el:nodeEl};
       }
-      if (under?.closest(".mm-tray") && source.id !== undefined) return {kind: "remove"};
-      if (under?.closest(".mm-scroll")) return {kind: "root", ops: MM.rootOps(t, source)};
+      if (under?.closest(".mm-tray") && source.id !== undefined) return {kind:"remove"};
+      if (under?.closest(".mm-scroll") && !under.closest(".mm-menu")) {
+        const position = controls.toWorld(event.clientX - drag.grab.x, event.clientY - drag.grab.y);
+        return {kind:"blank", ops:MM.rootOps(t, source, position)};
+      }
       return null;
     }
     function paintDrop(event) {
       for (const el of host.querySelectorAll(".drop-child,.drop-before,.drop-after,.drop-invalid")) el.classList.remove("drop-child", "drop-before", "drop-after", "drop-invalid");
-      host.querySelector(".mm-tray").classList.toggle("drop-remove", drag.target?.kind === "remove");
-      $(".mm-scroll").classList.toggle("drop-root", drag.target?.kind === "root");
+      $(".mm-tray").classList.toggle("drop-remove", drag.target?.kind === "remove");
+      $(".mm-scroll").classList.toggle("drop-root", drag.target?.kind === "blank");
       const label = $(".mm-drop-label"), target = drag.target;
       if (!target) { label.hidden = true; return; }
       if (target.kind === "node") target.el.classList.add(`drop-${target.zone}`);
       if (target.kind === "invalid") target.el.classList.add("drop-invalid");
       const name = target.id ? nodeTitle(target.id) : "";
       label.textContent = target.kind === "node" ? (target.zone === "child" ? `挂到「${name}」下` : `放到「${name}」${target.zone === "before" ? "前面" : "后面"}`)
-        : target.kind === "remove" ? "移出导图（想法还在）" : target.kind === "root" ? "放成一个新的根" : "不能挂到自己或自己的下级下";
+        : target.kind === "remove" ? "移出导图（想法还在）" : target.kind === "blank" ? "松开放在这里" : "不能挂到自己或自己的下级下";
       label.hidden = false;
-      const box = host.querySelector(".mm-stage").getBoundingClientRect();
-      label.style.transform = `translate(${Math.min(event.clientX - box.left + 14, box.width - 220)}px,${event.clientY - box.top + 30}px)`;
+      const box = $(".mm-stage").getBoundingClientRect();
+      const x = Math.max(8, Math.min(event.clientX - box.left + 14, box.width - label.offsetWidth - 8));
+      const y = Math.max(8, Math.min(event.clientY - box.top + 28, box.height - label.offsetHeight - 8));
+      label.style.transform = `translate(${x}px,${y}px)`;
     }
-    function cancelDrag() {
-      if (!drag) return;
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-      window.removeEventListener("pointercancel", cancelDrag);
-      drag.ghost?.remove(); drag.from.classList.remove("dragging"); host.classList.remove("mm-dragging");
+    function clearDrag() {
+      drag.ghost.remove(); drag.from.classList.remove("dragging");
+      host.classList.remove("mm-dragging");
       for (const el of host.querySelectorAll(".drop-child,.drop-before,.drop-after,.drop-invalid")) el.classList.remove("drop-child", "drop-before", "drop-after", "drop-invalid");
-      host.querySelector(".mm-tray").classList.remove("drop-remove"); $(".mm-scroll").classList.remove("drop-root");
+      $(".mm-tray").classList.remove("drop-remove"); $(".mm-scroll").classList.remove("drop-root");
       $(".mm-drop-label").hidden = true;
       drag = null;
     }
-    async function onPointerUp(event) {
-      const current = drag;
-      if (!current || event.pointerId !== current.pointer) return;
-      cancelDrag();
-      if (!current.active) return;
-      // The click that follows this pointerup belongs to the drag, not to the canvas.
-      suppressClick = true; setTimeout(() => { suppressClick = false; });
-      const target = current.target;
+    function rollbackGesture(done) {
+      if (drag) clearDrag();
+      if (!done.pan && done.type === "marquee" && done.moved) {
+        $(".mm-marquee").hidden = true;
+        renderCanvas();
+      }
+    }
+    async function finishGesture(done) {
+      if (!done.moved) return;
+      if (done.type === "marquee") {
+        $(".mm-marquee").hidden = true;
+        marquee = done.picked;
+        selected = marquee.size === 1 ? [...marquee][0] : null;
+        attachCapture = true; render(); ctx.onSelection();
+        return;
+      }
+      const target = done.target;
+      clearDrag();
       if (!target || target.kind === "invalid") return;
-      if (target.kind === "remove") { await removeNode(current.source.id); return; }
-      const result = await edit(target.ops, current.source.id !== undefined ? "移动" : "放进导图");
-      if (result) { selected = current.source.id ?? result.effects[0].id; focusAfter = true; render(); ctx.onSelection(); }
+      if (target.kind === "remove") { await removeNode(done.source.id, done.baseVersion); return; }
+      const result = await edit(target.ops, done.source.id !== undefined ? "移动" : "放进导图", done.baseVersion);
+      if (result) select(done.source.id ?? result.effects[0].id, false);
+    }
+    function closeCanvasMenu() { $(".mm-menu").hidden = true; }
+    function openCanvasMenu(done, event) {
+      const menu = $(".mm-menu"), rect = controls.rect();
+      if (done.source?.id && !picking && !draft && renaming === null) select(done.source.id, false);
+      menu.innerHTML = `<button type="button" role="menuitem" data-mm="fit">显示全部</button>`
+        + (hasPositions() ? '<button type="button" role="menuitem" data-mm="auto-layout">恢复自动排列</button>' : "")
+        + (!picking && !draft && renaming === null ? (done.source?.id
+          ? '<button type="button" role="menuitem" data-mm="child">新建子主题</button><button type="button" role="menuitem" data-mm="rename">编辑</button>'
+          : '<button type="button" role="menuitem" data-mm="new-root">新建主题</button>') : "");
+      menu.hidden = false;
+      menu.style.left = `${Math.max(4, Math.min(event.clientX - rect.left, rect.width - menu.offsetWidth - 4))}px`;
+      menu.style.top = `${Math.max(4, Math.min(event.clientY - rect.top, rect.height - menu.offsetHeight - 4))}px`;
+      menu.querySelector("button").focus({preventScroll:true});
     }
 
     // ---- clicks -----------------------------------------------------------------------------------------------------
     function onClick(event) {
-      if (suppressClick) { suppressClick = false; return; }
+      closeCanvasMenu();
       const control = event.target.closest("[data-mm]"), nodeEl = event.target.closest(".mm-node");
       const act = control?.dataset.mm;
       if (act === "chat") return;
@@ -478,26 +562,30 @@ window.CrewMindmap = (() => {
       if (trayEl && !picking && map) { arm(trayEl.dataset.note); return; }
       if (armed !== null && !picking) {
         if (nodeEl && !nodeEl.classList.contains("editing")) { void place(armed, nodeEl.dataset.node); return; }
-        if (event.target.closest(".mm-scroll")) { void place(armed, null); return; }
+        if (event.target.closest(".mm-scroll")) {
+          const position = controls.toWorld(event.clientX, event.clientY);
+          void place(armed, null, position); return;
+        }
       }
       if (nodeEl && !nodeEl.classList.contains("editing")) {
         if (picking) togglePick(nodeEl.dataset.node);
         else if (selected !== nodeEl.dataset.node) select(nodeEl.dataset.node);
         return;
       }
-      if (event.target.closest(".mm-scroll") && selected !== null && !picking) { selected = null; render(); ctx.onSelection(); }
+      if (event.target.closest(".mm-scroll") && (selected !== null || marquee.size) && !picking) select(null);
     }
     function onDoubleClick(event) {
       const nodeEl = event.target.closest(".mm-node");
       if (!nodeEl || picking || event.target.closest("[data-mm]") || nodeEl.classList.contains("editing")) return;
       rename(nodeEl.dataset.node);
     }
-    function onChange() {}
     async function action(act, control) {
       if (act === "reload") { await load(); return; }
       if (act === "tray") { trayOpen = !trayOpen; renderTray(); return; }
-      if (act === "zoom-in" || act === "zoom-out") { setZoom(zoom + (act === "zoom-in" ? .1 : -.1)); return; }
-      if (act === "zoom-reset") { setZoom(1); return; }
+      if (act === "zoom-in" || act === "zoom-out") { controls.zoomCenter(act === "zoom-in" ? 1.2 : 1 / 1.2); return; }
+      if (act === "zoom-reset") { controls.zoomCenter(1 / camera.z); return; }
+      if (act === "fit") { fit(); return; }
+      if (act === "auto-layout") { if (await edit([{op:"auto_layout"}], "恢复自动排列") && host !== null) fit(); return; }
       if (act === "place") { await place(control.closest(".mm-tray-item").dataset.note); return; }
       if (act === "disarm") { armed = null; render(); return; }
       if (act === "capture-detach") { attachCapture = false; renderCapture(); $(".mm-capture-input").focus(); return; }
@@ -636,7 +724,7 @@ window.CrewMindmap = (() => {
     return {
       active: () => host !== null,
       mount(element) { host = element; scaffold(); render(); void load(); },
-      unmount() { cancelDrag(); if (host) host.innerHTML = ""; host = null; picking = null; draft = null; renaming = null; armed = null; },
+      unmount() { controls.destroy(); resizing.disconnect(); host.innerHTML = ""; host = null; picking = null; draft = null; renaming = null; armed = null; },
       render() { if (host) { sync(); render(); const box = $(".mm-capture-input"); if (document.activeElement !== box && box.value !== ctx.draft.get()) { box.value = ctx.draft.get(); resizeBox(); } } },
       refresh: () => host ? load() : Promise.resolve(),
       // The node the tray box would hang a new idea under, or null.

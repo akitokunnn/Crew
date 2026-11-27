@@ -348,11 +348,11 @@
 | `architecture.select-all` | 画布内按 Ctrl／⌘+A → 选中当前可见节点 | `frontend/architecture.js:815` | `shownIds`、`selection` | 无 | 手动 · 1280×800 · 画布内按 Ctrl／⌘+A，核对选中当前可见节点 |
 | `architecture.marquee` | 拖框 → 选中范围内节点，追加时保留已有选区 | `frontend/architecture.js:713` | `.arch-marquee` | 无 | 手动 · 1280×800 · 拖框，核对选中范围内节点，追加时保留已有选区 |
 | `architecture.node-drag` | 拖动节点或选区 → 移动节点，按落点决定重排或挂入目标 | `frontend/architecture.js:624`、`frontend/architecture.js:644` | `.arch-part`、`finishDrag` | `plugin/tests/test_domains.py::test_tree_paths_layout_direction_and_version` | 手动 · 1280×800 · 拖动节点或选区，核对移动节点，按落点决定重排或挂入目标 |
-| `architecture.member-drag` | 拖动成员到节点或未归属区 → 更新归属并显示可落点 | `frontend/architecture.js:672`、`frontend/architecture.js:682` | `.arch-ghost`、`.drop-target` | `plugin/tests/test_domains.py::test_many_leaders_per_part_and_one_lead` | 手动 · 1280×800 · 拖动成员到节点或未归属区，核对更新归属并显示可落点 |
+| `architecture.member-drag` | 拖入 part 接任负责人，拖到空白处成为独立节点 | `frontend/architecture.js` | `.arch-independent`、`.arch-ghost`、`.drop-target` | `plugin/tests/test_domains.py::test_independent_leaders_drag_into_and_out_of_part_and_restore_coordinates` | 1280×800 · 核对原负责人变为普通成员、拖出落点及版本回滚 |
 | `architecture.member-open` | 在成员菜单点进入对话 → 打开对应 Leader 聊天 | `frontend/architecture.js:764` | `data-cmd=open` | 无 | 手动 · 1280×800 · 在成员菜单点进入对话，核对打开对应 Leader 聊天 |
 | `architecture.member-lead` | 在成员菜单设负责人 → 该节点显示其负责人标识 | `frontend/architecture.js:765` | `data-cmd=lead` | `plugin/tests/test_domains.py::test_many_leaders_per_part_and_one_lead` | 手动 · 1280×800 · 在成员菜单设负责人，核对该节点显示其负责人标识 |
 | `architecture.member-unlead` | 取消负责人 → 降为普通归属成员 | `frontend/architecture.js:766` | `data-cmd=unlead` | `plugin/tests/test_domains.py::test_many_leaders_per_part_and_one_lead` | 手动 · 1280×800 · 取消负责人，核对降为普通归属成员 |
-| `architecture.member-leave` | 选移出到未归属 → 行回到未归属面板 | `frontend/architecture.js:767` | `data-cmd=leave` | `plugin/tests/test_domains.py::test_many_leaders_per_part_and_one_lead` | 手动 · 1280×800 · 选移出到未归属，核对行回到未归属面板 |
+| `architecture.member-leave` | 选移出成独立节点 → 在画布上显示 leader 卡片 | `frontend/architecture.js` | `data-cmd=leave` | 同 `architecture.member-drag` | 1280×800 · 核对卡片位置与归属 |
 | `architecture.wire-connect` | 从端点拖向有效节点 → 改变父子连线 | `frontend/architecture.js:700` | `.arch-pin`、`finishWire` | 无 | 手动 · 1280×800 · 从端点拖向有效节点，核对改变父子连线 |
 | `architecture.wire-detach` | 把入端点拖到空白 → 从父节点移出 | `frontend/architecture.js:704` | `detachPart` | 无 | 手动 · 1280×800 · 把入端点拖到空白，核对从父节点移出 |
 | `architecture.wire-new` | 把出端点拖到空白 → 在释放处新建子节点 | `frontend/architecture.js:705` | `createPart` | 无 | 手动 · 1280×800 · 把出端点拖到空白，核对在释放处新建子节点 |
@@ -360,7 +360,6 @@
 | `architecture.delete` | 从菜单删除或按 Delete／Backspace → 删除选中 part | `frontend/architecture.js:773`、`frontend/architecture.js:816` | `deleteParts` | `plugin/tests/test_domains.py::test_deleting_a_part_moves_its_children_and_all_leaders_up_one_level` | 手动 · 1280×800 · 从菜单删除或按 Delete／Backspace，核对删除选中 part |
 | `architecture.tidy` | 点自动排列 → 重排画布节点 | `frontend/architecture.js:775`、`frontend/architecture.js:784` | `data-arch-act=tidy` | 无 | 手动 · 1280×800 · 点自动排列，核对重排画布节点 |
 | `architecture.direction` | 切换 TB 或 LR → 在上下与左右布局间切换，连线端点随之变更 | `frontend/architecture.js:785` | `data-direction`、`direction` | `plugin/tests/test_domains.py::test_tree_paths_layout_direction_and_version` | 手动 · 1280×800 · 切换 TB 或 LR，核对在上下与左右布局间切换，连线端点随之变更 |
-| `architecture.shelf` | 点未归属区标题 → 展开或折叠并记住状态 | `frontend/architecture.js:226`、`frontend/architecture.js:786` | `crew.architecture.shelf` | 无 | 手动 · 1280×800 · 点未归属区标题，核对展开或折叠并记住状态 |
 | `architecture.undo` | 点撤销或按 Ctrl／⌘+Z → 回退可撤销编辑 | `frontend/architecture.js:782`、`frontend/architecture.js:813` | `data-arch-act=undo` | `plugin/tests/test_domains.py::test_undo_batch_restores_a_deleted_part_with_the_same_id` | 手动 · 1280×800 · 点撤销或按 Ctrl／⌘+Z，核对回退可撤销编辑 |
 | `architecture.redo` | 点重做或按 Ctrl／⌘+Shift+Z、Ctrl／⌘+Y → 重做编辑 | `frontend/architecture.js:783`、`frontend/architecture.js:813`、`frontend/architecture.js:814` | `data-arch-act=redo` | 无 | 手动 · 1280×800 · 点重做或按 Ctrl／⌘+Shift+Z、Ctrl／⌘+Y，核对重做编辑 |
 | `architecture.fit` | 点显示全部或按 Home → 让可见节点适配画布 | `frontend/architecture.js:776`、`frontend/architecture.js:787`、`frontend/architecture.js:818` | `fit` | 无 | 手动 · 1280×800 · 点显示全部或按 Home，核对让可见节点适配画布 |
@@ -368,11 +367,11 @@
 | `architecture.zoom-in` | 点加号 → 以画布中心放大 | `frontend/architecture.js:788` | `data-arch-act=zoom-in` | 无 | 手动 · 1280×800 · 点加号，核对以画布中心放大 |
 | `architecture.zoom-out` | 点减号 → 以画布中心缩小 | `frontend/architecture.js:789` | `data-arch-act=zoom-out` | 无 | 手动 · 1280×800 · 点减号，核对以画布中心缩小 |
 | `architecture.zoom-reset` | 点倍率 → 恢复 100% | `frontend/architecture.js:790` | `data-arch-act=zoom-reset` | 无 | 手动 · 1280×800 · 点倍率，核对恢复 100% |
-| `architecture.wheel` | 滚轮滚动或横向手势 → 围绕指针缩放或平移 | `frontend/architecture.js:724` | `wheel`、`zoomAt` | 无 | 手动 · 1280×800 · 滚轮滚动或横向手势，核对围绕指针缩放或平移 |
-| `architecture.pinch` | 双指捏合 → 在两指中点附近调整镜头 | `frontend/architecture.js:607`、`frontend/architecture.js:611` | `startPinch`、`movePinch` | 无 | 手动 · 1280×800 · 双指捏合，核对在两指中点附近调整镜头 |
+| `architecture.wheel` | 普通滚轮平移，Ctrl／⌘＋滚轮在指针处缩放。设置可以将竖向滚轮改为缩放 | `frontend/canvas-core.js`、`frontend/settings-ui.js` | `wheel`、`zoomAt`、`data-canvas-wheel` | `plugin/tests/test_canvas_core.js` | 1280×800 · 架构图与导图分别核对平移、锚点缩放和设置 |
+| `architecture.pinch` | 第二指按下取消节点拖动，捏合在两指中点处缩放 | `frontend/canvas-core.js` | `pointerdown`、`pointermove` | `plugin/tests/test_canvas_core.js` | 375px · 核对捏合及取消 |
 | `architecture.camera-remember` | 平移缩放后再回架构图 → 恢复工作区相机位置 | `frontend/architecture.js:216`、`frontend/architecture.js:219` | `cameraKey`、`localStorage` | 无 | 手动 · 1280×800 · 平移缩放后再回架构图，核对恢复工作区相机位置 |
 | `architecture.context` | 单击右键 → 画布、节点和成员各显示对应菜单 | `frontend/architecture.js:733`、`frontend/architecture.js:801` | `.arch-menu`、`data-cmd` | 无 | 手动 · 1280×800 · 单击右键，核对画布、节点和成员各显示对应菜单 |
-| `architecture.escape` | 按 Escape → 取消当前手势、菜单或选中态 | `frontend/architecture.js:811`、`frontend/architecture.js:819` | `cancelGesture`、`closeMenu` | 无 | 手动 · 1280×800 · 按 Escape，核对取消当前手势、菜单或选中态 |
+| `architecture.escape` | 按 Escape → 取消当前手势、菜单或选中态 | `frontend/architecture.js`、`frontend/canvas-core.js` | `controls.cancel`、`closeMenu` | `plugin/tests/test_canvas_core.js` | 1280×800 · 按 Escape，核对取消当前手势、菜单或选中态 |
 | `architecture.return-chat` | 从会话团队栏进入架构图后点返回 → 还原原会话、执行范围与团队栏焦点 | `frontend/app.js:1603`、`frontend/app.js:1609` | `architectureReturn`、`.rp-architecture` | 无 | 手动 · 1280×800 · 从会话团队栏进入架构图后点返回，核对还原原会话、执行范围与团队栏焦点 |
 | `architecture.pan` | 中键、右键或按住空格拖动 → 平移画布，右键原地释放则打开菜单 | `frontend/architecture.js:541`、`frontend/architecture.js:574` | `spaceDown`、`camera` | 无 | 手动 · 1280×800 · 中键、右键或按住空格拖动，核对平移画布，右键原地释放则打开菜单 |
 | `architecture.touch-pan` | 单指拖动空白 → 平移画布 | `frontend/architecture.js:559`、`frontend/architecture.js:574` | `pointerType`、`camera` | 无 | 截图走查 · 375px 触屏拖动空白及缩放 |
@@ -991,7 +990,7 @@
 | `mobile.task-back-status` | 手机查看任务执行对话 → 返回总会话按钮可见，执行状态徽记收起 | `frontend/mobile-chat.css:252-254` | `.exec-chat-bar`、`.exec-chat-back` | 无 | 截图走查 · 375px 用执行卡进入后返回 |
 | `mobile.pin-touch` | 无悬停设备查看 Leader 行 → 图钉仍可触达 | `frontend/style.css:974` | `.leader-pin`、`hover:none` | 无 | 截图走查 · 375px 触控分别置顶与撤销置顶 |
 | `mobile.responsive-attention` | 在 620px 以下打开待关注 → 图标及数字保留，卡片操作重排 | `frontend/style.css:295` | `.attention-trigger`、`.attention-count` | 无 | 截图走查 · 620px 和 375 打开面板并点待办操作 |
-| `mobile.responsive-architecture` | 缩窄架构画布 → 工具栏、归属区与缩放控件按触屏尺寸调整 | `frontend/architecture.css:151-176` | `.arch-shelf`、`.arch-zoom` | 无 | 截图走查 · 760px 与 375 切方向、缩放和折叠 |
+| `mobile.responsive-architecture` | 缩窄架构画布 → 浏览 part 和独立 leader，触屏拖动平移 | `frontend/architecture.css`、`frontend/canvas-core.js` | `.arch-independent`、`.arch-zoom` | 无 | 截图走查 · 760px 与 375px 检查画布和缩放控件 |
 | `mobile.reduced-motion` | 系统启用减弱动态后操作 → 圆环或面板跳过相应动画，桌面切页直接完成 | `frontend/style.css:245`、`frontend/style.css:1023`、`desktop/src/tabs.cjs:243` | `prefers-reduced-motion` | `desktop/test/tabs.test.cjs::the system reduced-motion setting switches pages directly` | 截图走查 · 1280px 启用系统减弱动态，切页并触发圆环忙态 |
 
 ## 未确认的交接描述

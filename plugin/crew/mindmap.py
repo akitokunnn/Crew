@@ -39,7 +39,7 @@ def _bump(conn, project, now):
 def snapshot(conn, project):
     """Every node in sibling order, and each node's live link to a board part (links to deleted parts are left out)."""
     nodes = [{'id': row['id'], 'parent_id': row['parent_id'], 'note_id': row['note_id'], 'label': row['label'],
-              'sort_order': row['sort_order'], 'collapsed': bool(row['collapsed'])}
+              'sort_order': row['sort_order'], 'collapsed': bool(row['collapsed']), 'x': row['x'], 'y': row['y']}
              for row in conn.execute('SELECT * FROM personal_mindmap_nodes WHERE project=? ORDER BY sort_order,created_at,id', (project,))]
     links = [dict(row) for row in conn.execute(
         'SELECT l.node_id,l.project,l.domain_id,d.name AS domain_name FROM personal_mindmap_links l '
@@ -55,6 +55,12 @@ def _label(value):
     if len(label) > LABEL_MAX:
         raise board.BoardError('主题最多 %d 个字' % LABEL_MAX)
     return label
+
+
+def _position(op):
+    if 'x' not in op and 'y' not in op:
+        return None
+    return domains._coordinate(op, 'x'), domains._coordinate(op, 'y')
 
 
 @board.atomic
@@ -141,8 +147,10 @@ class _Edit:
         else:
             label = _label(op['label'])
         parent_id = self.parent(op)
-        self.conn.execute('INSERT INTO personal_mindmap_nodes(project,id,parent_id,note_id,label,sort_order,collapsed,created_at,updated_at) '
-                          'VALUES(?,?,?,?,?,0,0,?,?)', (self.project, node_id, parent_id, note_id, label, self.now, self.now))
+        position = _position(op)
+        x, y = (None, None) if position is None else position
+        self.conn.execute('INSERT INTO personal_mindmap_nodes(project,id,parent_id,note_id,label,sort_order,collapsed,created_at,updated_at,x,y) '
+                          'VALUES(?,?,?,?,?,0,0,?,?,?,?)', (self.project, node_id, parent_id, note_id, label, self.now, self.now, x, y))
         self.place(node_id, parent_id, op.get('index'))
         return {'op': 'create', 'id': node_id}
 
@@ -155,6 +163,12 @@ class _Edit:
 
     def op_move(self, op):
         node = self.node(op.get('id'))
+        position = _position(op)
+        if position is not None:
+            self.conn.execute('UPDATE personal_mindmap_nodes SET x=?,y=?,updated_at=? WHERE id=?',
+                              (*position, self.now, node['id']))
+            if 'parent_id' not in op and 'index' not in op:
+                return
         parent_id = self.parent(op)
         ancestor = parent_id
         while ancestor is not None:
@@ -165,6 +179,10 @@ class _Edit:
         self.place(node['id'], parent_id, op.get('index'))
         if previous != parent_id:
             self.renumber(self.siblings(previous))
+
+    def op_auto_layout(self, op):
+        self.conn.execute('UPDATE personal_mindmap_nodes SET x=NULL,y=NULL,updated_at=? '
+                          'WHERE project=? AND (x IS NOT NULL OR y IS NOT NULL)', (self.now, self.project))
 
     def op_collapse(self, op):
         node = self.node(op.get('id'))
@@ -185,7 +203,8 @@ class _Edit:
         self.conn.execute('DELETE FROM personal_mindmap_nodes WHERE id=?', (node['id'],))
         self.renumber(order[:index] + children + order[index + 1:])
         return {'op': 'remove', 'id': node['id'], 'parent_id': node['parent_id'], 'index': index, 'children': children,
-                'note_id': node['note_id'], 'label': node['label'], 'collapsed': bool(node['collapsed'])}
+                'note_id': node['note_id'], 'label': node['label'], 'collapsed': bool(node['collapsed']),
+                'x': node['x'], 'y': node['y']}
 
 
 # ---- conversion ---------------------------------------------------------------------------------------------------
