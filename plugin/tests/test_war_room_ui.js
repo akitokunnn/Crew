@@ -119,7 +119,8 @@ test("筹备页显示当前决定和已定折叠，确认期间看到的推荐�
   f.click("collapse");
   assert.equal(f.host.dataset.collapsed, "true");
   f.click("full");
-  assert.match(f.node(".wr-pane-content").innerHTML, /作战计划书/);
+  assert.equal(f.node("#wr-pane-title").innerHTML, "作战计划书 v2");
+  assert.doesNotMatch(f.node(".wr-pane-content").innerHTML, /作战计划书/);
   assert.doesNotMatch(f.node(".wr-pane-content").innerHTML, /敲定，开打/);
   f.W.unmount();
   assert.equal(f.listeners.size, 0);
@@ -214,7 +215,7 @@ test("作战中收到 v3 修订版，对话显示锚点，全文标出新改，�
   const pane = f.node(".wr-pane-content");
   const {blocks} = watchPlan(f, pane, ["entry:A1", "entry:A2"]);
   f.click("full");
-  assert.match(pane.innerHTML, /作战计划书 <span>v3/);
+  assert.equal(f.node("#wr-pane-title").innerHTML, "作战计划书 v3");
   assert.match(pane.innerHTML, /逐步切换网关[\s\S]*观察错误率/);
   assert.match(pane.innerHTML, /敲定修订/);
   assert.deepEqual(blocks.map(block => block.dataset.mark), ["改", "新"]);
@@ -237,7 +238,8 @@ test("v2 的历史锚点在作战中打开 v3，跳到改过的小节中同 ID �
   const {blocks:[other, target]} = watchPlan(f, pane, ["entry:A2", "entry:A1"]);
   f.click("jump", {version:"2", block:"entry:A1"});
   assert.equal(f.node(".wr-pane-dialog").open, true);
-  assert.match(pane.innerHTML, /作战计划书 <span>v3[\s\S]*观察错误率[\s\S]*逐步切换网关/);
+  assert.equal(f.node("#wr-pane-title").innerHTML, "作战计划书 v3");
+  assert.match(pane.innerHTML, /观察错误率[\s\S]*逐步切换网关/);
   assert(target.scrolled && target.classList.contains("wr-flash"));
   assert.equal(other.scrolled, undefined);
 });
@@ -260,7 +262,7 @@ test("旧正文锚点能跟随段落移动，同序号的另一段不会冒充�
   f.reload(room({draft_version:4, plans:[removed, moved, original, plan1]}));
   await tick();
   f.click("jump", {version:"2", block:key});
-  assert.match(pane.innerHTML, /作战计划书 <span>v4/);
+  assert.match(f.node(".wr-plan-panel").innerHTML, /作战计划书 <span>v4/);
   assert.deepEqual(f.toasts, ["这一段在 v4 已删除"]);
   assert.equal(other.scrolled, undefined);
 });
@@ -276,7 +278,7 @@ test("历史锚点已删除时打开最新版并提示首次消失的版本，�
     const pane = f.node(".wr-plan-panel");
     const {blocks:[remaining], scroll} = watchPlan(f, pane, ["entry:A2"]);
     f.click("jump", {version:"2", block:"entry:A1"});
-    assert.match(pane.innerHTML, new RegExp(`作战计划书 <span>v${version}`));
+    assert.match(f.node(".wr-plan-panel").innerHTML, new RegExp(`作战计划书 <span>v${version}`));
     assert.deepEqual(f.toasts, ["这一段在 v3 已删除"]);
     assert.equal(scroll.scrollTop, 120);
     assert.equal(remaining.scrolled, undefined);
@@ -317,7 +319,7 @@ test("没有所属小节的删条目提示当版已删，仍可打开最新版",
   const {scroll} = watchPlan(f, pane, ["entry:A1"]);
   assert.match(f.node(".wr-timeline").innerHTML, /data-version="3" data-block=""><span>删<\/span> 临时说明/);
   f.click("jump", {version:"3", block:""});
-  assert.match(pane.innerHTML, /作战计划书 <span>v3/);
+  assert.match(f.node(".wr-plan-panel").innerHTML, /作战计划书 <span>v3/);
   assert.deepEqual(f.toasts, ["这一段在 v3 已删除"]);
   assert.equal(scroll.scrollTop, 120);
 });
@@ -329,9 +331,47 @@ test("没有条目的历史锚点卡仍用「看这一版」打开当时的计�
   assert.match(f.node(".wr-timeline").innerHTML, /data-version="2">看这一版/);
   f.click("jump", {version:"2"});
   const pane = f.node(".wr-pane-content").innerHTML;
-  assert.match(pane, /作战计划书 <span>v2[\s\S]*整理方案/);
+  assert.equal(f.node("#wr-pane-title").innerHTML, "作战计划书 v2");
+  assert.match(pane, /整理方案/);
   assert.doesNotMatch(pane, /逐步切换网关/);
   assert.deepEqual(f.toasts, []);
+});
+
+test("v1 锚点只显示版本、摘要和打开按钮，点开仍能查看初稿", async () => {
+  const f = harness(room());
+  await tick();
+  const [card] = f.node(".wr-timeline").innerHTML.match(/<section class="wr-note wr-revision"><div><strong>计划书 v1<\/strong>[\s\S]*?<\/section>/);
+  assert(card.includes(plan1.summary));
+  assert.match(card, /data-version="1">看这一版/);
+  assert.doesNotMatch(card, /<ul>|data-block=/);
+  f.click("jump", {version:"1"});
+  assert.match(f.node(".wr-plan-panel").innerHTML, /作战计划书 <span>v1/);
+});
+
+test("六个改动全部显示，更多改动可展开和收起", async () => {
+  function revisedWithChanges(n) {
+    const notes = Array.from({length:n}, (_, index) => `补充说明 ${index + 1}`).join("\n\n");
+    return {...plan1, version:2, created_at:plan2.created_at, body:`${plan1.body.trimEnd()}\n\n${notes}\n`};
+  }
+  const six = harness(room({plans:[revisedWithChanges(6), plan1]}));
+  await tick();
+  const collapsed = six.node(".wr-timeline").innerHTML;
+  assert.equal([...collapsed.matchAll(/data-block=/g)].length, 6);
+  assert.doesNotMatch(collapsed, /data-wr="revision-more"/);
+
+  const eight = harness(room({plans:[revisedWithChanges(8), plan1]}));
+  const feed = eight.node(".wr-timeline");
+  feed.querySelector = () => eight.node("revision expansion button");
+  await tick();
+  assert.equal([...feed.innerHTML.matchAll(/data-block=/g)].length, 6);
+  assert.match(feed.innerHTML, /aria-expanded="false">\+2 项/);
+  assert.doesNotMatch(feed.innerHTML, /补充说明 7|补充说明 8/);
+  eight.click("revision-more", {version:"2"});
+  assert.equal([...feed.innerHTML.matchAll(/data-block=/g)].length, 8);
+  assert.match(feed.innerHTML, /补充说明 7[\s\S]*补充说明 8[\s\S]*aria-expanded="true">收起/);
+  eight.click("revision-more", {version:"2"});
+  assert.match(feed.innerHTML, /aria-expanded="false">\+2 项/);
+  assert.doesNotMatch(feed.innerHTML, /补充说明 7|补充说明 8/);
 });
 
 test("手机摘要打开同一份计划并在单内敲定，正常发言和回复都发给领头会话", async () => {
@@ -340,6 +380,8 @@ test("手机摘要打开同一份计划并在单内敲定，正常发言和回�
   assert.match(f.node(".wr-panelbar").innerHTML, /计划书 v2 · 1 项等你定/);
   f.click("panel");
   assert.equal(f.node(".wr-pane-dialog").open,true);
+  assert.equal(f.node("#wr-pane-title").innerHTML, "作战计划书 v2");
+  assert.doesNotMatch(f.node(".wr-pane-content").innerHTML, /作战计划书/);
   assert.match(f.node(".wr-pane-content").innerHTML, /敲定，开打/);
   f.click("hide-panel");
   f.click("reply",{message:"1"});
@@ -366,10 +408,11 @@ test("作战中战况显示卡住和待定项，成员和内部消息在独立�
   assert.match(aside, /需要你关注[\s\S]*卡住了 · 切换网关[\s\S]*先做哪项/);
   assert.match(aside, /建好任务 · A1/);
   assert.doesNotMatch(html,/内部讨论/);
-  assert.match(html, /创意顾问[\s\S]*Codex · 实际模型 · 强度 high · 用量待确认[\s\S]*能否简化[\s\S]*可以/);
+  assert.match(html, /创意顾问<\/strong><span>用量待确认<\/span><small[^>]*>Codex · 实际模型 · 强度 high<\/small>[\s\S]*能否简化[\s\S]*可以/);
   assert.match(html, /常规顾问[\s\S]*0 tokens/);
   assert.match(html, /顾问调用失败[\s\S]*OAuth 登录过期/);
   assert.match(aside, /另有 2 次用量待确认/);
+  assert.match(html, /等你定[\s\S]*去拍板/);
   f.click("internal"); assert.match(f.node(".wr-pane-content").innerHTML, /内部讨论/);
   f.click("members"); assert.match(f.node(".wr-pane-content").innerHTML, /支付/);
 });
@@ -390,6 +433,37 @@ test("领头的 mention 决定用户发言回执，其他收件人的状态不�
   assert.match(html, /已回复/);
 });
 
+test("用户可以回复领头的消息，自己的消息没有回复按钮", async () => {
+  const f = harness(room({messages:[message(1,"assistant","先写计划"),message(2,"user","收到")]}));
+  await tick();
+  const html = f.node(".wr-timeline").innerHTML;
+  assert.match(html, /data-wr="reply" data-message="1">回复/);
+  assert.doesNotMatch(html, /data-wr="reply" data-message="2"/);
+});
+
+test("结束后摘要和战况只提示进度与结局，排队回执和未决拍板随房间结束", async () => {
+  const queued = http.queued, [lead] = queued.mentions;
+  const decision = {id:8, status:"open", question:"作战室《签名》：可以上线吗？", recommendation:"明天", answer:null, created_at:"2026-11-28T02:05:00Z"};
+  for (const [phase, close_reason, label] of [["active","completed","做完了"],["preparing","cancelled","筹备已撤销"]]) {
+    const f = harness(room({status:"closed", phase, close_reason, lead_session_id:lead.session_id,
+      board:[job("A1","assignment","done","核对签名"),job("A2","assignment","blocked","发布")],
+      messages:[{...queued, mentions:[{...lead, waiting:"busy"}]}], open_decisions:1, decisions:[decision]}), {mobile:true});
+    await tick();
+    const bar = f.node(".wr-panelbar").innerHTML, aside = f.node(".wr-plan-panel").innerHTML;
+    assert.match(bar, new RegExp(`进度 1/2 · ${label}`));
+    assert.doesNotMatch(bar, /等你定|卡住/);
+    assert.match(aside, new RegExp(`分工进度 <span>1/2 · ${label}`));
+    assert.doesNotMatch(aside, /等你定|需要你关注|可以上线吗/);
+    f.click("panel");
+    assert.equal(f.node("#wr-pane-title").innerHTML, "战况");
+    assert.doesNotMatch(f.node(".wr-pane-content").innerHTML, /<h2>战况/);
+    const feed = f.node(".wr-timeline").innerHTML;
+    assert.match(feed, /data-delivery="undelivered">未送达<\/small>/);
+    assert.match(feed, /wr-decision" data-state="closed"[^>]*><strong>随房间结束关闭<\/strong><p>作战室《签名》：可以上线吗？<\/p>/);
+    assert.doesNotMatch(feed, /待送达|领头还在忙|去拍板/);
+  }
+});
+
 test("分工行按目标展示真实执行的未读数，历史翻页和已读只使用本执行的序号", async () => {
   const {id, goal_id, read_seq, latest_seq, unread, session_id, round, generation, status} = http.history;
   const summary = {id, goal_id, read_seq, latest_seq, unread, session_id, round, generation, status};
@@ -405,6 +479,7 @@ test("分工行按目标展示真实执行的未读数，历史翻页和已读�
   }});
   await tick();
   assert.match(f.node(".wr-plan-panel").innerHTML, /切换网关[\s\S]*3 条未读/);
+  assert.doesNotMatch(f.node(".wr-plan-panel").innerHTML, /条执行记录未读/);
   f.click("history", {execution:id});
   await tick();
   const pane = f.node(".wr-pane-content");
@@ -453,6 +528,7 @@ test("历史可逐个进入，六种结束说法明确且列表本身没有逐�
   const f = harness(null,{directory:[room({id:7,phase:"active",legacy:true}),room({id:8}), ...reasons.map((close_reason,i) => room({id:10+i,status:"closed",close_reason}))]});
   await tick();
   const html = f.node(".wr-directory").innerHTML;
+  assert.match(html, /统一 v2 · 领头 工作区助手/);
   for (const label of ["做完了","你叫停了","领头放弃了","预算用完了","筹备已撤销","已退出旧房"]) assert(html.includes(label));
   assert.match(html, /data-wr-route="7"[\s\S]*data-wr-route="8"/);
   f.host.onclick({target:{closest:selector => selector === "[data-wr-route]" ? {dataset:{wrRoute:"8"}} : null}, preventDefault(){}});

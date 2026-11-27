@@ -143,8 +143,11 @@
     }
     function renderChoices(entries, draft, catalog, customFields) {
       return entries.map(([key, title, description]) => {
-        const inherit = key === "war_room" ? "" : `<label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] == null ? "checked" : ""}>${key === "member" ? "跟随各自 leader" : "跟随默认"}</label>`;
-        return `<section class="cs-card" data-ai-task="${key}" tabindex="-1"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div>${inherit}</div>${draft[key] == null ? `<p class="cs-follow">${key === 'member' ? '使用所属 leader 的载体、模型与思考强度；在组内设置时可覆盖。' : '使用默认大脑的载体、模型与思考强度。'}</p>` : selectionMarkup(key, draft[key], catalog, customFields)}</section>`;
+        const advisor = key === "creative" || key === "routine" || key === "difficult";
+        const defaultBrain = advisor ? "全局默认大脑" : "默认大脑";
+        const label = key === "member" ? "跟随各自 leader" : advisor ? "跟随全局默认大脑" : "跟随默认";
+        const inherit = key === "war_room" ? "" : `<label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] == null ? "checked" : ""}>${label}</label>`;
+        return `<section class="cs-card" data-ai-task="${key}" tabindex="-1"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div>${inherit}</div>${draft[key] == null ? `<p class="cs-follow">${key === 'member' ? '使用所属 leader 的载体、模型与思考强度；在组内设置时可覆盖。' : `使用${defaultBrain}的载体、模型与思考强度。`}</p>` : selectionMarkup(key, draft[key], catalog, customFields)}</section>`;
       }).join("");
     }
     function renderAI() {

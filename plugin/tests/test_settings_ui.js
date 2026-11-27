@@ -99,8 +99,10 @@ test("war room default and advisors share the settings section and save independ
   assert.match(content.innerHTML,/data-ai-task="war_room"[\s\S]*?作战室默认载体[\s\S]*?value="claude" selected/);
   for(const [key,label] of [["creative","创意顾问"],["routine","常规顾问"],["difficult","疑难顾问"]]){
     assert.match(content.innerHTML,new RegExp(`data-ai-task="${key}"[\\s\\S]*?<h3>${label}</h3>`));
-    assert.match(content.innerHTML,new RegExp(`data-ai-inherit="${key}" checked`));
+    assert.match(content.innerHTML,new RegExp(`data-ai-inherit="${key}" checked>跟随全局默认大脑</label>`));
   }
+  assert.equal((content.innerHTML.match(/使用全局默认大脑的载体、模型与思考强度/g) || []).length,3);
+  assert.match(content.innerHTML,/data-ai-inherit="assistant" checked>跟随默认<\/label>/);
   const change=target=>handlers.change({target});
   change({dataset:{aiKey:"war_room",aiField:"runtime"},value:"codex"});
   assert.match(content.innerHTML, /data-ai-key="war_room" data-ai-field="model"[\s\S]*?value="native-b"/);

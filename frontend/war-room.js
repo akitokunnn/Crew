@@ -6,7 +6,7 @@
     budget:"预算用完了", cancelled:"筹备已撤销", legacy:"已退出旧房"};
   const purposes = {creative:"创意", routine:"常规", difficult:"疑难"};
   const itemStatus = {todo:"待做", doing:"在做", blocked:"卡住", done:"完成"};
-  const deliveryStatus = {queued:"待送达", delivered:"已送达", replied:"已回复"};
+  const deliveryStatus = {queued:"待送达", undelivered:"未送达", delivered:"已送达", replied:"已回复"};
   const deliveryWait = {busy:"领头还在忙", stopped:"领头已停止", external:"领头在外部窗口", maintenance:"领头正在维护",
     liveness_unknown:"还不清楚领头是否在线", failed:"上次没送成"};
   const launchStep = {leader:"建好领队", invite:"邀请成员", goal:"建好任务", announce:"发布开打公告"};
@@ -20,7 +20,9 @@
   const atBottom = node => node.scrollHeight - node.clientHeight - node.scrollTop < 48;
   const isOpen = room => room.status === "open";
   const preparing = room => room.phase === "preparing";
+  const showsPlan = room => isOpen(room) && preparing(room) && !room.approved_version;
   const latest = room => room.plans.find(plan => plan.version === room.draft_version);
+  const selectedPlan = ctx => ctx.planVersion === null ? latest(ctx.room) : ctx.room.plans.find(plan => plan.version === ctx.planVersion);
   const previousPlan = (ctx, plan) => ctx.room.plans.find(item => item.version === plan.version - 1);
   const planRoot = ctx => ctx.panelDialog.open ? ctx.panelContent : ctx.aside;
   const pending = room => room.decisions.filter(item => item.status === "open");
@@ -46,7 +48,7 @@
     if (ctx.rooms === null) return '<p role="status">正在读取作战室…</p>';
     const live = ctx.rooms.filter(isOpen), history = ctx.rooms.filter(room => !isOpen(room));
     const rows = (rooms, label, empty) => `<section class="wr-room-group"><h2>${label}</h2>${rooms.length ? rooms.map(room =>
-      `<a class="wr-room-row" href="${roomLink(room.id)}" data-wr-route="${room.id}"><span><strong>${esc(room.title)}</strong><small>${esc(room.goal)}</small></span><span class="wr-room-state" data-state="${CrewGlobalRail.roomState([room])}">${esc(isOpen(room) ? CrewGlobalRail.roomLabel([room]) : ending[room.close_reason])}${room.unread ? ` · ${room.unread} 条未读` : ""}</span></a>`).join("") : `<p>${empty}</p>`}</section>`;
+      `<a class="wr-room-row" href="${roomLink(room.id)}" data-wr-route="${room.id}"><span><strong>${esc(room.title)}</strong><small>${esc(room.goal)} · 领头 ${esc(room.lead_name)}</small></span><span class="wr-room-state" data-state="${CrewGlobalRail.roomState([room])}">${esc(isOpen(room) ? CrewGlobalRail.roomLabel([room]) : ending[room.close_reason])}${room.unread ? ` · ${room.unread} 条未读` : ""}</span></a>`).join("") : `<p>${empty}</p>`}</section>`;
     return `<div class="wr-directory-head"><h1>作战室</h1>${live.length ? "" : ctx.state.leaders.length ? action("open", "开作战室") :
       `<a class="cx-btn" href="/assistant.html?project=${encodeURIComponent(ctx.state.project.name)}#opening=${encodeURIComponent(ctx.state.project.name)}">找助手开局</a>`}</div>` +
       rows(live, "进行中", "当前没有作战室") + rows(history, "历史", "还没有结束的作战室");
@@ -56,11 +58,12 @@
     const user = message.speaker_session_id === "user";
     const name = esc(message.speaker_name);
     const avatar = user ? `<span class="av round cx-av-user" style="--s:28px" aria-hidden="true">${name.slice(0, 1)}</span>` : ctx.avatar(message.speaker_name, 28, true);
-    const reply = !internal && isOpen(ctx.room) ? action("reply", "回复", `data-message="${message.id}"`) : "";
+    const reply = !user && !internal && isOpen(ctx.room) ? action("reply", "回复", `data-message="${message.id}"`) : "";
     const quote = message.reply ? `<blockquote class="wr-message-quote"><strong>${esc(message.reply.speaker_name)}</strong> ${esc(K.plain(message.reply.excerpt))}</blockquote>` : "";
     const mention = user && message.mentions.find(item => item.session_id === ctx.room.lead_session_id);
-    const waiting = mention?.delivery === "queued" && (deliveryWait[mention.waiting] ?? mention.waiting);
-    const delivery = deliveryStatus[mention?.delivery] ? `<small class="wr-delivery" data-delivery="${mention.delivery}">${deliveryStatus[mention.delivery]}${waiting ? ` · ${esc(waiting)}` : ""}</small>` : "";
+    const status = mention?.delivery === "queued" && !isOpen(ctx.room) ? "undelivered" : mention?.delivery;
+    const waiting = status === "queued" && (deliveryWait[mention.waiting] ?? mention.waiting);
+    const delivery = deliveryStatus[status] ? `<small class="wr-delivery" data-delivery="${status}">${deliveryStatus[status]}${waiting ? ` · ${esc(waiting)}` : ""}</small>` : "";
     return `<article class="cx-msg${user ? " cx-user" : ""}">${avatar}<div class="cx-body-col"><div class="cx-meta"><strong>${name}</strong><time datetime="${esc(message.created_at)}">${esc(K.clock(message.created_at))}</time>${reply}</div>${quote}<div class="${user ? "cx-bubble" : "cx-content"}"><div class="markdown cx-md">${CrewChat.renderMarkdown(message.body, message.speaker_session_id)}</div></div>${delivery}</div></article>`;
   }
 
@@ -88,9 +91,14 @@
   }
 
   function versionCard(ctx, plan) {
-    const changes = planChanges(ctx, plan);
-    return `<section class="wr-note wr-revision"><div><strong>${plan.version === 1 ? "计划书 v1" : `计划书 v${plan.version - 1} → v${plan.version}`}</strong><p>${esc(plan.summary)}</p></div>
-      ${changes.length ? `<ul>${changes.map(change => `<li>${action("jump", `<span>${change.type}</span> ${esc(change.label)}`, `data-version="${plan.version}" data-block="${esc(change.key ?? change.heading)}"`)}</li>`).join("")}</ul>` : action("jump", "看这一版", `data-version="${plan.version}"`)}</section>`;
+    const initial = plan.version === 1, changes = initial ? [] : planChanges(ctx, plan);
+    const expanded = ctx.expandedVersions.has(plan.version);
+    const chips = changes.slice(0, expanded ? changes.length : 6).map(change =>
+      `<li>${action("jump", `<span>${change.type}</span> ${esc(change.label)}`, `data-version="${plan.version}" data-block="${esc(change.key ?? change.heading)}"`)}</li>`).join("");
+    const more = changes.length > 6 ? `<li>${action("revision-more", expanded ? "收起" : `+${changes.length - 6} 项`,
+      `data-version="${plan.version}" aria-expanded="${expanded}"`)}</li>` : "";
+    return `<section class="wr-note wr-revision"><div><strong>${initial ? "计划书 v1" : `计划书 v${plan.version - 1} → v${plan.version}`}</strong><p>${esc(plan.summary)}</p></div>
+      ${chips ? `<ul>${chips}${more}</ul>` : action("jump", "看这一版", `data-version="${plan.version}"`)}</section>`;
   }
 
   function consultHTML(card) {
@@ -98,8 +106,16 @@
     const runtime = ({claude:"Claude Code", codex:"Codex"})[card.runtime] ?? card.runtime;
     const response = card.error ? `<p class="wr-error">${esc(card.error)}</p>` : card.response === null ?
       "<p>正在等答复</p>" : `<div class="crew-md-doc">${CrewReportMarkdown.render(card.response)}</div>`;
-    return `<details class="wr-note wr-consult" data-wr-card="consult-${esc(card.question_id)}"><summary><strong>${purposes[card.purpose]}顾问</strong><span>${esc([runtime, card.model, card.effort && `强度 ${card.effort}`, usage].filter(Boolean).join(" · "))}</span></summary>
+    const details = [runtime, card.model, card.effort && `强度 ${card.effort}`].filter(Boolean).join(" · ");
+    return `<details class="wr-note wr-consult" data-wr-card="consult-${esc(card.question_id)}"><summary><strong>${purposes[card.purpose]}顾问</strong><span>${esc(usage)}</span><small title="${esc(details)}">${esc(details)}</small></summary>
       <div class="wr-consult-body"><h3>问题</h3><div class="crew-md-doc">${CrewReportMarkdown.render(card.question)}</div><h3>${card.error ? "顾问调用失败" : "答复"}</h3>${response}</div></details>`;
+  }
+
+  function decisionHTML(room, decision) {
+    const state = decision.status === "open" && !isOpen(room) ? "closed" : decision.status;
+    const label = {open:"等你定", closed:"随房间结束关闭", answered:"已定", withdrawn:"已撤回"}[state];
+    return `<section class="wr-note wr-decision" data-state="${state}" id="wr-decision-${decision.id}"><strong>${label}</strong><p>${esc(decision.question)}</p>${decision.answer ? `<p>${esc(decision.answer)}</p>` : ""}
+      ${state === "open" ? `${decision.recommendation ? `<p>建议 ${esc(decision.recommendation)}</p>` : ""}<a class="cx-btn" data-act="view" data-view="all" href="#all">去拍板</a>` : ""}</section>`;
   }
 
   function timelineHTML(ctx, main) {
@@ -110,9 +126,7 @@
     for (const event of room.events) {
       if (event.kind === "approved") rows.push({at:event.at, render:() => `<p class="wr-note">计划 v${event.detail.version} 已批准，开始作战。</p>`});
     }
-    for (const decision of room.decisions) rows.push({at:decision.created_at, render:() =>
-      `<section class="wr-note wr-decision" id="wr-decision-${decision.id}"><strong>${decision.status === "open" ? "等你定" : decision.status === "answered" ? "已定" : "已撤回"}</strong><p>${esc(decision.question)}</p>${decision.answer ? `<p>${esc(decision.answer)}</p>` : ""}
-      ${decision.status === "open" && isOpen(room) ? `${decision.recommendation ? `<p>建议 ${esc(decision.recommendation)}</p>` : ""}<a class="cx-btn" data-act="view" data-view="all" href="#all">去工作区拍板</a>` : ""}</section>`});
+    for (const decision of room.decisions) rows.push({at:decision.created_at, render:() => decisionHTML(room, decision)});
     const unread = main.find(message => message.id > ctx.readFrom && message.speaker_session_id !== "user");
     if (unread && isOpen(room)) rows.push({at:unread.created_at, first:true, render:() => '<div class="cx-divider cx-unread"><span>新发言</span></div>'});
     rows.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || Number(Boolean(b.first)) - Number(Boolean(a.first)));
@@ -124,10 +138,10 @@
     return previous && previous.budget_tokens !== null ? "预算上限已取消" : "";
   }
 
-  function planHTML(ctx) {
+  function planHTML(ctx, inDialog = false) {
     const room = ctx.room;
-    const plan = ctx.planVersion === null ? latest(room) : room.plans.find(item => item.version === ctx.planVersion);
-    if (!plan) return '<div class="wr-panel-head"><h2>作战计划书</h2></div><p class="wr-panel-empty">等领头写第一版计划。</p>';
+    const plan = selectedPlan(ctx);
+    if (!plan) return `${inDialog ? "" : '<header class="wr-panel-head"><h2>作战计划书</h2></header>'}<p class="wr-panel-empty">等领头写第一版计划。</p>`;
     const currentPlan = plan.version === room.draft_version, changes = planChanges(ctx, plan);
     const draft = canApprove(room) && currentPlan;
     const questions = draft ? P.pending(plan) : [];
@@ -136,27 +150,28 @@
       : P.decisions(plan).filter(item => item.answer);
     const closedDecisions = [...decided, ...room.decisions.filter(item => item.status === "answered").map(item => ({title:item.question, answer:item.answer}))];
     const previous = previousPlan(ctx, plan), budget = planBudget(plan, previous);
-    return `<header class="wr-panel-head"><h2>作战计划书 <span>v${plan.version}</span></h2><div>${previous ? action("compare", ctx.compare ? "收起对比" : "对比上一版", `aria-pressed="${ctx.compare}"`) : ""}
-      ${!currentPlan ? action("latest", "回最新版") : ""}</div></header>
+    const tools = (previous ? action("compare", ctx.compare ? "收起对比" : "对比上一版", `aria-pressed="${ctx.compare}"`) : "") +
+      (!currentPlan ? action("latest", "回最新版") : "");
+    const heading = inDialog ? "" : `<h2>作战计划书 <span>v${plan.version}</span></h2>`;
+    return `${heading || tools ? `<header class="wr-panel-head">${heading}${tools ? `<div>${tools}</div>` : ""}</header>` : ""}
       <div class="wr-panel-scroll">
-        ${questions.length ? `<section class="wr-plan-decisions"><h3>等你定 <span>${questions.length}</span></h3>${questions.map(q => `<div class="wr-question"><strong>${esc(q.entry_id)}</strong><div>${esc(q.title)}<small>${q.recommendation ? `领头建议 ${esc(q.recommendation)}` : "还没有推荐值"}</small></div>${action("reference", "引用回答", `data-entry="${esc(q.entry_id)}"`)}</div>`).join("")}</section>` : ""}
+        ${questions.length ? `<section class="wr-plan-decisions"><h3>等你定 <span>${questions.length}</span></h3>${questions.map(q => `<div class="wr-question"><strong>${esc(q.entry_id)}</strong><div>${esc(q.title)}</div><small>${q.recommendation ? `领头建议 ${esc(q.recommendation)}` : "还没有推荐值"}</small>${action("reference", "引用回答", `data-entry="${esc(q.entry_id)}"`)}</div>`).join("")}</section>` : ""}
         ${closedDecisions.length ? `<details class="wr-plan-decided" data-wr-card="decided"><summary>✓ 已定 (${closedDecisions.length})</summary><ul>${closedDecisions.map(item => `<li>${esc(item.title)}${item.answer ? ` · ${esc(item.answer)}` : ""}</li>`).join("")}</ul></details>` : ""}
         ${ctx.compare && previous ? `<section class="wr-compare"><strong>v${previous.version} → v${plan.version}</strong><ul>${changes.map(change => `<li>${change.type} · ${esc(change.label)}</li>`).join("") || "<li>正文没有改动</li>"}</ul><details data-wr-card="previous-${previous.version}"><summary>展开上一版全文</summary><article class="crew-md-doc">${planData(ctx, previous).html}</article></details></section>` : ""}
         <article class="crew-md-doc wr-plan-document">${budget ? `<p class="wr-plan-budget" data-wr-block="budget">${budget}</p>` : ""}${planData(ctx, plan).html}</article></div>
       ${draft ? `<footer class="wr-plan-action"><p class="wr-error" role="alert">${esc(ctx.approvalError)}</p>${action("approve", preparing(room) ? "敲定，开打" : "敲定修订", `data-version="${plan.version}"`)}</footer>` : ""}`;
   }
 
-  function statusHTML(ctx, internal) {
+  function statusHTML(ctx, internal, inDialog = false) {
     const room = ctx.room, jobs = assignments(room), done = jobs.filter(item => item.status === "done").length;
     const blocked = room.board.filter(item => item.status === "blocked"), decisions = pending(room);
     const steps = room.events.filter(event => event.kind === "launch_step" && event.detail.version === room.approved_version);
-    return `<header class="wr-panel-head"><h2>战况</h2></header><div class="wr-panel-scroll wr-status-scroll">
+    return `${inDialog ? "" : '<header class="wr-panel-head"><h2>战况</h2></header>'}<div class="wr-panel-scroll wr-status-scroll">
       ${isOpen(room) && (blocked.length || decisions.length) ? `<section class="wr-attention"><h3>需要你关注</h3><ul>
       ${blocked.map(item => `<li>卡住了 · ${esc(item.title)}${item.note ? ` · ${esc(item.note)}` : ""}</li>`).join("")}
       ${decisions.map(item => `<li>${action("decision-jump", esc(item.question), `data-decision="${item.id}"`)}</li>`).join("")}</ul></section>` : ""}
-      <section class="wr-progress"><h3>分工进度 <span>${done}/${jobs.length}</span></h3><progress value="${done}" max="${Math.max(1, jobs.length)}" aria-label="分工完成进度"></progress>
-      ${jobs.length ? `<ul>${jobs.map(item => assignmentHTML(room, item)).join("")}</ul>` : '<p class="wr-muted">还没有分工</p>'}
-      ${room.unread_execution_events ? `<p class="wr-muted">${count(room.unread_execution_events)} 条执行记录未读</p>` : ""}</section>
+      <section class="wr-progress"><h3>分工进度 <span>${done}/${jobs.length}${isOpen(room) ? "" : ` · ${ending[room.close_reason]}`}</span></h3><progress value="${done}" max="${Math.max(1, jobs.length)}" aria-label="分工完成进度"></progress>
+      ${jobs.length ? `<ul>${jobs.map(item => assignmentHTML(room, item)).join("")}</ul>` : '<p class="wr-muted">还没有分工</p>'}</section>
       ${room.budget || room.usage_pending ? `<section class="wr-budget"><h3>预算</h3>
         ${room.budget ? `<p>已用 ${count(room.budget.spent)} / ${count(room.budget.tokens)} tokens</p>` : "<p>未设上限</p>"}
         ${room.usage_pending ? `<p>另有 ${count(room.usage_pending)} 次用量待确认</p>` : ""}</section>` : ""}
@@ -196,18 +211,15 @@
       ${h.loading ? '<p class="wr-muted" role="status">正在读取执行记录…</p>' : ""}</section>`;
   }
 
-  function panelHTML(ctx) {
-    return preparing(ctx.room) && !ctx.room.approved_version ? planHTML(ctx) : statusHTML(ctx, conversation(ctx.room).internal);
-  }
-
   function summary(ctx) {
     const room = ctx.room;
-    if (preparing(room)) {
+    if (showsPlan(room)) {
       const plan = latest(room);
       const n = plan ? P.pending(plan).length : 0;
       return plan ? `计划书 v${plan.version}${n ? ` · ${n} 项等你定` : ""}` : "等第一版计划书";
     }
     const items = assignments(room), done = items.filter(item => item.status === "done").length;
+    if (!isOpen(room)) return `进度 ${done}/${items.length} · ${ending[room.close_reason]}`;
     const blocked = room.board.filter(item => item.status === "blocked").length, waiting = room.open_decisions;
     return `进度 ${done}/${items.length}${blocked ? ` · ${blocked} 项卡住` : ""}${waiting ? ` · ${waiting} 项等你定` : ""}`;
   }
@@ -235,18 +247,18 @@
   function render(ctx, follow = false) {
     if (ctx.id === 0) { put(ctx.list, roomListHTML(ctx)); return; }
     if (!ctx.room) return;
-    const {room} = ctx, {main} = conversation(room), open = isOpen(room);
-    ctx.host.dataset.phase = preparing(room) ? "preparing" : "active";
+    const {room} = ctx, {main, internal} = conversation(room), open = isOpen(room), showPlan = showsPlan(room);
+    ctx.host.dataset.phase = showPlan ? "preparing" : "active";
     ctx.host.dataset.collapsed = String(ctx.collapsed);
     put(ctx.head, headerHTML(ctx));
-    put(ctx.bar, `${action("panel", `<span>${esc(summary(ctx))}</span><span>${preparing(room) ? "看计划书" : "展开战况"} ›</span>`)}`);
-    put(ctx.toggle, preparing(room) ? "" : action("collapse", ctx.collapsed ? "展开战况" : "收起战况", `aria-expanded="${!ctx.collapsed}"`));
+    put(ctx.bar, action("panel", `<span>${esc(summary(ctx))}</span><span>${showPlan ? "看计划书" : "展开战况"} ›</span>`));
+    put(ctx.toggle, showPlan ? "" : action("collapse", ctx.collapsed ? "展开战况" : "收起战况", `aria-expanded="${!ctx.collapsed}"`));
     const b = room.budget;
     ctx.notice.hidden = !open && !room.summary || open && !b?.paused_at;
     put(ctx.notice, open && b?.paused_at ? `<div><strong>预算用完了，已暂停</strong><small>已用 ${count(b.spent)} / ${count(b.tokens)} tokens</small></div><div>${action("end_budget","结束")}${action("budget","追加预算")}</div>` : room.summary ? `<p>${esc(room.summary)}</p>` : "");
     put(ctx.feed, timelineHTML(ctx, main));
     if (follow) ctx.scroll.scrollTop = ctx.scroll.scrollHeight;
-    put(ctx.aside, panelHTML(ctx));
+    put(ctx.aside, showPlan ? planHTML(ctx) : statusHTML(ctx, internal));
     renderPanelDialog(ctx);
     applyPlanHighlights(ctx);
     ctx.composer.hidden = !open;
@@ -261,19 +273,21 @@
     const dialog = ctx.panelDialog;
     if (!dialog.open) return;
     const type = ctx.panelType;
-    const panel = type === "plan" || type === "panel";
-    const title = ({internal:"内部交流", members:"参战成员", plan:"计划书", panel:"作战室详情", history:"执行记录"})[type];
+    const showPlan = type === "plan" || (type === "panel" && showsPlan(ctx.room));
+    const plan = showPlan && selectedPlan(ctx);
+    const title = showPlan ? `作战计划书${plan ? ` v${plan.version}` : ""}` :
+      ({internal:"内部交流", members:"参战成员", panel:"战况", history:"执行记录"})[type];
     const {internal} = conversation(ctx.room);
-    const body = type === "plan" ? planHTML(ctx) : type === "panel" ? panelHTML(ctx) :
+    const body = showPlan ? planHTML(ctx, true) : type === "panel" ? statusHTML(ctx, internal, true) :
       type === "members" ? membersHTML(ctx) : type === "history" ? historyHTML(ctx) :
         internal.map(message => messageHTML(ctx, message, true)).join("") || '<p class="wr-panel-empty">还没有内部交流</p>';
     put(ctx.panelTitle, esc(title));
     put(ctx.panelContent, body);
-    dialog.classList.toggle("wr-sheet-drawer", !panel);
+    dialog.classList.toggle("wr-sheet-drawer", !showPlan && type !== "panel");
   }
 
   function applyPlanHighlights(ctx) {
-    const plan = ctx.planVersion === null ? latest(ctx.room) : ctx.room.plans.find(item => item.version === ctx.planVersion);
+    const plan = selectedPlan(ctx);
     if (!plan) return;
     const marks = plan.version > ctx.dismissedVersion ? new Map(planChanges(ctx, plan).filter(change => change.type !== "删").map(change => [change.key, change.type])) : new Map();
     for (const element of ctx.host.querySelectorAll(".wr-plan-document [data-wr-block]")) {
@@ -316,7 +330,7 @@
   function openAnchor(ctx, version, block) {
     ctx.planVersion = block === undefined ? version : null;
     ctx.compare = false;
-    if (!preparing(ctx.room) || ctx.room.approved_version || narrow()) showPanel(ctx, "plan");
+    if (!showsPlan(ctx.room) || narrow()) showPanel(ctx, "plan");
     else render(ctx);
     if (block === undefined) return;
 
@@ -568,6 +582,14 @@
     case "latest": ctx.planVersion = null; ctx.compare = false; render(ctx); break;
     case "compare": ctx.compare = !ctx.compare; render(ctx); break;
     case "jump": openAnchor(ctx, Number(version), block); break;
+    case "revision-more": {
+      const value = Number(version);
+      if (ctx.expandedVersions.has(value)) ctx.expandedVersions.delete(value);
+      else ctx.expandedVersions.add(value);
+      put(ctx.feed, timelineHTML(ctx, conversation(ctx.room).main));
+      ctx.feed.querySelector(`[data-wr="revision-more"][data-version="${value}"]`).focus({preventScroll:true});
+      break;
+    }
     case "reference": reference(ctx, `关于 ${entry}：`); break;
     case "reply":
       ctx.replyTo = ctx.room.messages.find(item => item.id === Number(message)); render(ctx); ctx.input.focus(); break;
@@ -598,7 +620,7 @@
   function mount(options) {
     unmount();
     const ctx = {...options, room:null, readSeq:0, readId:0, readFrom:0, readError:"", approvalError:"",
-      documents:new Map(), planVersion:null, dismissedVersion:0, compare:false, collapsed:false,
+      documents:new Map(), expandedVersions:new Set(), planVersion:null, dismissedVersion:0, compare:false, collapsed:false,
       writing:false, reading:false, sending:false, replyTo:null};
     active = ctx;
     const host = ctx.host;
@@ -623,7 +645,7 @@
     ctx.panelDialog.onclose = () => {
       ctx.panelToast.replaceChildren();
       ctx.history = null;
-      if (ctx.panelType === "panel" && !preparing(ctx.room)) ctx.planVersion = null;
+      if (ctx.panelType === "panel" && !showsPlan(ctx.room)) ctx.planVersion = null;
     };
     if (ctx.id === 0) { render(ctx); return; }
     ctx.scroll.onscroll = () => void read(ctx);
