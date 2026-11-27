@@ -3,7 +3,7 @@ from contextlib import closing
 from pathlib import Path
 
 from .. import board, git_admin, git_overview, git_view, store, vscode_sessions
-from .. import session_presence
+from .. import session_presence, snapshot_values
 
 
 class GitMixin:
@@ -28,7 +28,7 @@ class GitMixin:
             with self.agents_lock:
                 agents, error = self.agents, self.agents_error
             agents = session_presence.external_agents(self.chat, agents)
-            conversations, _ = self._conversation_cards(conn, name, agents, error)
+            conversations, _ = self._conversation_cards(conn, name, agents, error, snapshot_values.visible_goals(conn, name))
         result = {"enabled": config is not None, "config": config,
                   "assistant": conversations['git_assistant'],
                   "requests": board.titled_requests(requests, lambda sid: vscode_sessions.session_title(self.claude_root, sid)),

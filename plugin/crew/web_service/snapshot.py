@@ -24,7 +24,8 @@ class SnapshotMixin:
         if kind == 'conversations':
             with self.agents_lock:
                 agents, error = self.agents, self.agents_error
-            cards, _ = self._conversation_cards(conn, project, session_presence.external_agents(self.chat, agents), error)
+            agents = session_presence.external_agents(self.chat, agents)
+            cards, _ = self._conversation_cards(conn, project, agents, error, snapshot_values.visible_goals(conn, project))
             return cards
         if kind == 'channel_digest':
             return self.channel_digest.state(project)
@@ -33,7 +34,7 @@ class SnapshotMixin:
         if kind == 'runtimes':
             return self.runtime_catalog.snapshot()
         if kind == 'notification':
-            return self.notification_status()
+            return self.connections.notification_status(conn)
         if kind == 'scanner':
             with self.agents_lock:
                 return {'agents_error': self.agents_error, 'vscode_error': self.vscode_error}
@@ -59,7 +60,7 @@ class SnapshotMixin:
                       'models': models.MODELS, 'efforts': models.EFFORTS,
                       'runtimes': self.runtime_catalog.snapshot(),
                       'ai': snapshot_values.ai(conn, None, 'ai'),
-                      'now': self.now().isoformat(), 'agents_error': error, 'notification': self.notification_status(),
+                      'now': self.now().isoformat(), 'agents_error': error, 'notification': self.connections.notification_status(conn),
                       'leaders': [], 'members': [], 'decisions': [], 'attention': [], 'git_assistant': None, 'git_branches': None, 'domains': None,
                       'todos': [], 'todo_count': 0, 'goals': [], 'native_approvals': [],
                       'candidates': {'running': [], 'others': []},
@@ -120,9 +121,8 @@ class SnapshotMixin:
             return self.title_cache.get(native_id, {}).get('context')
 
     def _project_conversations(self, conn, name, agents, error):
-        visible_leaders = snapshot_values.visible_leaders(conn, name)
-        result = {'goals': [goal_api.card(conn, goal) for goal in goals.list_goals(conn, name)
-                            if goal['leader_session_id'] in visible_leaders],
+        visible_goals = snapshot_values.visible_goals(conn, name)
+        result = {'goals': [goal_api.card(conn, goal) for goal in visible_goals],
                   'channel': {**snapshot_values.channel(conn, name, name), **self.channel_digest.state(name)},
                   'project': snapshot_values.workspace(conn, name, name)}
         result['todos'] = todo.list(conn, name)
@@ -130,17 +130,15 @@ class SnapshotMixin:
         result['decisions'] = [snapshot_values.decision(conn, name, decision['id'])
                                for decision in board.decisions(conn, name, all=True) if decision['status'] == 'open']
         result['domains'] = snapshot_values.domains(conn, name, name)
-        cards, histories = self._conversation_cards(conn, name, agents, error)
+        cards, histories = self._conversation_cards(conn, name, agents, error, visible_goals)
         result.update(cards)
         return result, histories
 
-    def _conversation_cards(self, conn, name, agents, error):
+    def _conversation_cards(self, conn, name, agents, error, visible_goals):
         """The `conversations` fields (CONVERSATION_FIELDS) of an open workspace, and the journals read for them."""
         general_present = board.live_sessions(agents)
         result = {'leaders': [], 'members': [], 'git_assistant': None}
-        visible_leaders = snapshot_values.visible_leaders(conn, name)
-        coordinating = [goal for goal in goals.list_goals(conn, name) if goal['leader_session_id'] in visible_leaders
-                        and goal['status'] in ('running', 'pausing', 'paused', 'waiting_user')]
+        coordinating = [goal for goal in visible_goals if goal['status'] in ('running', 'pausing', 'paused', 'waiting_user')]
         status, present, agents = session_presence.project_status(self, conn, name, agents, error)
         git_config = board.git_config(conn, name)
         open_groups = {group['name'] for group in status['groups'] if group['closed_at'] is None}
