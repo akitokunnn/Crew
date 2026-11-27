@@ -578,7 +578,7 @@ test("starting a queued goal retains the leader transcript, stream, draft and re
   vm.runInContext(appSource.replace("  setup();\n})();",'window.appFixture={renderChat,configure(value,client,request){state=value;goals=client;api=request;view="chat";leaderId="leader";goalId="goal";}};\n})();'),h.sandbox);
   h.sandbox.CrewReader={pane:()=>null,refresh(){},close:()=>false,escape:()=>false};
   vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/goal-ui.js"),"utf8"),h.sandbox);
-  const goalUI=h.sandbox.CrewGoals.create({project:"fixture",state:()=>state,api,avatar:()=>"",ago:()=>"",toast(){},onChange:()=>h.sandbox.appFixture.renderChat(),refreshState:async()=>h.sandbox.appFixture.renderChat()});
+  const goalUI=h.sandbox.CrewGoals.create({project:"fixture",state:()=>state,api,avatar:()=>"",ago:()=>"",toast(){},decisionCards:()=>"",onChange:()=>h.sandbox.appFixture.renderChat(),refreshState:async()=>h.sandbox.appFixture.renderChat()});
   h.sandbox.appFixture.configure(state,goalUI,api);h.sandbox.appFixture.renderChat();await tick();
   assert.equal(h.connections.length,1);const emptyStream=h.connections[0],queuedHost=nodes.get("chat-host");
   queuedHost.querySelector("textarea").value="目标开始后仍要保留的草稿";queuedHost.querySelector("textarea").oninput();

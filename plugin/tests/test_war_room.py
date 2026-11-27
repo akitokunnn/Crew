@@ -337,6 +337,9 @@ class AssistantLeadTests(WarRoomFixture):
         self.assertIn("「alpha」点名你", notes[0])
         self.assertIn("回复了你的作战室发言 #%d" % answer["id"], notes[1])
         self.assertIn("war_room.post", notes[1])
+        # Scenario 8 rerun: the leading assistant ruled a member conflict itself, then asked the user in its own chat.
+        for note in notes:
+            self.assertIn("成员报来要用户定的分歧，当场用 war_room.decide 发拍板卡，不自己定案、不在对话里问用户", note)
 
 
 class BudgetTests(WarRoomFixture):

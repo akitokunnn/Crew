@@ -1548,6 +1548,7 @@
     if (window.CrewGoals && project !== null) goals = window.CrewGoals.create({project, api, toast, state:() => state,
       avatar:av, ago, refreshState:() => loadState(true), onChange:() => { if (state && view === "chat") renderChat(); else if (state && view === "all") renderAll(); }, onReturn:() => setTasksOpen(true),
       renderDocuments:(items,id) => documents?.taskCards(items,id),
+      decisionCards:id => state.decisions.filter(item => String(item.goal_id) === String(id)).map(decisionCard).join(""),
       execChat:() => leaderTaskChat,
       onExecChat:id => { leaderTaskChat = String(leaderTaskChat) === String(id) ? null : id; CrewChat.setTask(null); renderChat(); if (leaderTaskChat !== null && narrowLayout()) setTasksOpen(false); },
       onMemberExec:(id, goal) => { const item = member(id); if (!item) { toast("这个执行已经收起，记录在会话库里。"); return; } memberScopes.set(item.session_id, goal); if (cardId !== null) closeCard(); CrewChat.setTask(null); navigate("chat", item.leader_session_id, item.session_id, null); if (narrowLayout()) setTasksOpen(false); },

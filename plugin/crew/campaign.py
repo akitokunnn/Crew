@@ -4,11 +4,11 @@
 confirmed that summary once (docs/ASSISTANT_CAMPAIGN_DESIGN.md §1, ONBOARDING_AND_TEAMWORK_DESIGN.md §4.2–4.4).
 Structure is written in one board batch, so the whole opening is one architecture version and rolls back as one.
 """
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from . import board, domains, models, runtimes, usage, war_room
 
-NAME_LIMIT, BRIEF_LIMIT, NOTE_LIMIT = 20, 4000, 200
+NAME_LIMIT, BRIEF_LIMIT, NOTE_LIMIT, OWNS_LIMIT = 20, 4000, 200, 200
 
 
 def _text(value, what, limit):
@@ -24,10 +24,56 @@ def _list(plan, key):
     return value
 
 
+def _owns(value):
+    """The files or folders one leader alone changes, relative to the workspace root, in a stable written form."""
+    if not isinstance(value, list) or not value:
+        raise ValueError('owns 要是非空的路径列表')
+    paths = []
+    for raw in value:
+        if not isinstance(raw, str) or not raw.strip() or len(raw.strip()) > OWNS_LIMIT:
+            raise ValueError('owns 的每一项要是 1 到 %d 字的路径' % OWNS_LIMIT)
+        text = raw.strip().replace('\\', '/')
+        if PureWindowsPath(text).is_absolute() or PureWindowsPath(text).drive or text.startswith('/'):
+            raise ValueError('owns 写相对工作区根目录的路径：%s' % raw)
+        parts = [part for part in PurePosixPath(text).parts if part != '.']
+        if not parts or '..' in parts:
+            raise ValueError('owns 要指到工作区里的具体文件或目录，不能是整个工作区或上级目录：%s' % raw)
+        path = '/'.join(parts) + ('/' if text.endswith('/') else '')
+        if path in paths:
+            raise ValueError('owns 里 %s 写了两次' % path)
+        paths.append(path)
+    return paths
+
+
+def _overlaps(a, b):
+    a, b = a.rstrip('/'), b.rstrip('/')
+    return a == b or a.startswith(b + '/') or b.startswith(a + '/')
+
+
+def boundary(leader, leaders):
+    """The file split a leader starts with: its own paths, the others' paths, and how to cross the line."""
+    others = '；'.join('「%s」负责 %s' % (other['name'], '、'.join(other['owns']))
+                      for other in leaders if other is not leader and other['owns'])
+    return ('文件分工（开局方案定的，leader 共用工作区目录时各管各的文件）：你负责 %s%s。只改自己负责的；要改别人负责的文件，'
+            '先 @对方商量，由对方改或对方同意后再改；谁都没列的文件，改之前先说一声。' % (
+                '、'.join(leader['owns']), '；' + others if others else ''))
+
+
+def room_rule(room, session_id):
+    """How a first task reaches its campaign room when it runs into another member; the lead sends the card itself."""
+    if session_id == room['lead_session_id']:
+        return ('这个任务属于作战室 #%d《%s》，你是牵头：和成员冲突、要用户定的事，在房里（room=%d）点名对方核对清楚后，'
+                '马上用 `war_room_decide` 发拍板卡；不在本任务里先问用户、不自己 `decision_ask`。' % (
+                    room['id'], room['title'], room['id']))
+    return ('这个任务属于作战室 #%d《%s》（牵头：%s）：和别的成员冲突、要用户定的事，当场用 `war_room_post`（room=%d）'
+            '点名牵头和对方，写清分歧、方案和推荐，由牵头发拍板卡；不在本任务里先问用户、不自己 `decision_ask`。' % (
+                room['id'], room['title'], room['lead_name'], room['id']))
+
+
 def preview(conn, project, plan, home):
     """What the plan creates, what it may cost, and every problem in it; nothing is written."""
     board.project(conn, project)
-    errors, parts, leaders, tasks = [], [], [], []
+    errors, parts, leaders, tasks, unsplit = [], [], [], [], []
 
     def check(label, fn):
         try:
@@ -66,8 +112,24 @@ def preview(conn, project, plan, home):
         if part is not None and part not in known:
             errors.append('%s：领域 %s 不存在' % (label, part))
         brief = check(label, lambda: _text(item.get('brief'), '职责说明', BRIEF_LIMIT))
+        if item.get('owns') is None:
+            unsplit.append(name)
+            owns = None
+        else:
+            owns = check(label, lambda: _owns(item.get('owns')))
         leaders.append({'name': name, 'runtime': runtime, 'model': model, 'effort': effort, 'part': part,
-                        'part_name': known.get(part), 'lead': item.get('lead') is True, 'brief': brief})
+                        'part_name': known.get(part), 'lead': item.get('lead') is True, 'brief': brief, 'owns': owns})
+    if len(leaders) > 1:
+        # New leaders all work in the workspace root: without a written split one edits another's files.
+        for name in unsplit:
+            errors.append('「%s」：几位 leader 共用工作区目录，要用 owns 写明它负责的文件或目录' % name)
+        for index, leader in enumerate(leaders):
+            for other in leaders[index + 1:]:
+                for mine in leader['owns'] or ():
+                    for theirs in other['owns'] or ():
+                        if _overlaps(mine, theirs):
+                            errors.append('「%s」的 %s 和「%s」的 %s 重叠：一个文件只归一位 leader' % (
+                                leader['name'], mine, other['name'], theirs))
     for index, item in enumerate(_list(plan, 'goals'), 1):
         label = '第 %d 个首批任务' % index
         if item.get('leader') not in names:
@@ -147,9 +209,12 @@ def launch(service, conn, project, plan, board_version, actor, now):
         return {'version': version, 'started': False, 'to_start': checked['leaders'], 'goals': checked['goals']}
     created = []
     for leader in checked['leaders']:
-        session = service.chat.start(conn, project, leader['name'], leader['brief'], role='leader', now=now,
+        split = None if leader['owns'] is None else boundary(leader, checked['leaders'])
+        session = service.chat.start(conn, project, leader['name'],
+                                     leader['brief'] if split is None else leader['brief'] + '\n\n' + split,
+                                     role='leader', now=now,
                                      runtime=leader['runtime'], model=leader['model'], effort=leader['effort'])
-        created.append({**leader, 'session_id': session['session_id']})
+        created.append({**leader, 'session_id': session['session_id'], 'boundary': split})
     for leader in created:
         if leader['part'] is not None:
             ops.append({'op': 'assign', 'session_id': leader['session_id'], 'domain_id': leader['part']})
@@ -157,21 +222,28 @@ def launch(service, conn, project, plan, board_version, actor, now):
                 ops.append({'op': 'lead', 'session_id': leader['session_id'], 'lead': True})
     with board.transaction(conn):
         version = domains.apply_ops(conn, project, ops, None, now, source='restructure', note=note)['version'] if ops else None
-    by_name = {leader['name']: leader['session_id'] for leader in created}
-    control = service.chat.goal_controller
-    tasks = []
-    for task in checked['goals']:
-        result = control.agent_action('create', {'project': project, 'leader_session_id': by_name[task['leader']],
-                                                 'title': task['title'], 'request': task['request'],
-                                                 'acceptance': task['acceptance'], 'start': True}, board.HUMAN)
-        goal = result['goal'] if 'goal' in result else result
-        tasks.append({'id': goal['id'], 'title': goal['title'], 'leader': task['leader']})
     room = None
     if checked['room'] is not None:
         spec = checked['room']
         room = war_room.start(conn, project, actor, spec['title'], spec['goal'], [leader['name'] for leader in created],
                               lead=None if actor != board.HUMAN else created[0]['name'],
                               budget_tokens=spec.get('budget_tokens'), now=now)
+    by_name = {leader['name']: leader for leader in created}
+    control = service.chat.goal_controller
+    tasks = []
+    for task in checked['goals']:
+        owner = by_name[task['leader']]
+        # The first task's execution is a separate conversation from the opening brief, and room posts reach only the
+        # leader's own conversation: the split and the room it works in ride on the task itself.
+        constraints = [] if owner['boundary'] is None else [owner['boundary']]
+        if room is not None:
+            constraints.append(room_rule(room, owner['session_id']))
+        result = control.agent_action('create', {'project': project, 'leader_session_id': owner['session_id'],
+                                                 'title': task['title'], 'request': task['request'],
+                                                 'acceptance': task['acceptance'], 'constraints': constraints,
+                                                 'start': True}, board.HUMAN)
+        goal = result['goal'] if 'goal' in result else result
+        tasks.append({'id': goal['id'], 'title': goal['title'], 'leader': task['leader']})
     return {'version': version, 'started': True,
             'leaders': [{'name': leader['name'], 'session_id': leader['session_id']} for leader in created],
             'goals': tasks, 'room': None if room is None else {'id': room['id'], 'title': room['title']}}

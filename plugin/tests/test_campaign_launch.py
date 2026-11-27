@@ -6,6 +6,7 @@ from unittest import mock
 
 from crew import board, domain_versions, goals, personal, store, war_room, web
 from crew.ops import confirmations, executor
+from crew.ops.errors import OpError
 from ops_helpers import ai_call
 from test_shell import NOW, PLUGIN, ShellFixture
 
@@ -14,8 +15,9 @@ def plan(**extra):
     value = {
         'note': '两位 leader 起盘登录模块',
         'parts': [{'ref': 'login01', 'name': '登录', 'parent': None}],
-        'leaders': [{'name': '后端', 'brief': '负责登录接口与签名校验', 'runtime': 'claude', 'part': 'login01', 'lead': True},
-                    {'name': '页面', 'brief': '负责登录页与调用', 'runtime': 'claude', 'part': 'login01'}],
+        'leaders': [{'name': '后端', 'brief': '负责登录接口与签名校验', 'runtime': 'claude', 'part': 'login01', 'lead': True,
+                     'owns': ['server/', 'data/users.json']},
+                    {'name': '页面', 'brief': '负责登录页与调用', 'runtime': 'claude', 'part': 'login01', 'owns': ['web/']}],
         'goals': [{'leader': '后端', 'title': '登录接口', 'request': '实现 POST /login', 'acceptance': ['接口返回 token']},
                   {'leader': '页面', 'title': '登录页', 'request': '做登录表单并调接口', 'acceptance': ['能登录成功']}],
         'room': {'title': '登录起盘', 'goal': '两端联调通过登录', 'budget_tokens': 200000},
@@ -81,6 +83,65 @@ class CampaignTests(ShellFixture, unittest.TestCase):
         with self.assertRaises(board.BoardError):
             self.call('campaign.launch', {**plan(), 'board_version': checked['board_version']})
 
+    def test_leaders_sharing_the_workspace_must_split_its_files(self):
+        # Scenario 8: two new leaders in one folder, no written split, and the front end rewrote the back end's data.
+        def leaders(first, second):
+            back = {key: value for key, value in plan()['leaders'][0].items() if key != 'owns'}
+            return [back if first is None else {**back, 'owns': first}, {**plan()['leaders'][1], 'owns': second}]
+        missing = self.call('campaign.preview', plan(leaders=leaders(None, ['web/'])))
+        self.assertEqual(missing['errors'], ['「后端」：几位 leader 共用工作区目录，要用 owns 写明它负责的文件或目录'])
+        overlap = self.call('campaign.preview', plan(leaders=leaders(['data/'], ['web\\', './data/products.json'])))
+        self.assertEqual(overlap['errors'], ['「后端」的 data/ 和「页面」的 data/products.json 重叠：一个文件只归一位 leader'])
+        for bad, fragment in ((['/etc/x'], '相对工作区根目录'), (['C:\\x'], '相对工作区根目录'), (['../x'], '上级目录'),
+                              (['.'], '整个工作区'), (['a', './a'], '写了两次')):
+            with self.subTest(bad=bad):
+                value = self.call('campaign.preview', plan(leaders=leaders(bad, ['web/'])))
+                self.assertFalse(value['ok'])
+                self.assertEqual(len(value['errors']), 1, value['errors'])
+                self.assertIn(fragment, value['errors'][0])
+        for empty in ([], [' '], None):
+            with self.subTest(empty=empty), self.assertRaises(OpError):
+                self.call('campaign.preview', plan(leaders=[{**plan()['leaders'][0], 'owns': empty}, plan()['leaders'][1]]))
+        clean = self.call('campaign.preview', plan(leaders=leaders(['server/', 'data\\users.json'], ['web/', 'data/products.json'])))
+        self.assertTrue(clean['ok'], clean['errors'])
+        self.assertEqual([leader['owns'] for leader in clean['leaders']], [['server/', 'data/users.json'], ['web/', 'data/products.json']])
+        # One new leader has nobody to split with; a split it is given is still carried.
+        alone = {key: value for key, value in plan()['leaders'][0].items() if key != 'owns'}
+        self.assertTrue(self.call('campaign.preview', plan(leaders=[alone], goals=plan()['goals'][:1], room=None))['ok'])
+
+    def test_launch_hands_each_leader_its_file_split_in_the_opening_and_the_first_task(self):
+        checked = self.call('campaign.preview', plan())
+        with mock.patch.object(self.service.chat, 'start', wraps=self.service.chat.start) as start:
+            result = self.call('campaign.launch', {**plan(), 'board_version': checked['board_version']})
+        briefs = {call.args[2]: call.args[3] for call in start.call_args_list}
+        self.assertTrue(briefs['后端'].startswith('负责登录接口与签名校验\n\n文件分工'))
+        self.assertIn('你负责 server/、data/users.json；「页面」负责 web/。只改自己负责的', briefs['后端'])
+        self.assertIn('你负责 web/；「后端」负责 server/、data/users.json。', briefs['页面'])
+        room = result['room']['id']
+        rules = {}
+        for task in result['goals']:
+            constraints = goals.requirements(self.conn, task['id'])['constraints']
+            self.assertEqual(constraints[0], briefs[task['leader']].split('\n\n', 1)[1])
+            self.assertEqual(len(constraints), 2)
+            rules[task['leader']] = constraints[1]
+        # Room posts reach the leader's own conversation, not the task's execution: the task names its room. The user
+        # opened this campaign, so the first leader leads the room and sends the card itself.
+        self.assertEqual(rules['页面'], '这个任务属于作战室 #%d《登录起盘》（牵头：后端）：和别的成员冲突、要用户定的事，'
+                                        '当场用 `war_room_post`（room=%d）点名牵头和对方，写清分歧、方案和推荐，由牵头发拍板卡；'
+                                        '不在本任务里先问用户、不自己 `decision_ask`。' % (room, room))
+        self.assertEqual(rules['后端'], '这个任务属于作战室 #%d《登录起盘》，你是牵头：和成员冲突、要用户定的事，在房里（room=%d）'
+                                        '点名对方核对清楚后，马上用 `war_room_decide` 发拍板卡；不在本任务里先问用户、'
+                                        '不自己 `decision_ask`。' % (room, room))
+
+    def test_without_a_room_the_first_task_carries_only_the_file_split(self):
+        checked = self.call('campaign.preview', plan(room=None))
+        result = self.call('campaign.launch', {**plan(room=None), 'board_version': checked['board_version']})
+        self.assertIsNone(result['room'])
+        for task in result['goals']:
+            constraints = goals.requirements(self.conn, task['id'])['constraints']
+            self.assertEqual(len(constraints), 1)
+            self.assertTrue(constraints[0].startswith('文件分工'))
+
     def test_structure_only_starts_no_model(self):
         checked = self.call('campaign.preview', plan(start=False, room=None))
         before = len(self.processes)
@@ -103,6 +164,11 @@ class CampaignTests(ShellFixture, unittest.TestCase):
         self.assertEqual(done['status'], 'approved', done['error'])
         room = war_room.get(self.conn, done['result']['room']['id'])
         self.assertEqual((room['lead_session_id'], room['lead_name']), (assistant, '助手'))
+        # Both leaders are members of the assistant's room: each first task sends conflicts to the room, not the user.
+        for task in done['result']['goals']:
+            rule = goals.requirements(self.conn, task['id'])['constraints'][1]
+            self.assertIn('（牵头：助手）', rule)
+            self.assertIn('`war_room_post`（room=%d）点名牵头和对方' % room['id'], rule)
 
 
     def test_the_assistant_leads_its_own_room_without_a_fresh_user_message_but_no_other(self):

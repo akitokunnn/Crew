@@ -88,6 +88,9 @@ route('settings.save', '保存全局设置', 'POST', '/api/settings', admin.post
           }, ['muted', 'volume', 'leader', 'assistant', 'delivery'], description='完整的提示音设置，ai、execution、sounds 至少提供一项', open_fields=False),
       }))
 route('runtimes.list', '列出可用载体与模型', 'GET', '/api/runtimes', admin.get_runtimes, access='read',
+      description='列出可用载体与模型。每个载体的 models_source 说明模型清单从哪来：discovered 是载体自己报告的完整清单（Codex model/list），'
+                  '不在清单里的模型不能用；preset 是 Crew 预置的常用模型（Claude Code 没有模型清单接口），'
+                  '清单外的 Claude 模型 ID 也能直接用，不在清单里不代表启动会失败。',
       params=_object({
           'refresh': _field('boolean', '是否强制重新发现载体与模型，默认否'),
       }))

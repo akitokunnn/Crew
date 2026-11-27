@@ -269,7 +269,8 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
                 notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now)
             else:
                 # The assistant leading this room: the same notice queue, delivered by the same loop.
-                text += "\n\n（你是作战室牵头：在房里接话用 war_room.post，reply_to=%d）" % message_id
+                text += ("\n\n（你是作战室牵头：在房里接话用 war_room.post，reply_to=%d；成员报来要用户定的分歧，"
+                         "当场用 war_room.decide 发拍板卡，不自己定案、不在对话里问用户）" % message_id)
                 notice_id = conn.execute(
                     "INSERT INTO leader_notices(project,session_id,source,text,created_at,wake) VALUES(?,?,?,?,?,1)",
                     (project_name, target["session_id"], source, text, board._time(now))).lastrowid

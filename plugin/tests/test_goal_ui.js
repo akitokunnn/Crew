@@ -17,7 +17,7 @@ function readerFake(main){
   return reader;
 }
 function harness(api,{fetch:fetcher}={}){
-  const handlers={},main=node(),calls=[],network=[],navigations=[],reader=readerFake(main);
+  const handlers={},main=node(),calls=[],network=[],navigations=[],reader=readerFake(main),cards=[];
   const state={git_assistant:null,members:[],leaders:[{session_id:"leader",name:"验证组"}],goals:[
     {id:"a",leader_session_id:"leader",title:"短句验证",request:"保留原始要求",status:"running",current_round:1,requirement_version:1,version:1},
     {id:"b",leader_session_id:"leader",title:"性能目标",request:"另一份要求",status:"queued",current_round:1,version:1}]};
@@ -25,10 +25,10 @@ function harness(api,{fetch:fetcher}={}){
   const sandbox={window:{CrewReader:reader},URLSearchParams,document:{activeElement:null,addEventListener(type,handler){(handlers[type]??=[]).push(handler);},getElementById:id=>id==="main"?main:null,createElement:node,body:{append(){}}},
     fetch:async url=>{network.push(url);return fetcher?fetcher(url):{ok:true,text:async()=>"<h1>真实报告</h1>"};}};
   vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/goal-work-ui.js"),"utf8"),sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/goal-ui.js"),"utf8"),sandbox);
-  const client=sandbox.window.CrewGoals.create({project:"fixture",state:()=>state,avatar:(name)=>`<i>${name}</i>`,ago:()=>"刚刚",api:async(url,data)=>{calls.push({url,data});const result=api?await api(url,data):{goal:state.goals.find(item=>url.includes(`id=${item.id}`)),context:{items:[],manifest:{}},reports:[]};if(result.goal)result.goal={supplements_after_report:[],...result.goal};return url.startsWith("/api/op/document.list?")?{documents:result.documents||[]}:result;},renderDocuments:items=>items.map(item=>`<span>${item.title}</span>`).join(""),toast(){},onChange(){},onNavigate(id){navigations.push(id);client.sync("leader",id);},onGeneral(){},refreshState:async()=>{}});
+  const client=sandbox.window.CrewGoals.create({project:"fixture",state:()=>state,avatar:(name)=>`<i>${name}</i>`,ago:()=>"刚刚",api:async(url,data)=>{calls.push({url,data});const result=api?await api(url,data):{goal:state.goals.find(item=>url.includes(`id=${item.id}`)),context:{items:[],manifest:{}},reports:[]};if(result.goal)result.goal={supplements_after_report:[],...result.goal};return url.startsWith("/api/op/document.list?")?{documents:result.documents||[]}:result;},renderDocuments:items=>items.map(item=>`<span>${item.title}</span>`).join(""),decisionCards:id=>cards.filter(card=>card.goal===id).map(card=>card.html).join(""),toast(){},onChange(){},onNavigate(id){navigations.push(id);client.sync("leader",id);},onGeneral(){},refreshState:async()=>{}});
   async function click(act,extra={}){const button={disabled:false,closest:()=>null,dataset:{goalAct:act,...extra}};for(const handler of handlers.click||[])await handler({target:{closest:()=>button}});await tick();}
   async function submit(form){for(const handler of handlers.submit||[])await handler({target:form,preventDefault(){}});await tick();}
-  return {module:sandbox.window.CrewGoals,client,main,state,calls,network,navigations,click,submit,reader,window:sandbox.window};
+  return {module:sandbox.window.CrewGoals,client,main,state,calls,network,navigations,click,submit,reader,window:sandbox.window,cards};
 }
 
 const surfaces=h=>h.client.detailMarkup("leader");
@@ -354,4 +354,22 @@ test("a delivered task shows its delivery as loading, not as undelivered, until 
   const pending=h.client.detailMarkup();assert(pending.includes("正在读取交付"));assert(!pending.includes("还没有交付"));
   release({goal:h.state.goals.find(item=>item.id==="a"),context:{items:[],manifest:{}},executions:[],reports:[],documents:[]});await tick();
   assert(h.client.detailMarkup().includes("还没有交付"));
+});
+
+// On a narrow screen the task panel covers the conversation, so the task's own open decision is answered in the panel.
+test("the task detail shows its own open decisions above the task tools, and none once the task has ended",async()=>{
+  const h=harness();
+  h.cards.push({goal:"a",html:'<article class="dc decision-card" data-dc="7"><button data-act="answer-option" data-id="7" data-option="0">改回字符串</button></article>'},
+               {goal:"b",html:'<article class="dc decision-card" data-dc="8"></article>'});
+  h.client.sync("leader","a");await tick();
+  const html=h.client.detailMarkup();
+  assert(html.includes('<section class="task-decisions" aria-label="等你拍板"><h2>等你拍板</h2><article class="dc decision-card" data-dc="7">'));
+  assert(html.indexOf('class="task-decisions"')<html.indexOf('data-goal-tools="a"'));
+  assert(html.includes('data-act="answer-option" data-id="7"'));assert(!html.includes('data-dc="8"'));
+  h.client.sync("leader","b");await tick();
+  assert(!h.client.detailMarkup().includes('data-dc="7"'));assert(h.client.detailMarkup().includes('data-dc="8"'));
+  h.cards.length=0;h.client.sync("leader","a");await tick();assert(!h.client.detailMarkup().includes("task-decisions"));
+  h.cards.push({goal:"a",html:'<article class="dc decision-card" data-dc="9"></article>'});
+  Object.assign(h.state.goals[0],{status:"completed",version:2});h.client.sync("leader","a");await tick();
+  assert(!h.client.detailMarkup().includes("task-decisions"));
 });

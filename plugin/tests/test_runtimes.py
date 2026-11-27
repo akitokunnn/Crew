@@ -139,6 +139,29 @@ class RuntimeModelTests(RuntimeFixture):
             with self.subTest(model=model, effort=effort), self.assertRaises(ValueError):
                 models.validate_options(model, effort, runtime="codex", catalog=catalog)
 
+    def test_catalog_marks_the_claude_list_as_a_preset_and_codex_as_its_own_report(self):
+        # Claude Code has no model list to ask: a model outside Crew's preset is not a launch risk (scenario 8 warned
+        # about claude-haiku-5-5 every opening). Codex's list is what Codex itself reports.
+        from unittest import mock
+        from crew import runtime_catalog
+        from crew.ops import registry
+        native = mock.MagicMock()
+        native.__enter__.return_value = native
+        native.list_models.return_value = {'data': [{'id': 'gpt-6-luna', 'supportedReasoningEfforts': [
+            {'reasoningEffort': 'low'}]}], 'nextCursor': None}
+        listed = runtime_catalog.Catalog(client_factory=lambda **_: native, which=lambda name: name).refresh(force=True)
+        self.assertEqual([(item['id'], item['models_source']) for item in listed],
+                         [('claude', 'preset'), ('codex', 'discovered')])
+        self.assertEqual([item['id'] for item in listed[1]['models']], ['gpt-6-luna'])
+        self.assertNotIn('claude-haiku-5-5', [item['id'] for item in listed[0]['models']])
+        models.validate_options('claude-haiku-5-5', 'low')
+        absent = runtime_catalog.Catalog(client_factory=lambda **_: native, which=lambda name: None).refresh(force=True)
+        self.assertEqual([(item['id'], item['available'], item['models_source'], item['models']) for item in absent],
+                         [('claude', False, 'preset', models.MODELS), ('codex', False, 'discovered', [])])
+        description = registry.operations()['runtimes.list'].description
+        self.assertIn('preset', description)
+        self.assertIn('清单外的 Claude 模型 ID 也能直接用', description)
+
     def test_codex_advertised_efforts_are_strings_and_can_include_new_capabilities(self):
         for effort in ("none", "minimal", "max", "ultra"):
             models.validate_effort(effort, runtime="codex")

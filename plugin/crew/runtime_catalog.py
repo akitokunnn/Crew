@@ -65,13 +65,15 @@ class Catalog:
         self.updated_at = None
         self.codex = {"id": "codex", "name": "Codex", "available": bool(which("codex")),
                       "error": None if which("codex") else "尚未安装 Codex CLI",
-                      "models": [], "efforts": ["low", "medium", "high", "xhigh"]}
+                      "models": [], "models_source": "discovered", "efforts": ["low", "medium", "high", "xhigh"]}
 
     def snapshot(self):
+        """``models_source``: Codex reports its own full list (model/list); Claude Code has no model list to ask,
+        so its entry carries Crew's preset of common models, and any other Claude model ID is just as usable."""
         with self.lock:
             return [{"id": "claude", "name": "Claude Code", "available": bool(self.which("claude")),
                      "error": None if self.which("claude") else "尚未安装 Claude Code CLI",
-                     "models": models.MODELS, "efforts": models.EFFORTS},
+                     "models": models.MODELS, "models_source": "preset", "efforts": models.EFFORTS},
                     {**self.codex, "models": [dict(item) for item in self.codex["models"]]}]
 
     def refresh(self, force=False):

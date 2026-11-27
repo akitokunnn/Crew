@@ -24,6 +24,11 @@ PLAN = {
                                          'runtime': {'type': 'string', 'enum': ['claude', 'codex']},
                                          'model': {'type': ['string', 'null']}, 'effort': {'type': ['string', 'null']},
                                          'part': {'type': ['string', 'null'], 'description': '放进哪个领域（ref 或已有 id）'},
+                                         'owns': {'type': 'array', 'minItems': 1, 'maxItems': 30,
+                                                  'items': {**_STRING, 'maxLength': campaign.OWNS_LIMIT},
+                                                  'description': '它负责、只有它改的文件或目录（相对工作区根目录，如 backend/、'
+                                                                 'data/products.json）。新 leader 都在同一个工作区目录里干活，'
+                                                                 '两位以上时每位都要写，互不重叠；会写进它的开场说明和首批任务约束'},
                                          'lead': {'type': 'boolean', 'description': '是否负责该领域'}}}},
     'goals': {'type': 'array', 'maxItems': 20, 'description': '首批任务，每个交给一位新 leader',
               'items': {'type': 'object', 'additionalProperties': False,

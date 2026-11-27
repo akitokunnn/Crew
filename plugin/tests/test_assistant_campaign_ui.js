@@ -156,3 +156,16 @@ test("a leader merge is shown as the board's before / after, its effects and wak
   await settle();
   assert(detail(stale.cards()[0]).innerHTML.includes("方案现在执行不了（1 处问题）"));
 });
+
+test("each leader's own files from the plan are listed on the opening card, escaped, and absent when the plan has no split", async () => {
+  const split = [{...preview().leaders[0], owns: ["server/", "data/<users>.json"]}, {...preview().leaders[1], owns: ["app/"]}];
+  const page = assistantPage([launch], {preview: preview({leaders: split})});
+  await settle();
+  const html = detail(page.cards()[0]).innerHTML;
+  assert(html.includes('<p class="ac-owns"><span>只改</span><code>server/</code><code>data/&lt;users&gt;.json</code></p>'));
+  assert(html.includes('<p class="ac-owns"><span>只改</span><code>app/</code></p>'));
+  assert(html.indexOf('<code>server/</code>') < html.indexOf("负责打卡接口与数据表"), "the split sits under the leader's name, before the brief");
+  const plain = assistantPage([launch], {preview: preview({leaders: [{...preview().leaders[0], owns: null}, {...preview().leaders[1], owns: null}]})});
+  await settle();
+  assert(!detail(plain.cards()[0]).innerHTML.includes("ac-owns"));
+});
