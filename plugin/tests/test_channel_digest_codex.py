@@ -38,7 +38,8 @@ for line in sys.stdin:
     elif method=='initialized':pass
     elif method=='config/read':reply(message,{'config':{'mcp_servers':{'fixture-side-effect-server':{'command':'must-not-run'}}}})
     elif method=='thread/start':
-        result={'thread':{'id':'digest-thread','turns':[],'ephemeral':True},'model':'resolved-native-default','sandbox':{'type':'readOnly'}}
+        result={'thread':{'id':'digest-thread','turns':[],'ephemeral':True},'model':'resolved-native-default',
+                'reasoningEffort':'high','sandbox':{'type':'readOnly'}}
         if mode=='missing-model':result.pop('model')
         reply(message,result)
     elif method=='turn/start':

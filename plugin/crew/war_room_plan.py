@@ -257,7 +257,7 @@ def approve(conn, room_id, actor, version, recommendations, budget_tokens, now=N
 def consult(conn, room_id, actor, version, question_id, purpose, question, now=None, catalog=None):
     import subprocess
     import tempfile
-    from . import channel_digest, settings
+    from . import channel_digest, settings, store
     with board.transaction(conn):
         room = war_room.open_room(conn, room_id)
         if actor != room['lead_session_id'] or room['legacy']:
@@ -277,18 +277,22 @@ def consult(conn, room_id, actor, version, question_id, purpose, question, now=N
         if catalog is not None:
             from . import runtime_switch
             runtime_switch.validate_target(choice['runtime'], choice['model'], choice['effort'], catalog, choice['speed'])
-        conn.execute('INSERT INTO war_room_consults(room_id,question_id,plan_version,purpose,question,runtime,requested_model,'
-                     'requested_effort,created_at) VALUES(?,?,?,?,?,?,?,?,?)', (room_id, question_id, version, purpose, question,
-                     choice['runtime'], choice['model'], choice['effort'], board._time(now)))
+        model, effort = choice['model'], choice['effort']
+        if effort is None:
+            effort = store.CARRIER_DEFAULT_EFFORT
+        conn.execute('INSERT INTO war_room_consults(room_id,question_id,plan_version,purpose,question,runtime,'
+                     'model,effort,requested_model,requested_effort,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                     (room_id, question_id, version, purpose, question, choice['runtime'], model, effort,
+                      model, effort, board._time(now)))
     prompt = question if plan is None else question + '\n\n' + plan['body']
     receipt = {}
     from . import codex_client
     try:
         if choice['runtime'] == 'claude':
             with tempfile.TemporaryDirectory(prefix='crew-consult-') as directory:
-                answer, _, model = channel_digest._claude(directory, prompt, subprocess.Popen, choice, receipt=receipt)
+                answer, _, native_model = channel_digest._claude(directory, prompt, subprocess.Popen, choice, receipt=receipt)
         else:
-            answer, _, model = channel_digest._codex(prompt, subprocess.Popen, choice, receipt=receipt)
+            answer, _, native_model = channel_digest._codex(prompt, subprocess.Popen, choice, receipt=receipt)
     except (TimeoutError, OSError, RuntimeError, ValueError, codex_client.CodexError) as exc:
         with board.transaction(conn):
             conn.execute('UPDATE war_room_consults SET error=? WHERE room_id=? AND question_id=?',
@@ -297,8 +301,8 @@ def consult(conn, room_id, actor, version, question_id, purpose, question, now=N
         raise OpError('outcome_unknown', '顾问未返回完整回执，用量待确认',
                       {'room': room_id, 'question_id': question_id, 'reason': str(exc)}) from exc
     with board.transaction(conn):
-        conn.execute('UPDATE war_room_consults SET model=?,effort=?,response=?,tokens=? WHERE room_id=? AND question_id=?',
-                     (model, receipt.get('effort', choice['effort']), answer, receipt.get('tokens'), room_id, question_id))
+        conn.execute('UPDATE war_room_consults SET native_model=?,response=?,tokens=? WHERE room_id=? AND question_id=?',
+                     (native_model, answer, receipt.get('tokens'), room_id, question_id))
         war_room._touch(conn, room_id, room['project'])
     return consult_view(conn.execute('SELECT * FROM war_room_consults WHERE room_id=? AND question_id=?',
                                      (room_id, question_id)).fetchone())

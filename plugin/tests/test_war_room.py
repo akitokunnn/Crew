@@ -118,6 +118,36 @@ class BoardAndDecisionTests(WarRoomFixture):
             war_room.set_contract(self.conn, room["id"], "b", "POST /login sig=v3", None, now=NOW)
         war_room.set_contract(self.conn, room["id"], "b", "POST /login sig=v3", saved["updated_at"], now=NOW)
 
+    def test_marking_done_requires_evidence_in_the_same_request(self):
+        room = self.open_room()["id"]
+        item = war_room.set_item(self.conn, room, "b", title="签名适配", status="blocked", note="等签名算法")
+        before = war_room.get(self.conn, room)
+        for args in ({"item_id": item["id"]}, {"item_id": item["id"], "note": ""},
+                     {"item_id": item["id"], "note": " \t\n"}, {"title": "直接完成的新事项"}):
+            with self.subTest(args=args), self.assertRaises(OpError) as error:
+                war_room.set_item(self.conn, room, "b", status="done", **args)
+            self.assertEqual(error.exception.code, "missing_evidence")
+            self.assertIn("完成证据", str(error.exception))
+        after = war_room.get(self.conn, room)
+        self.assertEqual((after["board"], after["events"]), (before["board"], before["events"]))
+
+        for args in ({"item_id": item["id"]}, {"title": "直接完成的新事项"}):
+            done = war_room.set_item(self.conn, room, "b", status="done", note=" 联调记录已保存 ", **args)
+            self.assertEqual((done["status"], done["note"]), ("done", "联调记录已保存"))
+        reopened = war_room.set_item(self.conn, room, "b", item_id=item["id"], status="todo")
+        self.assertEqual(reopened["status"], "todo")
+        with self.assertRaisesRegex(OpError, "完成证据"):
+            war_room.set_item(self.conn, room, "b", item_id=item["id"], status="done")
+
+    def test_old_done_item_without_evidence_can_still_be_edited(self):
+        room = self.open_room()["id"]
+        item = war_room.set_item(self.conn, room, "b", title="历史事项")
+        self.conn.execute("UPDATE war_room_items SET status='done' WHERE id=?", (item["id"],))
+        replay = war_room.set_item(self.conn, room, "b", item_id=item["id"], status="done")
+        edited = war_room.set_item(self.conn, room, "b", item_id=item["id"], title="历史事项改名")
+        self.assertEqual((replay["status"], edited["status"], edited["note"], edited["title"]),
+                         ("done", "done", None, "历史事项改名"))
+
     def test_only_the_lead_raises_the_decision_card(self):
         room = self.open_room()
         with self.assertRaisesRegex(board.BoardError, "只有牵头"):
@@ -138,7 +168,7 @@ class CloseTests(WarRoomFixture):
         with self.assertRaisesRegex(board.BoardError, "只有牵头"):
             war_room.close(self.conn, room["id"], "b", "完成", now=NOW)
         criterion = next(i for i in room["board"] if i["kind"] == "criterion")
-        war_room.set_item(self.conn, room["id"], "a", item_id=criterion["id"], status="done")
+        war_room.set_item(self.conn, room["id"], "a", item_id=criterion["id"], status="done", note="v2 已联调通过")
         closed = war_room.close(self.conn, room["id"], "a", "v2 已联调通过，v1 兼容一个月", now=NOW)
         self.assertEqual(closed["status"], "closed")
         notice = self.main()[-1]
@@ -210,6 +240,14 @@ class WarRoomOperationTests(ChannelHttpFixture):
         self.assertEqual(room['unread_execution_events'], 0)
         code, _ = self.request('/api/op/war_room.get', project='demo', id=room['id'], execution_id='another')
         self.assertNotEqual(code, 200)
+
+    def test_marking_done_without_evidence_returns_a_public_error(self):
+        room = approve_assignments(self.conn, war_room.start(self.conn, 'demo', 's3', '联调', '打通登录'), ['web'])
+        item = next(item for item in room['board'] if item['kind'] == 'criterion')
+        code, result = self.request('/api/op/war_room.item',
+                                    {'project': 'demo', 'room': room['id'], 'id': item['id'], 'status': 'done'})
+        self.assertEqual((code, result['error_code']), (400, 'missing_evidence'))
+        self.assertIn('完成证据', result['error'])
 
     def test_the_host_stops_the_members_of_a_room_over_its_cap(self):
         from crew import messaging

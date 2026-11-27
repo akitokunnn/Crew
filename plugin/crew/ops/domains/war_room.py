@@ -202,7 +202,7 @@ op('war_room.item', '新增或更新作战室状态板的一项', _item, workspa
                     title=_text('事项', war_room.ITEM_LIMIT), owner=_text('负责的成员名'),
                     status={'type': 'string', 'enum': list(war_room.ITEM_STATES),
                             'description': '、'.join('%s=%s' % pair for pair in war_room.ITEM_STATES.items())},
-                    note=_text('说明或阻塞原因', war_room.ITEM_LIMIT * 2, minimum=0)),
+                    note=_text('说明或阻塞原因。标为完成（done）时，必须填写完成证据', war_room.ITEM_LIMIT * 2, minimum=0)),
    description='新增时带 title（以及 owner、status）；改已有项时带它的 id，只填要改的字段。')
 op('war_room.contract', '整份替换作战室的接口契约', _contract, workspace=True, access='write',
    schemas=_schemas(['room', 'text'], room=ROOM, text=_text('完整的契约正文', war_room.CONTRACT_LIMIT, minimum=0),
