@@ -6,7 +6,7 @@ from unittest import mock
 
 import test_vscode_service as fixtures
 from test_vscode_service import identity, NOW
-from crew import board, codex_events, goals, runtimes, session_ops, store, workspace_activity
+from crew import board, channel, codex_events, goals, runtimes, session_ops, store, war_room, war_room_plan, workspace_activity
 
 
 class WorkspaceActivityTests(unittest.TestCase):
@@ -17,16 +17,70 @@ class WorkspaceActivityTests(unittest.TestCase):
     def snapshot(self):
         return workspace_activity.snapshot(self.service, self.conn, 'alpha')
 
+    def test_war_room_snapshot_follows_the_current_plan_and_room_lifecycle(self):
+        sid = identity(1)
+        self.register(sid, 'leader', role='leader')
+        self.assertEqual(self.snapshot()['war_rooms'], [])
+        budget = 100_000
+        room = war_room.start(self.conn, 'alpha', sid, '发布演练', '核对版本', budget_tokens=budget)
+        room_id = room['id']
+        plan = '## 分工\n## 等你定\n%s## 完成标准\n- [ready] 核对通过'
+
+        def status(expected):
+            self.assertEqual(self.snapshot()['war_rooms'], [{'title': '发布演练', 'status': expected}])
+
+        status('running')
+        war_room_plan.update(self.conn, room_id, sid, 0, plan % '', '首稿', budget)
+        status('awaiting_decision')  # A preparing plan can await approval without specific questions.
+        war_room_plan.approve(self.conn, room_id, board.HUMAN, 1, {}, budget)
+        status('running')
+        question = '- [method] 怎么核对 | 自动'
+        war_room_plan.update(self.conn, room_id, sid, 1, plan % (question + '\n'), '提问', budget)
+        status('awaiting_decision')
+        war_room_plan.approve(self.conn, room_id, board.HUMAN, 2, {'method': '自动'}, budget)
+        status('running')  # Approval answers the recommendation without rewriting the draft.
+        war_room_plan.update(self.conn, room_id, sid, 2, plan % (question + ' | 已确定\n'), '已答复', budget)
+        status('running')
+        self.conn.execute('UPDATE war_rooms SET paused_at=? WHERE id=?', (NOW, room_id))
+        status('awaiting_decision')
+        war_room.close(self.conn, room_id, board.HUMAN, reason='user_stop')
+        self.assertEqual(self.snapshot()['war_rooms'], [])
+
     def test_reading_status_does_not_scan_launch_or_mark_messages_read(self):
         self.register(identity(1), 'leader', role='leader')
         self.service.chat.journal(identity(1)).emit('assistant', id='reply', text='A saved reply')
         before = self.conn.total_changes
         with mock.patch.object(self.service, 'scan_usage', side_effect=AssertionError('No scan')):
             value = self.snapshot()
-        self.assertEqual(value['counts']['unread'], 1)
+        self.assertEqual(value['counts']['chat_unread'], 1)
         self.assertEqual(self.conn.total_changes, before)
         self.assertEqual(board.read_seq(self.conn, identity(1)), 0)
         self.service.chat.process_factory.assert_not_called()
+
+    def test_chat_and_channel_unread_are_independent_and_read_only(self):
+        leader = identity(1)
+        self.register(leader, 'leader', role='leader')
+        journal = self.service.chat.journal(leader)
+        journal.emit('assistant', id='reply', text='A saved reply')
+        post = channel.post(self.conn, 'alpha', leader, 'One channel update', now=NOW)
+        before = self.conn.total_changes
+        counts = self.snapshot()['counts']
+        self.assertEqual((counts['chat_unread'], counts['channel_unread']), (1, 1))
+        self.assertEqual(self.conn.total_changes, before)
+        channel.mark_read(self.conn, 'alpha', board.HUMAN, post['id'], now=NOW)
+        counts = self.snapshot()['counts']
+        self.assertEqual((counts['chat_unread'], counts['channel_unread']), (1, 0))
+
+    def test_error_details_survive_a_full_attention_queue(self):
+        leader = identity(1)
+        self.register(leader, 'leader', role='leader')
+        self.service.chat.journal(leader).emit('error', text='Execution timed out')
+        approvals = [{'title': 'Confirm ' + str(index)} for index in range(6)]
+        with mock.patch.object(self.service, 'native_approvals', return_value=approvals):
+            value = self.snapshot()
+        self.assertEqual((value['counts']['attention'], value['counts']['errors']), (6, 1))
+        error = next(item for item in value['items'] if item['kind'] == 'error')
+        self.assertEqual((error['name'], error['detail']), ('leader', 'Execution timed out'))
 
     def test_builtin_git_assistant_is_excluded_from_all_activity_counts(self):
         from crew import todo
@@ -55,7 +109,7 @@ class WorkspaceActivityTests(unittest.TestCase):
         self.register(sid, 'ordinary', role='leader')
         self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES('alpha',?,'main',?)", (NOW, sid))
         self.service.chat.journal(sid).emit('assistant', id='reply', text='Ordinary reply')
-        self.assertEqual(self.snapshot()['counts']['unread'], 1)
+        self.assertEqual(self.snapshot()['counts']['chat_unread'], 1)
 
     def test_working_is_observed_not_inferred_from_stale_database_status(self):
         self.register(identity(1), 'leader', role='leader')
@@ -239,7 +293,7 @@ class WorkspaceActivityTests(unittest.TestCase):
         self.register(identity(1), 'leader', role='leader')
         self.register(identity(2), 'member', group_name='leader')
         self.service.chat.journal(identity(2)).emit('assistant', id='internal', text='Internal implementation output')
-        self.assertEqual(self.snapshot()['counts']['unread'], 0)
+        self.assertEqual(self.snapshot()['counts']['chat_unread'], 0)
 
     def test_tools_do_not_inflate_general_or_goal_unread_for_either_runtime(self):
         for index, (runtime, scoped) in enumerate((('claude', False), ('codex', False), ('claude', True), ('codex', True)), 1):
@@ -262,14 +316,14 @@ class WorkspaceActivityTests(unittest.TestCase):
                                 'id': 'tool-' + str(number), 'type': 'commandExecution', 'command': 'git status',
                                 'cwd': str(self.alpha), 'status': 'completed', 'exitCode': 0, 'aggregatedOutput': 'clean'}}):
                             journal.emit(event['type'], **{key: value for key, value in event.items() if key != 'type'})
-                self.assertEqual(self.snapshot()['counts']['unread'], 0)
+                self.assertEqual(self.snapshot()['counts']['chat_unread'], 0)
                 seen = journal.emit('text', id='answer', text='Git 检查完成。')
                 value = self.snapshot()
-                self.assertEqual(value['counts']['unread'], 1)
+                self.assertEqual(value['counts']['chat_unread'], 1)
                 self.assertEqual(next(item['title'] for item in value['items'] if item['kind'] == 'reply'), 'Git 检查完成。')
                 if execution:
                     goals.mark_read(self.conn, execution['id'], seen['seq'])
                 else:
                     board.mark_read(self.conn, sid, seen['seq'])
                 journal.emit('assistant', id='answer', content=[{'type': 'text', 'text': 'Git 检查完成。'}])
-                self.assertEqual(self.snapshot()['counts']['unread'], 0)
+                self.assertEqual(self.snapshot()['counts']['chat_unread'], 0)

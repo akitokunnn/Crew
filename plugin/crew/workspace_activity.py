@@ -19,7 +19,8 @@ def snapshot(service, conn, project):
               if person['crew_name'] and person['status'] != 'closed' and not board.is_archived(conn, person['session_id'])
               and not git_admin.is_builtin(person, git_config)]
     visible = {person['session_id']: person for person in people}
-    counts = dict.fromkeys(('working', 'decisions', 'todos', 'approvals', 'waiting', 'acceptance', 'unread', 'errors'), 0)
+    counts = dict.fromkeys(('working', 'working_leaders', 'decisions', 'todos', 'approvals', 'waiting',
+                            'acceptance', 'attention', 'errors', 'chat_unread', 'channel_unread'), 0)
     items, journals, histories = [], {}, {}
     dispatches = None
     for person in people:
@@ -49,7 +50,7 @@ def snapshot(service, conn, project):
             # Members' internal replies are coordinated by their leader. The
             # human unread signal follows the existing leader conversation UI.
             if person['role'] == 'leader':
-                counts['unread'] += len(unread)
+                counts['chat_unread'] += len(unread)
             if unread and person['role'] == 'leader':
                 last = unread[-1]
                 items.append({'kind': 'reply', 'title': last.get('text', '')[:130] or '有新的回复', 'name': person['crew_name'], 'detail': '未读回复'})
@@ -59,6 +60,7 @@ def snapshot(service, conn, project):
         working = person['status'] == 'working' and (service.chat.running(key) or not unknown and sid in present)
         if working:
             counts['working'] += 1
+            counts['working_leaders'] += person['role'] == 'leader'
             title = person['task'] or '正在处理当前工作'
             if execution:
                 title = goals.get(conn, execution['goal_id'])['title']
@@ -73,6 +75,7 @@ def snapshot(service, conn, project):
                             if task['status'] == 'running'), None)
             if running is not None or sid in dispatches:
                 counts['working'] += 1
+                counts['working_leaders'] += person['role'] == 'leader'
                 items.append({'kind': 'working', 'title': (running['task_name'] if running else person['task'] or '临时派工')[:160],
                               'name': person['crew_name'], 'detail': '子代理在运行' if running else '派工在运行'})
     decisions = board.decisions(conn, project, all=True)
@@ -105,7 +108,8 @@ def snapshot(service, conn, project):
         if report and (reviewing or store.parse_iso(report['created_at']) >= service.now() - dt.timedelta(hours=24)):
             items.append({'kind': 'acceptance' if reviewing else 'delivery', 'title': value['title'][:160], 'name': visible[value['leader_session_id']]['crew_name'],
                           'detail': json.loads(report['data_json']).get('summary', '')[:160], 'at': report['created_at']})
-    counts['unread'] += channel.state(conn, project)['unread']
+    counts['attention'] = sum(counts[key] for key in ('decisions', 'todos', 'approvals', 'waiting', 'acceptance'))
+    counts['channel_unread'] = channel.state(conn, project)['unread']
     priority = {'approval': 0, 'decision': 1, 'acceptance': 2, 'todo': 3, 'waiting': 4, 'error': 5, 'delivery': 6, 'working': 7, 'reply': 8}
     items.sort(key=lambda item: item.get('at', ''), reverse=True)
     items.sort(key=lambda item: priority[item['kind']])
@@ -117,5 +121,20 @@ def snapshot(service, conn, project):
             return deliveries <= 2
         return True
     items = [item for item in items if include(item)]
-    return {'project': project, 'counts': counts, 'items': items[:5], 'unknown': unknown,
-            'updated_at': service.now().isoformat(timespec='seconds')}
+    # A full queue of human decisions must not crowd errors out of the preview.
+    visible_items = items[:5]
+    preview_errors = [item for item in items if item['kind'] == 'error'][:2]
+    visible_items.extend(item for item in preview_errors if item not in visible_items)
+    war_rooms = board._rows(conn, """
+        SELECT r.title, CASE WHEN r.paused_at IS NOT NULL
+            OR (r.phase='preparing' AND p.version IS NOT NULL AND r.approved_version IS NULL)
+            OR (p.approval IS NULL AND EXISTS (
+                SELECT 1 FROM json_each(p.entries_json) AS entry
+                WHERE json_extract(entry.value, '$.kind')='decision'
+                  AND json_extract(entry.value, '$.answer') IS NULL
+            )) THEN 'awaiting_decision' ELSE 'running' END AS status
+        FROM war_rooms r LEFT JOIN war_room_plans p ON p.room_id=r.id AND p.version=r.draft_version
+        WHERE r.project=? AND r.status='open' ORDER BY r.id DESC
+        """, (project,))
+    return {'project': project, 'counts': counts, 'items': visible_items, 'unknown': unknown,
+            'war_rooms': war_rooms, 'updated_at': service.now().isoformat(timespec='seconds')}

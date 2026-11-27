@@ -136,7 +136,12 @@
     const tagsNow = view.tags.includes(name) ? view.tags.filter(tag => tag !== name) : [...view.tags, name];
     setView({tags: tagsNow, untagged: false});
   }
-  window.addEventListener("hashchange", () => { view = M.parseHash(location.hash); render(); });
+  function focusMindmapStart() {
+    if (location.hash !== "#start=mindmap" || !mindmap.active()) return;
+    history.replaceState(null, "", location.pathname + location.search);
+    mindmap.focusStart();
+  }
+  window.addEventListener("hashchange", () => { view = M.parseHash(location.hash); render(); focusMindmapStart(); });
 
   // ---- rendering ------------------------------------------------------------
   function tagChip(name, act = "filter-tag") {
@@ -845,6 +850,6 @@
     if (scope.mode === "invalid") { fatal(`${scope.reason}，打不开想法页。`); return; }
     if (window.CrewAccess && !await CrewAccess.ready) return;
     if (scope.mode === "home") { await rewriteBare(); return; }
-    render(); await boot();
+    render(); focusMindmapStart(); await boot();
   })();
 })();

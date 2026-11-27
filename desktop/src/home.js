@@ -162,13 +162,16 @@ async function chooseExisting() {
   const directory = await hostFolder('打开主机上的文件夹', '打开此文件夹');
   return directory ? window.crewDesktop.openExistingDirectory(directory) : null;
 }
-function openExisting() { return action(async () => {
+async function selectExisting() {
   const project = await chooseExisting();
-  if (!project) return;
-  if (!project.relocation) { await openWorkspace(project.name); return; }
+  if (!project?.relocation) return project;
   const choice = await relocationChoice(project.relocation);
   if (choice.kind === 'relink') await openWorkspaceSettings(choice.project, {root:project.relocation.directory});
-  if (choice.kind === 'new') { const created = await window.crewDesktop.registerExisting(project.relocation.directory); await openWorkspace(created.name); }
+  return choice.kind === 'new' ? window.crewDesktop.registerExisting(project.relocation.directory) : null;
+}
+function openExisting() { return action(async () => {
+  const project = await selectExisting();
+  if (project) await openWorkspace(project.name);
 }); }
 // Importing a package reads a file on the host's own disk, so it stays on the host.
 $('import-workspace').hidden = remote;
@@ -223,17 +226,39 @@ $('refresh').addEventListener('click', () => action(refresh));
 // Shortcut into “设置 → 后台与连接 → 连接与目录”: add a LAN host here, or preview switching back from one.
 $('connection-switch').addEventListener('click', () => { void window.CrewHomeSettings.show('backend', {launch:remote ? 'local' : 'pair'}); });
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('create-panel').hidden && !busy) closeCreate(); });
-// First-run guide: its last step hands over to the same open / create flows as the menu and tray.
-function openOnboarding() {
-  return window.CrewOnboarding.open({onWorkspace:next => { homeActions.push(next); void flushHomeActions(); },
-    onClose:() => { if (!busy && $('create-panel').hidden) $('existing').focus({preventScroll:true}); }});
+async function chooseOnboardingFolder(kind) {
+  if (kind === 'existing') {
+    const project = await selectExisting();
+    return project && {kind, project, directory:project.root};
+  }
+  const directory = remote ? await hostFolder('选择新工作区的保存位置', '保存到这里') : await window.crewDesktop.chooseParent();
+  return directory && {kind, directory};
+}
+async function openOnboardingWorkspace(folder, name, kickoff) {
+  if (!folder.project) {
+    folder.project = remote ? await window.crewDesktop.createWorkspace(name, folder.directory) : await window.crewDesktop.createWorkspace(name);
+  }
+  const {ok} = await window.crewDesktop.openProject(folder.project.name, kickoff);
+  return ok;
+}
+let onboardingAssets;
+async function openOnboarding() {
+  try {
+    onboardingAssets ??= window.crewDesktop.onboardingUI();
+    await onboardingAssets;
+    return window.CrewOnboarding.open({onChoose:chooseOnboardingFolder, onWorkspace:openOnboardingWorkspace,
+      onClose:() => { if (!busy && $('create-panel').hidden) $('existing').focus({preventScroll:true}); }});
+  } catch (error) {
+    onboardingAssets = null;
+    failure(error);
+  }
 }
 window.CrewHomeOnboarding = {open:openOnboarding};
 async function maybeOnboard(state) {
   // Only this computer's own first start, before any workspace exists, asks the backend at all.
   if (remote || state.pendingAction || state.projects.length) return;
   const {status} = await window.crewDesktop.onboardingGet();
-  if (window.CrewOnboarding.shouldOpen({remote, projects:state.projects.length, pendingAction:state.pendingAction || null, status})) openOnboarding();
+  if (window.CrewOnboarding.shouldOpen({remote, projects:state.projects.length, pendingAction:state.pendingAction || null, status})) await openOnboarding();
 }
 async function finishStartup(state) {
   await window.crewDesktop.ready({ projects: state.projects.length, nodeAvailable: typeof require !== 'undefined',

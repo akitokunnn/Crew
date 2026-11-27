@@ -585,8 +585,10 @@ handle('desktop:create', async (name,parent) => {
   if (!parentDirectory) throw new Error('请先选择工作区的保存位置');
   const result=await core.newWorkspace(parentDirectory, name, backend.url);parentDirectory=null;return result;
 });
-handle('desktop:open', async name => {
-  return {ok:await openProject(name)};
+handle('desktop:open', async (name, kickoff) => {
+  if (kickoff === undefined) return {ok:await openProject(name)};
+  if (!['war-room', 'leader', 'mindmap'].includes(kickoff)) throw new Error('未知的开局方式');
+  return {ok:await openProject(name, {page:kickoff === 'mindmap' ? 'notes' : 'workspace', hash:'#start=' + kickoff})};
 });
 localHandle('desktop:tools-snapshot',()=>tools.snapshot());
 localHandle('desktop:tools-check',()=>tools.check());
@@ -689,6 +691,14 @@ handle('desktop:settings-save',body=>{
 handle('desktop:onboarding-get',()=>settingsRequest('/api/op/onboarding.get'));
 handle('desktop:onboarding-save',status=>settingsRequest('/api/op/onboarding.set',{status}));
 handle('desktop:runtime-readiness',()=>settingsRequest('/api/op/runtimes.readiness',undefined,60000));
+handle('desktop:copy-login-command', runtime => {
+  if (runtime !== 'claude' && runtime !== 'codex') throw new Error('未知的 AI 引擎');
+  clipboard.writeText(runtime === 'claude' ? 'claude' : 'codex login');
+});
+handle('desktop:onboarding-ui', async () => {
+  const directory = await core.resolveFrontendDir(config.helperBackendDir, config.helperFrontendDir);
+  return injectAssets(directory, [['executeJavaScript','workspace-start.js']]);
+});
 handle('desktop:launch-settings-get',()=>launchSettings.get());
 handle('desktop:launch-settings-validate',body=>launchSettings.validate(body));
 handle('desktop:launch-settings-apply',body=>launchSettings.apply(body));

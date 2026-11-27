@@ -5,6 +5,11 @@ const { EventEmitter } = require('node:events');
 const vm = require('node:vm');
 const { WorkspaceTabs } = require('../src/tabs.cjs');
 
+function activitySnapshot(project, counts = {}) {
+  return {project, counts:{working:0,working_leaders:0,decisions:0,todos:0,approvals:0,waiting:0,acceptance:0,
+    attention:0,errors:0,chat_unread:0,channel_unread:0,...counts},items:[],war_rooms:[],unknown:false,updated_at:new Date().toISOString()};
+}
+
 function fixture(options = {}) {
   const views = [], changed = [], external = [], projects = [], keyboard = [];
   let homes = 0, windowClosed = 0;
@@ -101,7 +106,7 @@ test('cross-workspace task links retain their hash and select the existing docum
 });
 
 test('the assistant is one global conversation across workspace tabs with no project activity polling',async()=>{
-  const calls=[];const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async names=>{calls.push(names);return {projects:names.map(project=>({project,counts:{},items:[]}))};}});
+  const calls=[];const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async names=>{calls.push(names);return {projects:names.map(project=>activitySnapshot(project))};}});
   const first=await f.manager.openAssistant();
   assert.equal(first.project,null);assert.equal(first.kind,'assistant');
   assert.equal(f.views[0].webContents.loads[0],'http://127.0.0.1:1234/assistant.html');
@@ -120,7 +125,7 @@ test('the assistant is one global conversation across workspace tabs with no pro
 });
 
 test('saved history tabs remain readable without polling the execution activity endpoint',async()=>{
-  const calls=[];const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async names=>{calls.push(names);return {projects:names.map(project=>({project,counts:{},items:[]}))};}});
+  const calls=[];const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async names=>{calls.push(names);return {projects:names.map(project=>activitySnapshot(project))};}});
   await f.manager.open({name:'storage:archive',read_only:true});await f.manager.refreshActivity();
   assert.equal(calls.length,0);assert.equal(f.manager.state().tabs[1].readOnly,true);
   assert.equal(f.manager.state().tabs[1].activity.label,'已保存的只读历史');
@@ -131,25 +136,25 @@ test('saved history tabs remain readable without polling the execution activity 
 test('one batched activity poll keeps hidden projects current without reloading or acknowledging them',async()=>{
   let tick,cleared=0;const calls=[];
   const f=fixture({setTimer:fn=>(tick=fn,1),clearTimer:()=>cleared++,readActivity:async names=>{
-    calls.push(names);return {projects:names.map(project=>({project,counts:{working:2,decisions:1,unread:3},items:[],updated_at:'now'}))};
+    calls.push(names);return {projects:names.map(project=>activitySnapshot(project,{working:2,working_leaders:1,decisions:1,attention:1,chat_unread:3}))};
   }});
   const a=await f.manager.open({name:'A'});await f.manager.open({name:'B'});await new Promise(resolve=>setImmediate(resolve));
   tick();await new Promise(resolve=>setImmediate(resolve));
   assert.deepEqual(calls.at(-1),['A','B']);
-  for(const tab of f.manager.state().tabs.filter(tab=>tab.project)){assert.equal(tab.activity.badge,1);assert.equal(tab.activity.unread,3);}
-  f.manager.select(a.id);assert.equal(f.manager.state().tabs[1].activity.unread,3);
+  for(const tab of f.manager.state().tabs.filter(tab=>tab.project)){assert.equal(tab.activity.markerCount,1);assert.equal(tab.activity.rows.find(row=>row.label==='未读').count,3);}
+  f.manager.select(a.id);assert.equal(f.manager.state().tabs[1].activity.rows.find(row=>row.label==='未读').count,3);
   assert(f.views.every(view=>view.webContents.loads.length===1));f.manager.dispose();assert.equal(cleared,1);
 });
 test('activity fetch failure keeps the last facts and explicitly marks them stale',async()=>{
   let failing=false;
-  const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async()=>{if(failing)throw Error('connection lost');return {projects:[{project:'A',counts:{working:2},items:[]}]};}});
+  const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:async()=>{if(failing)throw Error('connection lost');return {projects:[activitySnapshot('A',{working:2,working_leaders:2})]};}});
   await f.manager.open({name:'A'});await new Promise(resolve=>setImmediate(resolve));failing=true;await f.manager.refreshActivity();
-  const activity=f.manager.state().tabs[1].activity;assert.equal(activity.tone,'stale');assert.equal(activity.counts.working,2);assert.equal(activity.error,'connection lost');f.manager.dispose();
+  const activity=f.manager.state().tabs[1].activity;assert.equal(activity.stale,true);assert.equal(activity.marker,'unknown');assert.equal(activity.working,false);assert(!activity.rows.some(row=>row.label==='正在推进'));assert.equal(activity.error,'connection lost');f.manager.dispose();
 });
 test('an in-flight activity response cannot revive a closed or disposed project view',async()=>{
   let resolve;const f=fixture({setTimer:()=>1,clearTimer:()=>{},readActivity:()=>new Promise(done=>resolve=done)});
   const a=await f.manager.open({name:'A'});f.manager.close(a.id);const b=await f.manager.open({name:'A'});
-  resolve({projects:[{project:'A',counts:{decisions:9}}]});await new Promise(done=>setImmediate(done));
+  resolve({projects:[activitySnapshot('A',{attention:9})]});await new Promise(done=>setImmediate(done));
   assert.equal(f.manager.state().tabs.find(tab=>tab.id===b.id).activity,null);f.manager.dispose();
 });
 
@@ -510,7 +515,7 @@ test('a page that fails mid-slide ends the slide with the recovery controls focu
 test('a workspace keeps its assistant and ideas inside its own tab; only the administrator is a global page', async () => {
   const calls = [], titles = [], destinations = [];
   const f = fixture({ setTimer: () => 1, clearTimer: () => {}, onTitleChange: name => titles.push(name), openProject: (name, target) => destinations.push({ name, target }),
-    readActivity: async names => { calls.push(names); return { projects: names.map(project => ({ project, counts: {}, items: [] })) }; } });
+    readActivity: async names => { calls.push(names); return { projects: names.map(project => activitySnapshot(project)) }; } });
   await f.manager.open({ name: 'A' });
   const wc = f.views[0].webContents;
   // Same-workspace pages are ordinary navigation of the one document.

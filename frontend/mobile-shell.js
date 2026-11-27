@@ -32,6 +32,7 @@
     architecture: '<rect x="9" y="3" width="6" height="5" rx="1.5"/><rect x="3" y="16" width="6" height="5" rx="1.5"/><rect x="15" y="16" width="6" height="5" rx="1.5"/><path d="M12 8v4M6 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2"/>',
     git: '<circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="8" r="2"/><path d="M6.5 7.5v9M17.5 10c0 4-5 3.5-9.5 7"/>',
     usage: '<path d="M5 19V11M10 19V5M15 19v-6M20 19V9"/>',
+    library: '<path d="M4 4h6v16H4zM10 4h5v16h-5zM15 6l4-1 4 14-4 1z"/>',
     todos: '<path d="m5 12 3.5 3.5L19 6"/><path d="M5 19h14"/>',
     switch: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
     theme: '<path d="M12 3.5a8.5 8.5 0 1 0 8.5 8.5A6.5 6.5 0 0 1 12 3.5z"/>',
@@ -74,6 +75,7 @@
       sheetItem("architecture", "架构图", navAttrs("architecture"), tag()),
       sheetItem("git", "Git 助手", navAttrs("git"), tag(), '<em class="m-count" data-m-count="git" hidden></em>'),
       sheetItem("usage", "用量与额度", navAttrs("usage"), tag()),
+      sheetItem("library", "会话库", navAttrs("adopt"), tag()),
       sheetItem("switch", "切换工作区", 'href="/" data-m-always', "a"),
       ...(window.crewDesktopShell || window.crewDesktopTheme ? [] : [sheetItem("admin", "系统管理员", 'href="/assistant.html" data-m-always', "a")]),
     ];

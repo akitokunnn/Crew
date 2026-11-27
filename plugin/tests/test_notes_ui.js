@@ -161,14 +161,7 @@ test("系统管理员 (no query) keeps the HOME-wide inbox and sends ideas to th
   assert.equal(page.chat.notes.length, 0);
 });
 
-test("a workspace assistant only takes its own opening, and a past discussion elsewhere goes to the administrator", async () => {
-  const other = assistantPage("#opening=B", {search: "?project=A"});
-  await settle(); await settle();
-  assert.deepEqual(other.chat.prefills, [], "another workspace's opening is never written here");
-  assert.match(other.nodes.get("assistant-toast").textContent, /另一个工作区/);
-  const own = assistantPage("#opening=A", {search: "?project=A"});
-  await settle(); await settle();
-  assert.equal(own.chat.prefills.length, 1); assert.match(own.chat.prefills[0], /工作区「A 工作区」开局/);
+test("a past discussion elsewhere goes to the administrator", async () => {
   const past = assistantPage("#discussion=admin", {search: "?project=A"});
   await settle(); await settle();
   assert.deepEqual(past.replaced, ["replace:/assistant.html#discussion=admin"]);
