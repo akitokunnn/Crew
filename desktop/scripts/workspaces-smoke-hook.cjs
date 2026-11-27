@@ -189,10 +189,11 @@ app.once('browser-window-created', (_event, win) => {
       await capture('05-v2-new-discussion', first);
       await first.executeJavaScript('document.querySelector("[data-act=modal-close]").click()');
       evidence.checks.push('V2 opens on tasks and TODO, with one initial message and optional name/AI settings for a new discussion');
-      assert(await first.executeJavaScript('document.querySelector("a[href=\\"/notes.html\\"]")?.getAttribute("aria-label")==="想法墙"'));
-      const captured = await first.executeJavaScript('fetch("/api/op/note.capture",{method:"POST",headers:{"Content-Type":"application/json","X-Crew":"1","X-Crew-Request-Id":"smoke-quick-note"},body:JSON.stringify({data:{text:"我最近打算健身，先记下每日打卡 App 的想法"}})}).then(r=>r.json())');
+      // The workspace rail carries this workspace's own 助手 and 想法 pages; no cross-workspace idea wall is left.
+      assert(await first.executeJavaScript('(()=>{const q="?project="+encodeURIComponent(new URLSearchParams(location.search).get("project"));return document.querySelector(`a[href="/assistant.html${q}"]`)?.getAttribute("aria-label")==="助手"&&document.querySelector(`a[href="/notes.html${q}"]`)?.getAttribute("aria-label")==="想法"&&!document.querySelector("a[href=\\"/notes.html\\"]")})()'));
+      const captured = await first.executeJavaScript('fetch("/api/op/note.capture",{method:"POST",headers:{"Content-Type":"application/json","X-Crew":"1","X-Crew-Request-Id":"smoke-quick-note"},body:JSON.stringify({project:new URLSearchParams(location.search).get("project"),data:{text:"我最近打算健身，先记下每日打卡 App 的想法"}})}).then(r=>r.json())');
       assert.equal(captured.model_calls, 0);
-      assert(await first.executeJavaScript('fetch("/api/op/notes.list").then(r=>r.json()).then(r=>r.notes.some(n=>n.text.includes("每日打卡")&&n.stage==="new"))'));
+      assert(await first.executeJavaScript('fetch("/api/op/notes.list"+location.search).then(r=>r.json()).then(r=>r.notes.some(n=>n.text.includes("每日打卡")&&n.stage==="new"))'));
       await first.executeJavaScript('const settings=document.querySelector("[data-act=settings]");settings.dataset.category="prompts";settings.click()');
       await until(()=>first.executeJavaScript('Boolean(document.querySelector("[data-bp-key=summary]"))'),'behavior configuration scope');
       await first.executeJavaScript('document.querySelector("[data-bp-key=summary]").click();const input=document.querySelector(".bp-editor textarea");input.value="先写结论，再列未验证内容。";input.dispatchEvent(new Event("input",{bubbles:true}));document.querySelector("[data-bp-action=save]").click()');
@@ -419,14 +420,14 @@ app.once('browser-window-created', (_event, win) => {
       assert.equal((await core.request(state.service.url,'/api/op/workspace.settings.get?project='+encodeURIComponent(managed.name))).sessions.length,2);
       await click('#refresh');await wait('document.querySelectorAll(".project").length===4','removed directory restored');
       evidence.checks.push('removal closes only its tab after success, keeps every record and file, and opening the same directory restores the stable workspace');
-      await click('.crew-chrome-assistant');
+      await click('.crew-chrome-admin');
       let assistant;
       await until(()=>{assistant=webContents.getAllWebContents().find(contents=>contents.getURL()===state.service.url+'/assistant.html');return Boolean(assistant);},'one global assistant view');
       await until(()=>assistant.executeJavaScript('Boolean(document.querySelector(".composer textarea")) && document.querySelector(".send").disabled && document.querySelector("#assistant-error").hidden'),'global assistant ready without a model turn');
       await assistant.executeJavaScript('const field=document.querySelector(".composer textarea");field.value="跨工作区保留的助手草稿";field.dispatchEvent(new Event("input",{bubbles:true}));window.__assistantDocument=performance.timeOrigin;');
       await capture('16-v2-global-assistant',assistant);
       const assistantIdentity=await assistant.executeJavaScript('window.__assistantDocument');
-      await home();await click('.crew-chrome-assistant');
+      await home();await click('.crew-chrome-admin');
       assert(await assistant.executeJavaScript('document.querySelector(".composer textarea").value==="跨工作区保留的助手草稿"'));
       assert.equal(await assistant.executeJavaScript('performance.timeOrigin'),assistantIdentity);
       const assistantState=await core.request(state.service.url,'/api/op/assistant.state');assert.equal(assistantState.project,null);assert.equal(assistantState.assistant.running,false);

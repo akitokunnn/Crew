@@ -3,7 +3,7 @@
   const drafts = new WeakMap();
   const esc = value => String(value).replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[char]);
   const events = [["leader", "leader 回复完成", "总会话和任务会话中的 leader 完成一轮回复时。"],
-    ["assistant", "全局助手回复完成", "助手完成回复时，离开助手页面也能提醒。"],
+    ["assistant", "助手回复完成", "系统管理员或工作区助手完成回复时，离开助手页面也能提醒。"],
     ["delivery", "任务交付", "任务交付完成、报告可查看时；阶段进展不响。"]];
   function mount(host, options) {
     const previous = drafts.get(host);
@@ -15,7 +15,7 @@
     }
     function render() {
       host.innerHTML = `<section class="cs-card cs-sound-master">
-        <div class="cs-card-heading"><div><h2>提示音</h2><p>所有工作区和全局助手共用，保存后生效。</p></div>
+        <div class="cs-card-heading"><div><h2>提示音</h2><p>所有工作区、系统管理员和助手共用，保存后生效。</p></div>
           <label class="cs-inherit"><input type="checkbox" data-sound-enabled ${draft.muted ? "" : "checked"}>启用提示音</label></div>
         <label class="cs-sound-volume">音量 <output data-sound-volume-value>${Math.round(draft.volume * 100)}%</output>
           <input type="range" min="0" max="100" step="1" value="${Math.round(draft.volume * 100)}" data-sound-volume aria-label="提示音音量"></label>

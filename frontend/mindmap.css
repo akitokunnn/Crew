@@ -56,7 +56,7 @@
 .mm-scroll.drop-root{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent);background-color:color-mix(in srgb,var(--accent) 4%,transparent)}
 .mm-world{position:relative;min-width:100%;min-height:100%;padding-bottom:72px}
 .mm-plane{position:absolute;left:0;top:0;transform-origin:0 0}
-.mm-wires{position:absolute;left:0;top:0;overflow:visible}
+.mm-wires{position:absolute;left:0;top:0;overflow:visible;max-width:none}
 .mm-wires path{fill:none;stroke:color-mix(in srgb,var(--text-3) 64%,transparent);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
 .mm-wires path.picked{stroke:var(--accent);stroke-width:2}
 .mm-nodes{position:absolute;left:0;top:0}
@@ -219,4 +219,29 @@
 }
 @media (prefers-reduced-motion:reduce){
   .mm-node,.mm-fold,.mm-tray{transition:none}
+}
+
+/* Tray box: always visible, jots an idea and hangs it under the selected node. */
+.mm-capture{display:flex;gap:6px;align-items:center;margin:8px 8px 0;padding:5px 5px 5px 9px;border:1.5px solid color-mix(in srgb,var(--accent) 70%,var(--line));border-radius:10px;background:var(--surface)}
+.mm-capture:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-softer,color-mix(in srgb,var(--accent) 10%,transparent))}
+.mm-capture-input{flex:1;min-width:0;height:26px;border:0;background:transparent;color:var(--text);resize:none;outline:none;font:inherit;font-size:12.5px;line-height:1.55;padding:3px 0;max-height:120px;overflow:hidden}
+.mm-capture-input::placeholder{color:var(--text-3)}
+.notes-page .mm-capture .btn{flex:none;padding:3px 9px;font-size:11.5px}
+.mm-capture-hint{display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline;margin:5px 10px 2px;font-size:11px;line-height:1.5;color:var(--text-3)}
+.mm-capture-hint:empty{display:none}
+.mm-capture-hint .text-link{font-size:11px}
+.mm-capture-warn{color:var(--warn)}
+/* Tap-to-place: the picked idea is marked in the tray and a banner says where to tap. */
+.mm-tray-item{cursor:pointer}
+.mm-tray-item.armed{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 9%,var(--studio-card));box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
+.mm-arm{position:absolute;left:50%;top:52px;transform:translateX(-50%);z-index:6;display:flex;align-items:center;gap:10px;max-width:calc(100% - 24px);padding:6px 6px 6px 14px;border:1px solid color-mix(in srgb,var(--accent) 35%,var(--studio-border));border-radius:999px;background:var(--studio-glass);backdrop-filter:blur(12px);box-shadow:var(--studio-shadow-float);font-size:12.5px;color:var(--text)}
+.mm-arm[hidden]{display:none}
+.mm-arm span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:760px){
+  .mm-capture{margin:8px 8px 0}
+  .mm-capture-input{font-size:14px}
+  .notes-page .mm-capture .btn{min-height:34px;padding:0 12px;font-size:13px}
+  .mm-tray{display:flex;flex-direction:column}
+  .mm-arm{top:auto;bottom:56px;left:8px;right:8px;transform:none;max-width:none;border-radius:12px}
+  .mm-arm span{white-space:normal}
 }

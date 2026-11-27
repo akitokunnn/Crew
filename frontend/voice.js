@@ -696,3 +696,11 @@
   setState("idle");
   requestAnimationFrame(loop);
 })();
+// 返回：从工作区助手进来（?project=X）就回到那个助手，否则回系统管理员。
+(() => {
+  const back = document.querySelector(".vh-back"), project = new URLSearchParams(location.search).get("project");
+  if (!back) return;
+  back.href = project ? `/assistant.html?project=${encodeURIComponent(project)}` : "/assistant.html";
+  back.setAttribute("aria-label", project ? "返回助手" : "返回系统管理员");
+  if (!project) back.querySelector("span").textContent = "系统管理员";
+})();

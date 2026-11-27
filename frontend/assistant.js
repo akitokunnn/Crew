@@ -1,16 +1,25 @@
 "use strict";
 (() => {
   const $ = id => document.getElementById(id);
-  let mounted=null, opened=false, loading=false, timer=null, toastTimer=null, assistantSession=null, note=null, notePrefill=false, opening=null, lastState=null;
+  let mounted=null, opened=false, loading=false, timer=null, toastTimer=null, assistantSession=null, note=null, notePrefill=false, opening=null, discussion=null, lastState=null, stopped=false;
+  // One page, two assistants: no query is the 系统管理员 (the HOME-wide assistant); ?project=X is workspace X's own assistant.
+  const scope=window.CrewBrowser.pageProject(), PROJECT=scope.mode==="workspace"?scope.project:null;
+  const projectQuery=PROJECT===null?"":`?project=${encodeURIComponent(PROJECT)}`;
   const NOTE_OPENING="帮我把这个想法想清楚";
-  // "助手开局" on a blank workspace opens #opening=<project>: the intent is written into the composer, nothing is sent.
+  // "助手开局" on a blank workspace opens that workspace's assistant with #opening=<project>: the intent is written into the composer, nothing is sent.
   const OPENING=name=>`我想在工作区「${name}」开局，请你来起盘：先问我 2–3 个关键问题，对齐目标、范围和优先级；再给出领域划分、各领域的 leader 编制（载体与模型）和首批任务清单。等我确认方案后再创建和启动，先不要直接动手。`;
   // An empty conversation offers a few starting points; picking one only writes it into the composer.
-  const EMPTY_GUIDE={title:"从哪里聊起？",text:"点一个示例填进输入框，改好再发送。",prompts:[
-    {label:"汇总各工作区近况",detail:"在推进什么、卡在哪、等你处理什么",icon:["M4 5h16v14H4z","M8 9h8M8 13h5"],text:"汇总一下各个工作区的近况：各自在推进什么、卡在哪里、有哪些事在等我处理。"},
-    {label:"记一个想法",detail:"先记下来，之后再慢慢想清楚",icon:["M4 20h4L19 9l-4-4L4 16v4Z","m13.5 6.5 4 4"],text:"帮我在想法墙记一个想法："},
-    {label:"让助手开局",detail:"先对齐目标，再给出结构和首批任务",icon:["M12 3v7M5 10h14M5 10v5m14-5v5","M8 3h8v4H8zM2 15h6v5H2zm14 0h6v5h-6z"],text:"帮我给一个工作区开局：先问我是哪个工作区，再问 2–3 个关键问题，对齐目标、范围和优先级；然后给出领域划分、各领域的 leader 编制和首批任务清单。等我确认方案后再创建和启动，先不要直接动手。"},
-    {label:"给 leader 建任务",detail:"说清要做成什么样，确认后再创建",icon:["M9 6h11M9 12h11M9 18h11","m3 6 1.5 1.5L7 5M3 12l1.5 1.5L7 11M3 18l1.5 1.5L7 17"],text:"帮我给一个 leader 建任务：先问清是哪个工作区、交给哪位 leader、要做成什么样；整理出任务标题、要求和验收标准，等我确认后再创建。"}]};
+  const ICONS={recap:["M4 5h16v14H4z","M8 9h8M8 13h5"],note:["M4 20h4L19 9l-4-4L4 16v4Z","m13.5 6.5 4 4"],opening:["M12 3v7M5 10h14M5 10v5m14-5v5","M8 3h8v4H8zM2 15h6v5H2zm14 0h6v5h-6z"],task:["M9 6h11M9 12h11M9 18h11","m3 6 1.5 1.5L7 5M3 12l1.5 1.5L7 11M3 18l1.5 1.5L7 17"]};
+  const ADMIN_GUIDE={title:"从哪里聊起？",text:"系统管理员看得到所有工作区。点一个示例填进输入框，改好再发送。",prompts:[
+    {label:"汇总各工作区近况",detail:"在推进什么、卡在哪、等你处理什么",icon:ICONS.recap,text:"汇总一下各个工作区的近况：各自在推进什么、卡在哪里、有哪些事在等我处理。"},
+    {label:"记一个想法",detail:"说清放进哪个工作区，之后再慢慢想",icon:ICONS.note,text:"帮我记一个想法：先问我放进哪个工作区，再记下来："},
+    {label:"让助手开局",detail:"先对齐目标，再给出结构和首批任务",icon:ICONS.opening,text:"帮我给一个工作区开局：先问我是哪个工作区，再问 2–3 个关键问题，对齐目标、范围和优先级；然后给出领域划分、各领域的 leader 编制和首批任务清单。等我确认方案后再创建和启动，先不要直接动手。"},
+    {label:"给 leader 建任务",detail:"说清要做成什么样，确认后再创建",icon:ICONS.task,text:"帮我给一个 leader 建任务：先问清是哪个工作区、交给哪位 leader、要做成什么样；整理出任务标题、要求和验收标准，等我确认后再创建。"}]};
+  const WORKSPACE_GUIDE={title:"从哪里聊起？",text:"这位助手只管这个工作区。点一个示例填进输入框，改好再发送。",prompts:[
+    {label:"理一理这里的近况",detail:"在推进什么、卡在哪、等你处理什么",icon:ICONS.recap,text:"理一理这个工作区的近况：在推进什么、卡在哪里、有哪些事在等我处理。"},
+    {label:"记一个想法",detail:"先记进这个工作区，之后再慢慢想清楚",icon:ICONS.note,text:"帮我在这个工作区记一个想法："},
+    {label:"让助手开局",detail:"先对齐目标，再给出结构和首批任务",icon:ICONS.opening,text:"帮我给这个工作区开局：先问 2–3 个关键问题，对齐目标、范围和优先级；然后给出领域划分、各领域的 leader 编制和首批任务清单。等我确认方案后再创建和启动，先不要直接动手。"},
+    {label:"给 leader 建任务",detail:"说清要做成什么样，确认后再创建",icon:ICONS.task,text:"帮我给这个工作区的一个 leader 建任务：先问清交给哪位 leader、要做成什么样；整理出任务标题、要求和验收标准，等我确认后再创建。"}]};
   const systemTheme=matchMedia("(prefers-color-scheme: dark)");
   function theme(){let selected="system";if(!window.crewDesktopTheme)try{selected=localStorage.getItem("crew.theme")||selected;}catch{}document.documentElement.dataset.theme=selected==="system"?(systemTheme.matches?"dark":"light"):selected;}
   theme();systemTheme.addEventListener("change",theme);window.addEventListener("storage",theme);window.addEventListener("crew:theme-change",theme);
@@ -18,7 +27,25 @@
   document.addEventListener("crew:sound-error",event=>toast(event.detail));
   async function api(path,body) {
     const response = await fetch(path, body === undefined ? {method:"GET", headers:{"X-Crew":"1"}} : window.CrewBrowser.postOptions(body));
-    const value=await response.json();if(!response.ok)throw Error(value.error||`请求失败 (${response.status})`);return value;
+    const value=await response.json();
+    if(!response.ok){const failure=Error(value.error||`请求失败 (${response.status})`);failure.status=response.status;failure.body=value;throw failure;}
+    return value;
+  }
+  function fatal(message) {
+    stopped=true;clearTimeout(timer);
+    const node=$("assistant-error");node.replaceChildren(document.createTextNode(message));node.hidden=false;
+    const home=document.createElement("a");home.className="btn ghost";home.href="/";home.textContent="回到工作区总览";node.append(home);
+    $("assistant-chat").replaceChildren();
+  }
+  const displayName=state=>state?.project?.display_name||state?.project?.name||PROJECT;
+  // Page title and header follow the mode; a workspace page speaks for that workspace only.
+  function header(state) {
+    if(PROJECT===null){document.title="系统管理员 · Crew";return;}
+    const name=displayName(state);
+    $("assistant-title").textContent="助手";$("assistant-scope").textContent=name;$("assistant-scope").hidden=false;
+    $("assistant-sub").textContent=`「${name}」的助手：只看这个工作区，帮你理清想法、开局和推进。`;
+    $("assistant-context-title").textContent="这里的事";$("assistant-overview-open").textContent="这里的事";$("assistant-context-sub").textContent="本区的待办与近况";
+    document.title=`助手 · ${name} · Crew`;
   }
   function error(message) {
     const node=$("assistant-error");node.replaceChildren();node.hidden=!message;
@@ -31,16 +58,21 @@
       const name=projectName(item);if(!name)continue;
       const link=document.createElement("a"),url=new URL("/",location.href);url.searchParams.set("project",name);
       if(item.leader_session_id)url.hash=new URLSearchParams({leader:item.leader_session_id,...(item.id&&title==="进行中的任务"?{goal:item.id}:{})}).toString();
-      link.href=url.href;link.textContent=label(item);const detail=document.createElement("small");detail.textContent=name;link.append(detail);node.append(link);
+      link.href=url.href;link.textContent=label(item);
+      // A workspace page lists only its own items; naming the workspace on each would repeat the title.
+      if(PROJECT===null){const detail=document.createElement("small");detail.textContent=name;link.append(detail);}
+      node.append(link);
     }
     return node;
   }
   function overview(state) {
     window.CrewGlobalRail?.update({projects: state.projects || [], todos: state.todos || [], goals: state.goals || []});
+    // A workspace page lists only its own work; anything carrying another project is left out.
+    const own=item=>PROJECT===null||item.project==null||item.project===PROJECT,where=item=>item.project||PROJECT;
     const node=$("assistant-overview");node.replaceChildren(
-      section("我的 TODO",(state.todos||[]).filter(item=>item.status==null||item.status==="open"),item=>item.title||item.text||"待办",item=>item.project,"暂时没有需要你动手的事项。"),
-      section("进行中的任务",(state.goals||[]).filter(item=>!["completed","cancelled"].includes(item.status)),item=>item.title,item=>item.project,"各工作区暂时没有进行中的任务。"),
-      section("工作区",state.projects||[],item=>item.display_name||item.name,item=>item.name,"先打开一个文件夹，开始项目。")
+      section("我的 TODO",(state.todos||[]).filter(item=>(item.status==null||item.status==="open")&&own(item)),item=>item.title||item.text||"待办",where,"暂时没有需要你动手的事项。"),
+      section("进行中的任务",(state.goals||[]).filter(item=>!["completed","cancelled"].includes(item.status)&&own(item)),item=>item.title,where,PROJECT===null?"各工作区暂时没有进行中的任务。":"这个工作区暂时没有进行中的任务。"),
+      ...(PROJECT===null?[section("工作区",state.projects||[],item=>item.display_name||item.name,item=>item.name,"先打开一个文件夹，开始项目。")]:[])
     );
   }
   // High-risk operations an AI asked for wait here until the user confirms or rejects them.
@@ -130,7 +162,7 @@
       for(const [label,approve,kind] of [["确认执行",true,"btn primary"],["拒绝",false,"btn ghost"]]){
         const button=document.createElement("button");button.className=kind;button.textContent=label;
         button.onclick=async()=>{for(const other of actions.querySelectorAll("button"))other.disabled=true;
-          try{const result=await api("/api/op/interaction.resolve",{id:item.id,approve});
+          try{const result=await api("/api/op/interaction.resolve",{id:item.id,approve,...(PROJECT===null?{}:{project:PROJECT})});
             toast(result.status==="approved"?"已确认并执行":result.status==="rejected"?"已拒绝":`执行失败：${result.error}`);}
           catch(failure){toast(failure.message);}
           shown=null;await loadConfirmations();};
@@ -139,19 +171,24 @@
       card.append(detail,actions);node.append(card);
     }
   }
-  async function loadConfirmations(){try{confirmations((await api("/api/op/interaction.list",{})).requests);}catch(failure){toast(`确认请求读取失败：${failure.message}`);}}
+  // The administrator keeps the HOME-wide inbox; a workspace page only sees and resolves its own workspace's cards.
+  async function loadConfirmations(){try{confirmations((await (PROJECT===null?api("/api/op/interaction.list",{}):api(`/api/op/interaction.list${projectQuery}`))).requests);}catch(failure){toast(`确认请求读取失败：${failure.message}`);}}
   async function refresh() {
-    if(loading || window.CrewAccess?.expired)return;loading=true;clearTimeout(timer);
+    if(loading || stopped || window.CrewAccess?.expired)return;loading=true;clearTimeout(timer);
     try {
-      if(!opened){await api("/api/op/assistant.open",{});opened=true;}
-      const state=await api("/api/op/assistant.state");assistantSession=state.assistant.session_id;CrewSound.observe(state.sounds,state.now);overview(state);error("");
+      if(!opened){await api("/api/op/assistant.open",PROJECT===null?{}:{project:PROJECT});opened=true;}
+      const state=await api(`/api/op/assistant.state${projectQuery}`);assistantSession=state.assistant.session_id;CrewSound.observe(state.sounds,state.now);header(state);overview(state);error("");
       await loadConfirmations();
       const identity=state.assistant.session_id;lastState=state;
-      if(mounted!==identity){CrewChat.unmount();CrewChat.mount({host:$("assistant-chat"),session:state.assistant,state,api,toast,onRouted:()=>{},onNoteCleared:dropNote,emptyGuide:EMPTY_GUIDE});mounted=identity;attachNote();}
+      if(mounted!==identity){CrewChat.unmount();CrewChat.mount({host:$("assistant-chat"),session:PROJECT===null?{...state.assistant,name:"系统管理员"}:state.assistant,state,api,toast,onRouted:()=>{},onNoteCleared:dropNote,emptyGuide:PROJECT===null?ADMIN_GUIDE:WORKSPACE_GUIDE});mounted=identity;attachNote();}
       else CrewChat.update(state);
-      attachOpening();
-    }catch(failure){error(failure.message||"暂时连不上助手");}
-    finally{loading=false;timer=setTimeout(refresh,4000);}
+      attachOpening();attachDiscussion();
+    }catch(failure){
+      // An unknown or removed workspace is a dead link: say so instead of retrying or opening the administrator.
+      if(PROJECT!==null&&(failure.body?.error_code==="project_unavailable"||failure.status===404&&!opened)){fatal(`工作区「${PROJECT}」不存在或已移除，这个助手打不开。`);return;}
+      error(failure.message||"暂时连不上助手");
+    }
+    finally{loading=false;if(!stopped)timer=setTimeout(refresh,4000);}
   }
   window.addEventListener("pagehide",()=>{clearTimeout(timer);CrewChat.unmount();});
   // "去聊聊" on the idea wall opens #note=<id>: attach the idea above the
@@ -161,22 +198,50 @@
   async function readNote(){
     const id=new URLSearchParams(location.hash.slice(1)).get("note");
     if(!id)return;
-    let result;
-    try{result=await api("/api/op/notes.list?include_archived=1");}catch(failure){toast(`想法读取失败：${failure.message}`);return;}
-    const found=result.notes.find(item=>item.id===id);
-    if(!found){toast("没有找到这条想法，可能已被删除。");dropNote();return;}
+    // Ideas belong to workspaces: a new discussion happens with the idea's own workspace assistant.
+    if(PROJECT===null){toast("想法要在它所属工作区的助手里讨论，请从那个工作区的想法页点“去聊聊”。");dropNote();return;}
+    let found;
+    try{const result=await api(`/api/op/note.get?project=${encodeURIComponent(PROJECT)}&note_id=${encodeURIComponent(id)}`);found=result.note||result;}
+    catch(failure){toast(failure.status===404?"这条想法不在这个工作区，或已被删除。":`想法读取失败：${failure.message}`);dropNote();return;}
+    if(!found?.id){toast("没有找到这条想法，可能已被删除。");dropNote();return;}
     note={id,title:found.title||found.text.split("\n").map(line=>line.trim()).find(Boolean)};notePrefill=true;attachNote();
   }
   function readOpening(){const project=new URLSearchParams(location.hash.slice(1)).get("opening");if(project){opening=project;attachOpening();}}
   function attachOpening(){
     if(opening===null||mounted===null||lastState===null)return;
-    const name=opening,found=(lastState.projects||[]).find(item=>item.name===name);opening=null;
+    const name=opening;opening=null;
     history.replaceState(null,"",location.pathname+location.search);
+    // A workspace assistant only takes its own workspace's opening; another workspace's intent is never written here.
+    if(PROJECT!==null&&name!==PROJECT){toast("这条开局链接属于另一个工作区，没有填进输入框。");return;}
+    const found=PROJECT!==null?lastState.project:(lastState.projects||[]).find(item=>item.name===name);
     if(!found){toast(`没有找到工作区「${name}」，可能已被移除。`);return;}
     if(!CrewChat.prefill(OPENING(found.display_name||found.name)))toast("输入框里有未发送的内容，开局说明没有覆盖它；发送或清空后再点一次“让助手开局”。");
   }
-  window.addEventListener("hashchange",()=>{void readNote();readOpening();});
-  $("assistant-prompts").onclick=()=>{const dialog=document.createElement("dialog");dialog.className="personal-notes-dialog assistant-prompts-dialog";dialog.innerHTML='<header><h2>助手行为配置</h2><button class="btn ghost" data-close aria-label="关闭行为配置">×</button></header><div data-prompts></div>';document.body.append(dialog);dialog.showModal();const cleanup=CrewBehaviorPrompts.mount(dialog.querySelector('[data-prompts]'),{...window.CrewBehaviorPrompts.requests(api),session:assistantSession});const close=()=>{cleanup();dialog.close();dialog.remove();};dialog.querySelector('[data-close]').onclick=close;dialog.oncancel=event=>{event.preventDefault();close();};};
-  $("assistant-notes").onclick=()=>CrewPersonalNotes.create({api}).open();
-  (async()=>{if(window.CrewAccess && !await CrewAccess.ready)return;$("assistant-prompts").hidden=Boolean(window.CrewAccess&&!CrewAccess.local_controls);CrewChat.initFiles(api,toast);readOpening();void refresh();void readNote();})();
+  // A past discussion (#discussion=<session>) reopens the conversation it happened in: this assistant,
+  // or the administrator for discussions held there before ideas moved into workspaces.
+  function readDiscussion(){const id=new URLSearchParams(location.hash.slice(1)).get("discussion");if(id){discussion=id;attachDiscussion();}}
+  function attachDiscussion(){
+    if(discussion===null||mounted===null||lastState===null)return;
+    const id=discussion;discussion=null;
+    if(id===lastState.assistant.session_id){history.replaceState(null,"",location.pathname+location.search);toast("这是那条想法讨论过的对话。");return;}
+    if(PROJECT!==null){location.replace("/assistant.html#discussion="+encodeURIComponent(id));return;}
+    history.replaceState(null,"",location.pathname+location.search);toast("原讨论所在的对话已不在，可以从想法页重新去聊聊。");
+  }
+  window.addEventListener("hashchange",()=>{void readNote();readOpening();readDiscussion();});
+  $("assistant-prompts").onclick=()=>{const dialog=document.createElement("dialog");dialog.className="personal-notes-dialog assistant-prompts-dialog";dialog.innerHTML=`<header><h2>${PROJECT===null?"系统管理员行为配置":"助手行为配置"}</h2><button class="btn ghost" data-close aria-label="关闭行为配置">×</button></header><div data-prompts></div>`;document.body.append(dialog);dialog.showModal();const cleanup=CrewBehaviorPrompts.mount(dialog.querySelector('[data-prompts]'),{...window.CrewBehaviorPrompts.requests(api),session:assistantSession,...(PROJECT===null?{}:{project:PROJECT})});const close=()=>{cleanup();dialog.close();dialog.remove();};dialog.querySelector('[data-close]').onclick=close;dialog.oncancel=event=>{event.preventDefault();close();};};
+  // 随手记 writes into this workspace; on the administrator page it asks which workspace first.
+  $("assistant-notes").onclick=()=>CrewPersonalNotes.create({api,project:PROJECT,projects:()=>lastState?.projects||null}).open();
+  // 运维: the desktop shows its native 系统管理员 · 运维 page; a browser opens the Web operations panel.
+  $("assistant-operations").onclick=()=>{
+    if(window.crewDesktopShell?.openOperations){void window.crewDesktopShell.openOperations().catch(failure=>toast(`没能打开运维页：${failure.message}`));return;}
+    location.href="/#settings=backend";
+  };
+  (async()=>{
+    if(scope.mode==="invalid"){fatal(`${scope.reason}，打不开助手。`);return;}
+    if(window.CrewAccess && !await CrewAccess.ready)return;
+    $("assistant-prompts").hidden=Boolean(window.CrewAccess&&!CrewAccess.local_controls);
+    // Host operations need this computer (or the desktop's own page); a LAN browser without them does not see 运维.
+    $("assistant-operations").hidden=PROJECT!==null||!window.crewDesktopShell&&Boolean(window.CrewAccess&&!(CrewAccess.host_admin&&CrewAccess.local_controls));
+    CrewChat.initFiles(api,toast);readOpening();readDiscussion();void refresh();void readNote();
+  })();
 })();

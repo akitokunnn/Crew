@@ -92,10 +92,11 @@ test("picked branches drop picks inside other picks and cover every descendant",
   assert.deepEqual(MM.branches(t, new Set(["a", "solo"])).tops, ["a", "solo"]);
 });
 
-test("the layout choice lives in the hash next to the filters", () => {
-  assert.equal(N.DEFAULTS.layout, "wall");
-  assert.equal(N.toHash({...N.DEFAULTS, layout: "map"}), "#layout=map");
-  assert.deepEqual(N.parseHash("#layout=map&tags=a"), {...N.DEFAULTS, tags: ["a"], layout: "map"});
+test("the map is the default layout; the card wall is chosen in the hash next to the filters", () => {
+  assert.equal(N.DEFAULTS.layout, "map");
+  assert.equal(N.toHash({...N.DEFAULTS, layout: "map"}), "");
+  assert.equal(N.toHash({...N.DEFAULTS, layout: "wall"}), "#layout=wall");
+  assert.deepEqual(N.parseHash("#layout=wall&tags=a"), {...N.DEFAULTS, tags: ["a"], layout: "wall"});
   assert.deepEqual(N.parseHash("#layout=grid"), {...N.DEFAULTS, tags: []});
 });
 
@@ -107,9 +108,9 @@ function fakeServer() {
   const exact = (body, keys) => assert.deepEqual(Object.keys(body).sort(), [...keys].sort());
   async function api(pathname, body) {
     state.calls.push([pathname, body === undefined ? "GET" : "POST"]);
-    if (pathname === "/api/op/mindmap.get" && body === undefined) return structuredClone(state.map);
+    if (pathname === "/api/op/mindmap.get?project=demo%20%26%20co" && body === undefined) return structuredClone(state.map);
     if (pathname === "/api/op/mindmap.edit") {
-      exact(body, ["ops", "base_version"]);
+      exact(body, ["project", "ops", "base_version"]); assert.equal(body.project, "demo & co");
       if (body.base_version !== state.map.version) throw conflict("导图已在别处改动，请刷新后再改");
       const effects = body.ops.map(op => {
         assert.equal(op.op, "create");
@@ -122,11 +123,11 @@ function fakeServer() {
     }
     const keys = ["project", "roots", "parent_id", "decisions", "names", "leaders"];
     if (pathname === "/api/op/mindmap.preview") {
-      exact(body, keys);
+      exact(body, keys); assert.equal(body.project, "demo & co", "the map converts into its own workspace");
       return {map_version: state.map.version, board_version: state.board, rows: body.roots.map(id => ({node_id: id, action: "create"})), nothing: false};
     }
     if (pathname === "/api/op/mindmap.convert") {
-      exact(body, [...keys, "map_version", "board_version"]);
+      exact(body, [...keys, "map_version", "board_version"]); assert.equal(body.project, "demo & co");
       if (body.map_version !== state.map.version || body.board_version !== state.board) throw conflict("导图或架构图在预览之后又有改动，请重新预览");
       state.board++; state.map.version++;
       state.map.links.push(...body.roots.map(id => ({node_id: id, project: body.project, domain_id: `d-${id}`, domain_name: id})));
@@ -137,8 +138,8 @@ function fakeServer() {
   return {state, api};
 }
 
-test("the map client speaks the documented endpoints, carries versions and surfaces conflicts", async () => {
-  const server = fakeServer(), client = MM.client(server.api);
+test("the map client speaks the documented endpoints for its own workspace, carries versions and surfaces conflicts", async () => {
+  const server = fakeServer(), client = MM.client(server.api, "demo & co");
   let map = await client.load();
   const t = MM.tree(map);
   const created = await client.edit(MM.rootOps(t, {note_id: "note-1"}), map.version);
@@ -147,13 +148,14 @@ test("the map client speaks the documented endpoints, carries versions and surfa
   const child = await client.edit(MM.dropOps(MM.tree(map), {note_id: "note-2"}, "n1", "child"), map.version);
   assert.deepEqual(child.map.nodes.map(item => [item.id, item.parent_id, item.note_id]), [["n1", null, "note-1"], ["n2", "n1", "note-2"]]);
   await assert.rejects(client.edit([{op: "create", label: "旧版本", parent_id: null, index: 0}], map.version), error => error.status === 409);
-  const request = {project: "demo", roots: ["n1"], parent_id: null, decisions: {}, names: {}, leaders: {}};
+  // Even a stale request naming another workspace converts into this map's own workspace.
+  const request = {project: "other", roots: ["n1"], parent_id: null, decisions: {}, names: {}, leaders: {}};
   const plan = await client.preview(request);
   const done = await client.convert(request, plan);
   assert.equal(done.board_version, 5);
   assert.deepEqual(done.map.links.map(link => link.node_id), ["n1"]);
   await assert.rejects(client.convert(request, plan), error => error.status === 409, "a second confirm with the old preview is refused");
   assert.deepEqual(server.state.calls.map(([pathname, method]) => `${method} ${pathname}`), [
-    "GET /api/op/mindmap.get", "POST /api/op/mindmap.edit", "POST /api/op/mindmap.edit", "POST /api/op/mindmap.edit",
+    "GET /api/op/mindmap.get?project=demo%20%26%20co", "POST /api/op/mindmap.edit", "POST /api/op/mindmap.edit", "POST /api/op/mindmap.edit",
     "POST /api/op/mindmap.preview", "POST /api/op/mindmap.convert", "POST /api/op/mindmap.convert"]);
 });

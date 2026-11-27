@@ -3,3 +3,5 @@
 .jot-dialog{width:min(520px,calc(100vw - 32px))}.jot-dialog form{margin-top:16px}.jot-dialog .pn-actions a{text-decoration:none;font-size:13px}.jot-dialog .pn-recent{font-size:12px;font-weight:500;color:var(--text-3);margin:8px 0 2px}.jot-dialog .pn-item>p{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}.jot-dialog .note{color:var(--text-3);font-size:12.5px}
 
 .stage-report-dialog form>label{margin:16px 0}.stage-report-dialog{max-height:90vh}
+
+.jot-dialog .pn-target{margin-bottom:10px;color:var(--text-2)}.jot-dialog .pn-target select{width:100%}

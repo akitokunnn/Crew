@@ -234,3 +234,37 @@
   .nw-check{opacity:1;top:8px;left:auto;right:8px;transform:none}
   .nw-card-top{padding-right:22px}
 }
+
+/* Workspace scope: the title names the workspace; old ideas from before workspaces wait in one quiet line. */
+.nw-head h1{display:flex;align-items:center;gap:8px;min-width:0}
+.nw-scope{display:inline-flex;align-items:center;max-width:min(320px,46vw);padding:1px 9px;border:1px solid color-mix(in srgb,var(--accent) 32%,transparent);border-radius:999px;background:var(--accent-softer,color-mix(in srgb,var(--accent) 8%,transparent));color:var(--accent-text);font-size:calc(12px * var(--fs));font-weight:500;line-height:1.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nw-scope[hidden]{display:none}
+.nw-unassigned{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 10px;padding:7px 12px;border:1px dashed var(--line-strong);border-radius:10px;background:color-mix(in srgb,var(--panel) 50%,transparent);font-size:12.5px;color:var(--text-2)}
+.nw-unassigned[hidden]{display:none}
+.nw-unassigned .text-link{font-size:12.5px}
+.nw-dead .nw-map,.nw-dead #nw-wall,.nw-dead .nw-capture,.nw-dead .nw-filters,.nw-dead .nw-head-acts,.nw-dead .nw-side>*{display:none!important}
+/* Claiming old ideas into this workspace */
+.nw-claim{width:min(620px,calc(100vw - 32px))}
+.nw-claim-body section{margin-top:12px}
+.nw-claim-body h3{display:flex;align-items:center;gap:8px;margin:0 0 6px;font-size:13px;font-weight:500}
+.nw-claim-body h3 .text-link{margin-left:auto;font-size:12px}
+.nw-claim-list{display:flex;flex-direction:column;gap:4px;max-height:min(40vh,320px);overflow:auto;padding:2px}
+.nw-claim-row{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:9px;background:var(--surface);font-size:13px;cursor:pointer}
+.nw-claim-row:hover{border-color:var(--line-strong)}
+.nw-claim-row input{margin-top:3px;flex:none}
+.nw-claim-row span{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;min-width:0}
+.nw-claim-row b{font-weight:500;overflow-wrap:anywhere}
+.nw-claim-row small{color:var(--text-3);font-size:11.5px}
+.nw-claim-tag{font-style:normal;font-size:11px;padding:0 6px;border-radius:999px;background:var(--hover);color:var(--text-3)}
+/* The map is the main view: one thin toolbar and the whole page for the map, no big capture box or filter row. */
+.nw-map-mode .nw-capture,.nw-map-mode .nw-filters,.nw-map-mode .nw-sub{display:none}
+.nw-map-mode .nw-head{align-items:center;padding:10px 0 8px}
+@media (max-width:760px){.nw-map-mode .nw-head{padding:10px 0 6px}.nw-claim-list{max-height:none}}
+/* Phone: the title (with its workspace chip) takes the first row and the view buttons the second, so nothing scrolls sideways. */
+@media (max-width:760px){
+  .notes-page .nw-head{flex-wrap:wrap;row-gap:8px}
+  .notes-page .nw-head>.nw-title{flex:1 1 100%;min-width:0}
+  .notes-page .nw-head-acts{flex-wrap:wrap}
+}
+.nw-dialog .nw-claim-row{display:flex;flex-direction:row;align-items:flex-start;gap:10px;margin:0}
+.nw-dialog .nw-claim-row input{width:auto;min-height:0;margin:3px 0 0;padding:0}

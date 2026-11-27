@@ -49,7 +49,7 @@ test("a blank workspace offers 自己搭 and 助手开局 as two equal entries t
   assert.deepEqual(paths,["self","assistant"]);
   assert.match(html,/<h3>自己搭<\/h3>/);assert.match(html,/<h3>助手开局<\/h3>/);
   assert.match(html,/data-act="modal-leader">开始新对话/);assert.match(html,/data-act="view" data-view="architecture">画架构图/);
-  assert.match(html,/href="\/assistant\.html#opening=fit%20%26%20go">让助手开局/);
+  assert.match(html,/href="\/assistant\.html\?project=fit%20%26%20go#opening=fit%20%26%20go">让助手开局/,"the workspace's own assistant takes the opening");
   assert.doesNotMatch(html,/wh-overview|wh-empty|任务列表/,"the empty columns step aside for the two entries");
   assert.doesNotMatch(html,/data-goal-act="start"|\/api\/|undefined|NaN/);
 });

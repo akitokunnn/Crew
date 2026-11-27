@@ -21,7 +21,7 @@
     appearanceHost=host;
     const percent=value=>Math.round(value*100)+'%';
     host.innerHTML=`<div class="hs-appearance"><section class="cs-card"><h2>显示模式</h2><p class="cs-hint">这台电脑上的 Crew 共用一个显示模式，首页、所有工作区和窗口边框同时生效。</p><div class="cs-theme-options">${[['system','跟随系统'],['light','浅色'],['dark','深色']].map(([id,title])=>`<button type="button" data-desktop-theme="${id}" aria-pressed="${mode===id}">${title}</button>`).join('')}</div><p role="status" data-theme-note></p></section>`+
-      `<section class="cs-card"><h2>字号</h2><p class="cs-hint">工作区、助手和想法墙页面共用一个字号；首页保持标准大小。</p><div class="hs-font"><input type="range" min="0.9" max="1.4" step="0.01" value="${fontScale}" data-desktop-font aria-label="字号"><output data-font-value>${percent(fontScale)}</output><button type="button" class="cs-button" data-font-reset ${fontScale===1?'disabled':''}>恢复标准</button></div><p role="status" data-font-note></p></section>`+
+      `<section class="cs-card"><h2>字号</h2><p class="cs-hint">工作区、助手和想法页面共用一个字号；首页保持标准大小。</p><div class="hs-font"><input type="range" min="0.9" max="1.4" step="0.01" value="${fontScale}" data-desktop-font aria-label="字号"><output data-font-value>${percent(fontScale)}</output><button type="button" class="cs-button" data-font-reset ${fontScale===1?'disabled':''}>恢复标准</button></div><p role="status" data-font-note></p></section>`+
       `<section class="cs-card"><h2>新手引导</h2><p class="cs-hint">再走一遍：检测执行载体、外观、Crew 的特色和第一个工作区。</p><button type="button" class="cs-button hs-guide" data-onboarding-open>重新打开新手引导</button></section></div>`;
     for(const button of host.querySelectorAll('[data-desktop-theme]'))button.onclick=async()=>{
       try{adopt(await bridge.setTheme(button.dataset.desktopTheme));}

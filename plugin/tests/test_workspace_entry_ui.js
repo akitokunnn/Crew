@@ -64,7 +64,7 @@ test("a hidden page keeps a throttled invalidation until visible", async () => {
   assert.equal(entry.calls.length, 2);
 });
 
-test("links keep the desktop tab-guard contract: project cards carry no hash, assistant and notes carry no query", async () => {
+test("links keep the desktop tab-guard contract: project cards carry no hash, the overview reaches only the 系统管理员", async () => {
   const entry = load();
   entry.render(state("自动驾驶 & 感知", "tools"));
   await entry.answer({projects:[{project:"自动驾驶 & 感知", counts:{...zero, decisions:1}, items:[{kind:"decision", title:"选方案", name:"感知", detail:""}], unknown:false, updated_at:"x"},
@@ -72,9 +72,9 @@ test("links keep the desktop tab-guard contract: project cards carry no hash, as
   const html = entry.render(state("自动驾驶 & 感知", "tools"));
   const cards = [...html.matchAll(/class="entry-card"[^>]*href="([^"]*)"/g)].map(match => match[1]);
   assert.deepEqual(cards, [`/?project=${esc(encodeURIComponent("自动驾驶 & 感知"))}`, "/?project=tools"]);
-  assert.match(html, /href="\/assistant\.html"/);
-  assert.match(html, /href="\/notes\.html"/);
-  assert.doesNotMatch(html, /href="\/(assistant|notes)\.html\?/);
+  // The overview has no workspace yet: 系统管理员 is reached directly; ideas need a workspace first.
+  assert.match(html, /href="\/assistant\.html" title="系统管理员/);
+  assert.doesNotMatch(html, /notes\.html|全局助手|想法墙/);
   assert.match(html, /<button type="button" data-local-control class="[^"]*" data-act="settings"/);
   assert.match(html, /class="entry-task"[^>]*href="\/\?project=%E8%87%AA[^"#]*#all"/);
 });
