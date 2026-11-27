@@ -85,7 +85,19 @@
   const runtime=value=>`<span class="ac-rt" data-rt="${esc(value)}">${RUNTIMES[value]||"未知载体"}</span>`;
   // An opening plan and a war-room budget raise are shown from what they will do, read once per request: the plan
   // through campaign.preview (read-only), the room through war_room.get.
-  const extras=new Map();let shown=null;
+  const extras=new Map(), resolving=new Set();
+  const confirmationDialog=$("assistant-confirmation-dialog"), confirmationTrigger=$("assistant-confirmation-trigger");
+  let shown=null, pendingRequests=[], confirmationRead=0;
+  function openConfirmations(){
+    if(confirmationDialog.open)return;
+    $("assistant-confirmation-status").textContent="";
+    confirmationDialog.showModal();
+  }
+  confirmationTrigger.onclick=openConfirmations;
+  function confirmationFeedback(message){
+    if(confirmationDialog.open)$("assistant-confirmation-status").textContent=message;
+    else toast(message);
+  }
   function lookup(item){
     if(!extras.has(item.id)){
       const {request_id,board_version,...plan}=item.args,project=item.args.project||item.project;
@@ -146,11 +158,15 @@
   const SPECIAL={"campaign.launch":["开局方案",campaignHTML],"war_room.budget":["追加作战室预算",budgetHTML],
     "domains.restructure.apply":["架构重整",restructureHTML],"leader.merge":["合并 leader",restructureHTML],"leader.retire":["退役 leader",restructureHTML]};
   function confirmations(requests){
-    const key=requests.map(item=>item.id).join();if(key===shown)return;shown=key;
+    pendingRequests=requests;
+    const key=JSON.stringify(requests.map(item=>item.id));if(key===shown)return;shown=key;
     for(const id of extras.keys())if(!requests.some(item=>item.id===id))extras.delete(id);
-    const node=$("assistant-confirmations");node.replaceChildren();node.hidden=!requests.length;
-    if(!requests.length)return;
-    const heading=document.createElement("h2");heading.textContent=`等你确认（${requests.length}）`;node.append(heading);
+    const node=$("assistant-confirmation-cards");node.replaceChildren();
+    confirmationTrigger.hidden=!requests.length;
+    if(!requests.length){if(confirmationDialog.open)confirmationDialog.close();return;}
+    const label=`等你确认 (${requests.length})`;
+    confirmationTrigger.textContent=label;
+    $("assistant-confirmation-heading").textContent=label;
     for(const item of requests){
       const special=SPECIAL[item.op],card=document.createElement("article");card.className=`assistant-confirmation${special?" assistant-confirmation-rich":""}`;
       const title=document.createElement("strong");title.textContent=special?special[0]:item.summary;
@@ -161,29 +177,52 @@
       else detail.textContent=argumentLine(item.args)||"无参数";
       const actions=document.createElement("div");actions.className="assistant-confirmation-actions";
       for(const [label,approve,kind] of [["确认执行",true,"btn primary"],["拒绝",false,"btn ghost"]]){
-        const button=document.createElement("button");button.className=kind;button.textContent=label;
-        button.onclick=async()=>{for(const other of actions.querySelectorAll("button"))other.disabled=true;
-          try{const result=await api("/api/op/interaction.resolve",{id:item.id,approve,...(PROJECT===null?{}:{project:PROJECT})});
-            toast(result.status==="approved"?"已确认并执行":result.status==="rejected"?"已拒绝":`执行失败：${result.error}`);}
-          catch(failure){toast(failure.message);}
-          shown=null;await loadConfirmations();};
+        const button=document.createElement("button");button.type="button";button.className=kind;button.textContent=label;button.disabled=resolving.has(item.id);
+        button.onclick=async()=>{
+          if(button.disabled||resolving.has(item.id))return;
+          resolving.add(item.id);
+          for(const other of actions.querySelectorAll("button"))other.disabled=true;
+          let result;
+          try{result=await api("/api/op/interaction.resolve",{id:item.id,approve,...(PROJECT===null?{}:{project:PROJECT})});}
+          catch(failure){
+            resolving.delete(item.id);
+            shown=null;confirmations(pendingRequests);
+            confirmationFeedback(failure.message);
+            return;
+          }
+          resolving.delete(item.id);
+          ++confirmationRead; // An older list response can still include the request that just completed.
+          confirmations(pendingRequests.filter(request=>request.id!==item.id));
+          confirmationFeedback(result.status==="approved"?"已确认并执行":result.status==="rejected"?"已拒绝":`执行失败：${result.error}`);
+        };
         actions.append(button);
       }
       card.append(detail,actions);node.append(card);
     }
+    const unseen=requests.map(item=>`crew.confirmation.seen.${item.id}`).filter(id=>localStorage.getItem(id)===null);
+    if(unseen.length){
+      openConfirmations();
+      for(const id of unseen)localStorage.setItem(id,"1");
+    }
   }
   // The administrator keeps the HOME-wide inbox; a workspace page only sees and resolves its own workspace's cards.
-  async function loadConfirmations(){try{confirmations((await (PROJECT===null?api("/api/op/interaction.list",{}):api(`/api/op/interaction.list${projectQuery}`))).requests);}catch(failure){toast(`确认请求读取失败：${failure.message}`);}}
+  async function loadConfirmations(){
+    const read=++confirmationRead;
+    try{
+      const {requests}=await (PROJECT===null?api("/api/op/interaction.list",{}):api(`/api/op/interaction.list${projectQuery}`));
+      if(read===confirmationRead)confirmations(requests);
+    }catch(failure){if(read===confirmationRead)confirmationFeedback(`确认请求读取失败：${failure.message}`);}
+  }
   async function refresh() {
     if(loading || stopped || window.CrewAccess?.expired)return;loading=true;clearTimeout(timer);
     try {
       if(!opened){await api("/api/op/assistant.open",PROJECT===null?{}:{project:PROJECT});opened=true;}
       const state=await api(`/api/op/assistant.state${projectQuery}`);assistantSession=state.assistant.session_id;CrewSound.observe(state.sounds,state.now);header(state);overview(state);error("");
-      await loadConfirmations();
       const identity=state.assistant.session_id;lastState=state;
       if(mounted!==identity){CrewChat.unmount();CrewChat.mount({host:$("assistant-chat"),session:PROJECT===null?{...state.assistant,name:"系统管理员"}:state.assistant,state,api,toast,onRouted:()=>{},onNoteCleared:dropNote,emptyGuide:PROJECT===null?ADMIN_GUIDE:WORKSPACE_GUIDE});mounted=identity;attachNote();}
       else CrewChat.update(state);
       attachOpening();attachDiscussion();
+      await loadConfirmations();
     }catch(failure){
       // An unknown or removed workspace is a dead link: say so instead of retrying or opening the administrator.
       if(PROJECT!==null&&(failure.body?.error_code==="project_unavailable"||failure.status===404&&!opened)){fatal(`工作区「${PROJECT}」不存在或已移除，这个助手打不开。`);return;}
