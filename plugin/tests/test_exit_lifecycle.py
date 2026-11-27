@@ -316,7 +316,8 @@ class DigestExitLifecycleTests(unittest.TestCase):
         web.Service.close(service)
         self.assertTrue(service.stop.is_set())
         self.assertEqual(actions, ['digest-stop', 'remote', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
-        preview = previews.capture('<p>Isolated shutdown fixture</p>', title='Shutdown', goal_id='fixture')
+        preview = previews.capture('<p>Isolated shutdown fixture</p>', field='document_html',
+                                   title='Shutdown', goal_id='fixture')
         self.assertFalse(preview['ok'])
         self.assertIn('宿主已关闭', preview['error'])
 
@@ -376,7 +377,8 @@ class DigestExitLifecycleTests(unittest.TestCase):
         self.assertIs(raised.exception, failure)
         self.assertEqual(actions, ['digest-stop', 'remote', 'storage', 'connections', 'chat', 'maintenance', 'digest-join'])
         logged.assert_called_once()
-        preview = previews.capture('<p>Isolated shutdown fixture</p>', title='Shutdown', goal_id='fixture')
+        preview = previews.capture('<p>Isolated shutdown fixture</p>', field='document_html',
+                                   title='Shutdown', goal_id='fixture')
         self.assertFalse(preview['ok'])
         self.assertIn('宿主已关闭', preview['error'])
 
