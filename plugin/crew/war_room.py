@@ -8,7 +8,8 @@ import json
 from . import board, change_feed, channel, personal
 
 TITLE_LIMIT, GOAL_LIMIT, ITEM_LIMIT, CONTRACT_LIMIT = 30, 200, 60, 8000
-BUDGET_MIN, BUDGET_MAX = 10_000, 1_000_000_000
+# One leader's first turn already writes tens of thousands of cache tokens; a lower cap pauses the room at once.
+BUDGET_MIN, BUDGET_MAX = 100_000, 1_000_000_000
 ITEM_STATES = {'todo': '待办', 'doing': '进行中', 'blocked': '阻塞', 'done': '完成'}
 
 
