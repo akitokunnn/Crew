@@ -76,7 +76,7 @@ class NativeMixin:
                         self._control(current, "get_context_usage")
                     if record["type"] == "result" and not record.get("parent_tool_use_id"):
                         with current.input_lock:
-                            current.journal.consume(record)
+                            current.journal.consume(record, interrupted=current.interrupt_requested)
                             if (record.get("is_error") and current.resumed_native is not None
                                     and CLAUDE_NO_CONVERSATION + current.resumed_native in
                                     record.get("errors", []) + [record.get("result")]):

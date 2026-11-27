@@ -77,6 +77,35 @@ class ComposerInterruptHttpTests(ShellFixture, unittest.TestCase):
         self.assertIn("空闲", result["error"])
         self.assertEqual(process.stdin.getvalue(), sent)
 
+    def test_interrupted_claude_turn_ends_as_interrupted_not_failed(self):
+        code, started = self.request("/api/op/leader.create?project=demo", {"name": "interrupt-real", "task": "fake turn"})
+        self.assertEqual(code, 200, started)
+        sid, process = started["session_id"], self.processes[-1]
+        manager = self.server.service.chat
+        code, result = self.request("/api/op/chat.interrupt?project=demo", {"session_id": sid})
+        self.assertEqual((code, result), (200, {"ok": True}))
+        # Required fields only, captured from Claude 2.1.332 on 2026-11-27 after an interrupt control request.
+        process.emit({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                      "terminal_reason": "aborted_streaming", "stop_reason": "tool_use",
+                      "errors": ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"]})
+        journal = manager.journal(sid)
+        with journal.condition:
+            self.assertTrue(journal.condition.wait_for(lambda: journal.status == "idle", timeout=3))
+        events = manager.history(sid)["events"]
+        self.assertEqual([(e["status"], e["success"], e.get("reason")) for e in events if e["type"] == "turn_result"],
+                         [("interrupted", False, "user_interrupt")])
+        self.assertFalse([e for e in events if e["type"] == "error"])
+
+        code, sent = self.request("/api/op/chat.send?project=demo", {"session_id": sid, "text": "next"})
+        self.assertEqual(code, 200, sent)
+        process.emit({"type": "result", "subtype": "error_during_execution", "is_error": True, "errors": ["boom"]})
+        with journal.condition:
+            self.assertTrue(journal.condition.wait_for(
+                lambda: sum(e["type"] == "turn_result" for e in journal.events) == 2, timeout=3))
+        events = manager.history(sid)["events"]
+        self.assertEqual([e["status"] for e in events if e["type"] == "turn_result"], ["interrupted", "failed"])
+        self.assertEqual([e["text"] for e in events if e["type"] == "error"], ["boom"])
+
     def test_unowned_session_interrupt_fails_without_launching_or_terminating_any_process(self):
         before = len(self.processes)
         code, result = self.request("/api/op/chat.interrupt?project=demo", {"session_id": "s3"})

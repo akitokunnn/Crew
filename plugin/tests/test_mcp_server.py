@@ -108,6 +108,18 @@ class McpServerTests(ShellFixture, unittest.TestCase):
         self.assertIn('handoff.add', [hit['op'] for hit in hits])
         self.assertIn('handoff_add', self.tools(token))
 
+    def test_a_resumed_claude_conversation_keeps_the_tools_it_found(self):
+        # Real Haiku run (2026-11-27): after a restart the resumed assistant called goal_create from its own
+        # history, Claude Code answered "No such tool available", and the assistant gave up.
+        token, _ = self.grant('s3')
+        self.rpc(token, 'tools/call', {'name': 'crew_search', 'arguments': {'query': '交接'}}, raw=True)
+        self.assertIn('handoff_add', self.tools(token))
+        tokens.revoke_all(self.conn, NOW)
+        resumed, _ = self.grant('s3')
+        self.assertIn('handoff_add', self.tools(resumed))
+        other, _ = self.grant('s1')
+        self.assertNotIn('handoff_add', self.tools(other))
+
     def test_codex_calls_searched_operations_through_crew_call(self):
         token, _ = self.grant('s1', runtime='codex')
         error, found = self.call(token, 'crew_search', {'query': '进度汇报'})

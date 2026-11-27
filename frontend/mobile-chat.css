@@ -51,7 +51,7 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 #chat-head .right>.rp-toggle .i{width:20px;height:20px}
 #chat-head .right>.context-ring{order:9;flex:none;height:28px;min-width:30px;margin:0 0 8px 6px;padding:0 7px;border-radius:999px;border:1px solid var(--line);background:var(--surface-2)}
 /* 很窄的屏幕：拍板方式只留图标（颜色区分自主推进），把位置让给模型 */
-@media (max-width:374px){#chat-head .right>.trust-tag>span{display:none!important}}
+@media (max-width:400px){#chat-head .right>.trust-tag>span{display:none!important}}
 /* 两行高度固定，面板据此定位 */
 #chat-head .head{min-height:calc(var(--m-safe-t) + var(--mc-row1) + var(--mc-row2))!important}
 
