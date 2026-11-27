@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest import mock
 
-from crew import board, domain_versions, goals, personal, store, war_room, web
+from crew import board, domain_versions, goals, personal, runtimes, settings, store, war_room, web
 from crew.ops import confirmations, executor
 from crew.ops.errors import OpError
 from ops_helpers import ai_call
@@ -66,8 +66,14 @@ class CampaignTests(ShellFixture, unittest.TestCase):
             self.assertIn(fragment, text)
 
     def test_launch_builds_everything_as_one_version_and_opens_the_room(self):
-        checked = self.call('campaign.preview', plan())
-        result = self.call('campaign.launch', {**plan(), 'board_version': checked['board_version']})
+        settings.save(self.conn, {**settings.get(self.conn),
+            'war_room': {'runtime': 'codex', 'model': None, 'effort': None, 'speed': None}})
+        proposed = plan()
+        del proposed['leaders'][1]['runtime']
+        checked = self.call('campaign.preview', proposed)
+        self.assertTrue(checked['ok'], checked['errors'])
+        self.assertEqual([item['runtime'] for item in checked['leaders']], ['claude', 'codex'])
+        result = self.call('campaign.launch', {**proposed, 'board_version': checked['board_version']})
         self.assertFalse(result['started'])
         room = result['room']
         self.assertEqual(room['phase'], 'preparing')
@@ -79,6 +85,8 @@ class CampaignTests(ShellFixture, unittest.TestCase):
         war_room_plan.update(self.conn, room['id'], room['lead_session_id'], 0, body, '首稿', 200000, NOW)
         active = war_room_plan.approve(self.conn, room['id'], 'user', 1, {}, 200000, NOW)
         self.assertEqual({m['crew_name'] for m in active['members']}, {'后端', '页面'})
+        self.assertEqual({m['crew_name']: runtimes.get(self.conn, m['session_id'])['runtime'] for m in active['members']},
+                         {'后端': 'claude', '页面': 'codex'})
         versions = domain_versions.listing(self.conn, 'demo')['versions']
         self.assertEqual((versions[0]['parts'], versions[0]['leaders']), (1, 2))
         for item in active['board']:

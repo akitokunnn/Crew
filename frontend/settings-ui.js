@@ -40,6 +40,9 @@
     return tier ? tier.description || (FAST_SPEEDS.has(value) ? "生成更快，消耗更多用量" : "") : "所选模型未列出这个速度";
   }
   const tasks = [["assistant", "系统管理员与工作区助手", "系统管理员和各工作区的助手首次发送时使用此选择"], ["leader", "新建 leader", "新建 leader 时的载体、模型与思考强度；创建时仍可临时调整"], ["member", "leader 开执行", "任务里新开的执行默认使用的大脑；每个 leader 也能单独覆盖，开执行时也可单独指定。已在跑的不受影响"], ["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "系统管理员 · 运维", "运维对话与事故处理共用此选择；自动修复另按已保存策略执行"]];
+  const warRoom = [["war_room", "作战室默认载体", "新建拟任成员时使用，助手开局可按人指定"],
+    ["creative", "创意顾问", "界面、文案和交互"], ["routine", "常规顾问", "盘点和挑刺"], ["difficult", "疑难顾问", "查根因和做设计取舍"]];
+  const choices = [...tasks, ...warRoom];
   const CATEGORIES = [["library", "会话库", "查找、接入与管理已有会话"], ["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["prompts", "行为配置", "提示内容、覆盖范围与使用记录"], ["appearance", "外观", "让工作区更顺手"], ["canvas", "画布", "架构图和导图的滚轮设置"], ["sounds", "音效", "回复完成与任务交付的提示音"], ["remote", "局域网访问", "连接同一网络中的手机和电脑"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["storage", "存储与清理", "空间占用、回收与保留"], ["backend", "系统管理员 · 运维", "后台状态、运维对话与自动修复"]];
   const icons = {
     library:'<path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/>',
@@ -79,13 +82,13 @@
     return ai;
   }
   function validate(ai, catalog) {
-    if (!defaultRuntime(ai, catalog) && !tasks.some(([key]) => ai[key]?.runtime)) throw Error(catalog.some(item => item.available) ? "请先选择默认载体。" : "没有可用的执行工具，请先安装并登录，再重新检测。");
-    for (const key of ["default", ...tasks.map(item => item[0])]) {
+    if (!defaultRuntime(ai, catalog) && !choices.some(([key]) => ai[key]?.runtime)) throw Error(catalog.some(item => item.available) ? "请先选择默认载体。" : "没有可用的执行工具，请先安装并登录，再重新检测。");
+    for (const key of ["default", ...choices.map(item => item[0])]) {
       if (ai[key] == null) continue;
       for (const field of ["model", "effort"]) if (ai[key][field] !== null && !ai[key][field].trim()) throw Error("模型和 effort 为空时请选择原生默认。");
       const selectedRuntime = ai[key].runtime || defaultRuntime(null,catalog);
       if (key === "default" && !selectedRuntime && ai[key].model === null && ai[key].effort === null && !ai[key].speed) continue;
-      if (!selectedRuntime) throw Error(`${key === "default" ? "默认大脑" : tasks.find(item => item[0] === key)[1]}：请选择执行载体，或使用“跟随默认”。`);
+      if (!selectedRuntime) throw Error(`${key === "default" ? "默认大脑" : choices.find(item => item[0] === key)[1]}：请选择执行载体，或使用“跟随默认”。`);
       const runtime = catalog.find(item => item.id === selectedRuntime), model = runtime?.models?.find(item => item.id === ai[key].model);
       if (ai[key].effort !== null && model && Array.isArray(model.efforts) && !model.efforts.includes(ai[key].effort)) throw Error(`${model.name || model.id} 不支持所填的 effort，请按实际支持情况修改。`);
       if (ai[key].speed && selectedRuntime !== "codex") throw Error("速度只适用于 Codex，请改为原生默认。");
@@ -138,9 +141,18 @@
       root.querySelector('[data-settings-action="save"]').textContent = saving ? "正在保存…" : "保存设置";
       root.querySelector('[data-settings-action="reset"]').disabled = !snapshot || saving || !dirty;
     }
+    function renderChoices(entries, draft, catalog, customFields) {
+      return entries.map(([key, title, description]) => {
+        const advisor = key === "creative" || key === "routine" || key === "difficult";
+        const defaultBrain = advisor ? "全局默认大脑" : "默认大脑";
+        const label = key === "member" ? "跟随各自 leader" : advisor ? "跟随全局默认大脑" : "跟随默认";
+        const inherit = key === "war_room" ? "" : `<label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] == null ? "checked" : ""}>${label}</label>`;
+        return `<section class="cs-card" data-ai-task="${key}" tabindex="-1"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div>${inherit}</div>${draft[key] == null ? `<p class="cs-follow">${key === 'member' ? '使用所属 leader 的载体、模型与思考强度；在组内设置时可覆盖。' : `使用${defaultBrain}的载体、模型与思考强度。`}</p>` : selectionMarkup(key, draft[key], catalog, customFields)}</section>`;
+      }).join("");
+    }
     function renderAI() {
       const catalog = snapshot.runtimes || [];
-      content.innerHTML = `<section class="cs-card cs-default"><div class="cs-card-heading"><div><h2>默认大脑</h2><p>选择“跟随默认”的用途使用这里的选择；下面可分别指定大脑。</p></div><span class="cs-badge">默认</span></div>${selectionMarkup("default", draft.default, catalog, customFields)}<p class="cs-hint">下拉选择本机检测到的模型与强度；也可自定义输入。选择“原生默认”沿用工具配置。速度只对 Codex 生效，较快的档位会消耗更多用量。</p></section><div class="cs-section-heading"><h2>任务分配</h2><p>按用途选择大脑，也可以全部跟随默认。</p></div><div class="cs-task-list">${tasks.map(([key, title, description]) => `<section class="cs-card" data-ai-task="${key}" tabindex="-1"><div class="cs-card-heading"><div><h3>${title}</h3><p>${description}</p></div><label class="cs-inherit"><input type="checkbox" data-ai-inherit="${key}" ${draft[key] === null ? "checked" : ""}>${key === "member" ? "跟随各自 leader" : "跟随默认"}</label></div>${draft[key] === null ? `<p class="cs-follow">${key === 'member' ? '使用所属 leader 的载体、模型与思考强度；在组内设置时可覆盖。' : '使用默认大脑的载体、模型与思考强度。'}</p>` : selectionMarkup(key, draft[key], catalog, customFields)}</section>`).join("")}</div><p class="cs-footnote">保存设置不会运行 AI。新建会话时仍可单独选择；组员沿用 leader 的明确分配。</p>`;
+      content.innerHTML = `<section class="cs-card cs-default"><div class="cs-card-heading"><div><h2>默认大脑</h2><p>选择“跟随默认”的用途使用这里的选择；下面可分别指定大脑。</p></div><span class="cs-badge">默认</span></div>${selectionMarkup("default", draft.default, catalog, customFields)}<p class="cs-hint">下拉选择本机检测到的模型与强度；也可自定义输入。选择“原生默认”沿用工具配置。速度只对 Codex 生效，较快的档位会消耗更多用量。</p></section><div class="cs-section-heading"><h2>任务分配</h2><p>按用途选择大脑，也可以全部跟随默认。</p></div><div class="cs-task-list">${renderChoices(tasks, draft, catalog, customFields)}</div><div class="cs-section-heading"><h2>作战室</h2></div><div class="cs-task-list">${renderChoices(warRoom, draft, catalog, customFields)}</div><p class="cs-footnote">保存设置不会运行 AI。新建会话时仍可单独选择；组员沿用 leader 的明确分配。</p>`;
     }
     function renderTools() {
       content.innerHTML = `<section class="cs-card"><div class="cs-card-heading"><div><h2>执行工具</h2><p>${options.remote ? "以下信息来自所连主机的实际检测。" : "以下信息来自本机实际检测。"}</p></div><button type="button" class="cs-button" data-settings-action="reload">重新检测</button></div>${(snapshot.runtimes || []).map(item => `<div class="cs-tool-row"><div><strong>${esc(item.name || item.id)}</strong><p>${esc(item.error || (item.available ? "已就绪" : "未就绪"))}</p></div><span class="cs-badge ${item.available ? "cs-ready" : ""}">${item.available ? "可用" : "需配置"}</span></div>`).join("")}</section><p class="cs-footnote">${options.remote ? "安装、登录与工具更新请在主机上的 Crew 中管理。" : "安装、登录与工具更新可在 Crew 桌面首页的设置中管理。"}</p>`;
@@ -209,7 +221,13 @@
       const element = event.target, key = element.dataset.aiKey, field = element.dataset.aiField;
       if (element.dataset.canvasWheel !== undefined) { canvasDraft = element.checked; error = ""; note = ""; controls(); }
       else if (element.dataset.executionRuntime) { executionDraft[element.dataset.executionRuntime] = element.value; error = ""; note = ""; controls(); }
-      else if (element.dataset.aiInherit) { const task = element.dataset.aiInherit; draft[task] = element.checked ? null : clone(draft.default); render(); }
+      else if (element.dataset.aiInherit) {
+        const task = element.dataset.aiInherit;
+        if (!element.checked) draft[task] = clone(draft.default);
+        else if (Object.hasOwn(snapshot.ai, task)) draft[task] = null;
+        else delete draft[task];
+        render();
+      }
       else if (key && field) {
         draft[key][field] = element.value.trim() || null;
         if (field === "runtime") { draft[key].model = null; draft[key].effort = null; draft[key].speed = null; }

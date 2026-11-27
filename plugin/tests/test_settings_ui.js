@@ -1,6 +1,6 @@
 "use strict";
 const {test}=require("node:test"), assert=require("node:assert/strict"), fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
-const sandbox={window:{}};vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/settings-ui.js"),"utf8"),sandbox);
+const sandbox={window:{},document:{activeElement:null}};vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(__dirname,"../../frontend/settings-ui.js"),"utf8"),sandbox);
 const ui=sandbox.window.CrewSettings, plain=value=>JSON.parse(JSON.stringify(value));
 const catalog=[{id:"claude",name:"Claude Code",available:true,models:[{id:"native-a",name:"Native A",efforts:["low","high"]}],efforts:["low","high"]},{id:"codex",name:"Codex",available:true,models:[{id:"native-b",efforts:["deep"]}],efforts:["deep"]}];
 const config=()=>({default:{runtime:null,model:null,effort:null},leader:null,member:null,digest:null,git:null,operations:null});
@@ -80,6 +80,46 @@ function panelHarness(){
   const root={...element(),hidden:false,contains:()=>true,querySelectorAll:()=>[],querySelector(selector){if(selector===".cs-content")return content;if(!nodes.has(selector))nodes.set(selector,element());return nodes.get(selector);},addEventListener(){}};
   return{root,content};
 }
+
+test("war room default and advisors share the settings section and save independent choices",async()=>{
+  const {root,content}=panelHarness(),handlers={},saved=[];
+  root.addEventListener=(type,handler)=>{handlers[type]=handler;};
+  const picker={tagName:"SELECT",innerHTML:""};
+  content.querySelector=()=>picker;
+  const ai={...ui.initialAI({ai:config(),runtimes:catalog}),creative:null,routine:null,difficult:null,
+    war_room:{runtime:"claude",model:null,effort:null,speed:null}};
+  ai.default.runtime="claude";
+  const snapshot={ai,runtimes:catalog};
+  const settings=ui.create({host:root,read:async()=>snapshot,save:async body=>{
+    saved.push(plain(body.ai));
+    return {...snapshot,ai:body.ai,execution:body.execution};
+  }});
+  settings.open();
+  for(let i=0;i<12;i++) await Promise.resolve();
+  assert.match(content.innerHTML,/data-ai-task="war_room"[\s\S]*?作战室默认载体[\s\S]*?value="claude" selected/);
+  for(const [key,label] of [["creative","创意顾问"],["routine","常规顾问"],["difficult","疑难顾问"]]){
+    assert.match(content.innerHTML,new RegExp(`data-ai-task="${key}"[\\s\\S]*?<h3>${label}</h3>`));
+    assert.match(content.innerHTML,new RegExp(`data-ai-inherit="${key}" checked>跟随全局默认大脑</label>`));
+  }
+  assert.equal((content.innerHTML.match(/使用全局默认大脑的载体、模型与思考强度/g) || []).length,3);
+  assert.match(content.innerHTML,/data-ai-inherit="assistant" checked>跟随默认<\/label>/);
+  const change=target=>handlers.change({target});
+  change({dataset:{aiKey:"war_room",aiField:"runtime"},value:"codex"});
+  assert.match(content.innerHTML, /data-ai-key="war_room" data-ai-field="model"[\s\S]*?value="native-b"/);
+  change({dataset:{aiKey:"war_room",aiField:"model"},value:"native-b"});
+  change({dataset:{aiInherit:"creative"},checked:false});
+  change({dataset:{aiKey:"creative",aiField:"runtime"},value:"codex"});
+  assert.match(content.innerHTML, /data-ai-key="creative" data-ai-field="model"[\s\S]*?value="native-b"/);
+  change({dataset:{aiKey:"creative",aiField:"model"},value:"native-b"});
+  await settings.save();
+  assert.deepEqual(saved[0].creative,{runtime:"codex",model:"native-b",effort:null,speed:null});
+  assert.deepEqual(saved[0].war_room,{runtime:"codex",model:"native-b",effort:null,speed:null});
+  assert.equal(saved[0].routine,null);
+  assert.equal(saved[0].difficult,null);
+  change({dataset:{aiInherit:"creative"},checked:true});
+  await settings.save();
+  assert.equal(saved[1].creative,null);
+});
 
 test("opening message channels does not wait for or start AI model discovery",()=>{
   const {root,content}=panelHarness();let reads=0,mounts=0,cleanups=0;

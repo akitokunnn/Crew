@@ -413,6 +413,26 @@ class PlanTests(DeliveryFixture):
             self.assertEqual(settings.resolve(self.conn, purpose, which=lambda _:True), choice)
         self.assertEqual(settings.resolve(self.conn, 'creative', which=lambda _:True), alternate)
 
+    def test_new_planned_member_uses_the_room_setting_and_existing_members_keep_their_runtime(self):
+        from crew import models, runtimes
+        configured = {'runtime': 'codex', 'model': 'room-model', 'effort': 'low', 'speed': 'default'}
+        runtimes.set(self.conn, 'b', 'codex')
+        for chosen, expected in ((None, 'claude'), (configured, 'codex')):
+            with self.subTest(runtime=expected):
+                settings.save(self.conn, {'default': {'runtime': 'codex', 'model': None, 'effort': None}, 'war_room': chosen})
+                room = self.open()
+                body = PLAN.replace('## 等你定', '- [NEW] 拟任：新成员' + expected + ' | 核对 tests/\n## 等你定')
+                war_room_plan.update(self.conn, room, 'a', 0, body, '首稿', None, NOW)
+                with mock.patch('crew.settings.shutil.which', side_effect=lambda name: name):
+                    active = self.approve(room)
+                    self.assertTrue(self.approve(room)['replayed'])
+                member = next(item for item in active['board'] if item['entry_id'] == 'NEW')
+                self.assertEqual(runtimes.get(self.conn, member['owner_session_id'])['runtime'], expected)
+                if chosen:
+                    self.assertEqual(models.get(self.conn, member['owner_session_id']), {k:v for k,v in chosen.items() if k != 'runtime'})
+                self.assertEqual(runtimes.get(self.conn, 'b')['runtime'], 'codex')
+                war_room.close(self.conn, room, 'user', reason='user_stop')
+
     def test_user_stop_works_with_broken_plan_and_offline_lead(self):
         room = self.open()
         self.plan(room)

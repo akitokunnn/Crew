@@ -28,6 +28,7 @@
     assistant: '<path d="M5 5h14a1 1 0 0 1 1 1v9.5a1 1 0 0 1-1 1h-7l-4.5 3.5v-3.5H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/><path d="M8.5 10.5h.01M12 10.5h.01M15.5 10.5h.01"/>',
     more: '<circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/>',
     channel: '<path d="M4 6h16v10H9l-5 4z"/>',
+    room: '<rect x="4" y="5" width="16" height="14" rx="2.5"/><path d="M4 9h16m-11 4h6m-6 3h4"/>',
     architecture: '<rect x="9" y="3" width="6" height="5" rx="1.5"/><rect x="3" y="16" width="6" height="5" rx="1.5"/><rect x="15" y="16" width="6" height="5" rx="1.5"/><path d="M12 8v4M6 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2"/>',
     git: '<circle cx="6.5" cy="5.5" r="2"/><circle cx="6.5" cy="18.5" r="2"/><circle cx="17.5" cy="8" r="2"/><path d="M6.5 7.5v9M17.5 10c0 4-5 3.5-9.5 7"/>',
     usage: '<path d="M5 19V11M10 19V5M15 19v-6M20 19V9"/>',
@@ -68,6 +69,7 @@
     sheet.dataset.open = "false"; sheet.inert = true;
     const go = [
       sheetItem("channel", "Leader 交流区", navAttrs("channel"), tag(), '<em class="m-count" data-m-count="channel" hidden></em>'),
+      sheetItem("room", "作战室", inProject ? 'type="button" data-act="room-list"' : `href="${projectUrl("war-room=0")}"`, tag(), '<small data-m-room-state></small>'),
       sheetItem("todos", "待办", navAttrs("todos"), tag()),
       sheetItem("architecture", "架构图", navAttrs("architecture"), tag()),
       sheetItem("git", "Git 助手", navAttrs("git"), tag(), '<em class="m-count" data-m-count="git" hidden></em>'),
@@ -115,11 +117,18 @@
     const rail = document.getElementById("sidebar");
     const homeCount = rail?.querySelector(".rail-home .rail-badge")?.textContent.trim() || "";
     const gitCount = rail?.querySelector(".rail-git .rail-badge")?.textContent.trim() || "";
-    const unread = Boolean(rail?.querySelector(".rail-dot"));
+    const unread = Boolean(rail?.querySelector(".leader-entry .rail-dot"));
+    const room = rail?.querySelector(".rail-war-room");
+    const waitingForRoom = room?.dataset.warRoomState === "waiting";
     const channelUnread = leaders?.querySelector(".leader-panel-channel .b-unread")?.textContent.trim() || "";
     badge(tabbar.querySelector('[data-m-tab="home"]'), homeCount);
     dot(tabbar.querySelector('[data-m-tab="leaders"]'), unread);
-    dot(tabbar.querySelector('[data-m-tab="more"]'), Boolean(gitCount || channelUnread));
+    const more = tabbar.querySelector('[data-m-tab="more"]');
+    dot(more, Boolean(gitCount || channelUnread || waitingForRoom));
+    if (waitingForRoom !== more.hasAttribute("data-room-waiting")) more.toggleAttribute("data-room-waiting", waitingForRoom);
+    const roomState = sheet.querySelector("[data-m-room-state]");
+    const roomLabel = room?.getAttribute("aria-label").split(" · ")[1] ?? "";
+    if (roomState && roomState.textContent !== roomLabel) roomState.textContent = roomLabel;
     count("git", gitCount); count("channel", channelUnread);
     const theme = rail?.querySelector('[data-act="theme"]')?.getAttribute("title")?.split("·")[1]?.trim();
     const themeLabel = sheet.querySelector("[data-m-theme]"); if (themeLabel && theme && themeLabel.textContent !== theme) themeLabel.textContent = theme;
@@ -159,7 +168,7 @@
       const item = event.target.closest(".m-sheet-item"); if (!item) return;
       setSheet(false);
       // 从 Leader 列表上打开的面板：跳转前先收起列表
-      if ((item.dataset.view || item.tagName === "A") && document.getElementById("leader-panel")?.dataset.open === "true") document.getElementById("leader-entry")?.click();
+      if ((item.dataset.view || item.dataset.act === "room-list" || item.tagName === "A") && document.getElementById("leader-panel")?.dataset.open === "true") document.getElementById("leader-entry")?.click();
     });
     backdrop.addEventListener("click", () => setSheet(false));
     document.addEventListener("keydown", event => { if (event.key === "Escape" && sheet.dataset.open === "true") setSheet(false); });

@@ -17,7 +17,7 @@
   const memberScopes = new Map();
   let mountedChannel = false;
   // The war room view: roomId comes from #war-room=<id>; mountedRoom is the room currently mounted.
-  let roomId = null, mountedRoom = null;
+  let roomId = null, mountedRoom = null, roomList = null, roomListError = "", roomListRequest = 0;
   // One-shot landing spots when jumping between a channel post and the private chat it points at.
   let channelFocus = null, chatFocus = null;
   let settingsUI = null, settingsOpen = false, settingsReturn = null;
@@ -210,10 +210,10 @@
     else if (["/api/op/session.stop", "/api/op/session.archive", "/api/op/session.delete"].includes(path)) waitingSounds.delete(data.session_id);
     return result;
   }
-  function toast(message, undo = null) {
+  function toast(message, undo = null, root = $("toast-root")) {
     const node = document.createElement("div"); node.className = "toast show"; node.setAttribute("role", "status"); node.textContent = message;
     if (undo !== null) { const button = document.createElement("button"); button.type = "button"; button.textContent = "撤销"; button.onclick = async () => { button.disabled = true; try { await undo(); node.remove(); } catch (error) { button.disabled = false; toast(error.message); } }; node.append(button); }
-    $("toast-root").replaceChildren(node); setTimeout(() => node.remove(), undo === null ? 5000 : 12000);
+    root.replaceChildren(node); setTimeout(() => node.remove(), undo === null ? 5000 : 12000);
   }
   document.addEventListener("crew:sound-error", event => toast(event.detail));
   function replace(node, html) {
@@ -367,7 +367,7 @@
     // A member conversation stays inside its leader's group: that leader keeps a quieter selection and its tasks.
     const inGroup = view === "chat" && leaderId === item.session_id, selected = inGroup && readOnlyId === null;
     const work = groupWork(item), unread = leaderUnread(item);
-    return `<div draggable="true" class="leader-row session-surface${item.pinned ? " pinned" : ""} ${selected ? "active" : inGroup ? "in-group" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}${unread ? "，有未读消息" : ""}" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><span class="leader-row-name"><strong>${esc(item.name)}</strong>${contextRing(item)}${trustMark(item)}${unread ? '<span class="leader-unread-dot" title="有未读消息"></span>' : ""}</span><span class="leader-row-sub">${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}${work.active ? groupWorkLabel(work, true) : st(item.status)}</span>${leaderBranches(item)}${leaderQueued(item)}</span>${pinButton(item)}</div>${inGroup ? CrewGoals.leaderTasks(state.goals.filter(task => task.leader_session_id === item.session_id), goalId) : ""}`;
+    return `<div draggable="true" class="leader-row session-surface${item.pinned ? " pinned" : ""} ${selected ? "active" : inGroup ? "in-group" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}${unread ? "，有未读消息" : ""}" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><span class="leader-row-name"><strong>${esc(item.name)}</strong>${contextRing(item)}${trustMark(item)}${unread ? '<span class="leader-unread-dot" title="有未读消息"></span>' : ""}</span><span class="leader-row-sub">${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}${workingRoom(item) || (work.active ? groupWorkLabel(work, true) : st(item.status))}</span>${leaderBranches(item)}${leaderQueued(item)}</span>${pinButton(item)}</div>${inGroup ? CrewGoals.leaderTasks(state.goals.filter(task => task.leader_session_id === item.session_id), goalId) : ""}`;
   }
   function setLeadersOpen(open, remember = true) {
     leadersOpen = open;
@@ -442,6 +442,7 @@
   // A workspace's own assistant and ideas pages; the 系统管理员 sits at the bottom of the rail in a browser
   // (the desktop shows it in the window's top-right corner instead).
   const pageHref = (page, name) => `/${page}.html?project=${encodeURIComponent(name)}`;
+  const workingRoom = item => item.working_room_id == null ? "" : '<span class="room-working-tag">作战室中</span>';
   const adminRail = () => window.crewDesktopShell || window.crewDesktopTheme ? "" : `<a class="rail-button rail-admin" href="/assistant.html" title="系统管理员" aria-label="系统管理员">${ic("shield")}</a>`;
   function renderSidebar() {
     if (leaderDrag !== null || leaderOrderSaving) return;
@@ -455,7 +456,7 @@
     const flash = failure !== null && failure !== presenceFailure; presenceFailure = failure;
     const railButton = (act,label,icon,extra="",active=false) => `<button type="button" class="rail-button ${active ? "active" : ""}" data-act="${act}" title="${label}" aria-label="${label}" ${extra}>${ic(icon)}</button>`;
     const navActive = !settingsOpen;
-    replace($("sidebar"), `<button type="button" id="workspace-entry" class="rail-brand ${workspaceSwitcherOpen ? "active" : ""}" data-act="workspace-switcher" title="${esc(projectDisplay(state.project))} · 切换工作区" aria-label="${esc(projectDisplay(state.project))} · 切换工作区" aria-controls="workspace-popover" aria-expanded="${workspaceSwitcherOpen}">${CrewTheme.logo()}<span class="rail-brand-caret" aria-hidden="true"></span></button><button type="button" id="leader-entry" class="rail-button leader-entry" data-act="leaders-toggle" title="Leader${unread ? " · 有未读消息" : ""}" aria-label="Leader${unread ? "，有未读消息" : ""}" aria-controls="leader-panel" aria-expanded="${leadersOpen}">${ic("team")}${unread ? '<span class="rail-dot" aria-hidden="true"></span>' : ""}</button><div class="rail-divider"></div><span class="rail-home">${railButton("view","主页","grid",'data-view="all"',navActive && view === "all")}${homeAttention ? `<span class="rail-badge" aria-label="${homeAttention} 件待你处理">${homeAttention}</span>` : ""}</span>${railButton("view","架构图","board",'data-view="architecture"',navActive && view === "architecture")}<a class="rail-button" href="${esc(pageHref("assistant", project))}" title="助手" aria-label="助手">${ic("msg")}</a><a class="rail-button" href="${esc(pageHref("notes", project))}" title="想法" aria-label="想法">${ic("pencil")}</a><span class="rail-git">${railButton("view","Git","branch",'data-view="git"',navActive && view === "git")}${state.git_assistant?.attention > 0 ? `<span class="rail-badge">${state.git_assistant?.attention}</span>` : ""}</span><span class="rail-space"></span>${adminRail()}${railButton("theme",`日间 / 夜间 · ${themeName}`,themeIcon)}<button type="button" id="presence-entry" class="rail-button presence-entry ${flash ? "presence-flash" : ""}" data-act="presence-toggle" title="${state.notification.away ? "我已离开" : "我在这里"}" aria-label="在场与消息连接" aria-controls="presence-popover" aria-expanded="${presenceOpen}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 13h12v4H6zM7 17v5m10-5v5M5 7v6m14-6v6"/>${state.notification.away ? '<path d="M8 4h8v9"/>' : '<circle cx="12" cy="4" r="2"/><path d="M9 12V9a3 3 0 0 1 6 0v3"/>'}</svg><i class="presence-dot ${connection}"></i></button>${railButton("settings","设置","settings",'data-local-control',settingsOpen && !workspaceOpen)}
+    replace($("sidebar"), `<button type="button" id="workspace-entry" class="rail-brand ${workspaceSwitcherOpen ? "active" : ""}" data-act="workspace-switcher" title="${esc(projectDisplay(state.project))} · 切换工作区" aria-label="${esc(projectDisplay(state.project))} · 切换工作区" aria-controls="workspace-popover" aria-expanded="${workspaceSwitcherOpen}">${CrewTheme.logo()}<span class="rail-brand-caret" aria-hidden="true"></span></button><button type="button" id="leader-entry" class="rail-button leader-entry" data-act="leaders-toggle" title="Leader${unread ? " · 有未读消息" : ""}" aria-label="Leader${unread ? "，有未读消息" : ""}" aria-controls="leader-panel" aria-expanded="${leadersOpen}">${ic("team")}${unread ? '<span class="rail-dot" aria-hidden="true"></span>' : ""}</button>${CrewGlobalRail.roomMarkup(project, roomList, navActive && view === "war-room", roomListError)}<div class="rail-divider"></div><span class="rail-home">${railButton("view","主页","grid",'data-view="all"',navActive && view === "all")}${homeAttention ? `<span class="rail-badge" aria-label="${homeAttention} 件待你处理">${homeAttention}</span>` : ""}</span>${railButton("view","架构图","board",'data-view="architecture"',navActive && view === "architecture")}<a class="rail-button" href="${esc(pageHref("assistant", project))}" title="助手" aria-label="助手">${ic("msg")}</a><a class="rail-button" href="${esc(pageHref("notes", project))}" title="想法" aria-label="想法">${ic("pencil")}</a><span class="rail-git">${railButton("view","Git","branch",'data-view="git"',navActive && view === "git")}${state.git_assistant?.attention > 0 ? `<span class="rail-badge">${state.git_assistant?.attention}</span>` : ""}</span><span class="rail-space"></span>${adminRail()}${railButton("theme",`日间 / 夜间 · ${themeName}`,themeIcon)}<button type="button" id="presence-entry" class="rail-button presence-entry ${flash ? "presence-flash" : ""}" data-act="presence-toggle" title="${state.notification.away ? "我已离开" : "我在这里"}" aria-label="在场与消息连接" aria-controls="presence-popover" aria-expanded="${presenceOpen}"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 13h12v4H6zM7 17v5m10-5v5M5 7v6m14-6v6"/>${state.notification.away ? '<path d="M8 4h8v9"/>' : '<circle cx="12" cy="4" r="2"/><path d="M9 12V9a3 3 0 0 1 6 0v3"/>'}</svg><i class="presence-dot ${connection}"></i></button>${railButton("settings","设置","settings",'data-local-control',settingsOpen && !workspaceOpen)}
       <section id="presence-popover" class="presence-popover" aria-label="在场与消息连接" ${presenceOpen ? "" : "hidden"}><button class="switch ${state.notification.manual_away ? "on" : ""}" data-act="away" role="switch" aria-checked="${state.notification.manual_away}"><span class="track"></span><span>我已离开</span></button>${notificationChannel()}${state.notification.error === null ? "" : `<p class="error-line">${esc(state.notification.error)}</p>`}<button class="text-link" data-local-control data-act="connection-settings">连接设置 ›</button></section>${workspacePopoverMarkup(true)}`);
     replace($("leader-panel"), `<div class="leader-panel-content"><header class="leader-panel-head"><h2>Leader</h2><span>${leaders.length} 位组长</span></header><button class="leader-panel-channel" data-act="view" data-view="channel">${ic("msg")}Leader 交流区 <span>›</span>${state.channel.unread ? `<span class="b-unread">${state.channel.unread}</span>` : ""}</button>${leaderGitStatus()}<div class="leader-panel-leaders"><section class="leader-zone-pinned ${leaders.some(item => item.pinned) ? "" : "empty"}" data-leader-zone="pinned" aria-label="置顶 leader"><div class="leader-zone-label">${pinIcon}<span>置顶</span><em>拖到这里置顶</em></div>${leaders.filter(item => item.pinned).map(sidebarLeader).join("")}</section><section data-leader-zone="normal">${leaders.filter(item => !item.pinned).map(sidebarLeader).join("")}</section>${noticeHistory(state.notice_history)}<button class="leader-panel-new btn ghost" data-act="modal-leader">＋ 新对话</button></div><button class="leader-panel-quota" data-act="view" data-view="usage" aria-label="查看完整额度和用量">${state.limits.claude.budget ? railBudget(state.limits.claude.budget) : railQuota("Claude",state.limits.claude.seven_day)}${railQuota("Codex",state.limits.codex)}</button></div>`);
     $("leader-panel").dataset.open = String(leadersOpen); $("leader-panel").inert = !leadersOpen;
@@ -573,7 +574,7 @@
   };
   function memberNode(item, goalId = null) {
     const where = item.where === "bg" ? "cloud" : item.where === "vscode" ? "code" : "clock";
-    return `<div class="session-node"><div class="node session-surface click ${readOnlyId === item.session_id ? "sel" : ""}" data-act="member-chat" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}"${goalId === null ? "" : ` data-goal-id="${esc(goalId)}"`}>${sessionOpen(item.session_id, "member-chat", `和「${item.name}」对话`)}<span class="node-top">${av(item.name, 26, true)}<span class="nm">${esc(item.name)}${runtimeBadge(item, true)}${contextRing(item)}<span class="where" title="${item.where === "bg" ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}">${ic(where, "xs")}</span></span>${st(item.status)}</span>${memberModel(item)}<span class="now">${item.task === null ? "还没写" : CrewChat.renderInline(item.task, item.session_id)}</span>${memberActivity(item)}${codexList(item)}</div><div class="session-node-actions"><button class="session-details" data-act="card" data-id="${esc(item.session_id)}">资料与操作</button></div></div>`;
+    return `<div class="session-node"><div class="node session-surface click ${readOnlyId === item.session_id ? "sel" : ""}" data-act="member-chat" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}"${goalId === null ? "" : ` data-goal-id="${esc(goalId)}"`}>${sessionOpen(item.session_id, "member-chat", `和「${item.name}」对话`)}<span class="node-top">${av(item.name, 26, true)}<span class="nm">${esc(item.name)}${runtimeBadge(item, true)}${contextRing(item)}<span class="where" title="${item.where === "bg" ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}">${ic(where, "xs")}</span></span>${workingRoom(item) || st(item.status)}</span>${memberModel(item)}<span class="now">${item.task === null ? "还没写" : CrewChat.renderInline(item.task, item.session_id)}</span>${memberActivity(item)}${codexList(item)}</div><div class="session-node-actions"><button class="session-details" data-act="card" data-id="${esc(item.session_id)}">资料与操作</button></div></div>`;
   }
   function leaderNode(item, clickable) {
     const work = groupWork(item);
@@ -582,7 +583,7 @@
   function workingRow(item) {
     const isLeader = leader(item.session_id) !== undefined;
     const task = isLeader ? item.goal : item.task;
-    return `<div class="li click session-surface" data-act="${isLeader ? "leader" : "member-chat"}" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}">${sessionOpen(item.session_id, isLeader ? "leader" : "member-chat", `和「${item.name}」对话`)}${av(item.name, 32, !isLeader)}<span class="grow"><span class="ttl">${esc(item.name)}${runtimeBadge(item, true)}${contextRing(item)} <span class="where">${ic(item.where === "bg" ? "cloud" : "code", "xs")}</span><span class="li-sub">${isLeader ? "leader" : `归 ${esc(item.group)}`}</span>${memberModel(item)}</span><span class="li-now">${task === null ? "还没写" : CrewChat.renderInline(task, item.session_id)}</span>${memberActivity(item)}<span class="sm">${item.codex.filter(task => task.status === "running").map(task => `<span>${ic("bolt", "xs")} ${codexTaskName(task, item.session_id)} · <span class="spin" style="width:9px;height:9px;display:inline-block"></span> ${Math.floor((Date.now() - new Date(task.started_at)) / 60000)} 分钟</span>`).join("")}</span></span>${st(item.status)}</div>`;
+    return `<div class="li click session-surface" data-act="${isLeader ? "leader" : "member-chat"}" data-session-menu="${esc(item.session_id)}" data-id="${esc(item.session_id)}">${sessionOpen(item.session_id, isLeader ? "leader" : "member-chat", `和「${item.name}」对话`)}${av(item.name, 32, !isLeader)}<span class="grow"><span class="ttl">${esc(item.name)}${runtimeBadge(item, true)}${contextRing(item)} <span class="where">${ic(item.where === "bg" ? "cloud" : "code", "xs")}</span><span class="li-sub">${isLeader ? "leader" : `归 ${esc(item.group)}`}</span>${memberModel(item)}</span><span class="li-now">${task === null ? "还没写" : CrewChat.renderInline(task, item.session_id)}</span>${memberActivity(item)}<span class="sm">${item.codex.filter(task => task.status === "running").map(task => `<span>${ic("bolt", "xs")} ${codexTaskName(task, item.session_id)} · <span class="spin" style="width:9px;height:9px;display:inline-block"></span> ${Math.floor((Date.now() - new Date(task.started_at)) / 60000)} 分钟</span>`).join("")}</span></span>${workingRoom(item) || st(item.status)}</div>`;
   }
   function workingDispatchRow({person, task}) {
     const isLeader = leader(person.session_id) !== undefined;
@@ -871,20 +872,35 @@
       const focus = channelFocus; channelFocus = null;
       CrewChannel.mount({host:$("channel-host"), state, api, toast, focus, avatar:av, onRead:channel => { Object.assign(state.channel, {unread:channel.unread, latest_id:channel.latest_id}); renderSidebar(); },
         openChat(id, target) { if (leader(id) === undefined) { toast("这位 leader 已不在列表里，看不到它的私聊"); return; } chatFocus = {session:id, ...target}; navigate("chat", id, null, null); },
-        openRoom(id) { roomId = id; navigate("war-room"); }});
+        openRoom});
     }
     CrewChannel.update(state);
+    if (roomList !== null) CrewChannel.updateRooms(roomList);
+  }
+  function openRoom(id) { roomId = id; navigate("war-room"); }
+  async function refreshRooms() {
+    const name = project, request = ++roomListRequest;
+    try {
+      const result = await api("/api/op/war_room.list");
+      if (name !== project || request !== roomListRequest) return;
+      roomList = result.rooms; roomListError = "";
+      if (mountedChannel) CrewChannel.updateRooms(roomList);
+    } catch (error) {
+      if (name !== project || request !== roomListRequest) return;
+      roomListError = error.message;
+    }
+    renderSidebar();
+    if (mountedRoom !== null) CrewWarRoom.update(state, roomList, roomListError);
   }
   function renderWarRoom() {
     if (mountedRoom !== roomId) {
       $("main").innerHTML = '<div id="war-room-host" class="cx-host wr-host"></div>';
       delete $("main").dataset.render;
       mountedRoom = roomId;
-      CrewWarRoom.mount({host:$("war-room-host"), id:roomId, state, api, toast, avatar:av, ring:item => contextRing(item), onChanged:() => loadState(true),
-        openChannel(id) { channelFocus = id; navigate("channel"); },
-        openChat(id, target) { if (leader(id) === undefined) { toast("这位 leader 已不在列表里，看不到它的私聊"); return; } chatFocus = {session:id, ...target}; navigate("chat", id, null, null); }});
+      CrewWarRoom.mount({host:$("war-room-host"), id:roomId, state, api, toast, avatar:av, rooms:roomList, roomsError:roomListError,
+        refreshRooms, openRoom, onChanged:() => loadState(true), openChannel(id) { channelFocus = id; navigate("channel"); }});
     }
-    CrewWarRoom.update(state);
+    CrewWarRoom.update(state, roomList, roomListError);
   }
   function renderAll() {
     if (allTab === "overview") {
@@ -984,7 +1000,7 @@
     const background = item.where === "bg", canStop = background && item.status === "working";
     const stopReason = background ? "这一轮没在工作" : item.where === "vscode" ? "开在 VS Code 里，去那边停" : "会话没在运行";
     const name = esc(item.name);
-    replace($("card"), `<div class="card-head" data-session-menu="${esc(item.session_id)}" tabindex="0">${av(item.name, 44, true)}<div style="min-width:0;flex:1"><div class="nm">${name}${contextControls(item)}</div><div class="meta">${runtimeBadge(item)}${st(item.status)}<span>${ic(background ? "cloud" : item.where === "vscode" ? "code" : "clock", "xs")} ${background ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}</span><span>归 ${esc(item.group)}</span>${memberModel(item)}</div></div><button class="icon-btn" data-act="card-close" aria-label="关闭下属卡片">${ic("x")}</button></div>
+    replace($("card"), `<div class="card-head" data-session-menu="${esc(item.session_id)}" tabindex="0">${av(item.name, 44, true)}<div style="min-width:0;flex:1"><div class="nm">${name}${contextControls(item)}</div><div class="meta">${runtimeBadge(item)}${workingRoom(item) || st(item.status)}<span>${ic(background ? "cloud" : item.where === "vscode" ? "code" : "clock", "xs")} ${background ? "后台运行" : item.where === "vscode" ? "开在 VS Code" : "没在运行"}</span><span>归 ${esc(item.group)}</span>${memberModel(item)}</div></div><button class="icon-btn" data-act="card-close" aria-label="关闭下属卡片">${ic("x")}</button></div>
       ${background && item.activity !== null ? `<div class="card-activity">${memberActivity(item)}</div>` : ""}
       <div class="card-actions"><span class="gap"></span><button class="icon-btn" data-act="rename" title="改名" aria-label="改名">${ic("pencil")}</button><button class="icon-btn" data-act="move-menu" title="换组" aria-label="换组">${ic("swap")}</button><button class="icon-btn" data-act="archive" title="归档" aria-label="归档">${ic("archive")}</button><button class="icon-btn" data-act="stop" ${canStop ? "" : "disabled"} title="${canStop ? "停下这一轮" : stopReason}" aria-label="停下这一轮">${ic("stop")}</button><button class="icon-btn" data-act="more-menu" title="更多" aria-label="更多">${ic("more")}</button></div>
       ${!localControls() ? "" : goalId == null ? runtimeSwitch?.entry(item) || "" : '<p class="editor-handoff-note">更换执行工具请回本组总对话，并先暂停该人员仍在推进的全部目标。</p>'}
@@ -1451,9 +1467,10 @@
     else { render(); syncRoute(); }
     // Channel posts are not in the snapshot: a change replaces a shown post, a snapshot has the channel re-read its newest page.
     const live = meta.source === "snapshot" ? null : meta.changes, rooms = live === null || live.some(change => change.type.startsWith("war_room."));
-    if (mountedChannel) { CrewChannel.changed(live === null ? null : live.filter(change => change.type.startsWith("channel_message."))); if (rooms) CrewChannel.roomsChanged(); }
+    if (mountedChannel) CrewChannel.changed(live === null ? null : live.filter(change => change.type.startsWith("channel_message.")));
+    if (rooms) void refreshRooms();
     // War rooms are not in the snapshot either: the open room takes its own changes and its posts' badges.
-    if (mountedRoom !== null) CrewWarRoom.changed(live === null ? null : live.filter(change => change.type.startsWith("war_room.") || change.type.startsWith("channel_message.")));
+    if (mountedRoom !== null && previous !== null) CrewWarRoom.changed(live);
     if (pendingSettingsHash) { const category = pendingSettingsHash; pendingSettingsHash = false; openSettings(category); }
     refreshUsage();
     if (previous !== null) notifySounds(previous, meta.source === "snapshot" || meta.catchUp, meta.source === "snapshot" ? snapshotGeneration : soundGeneration);
@@ -1587,6 +1604,12 @@
     document.addEventListener("click", event => {
       if (event.target.id === "backdrop") { closeBackdrop(); return; }
       if (event.target.id === "card-back") { closeCard(); return; }
+      if (event.target.closest(".rail-war-room") && project !== null && !settingsOpen && !workspaceOpen &&
+          !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        openRoom(0);
+        return;
+      }
       const button = event.target.closest("[data-act]");
       if (!event.target.closest("#menu") && !event.target.closest('[data-act$="-menu"]')) hideMenu();
       if (button === null || button.disabled) return;
@@ -1594,6 +1617,7 @@
       if (act === "tasks-toggle") { if (goalId !== null) showTaskList(); else setTasksOpen(!tasksOpen); return; }
       if (act === "tasks-back") { showTaskList(); return; }
       if (act === "workspace-switcher") { setWorkspaceSwitcherOpen(!workspaceSwitcherOpen); return; }
+      if (act === "room-list") { openRoom(0); return; }
       if (act === "leaders-toggle") { if (settingsOpen) { closeSettings(false); if (!leadersOpen) setLeadersOpen(true); render(); return; } setLeadersOpen(!leadersOpen); return; }
       if (narrowLayout() && leadersOpen && act !== "context-compact" && button.closest("#leader-panel")) setLeadersOpen(false);
       if (act === "presence-toggle") { setPresenceOpen(!presenceOpen); return; }

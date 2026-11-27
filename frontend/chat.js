@@ -675,6 +675,7 @@
     for (const scope of [context]) {
       const views = new Map();
       for (const item of [...scope.items, ...scope.cache.taskMessages].sort((a,b) => a.seq - b.seq)) {
+        if (item.room_id != null) continue;
         if (item.kind === "tool_result" && scope.toolOwners.has(item.tool_use_id)) continue;
         if (item.kind === "assistant" && item.turn.finished) {
           let view = views.get(item.turn);
@@ -803,6 +804,7 @@
   function apply(context, event, incremental) {
     if (event.seq <= context.cursor) return;
     context.cursor = event.seq;
+    if (event.room_id != null) return;
     context.events.push(event);
     if (event.type === "message") {
       if (context.turn && !context.busy) finishTurn(context, event, "ended");
