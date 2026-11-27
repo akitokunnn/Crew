@@ -266,6 +266,38 @@ def decide(conn, room_id, actor, question, options=(), recommendation=None, now=
     return _decision(conn, decision_id)
 
 
+TASK_WORDS = {'queued': '未开始', 'running': '执行中', 'pausing': '暂停中', 'paused': '已暂停', 'waiting_user': '等用户答复',
+              'awaiting_acceptance': '待验收', 'completed': '已验收', 'failed': '未达标结束'}
+
+
+def task_returned(conn, goal, outcome, now=None):
+    """A member's task came back: tell the assistant leading its open room where every member's task stands.
+
+    Nothing else wakes the lead at that moment (the delivery notice goes to the task's own leader), and its rules
+    wrap the room up once the first tasks all wait for the user.
+    """
+    for row in conn.execute("SELECT r.* FROM war_rooms r JOIN war_room_members m ON m.room_id=r.id "
+                            "WHERE r.project=? AND r.status='open' AND m.session_id=? AND m.left_at IS NULL",
+                            (goal['project'], goal['leader_session_id'])).fetchall():
+        room = dict(row)
+        if not personal.is_assistant(conn, room['lead_session_id']):
+            continue
+        tasks = conn.execute("SELECT g.title,g.status,s.crew_name FROM goals g JOIN war_room_members m "
+                             "ON m.session_id=g.leader_session_id AND m.room_id=? AND m.left_at IS NULL "
+                             "JOIN sessions s ON s.session_id=g.leader_session_id "
+                             "WHERE g.project=? AND g.status<>'cancelled' ORDER BY g.created_at,g.id LIMIT 12",
+                             (room['id'], room['project'])).fetchall()
+        name = board.session(conn, goal['leader_session_id'])['crew_name'] or goal['leader_session_id']
+        text = ('作战室 #%d《%s》：成员「%s」的任务「%s」%s。\n成员任务现状：\n%s\n首批任务都到待验收后，按守则写一句结论收尾'
+                '（war_room.close）并提醒用户验收；还有任务在做就不用回复。' % (
+                    room['id'], room['title'], name, goal['title'],
+                    '已交付，等用户验收' if outcome == 'awaiting_acceptance' else '未达标结束',
+                    '\n'.join('- 「%s」%s：%s' % (task['crew_name'], task['title'], TASK_WORDS.get(task['status'], task['status']))
+                              for task in tasks)))
+        conn.execute('INSERT INTO leader_notices(project,session_id,source,text,created_at,wake) VALUES(?,?,?,?,?,1)',
+                     (room['project'], room['lead_session_id'], 'crew', text, board._time(now)))
+
+
 @board.atomic
 def close(conn, room_id, actor, summary, now=None):
     """Wrap up: a closing notice in the channel, and each member keeps the outcome for its next conversation."""

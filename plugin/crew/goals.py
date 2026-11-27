@@ -1053,6 +1053,9 @@ def finalize_finish(conn, goal_id, *, now=None):
     if finish['execution_id'] is not None or finish['actor'] != goal['leader_session_id']:
         board._queue_leader_notice(conn, goal['leader_session_id'], _finish_notice(goal, report),
                                    'crew', now, wake=report['outcome'] != 'cancelled')
+    if report['outcome'] != 'cancelled':
+        from . import war_room
+        war_room.task_returned(conn, {**goal, 'status': finish['outcome']}, finish['outcome'], now=now)
     conn.execute("UPDATE goal_round_finishes SET status='finalized',finalized_at=? WHERE goal_id=? AND round=?", (board._time(now), goal_id, goal['current_round']))
     touch(conn, goal_id)
     return {'finalized': True, 'already': False, 'goal': result, 'finish': get_finish(conn, goal_id)}

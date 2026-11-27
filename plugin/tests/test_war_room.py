@@ -298,6 +298,32 @@ class AssistantLeadTests(WarRoomFixture):
         self.assertEqual((first["speaker_name"], [m["name"] for m in first["mentions"]]), ("助手", ["alpha", "beta"]))
         self.assertEqual(self.main()[-1]["speaker_name"], "助手")
 
+    def test_a_members_delivered_task_tells_the_assistant_where_every_members_task_stands(self):
+        """Nothing else wakes the lead when a task comes back; its rules wrap the room up once the first tasks wait."""
+        from crew import goals
+        from tests.test_goals import GoalFixture
+        room = war_room.start(self.conn, "demo", self.assistant, "开局", "跑通首个里程碑", ["alpha", "beta"], now=NOW)
+        ids = {}
+        for sid, title in (("a", "签名验签"), ("b", "登录页")):
+            ids[sid] = goals.create(self.conn, "demo", sid, title, "需求：" + title,
+                                    [{"id": "short", "title": "The new short speaker is identified"}], now=NOW)["id"]
+            goals.transition(self.conn, ids[sid], "running")
+        report = goals.save_report(self.conn, ids["a"], GoalFixture.report(None, "awaiting_acceptance"))
+        goals.request_finish(self.conn, ids["a"], report["id"])
+        goals.finalize_finish(self.conn, ids["a"])
+        [note] = self.conn.execute("SELECT text,wake FROM leader_notices WHERE session_id=?", (self.assistant,)).fetchall()
+        self.assertEqual(note["wake"], 1)
+        self.assertIn("作战室 #%d" % room["id"], note["text"])
+        self.assertIn("「alpha」的任务「签名验签」已交付，等用户验收", note["text"])
+        self.assertIn("「beta」登录页：执行中", note["text"])
+        self.assertIn("war_room.close", note["text"])
+        war_room.close(self.conn, room["id"], self.assistant, "首批都交付了", now=NOW)
+        report = goals.save_report(self.conn, ids["b"], GoalFixture.report(None, "awaiting_acceptance"))
+        goals.request_finish(self.conn, ids["b"], report["id"])
+        goals.finalize_finish(self.conn, ids["b"])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM leader_notices WHERE session_id=?",
+                                           (self.assistant,)).fetchone()[0], 1, "a closed room tells nobody")
+
     def test_leaders_reach_the_assistant_by_name_or_by_answering_it(self):
         room = war_room.start(self.conn, "demo", self.assistant, "开局", "跑通首个里程碑", ["alpha", "beta"], now=NOW)
         first = self.room_posts(room)[0]
