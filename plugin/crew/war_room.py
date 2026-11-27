@@ -259,11 +259,23 @@ def decide(conn, room_id, actor, question, options=(), recommendation=None, now=
     _gate(conn, room, actor, lead_only=True)
     question = _text(question, '拍板问题', 300)
     decision_id = board.ask.__wrapped__(conn, room['lead_session_id'], '作战室《%s》：%s' % (room['title'], question),
-                                        options, recommendation, now=now)
+                                        options, recommendation, now=now, project=room['project'])
     conn.execute('INSERT INTO war_room_decisions(decision_id,room_id) VALUES(?,?)', (decision_id, room_id))
     _event(conn, room_id, actor, 'decision', {'id': decision_id, 'question': question}, now)
     _touch(conn, room_id, room['project'])
     return _decision(conn, decision_id)
+
+
+def decision_answered(conn, decision_id, text, now=None):
+    room = conn.execute('SELECT r.id,r.title,r.project,r.lead_session_id,d.question FROM war_room_decisions wd '
+                        'JOIN war_rooms r ON r.id=wd.room_id JOIN decisions d ON d.id=wd.decision_id '
+                        'WHERE wd.decision_id=?', (decision_id,)).fetchone()
+    if room is not None and personal.is_assistant(conn, room['lead_session_id']):
+        notice = ('作战室 #%d《%s》的拍板卡已由用户答复。\n问题：%s\n答复：%s\n'
+                  '请在房里（war_room_post，room=%d）告诉成员结论和接下来谁做什么。'
+                  % (room['id'], room['title'], room['question'], text, room['id']))
+        conn.execute('INSERT INTO leader_notices(project,session_id,source,text,created_at,wake) VALUES(?,?,?,?,?,1)',
+                     (room['project'], room['lead_session_id'], 'crew', notice, board._time(now)))
 
 
 TASK_WORDS = {'queued': '未开始', 'running': '执行中', 'pausing': '暂停中', 'paused': '已暂停', 'waiting_user': '等用户答复',

@@ -94,6 +94,10 @@ class OpenAndTalkTests(WarRoomFixture):
 
 
 class BoardAndDecisionTests(WarRoomFixture):
+    def test_ask_rejects_a_project_outside_the_asking_session(self):
+        with self.assertRaisesRegex(board.BoardError, "提问会话不属于这个工作区"):
+            board.ask(self.conn, "a", "是否兼容 v1？", project="other", now=NOW)
+
     def test_board_items_are_owned_and_their_changes_are_handoff_points(self):
         room = self.open_room()
         item = war_room.set_item(self.conn, room["id"], "b", title="签名适配", now=NOW)
@@ -288,6 +292,36 @@ class AssistantLeadTests(WarRoomFixture):
         super().setUp()
         from crew import personal
         self.assistant = personal.ensure_assistant(self.conn, self.home)["session_id"]
+
+    def test_assistant_decision_stays_open_in_the_room_project_with_a_trusted_leader(self):
+        from crew import trust_mode
+        room = self.open_room(actor=self.assistant)
+        trust_mode.set(self.conn, "demo", True, "完成联调", leader_session_id="b", now=NOW)
+        card = war_room.decide(self.conn, room["id"], self.assistant, "是否兼容 v1？", ["兼容", "直接切"], "兼容", now=NOW)
+        self.assertIsNone(trust_mode.decision_leader(self.conn, card["id"]))
+        [decision] = board.decisions(self.conn, "demo")
+        self.assertEqual((decision["id"], decision["project"], decision["session_id"], decision["status"]),
+                         (card["id"], room["project"], self.assistant, "open"))
+        link = self.conn.execute("SELECT room_id FROM war_room_decisions WHERE decision_id=?", (card["id"],)).fetchone()
+        self.assertEqual(link["room_id"], room["id"])
+        [event] = self.conn.execute("SELECT project FROM events WHERE kind='decision:ask' AND session_id=?", (self.assistant,))
+        self.assertEqual(event["project"], room["project"])
+
+    def test_answer_queues_one_room_notice_only_for_an_assistant_lead(self):
+        room = self.open_room(actor=self.assistant)
+        card = war_room.decide(self.conn, room["id"], self.assistant, "是否兼容 v1？", now=NOW)
+        board.answer(self.conn, card["id"], "兼容一个月", now=NOW)
+        [notice] = self.notices(self.assistant)
+        self.assertEqual((notice["project"], notice["source"], notice["wake"]), (room["project"], "crew", 1))
+        self.assertEqual(notice["text"], f'作战室 #{room["id"]}《{room["title"]}》的拍板卡已由用户答复。\n'
+                         f'问题：{card["question"]}\n答复：兼容一个月\n'
+                         f'请在房里（war_room_post，room={room["id"]}）告诉成员结论和接下来谁做什么。')
+
+        leader_room = self.open_room()
+        leader_card = war_room.decide(self.conn, leader_room["id"], "a", "何时切换？", now=NOW)
+        before = self.conn.execute("SELECT COUNT(*) FROM leader_notices").fetchone()[0]
+        board.answer(self.conn, leader_card["id"], "月底", now=NOW)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM leader_notices").fetchone()[0], before)
 
     def test_the_assistant_leads_without_a_member_seat_and_speaks_as_itself(self):
         room = war_room.start(self.conn, "demo", self.assistant, "开局", "两位 leader 跑通首个里程碑", ["alpha", "beta"],

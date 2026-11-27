@@ -745,21 +745,26 @@ def unclaim(conn, session_id, pattern=None, now=None):
 
 
 @atomic
-def ask(conn, session_id, question, options=(), recommendation=None, blocking=False, now=None, *, brief=None, execution_id=None):
+def ask(conn, session_id, question, options=(), recommendation=None, blocking=False, now=None, *,
+        brief=None, execution_id=None, project=None):
     s = session(conn, session_id)
+    if project is None:
+        project = s["project"]
+    elif s["project"] is not None and s["project"] != project:
+        raise BoardError('提问会话不属于这个工作区')
     from . import decision_briefs, snapshot_values, trust_mode
     if brief is not None:
         decision_briefs._text(question, "问题")
         brief = decision_briefs.validate(brief, options=list(options) if options else None, recommendation=recommendation)
         options = [entry["label"] for entry in brief["options"]]
     decision_id = conn.execute("INSERT INTO decisions(project,session_id,question,options,recommendation,blocking,created_at) VALUES(?,?,?,?,?,?,?)",
-                               (s["project"], session_id, question, json.dumps(list(options), ensure_ascii=False), recommendation, int(blocking), _time(now))).lastrowid
+                               (project, session_id, question, json.dumps(list(options), ensure_ascii=False), recommendation, int(blocking), _time(now))).lastrowid
     trust_mode.record_decision_scope(conn, decision_id, session_id)
     snapshot_values.touch_decision(conn, decision_id)
     if execution_id is not None:
         from . import goal_links
         goal_links.bind(conn, 'decision', decision_id, execution_id)
-    _event(conn, "decision:ask", s["project"], session_id, {"id": decision_id, "question": question}, now)
+    _event(conn, "decision:ask", project, session_id, {"id": decision_id, "question": question}, now)
     if brief is not None:
         decision_briefs._save(conn, decision_id, brief, now)
     trust_mode.auto_answer(conn, decision_id, reason=brief["recommendation_reason"] if brief is not None else None, now=now)
@@ -793,6 +798,8 @@ def answer(conn, decision_id, text, actor=HUMAN, now=None, *, _human_origin=None
     from . import snapshot_values
     snapshot_values.touch_decision(conn, decision_id)
     _event(conn, "decision:answer", d["project"], actor, {"id": decision_id, "answer": text, "goal_policy": policy}, now)
+    from . import war_room
+    war_room.decision_answered(conn, decision_id, text, now=now)
 
 
 @atomic
