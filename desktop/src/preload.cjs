@@ -39,15 +39,30 @@ function tabsState(state){
   const item=document.createElement('div');item.className='crew-tab';item.dataset.active=String(state.activeId===tab.id);
   const select=document.createElement('button');select.type='button';select.dataset.tabId=tab.id;if(tab.project)select.dataset.project=tab.project;
   select.setAttribute('role','tab');select.setAttribute('aria-selected',String(state.activeId===tab.id));select.tabIndex=state.activeId===tab.id?0:-1;
-  select.setAttribute('aria-label',tab.name+(tab.activity?'，'+tab.activity.label+(tab.activity.unread?'，有未读动态':''):''));
+  select.setAttribute('aria-label',[tab.name,tab.activity?.label].filter(Boolean).join('，'));
   const mark=document.createElement('span');mark.className='crew-tab-mark';mark.textContent=tab.project?Array.from(tab.name)[0]?.toUpperCase():'▦';
   const name=document.createElement('span');name.className='crew-tab-name';name.textContent=tab.name;select.append(mark,name);
   if(tab.project){
-   const signal=document.createElement('span');signal.className='crew-tab-signal';signal.setAttribute('aria-hidden','true');
-   signal.dataset.tone=tab.loading?'loading':tab.error?'error':tab.activity?.stale?'stale':tab.activity?.counts?.working?'working':tab.activity?.tone||'unknown';select.append(signal);
-   if(tab.activity?.badge){const badge=document.createElement('span');badge.className='crew-tab-badge';badge.dataset.tone=tab.activity.tone;badge.textContent=tab.activity.badge>99?'99+':String(tab.activity.badge);badge.setAttribute('aria-hidden','true');select.append(badge);}
-   if(tab.activity?.unread){const unread=document.createElement('span');unread.className='crew-tab-unread';unread.setAttribute('aria-hidden','true');mark.append(unread);}
-   const preview=()=>{clearTimeout(tabPreviewTimer);tabPreviewTimer=setTimeout(()=>{if(!select.isConnected)return;const rect=select.getBoundingClientRect();void invoke('tab-preview',{id:tab.id,anchor:{x:rect.x,y:rect.y,width:rect.width,height:rect.height}});},280);};
+   if(tab.activity?.working) mark.classList.add('crew-tab-working');
+   const tone=tab.activity?.marker ?? (!tab.activity || tab.loading || tab.error ? 'unknown' : null);
+   if(tone){
+    const signal=document.createElement('span');signal.className='crew-tab-signal';signal.dataset.tone=tone;signal.setAttribute('aria-hidden','true');
+    if(tone==='attention'||tone==='error'){
+     const count=tab.activity.markerCount;
+     signal.textContent=(tone==='error'?'! ':'')+(count>99?'99+':String(count));
+    }
+    if(tone==='unread') name.classList.add('crew-tab-name-unread');
+    select.append(signal);
+   }
+   const preview=()=>{
+    clearTimeout(tabPreviewTimer);
+    tabPreviewTimer=setTimeout(()=>{
+     const current=tabsBar.querySelector('[data-tab-id="'+CSS.escape(tab.id)+'"]');
+     if(!current)return;
+     const {x,y,width,height}=current.getBoundingClientRect();
+     void invoke('tab-preview',{id:tab.id,anchor:{x,y,width,height}});
+    },280);
+   };
    select.addEventListener('mouseenter',preview);select.addEventListener('focus',preview);
    select.addEventListener('mouseleave',()=>{clearTimeout(tabPreviewTimer);void invoke('tab-preview-hide');});
    select.addEventListener('blur',()=>{clearTimeout(tabPreviewTimer);void invoke('tab-preview-hide');});
@@ -94,7 +109,7 @@ if(isHome&&process.isMainFrame)contextBridge.exposeInMainWorld('crewDesktop',Obj
  theme:()=>bridgeInvoke('desktop:theme'),setTheme:mode=>bridgeInvoke('desktop:theme-set',mode),setFontScale:value=>bridgeInvoke('desktop:font-scale-set',value),
  onTheme:callback=>{if(typeof callback!=='function')throw new TypeError('需要显示模式回调');const listener=(_event,state)=>callback(state);ipcRenderer.on('desktop:theme',listener);return()=>ipcRenderer.removeListener('desktop:theme',listener);},
  onConnection:callback=>{if(typeof callback!=='function')throw new TypeError('需要连接状态回调');const listener=(_event,state)=>callback(state);ipcRenderer.on('desktop:connection',listener);return()=>ipcRenderer.removeListener('desktop:connection',listener);},
- homeReady:()=>bridgeInvoke('desktop:home-ready'),bootstrap:()=>bridgeInvoke('desktop:bootstrap'),registerExisting:directory=>bridgeInvoke('desktop:existing-new',directory),openProject:name=>bridgeInvoke('desktop:open',name),openAdministrator:()=>bridgeInvoke('desktop:open-administrator'),
+ homeReady:()=>bridgeInvoke('desktop:home-ready'),bootstrap:()=>bridgeInvoke('desktop:bootstrap'),registerExisting:directory=>bridgeInvoke('desktop:existing-new',directory),openProject:(name,kickoff)=>bridgeInvoke('desktop:open',name,kickoff),openAdministrator:()=>bridgeInvoke('desktop:open-administrator'),
  ...local({chooseExisting:()=>bridgeInvoke('desktop:existing'),chooseParent:()=>bridgeInvoke('desktop:parent'),createWorkspace:name=>bridgeInvoke('desktop:create',name),storageActivate:workspaceId=>bridgeInvoke('desktop:storage-activate',workspaceId),storageImport:()=>bridgeInvoke('desktop:storage-import')}),
  ...lan({hostFolders:directory=>bridgeInvoke('desktop:host-folders',directory),openExistingDirectory:directory=>bridgeInvoke('desktop:existing-directory',directory),createWorkspace:(name,parent)=>bridgeInvoke('desktop:create',name,parent),storageActivate:(workspaceId,root)=>bridgeInvoke('desktop:storage-activate',workspaceId,root)}),
  storageExport:name=>bridgeInvoke('desktop:storage-export',name),
@@ -106,7 +121,7 @@ if(isHome&&process.isMainFrame)contextBridge.exposeInMainWorld('crewDesktop',Obj
   toolsSnapshot:()=>bridgeInvoke('desktop:tools-snapshot'),toolsCheck:()=>bridgeInvoke('desktop:tools-check'),toolsUpdate:id=>bridgeInvoke('desktop:tools-update',id),toolsCancel:id=>bridgeInvoke('desktop:tools-cancel',id),toolsSettings:settings=>bridgeInvoke('desktop:tools-settings',settings),
   remoteAccessRead:()=>bridgeInvoke('desktop:remote-access-read'),remoteAccessAction:body=>bridgeInvoke('desktop:remote-access-action',body)}),
  promptsGet:query=>bridgeInvoke('desktop:prompts-get',query),promptsSave:body=>bridgeInvoke('desktop:prompts-save',body),
- onboardingGet:()=>bridgeInvoke('desktop:onboarding-get'),onboardingSave:status=>bridgeInvoke('desktop:onboarding-save',status),runtimeReadiness:()=>bridgeInvoke('desktop:runtime-readiness'),
+ onboardingUI:()=>bridgeInvoke('desktop:onboarding-ui'),onboardingGet:()=>bridgeInvoke('desktop:onboarding-get'),onboardingSave:status=>bridgeInvoke('desktop:onboarding-save',status),runtimeReadiness:()=>bridgeInvoke('desktop:runtime-readiness'),copyLoginCommand:runtime=>bridgeInvoke('desktop:copy-login-command',runtime),
  settingsUI:()=>bridgeInvoke('desktop:settings-ui'),settingsGet:()=>bridgeInvoke('desktop:settings-get'),settingsSave:body=>bridgeInvoke('desktop:settings-save',body),settingsConnection:()=>bridgeInvoke('desktop:settings-connection'),settingsConnectionSave:body=>bridgeInvoke('desktop:settings-connection-save',body),settingsConnectionAction:body=>bridgeInvoke('desktop:settings-connection-action',body),settingsConnectionPreferences:body=>bridgeInvoke('desktop:settings-connection-preferences',body),settingsAway:away=>bridgeInvoke('desktop:settings-away',away),
  launchSettingsGet:()=>bridgeInvoke('desktop:launch-settings-get'),launchSettingsValidate:body=>bridgeInvoke('desktop:launch-settings-validate',body),launchSettingsApply:body=>bridgeInvoke('desktop:launch-settings-apply',body),launchSettingsPick:body=>bridgeInvoke('desktop:launch-settings-pick',body),remoteBackendPair:body=>bridgeInvoke('desktop:remote-backend-pair',body),
  storageRead:()=>bridgeInvoke('desktop:storage-read'),storagePreview:body=>bridgeInvoke('desktop:storage-preview',body),storageClean:body=>bridgeInvoke('desktop:storage-clean',body),storageRestore:body=>bridgeInvoke('desktop:storage-restore',body),storageEmptyTrash:body=>bridgeInvoke('desktop:storage-empty-trash',body),storagePolicy:body=>bridgeInvoke('desktop:storage-policy',body),

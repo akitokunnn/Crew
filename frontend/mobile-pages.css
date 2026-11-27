@@ -350,8 +350,7 @@ body:has(>.nw-menu)::after{content:"";position:fixed;inset:0;z-index:69;backgrou
 .sl-search{grid-column:1/-1;min-width:0}
 .sl-toolbar select{max-width:none}
 .sl-toolbar input,.sl-toolbar select{min-height:var(--m-tap)}
-.sl-categories{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:16px calc(-1 * var(--m-gutter)) 10px;padding:0 var(--m-gutter)}
-.sl-categories::-webkit-scrollbar{display:none}
+.sl-categories{flex-wrap:wrap;overflow:visible;margin:14px 0 10px}
 .sl-categories button{flex:none;min-height:40px;border-color:var(--line);border-radius:999px;white-space:nowrap}
 .sl-categories button span{font-size:13px}
 .sl-scope,.sl-warning,.sl-result-heading{font-size:var(--m-fs-meta)}

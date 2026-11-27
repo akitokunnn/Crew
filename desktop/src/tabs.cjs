@@ -55,7 +55,7 @@ class WorkspaceTabs {
 
   _public(tab) { if (isGlobal(tab)) return {id:tab.id,kind:tab.kind,name:GLOBAL_PAGES[tab.kind].name,project:null,loading:tab.loading,error:tab.error};
     return { id: tab.id, name: tab.project.display_name || tab.project.name, project: tab.project.name, loading: tab.loading, error: tab.error,
-    readOnly:Boolean(tab.project.read_only), activity:tab.project.read_only ? {tone:'idle',label:'已保存的只读历史',badge:0,unread:0,items:[],stale:false,error:''} : tab.activity||null }; }
+    readOnly:Boolean(tab.project.read_only), activity:tab.project.read_only ? {marker:null,working:false,label:'已保存的只读历史',rows:[]} : tab.activity||null }; }
   async refreshActivity() {
     if(this.disposed||this.activityBusy||!this.readActivity||!this.entries.size)return;
     const tabs=[...this.entries.values()].filter(tab=>!isGlobal(tab) && !tab.project.read_only);

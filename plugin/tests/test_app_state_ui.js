@@ -15,7 +15,7 @@ function harness(api){
     fail(){this.onerror({});}
   }
   const sandbox={window:{},document:{addEventListener(){},getElementById:id=>({main,"mobile-navigation":navigation,"mobile-project":projectName,"connection-status":connection})[id]||null},
-    location:{search:"?project=fixture",origin:"http://127.0.0.1:47811"},URL,URLSearchParams,EventSource:FakeEventSource,
+    location:{hash:"",search:"?project=fixture",origin:"http://127.0.0.1:47811"},URL,URLSearchParams,EventSource:FakeEventSource,
     setTimeout:(fn,delay)=>{const id=nextTimer++;timers.push({id,fn,delay});return id;},clearTimeout:id=>{const index=timers.findIndex(timer=>timer.id===id);if(index>=0)timers.splice(index,1);},
     setInterval(){throw Error("工作台不应再定时轮询");},CrewActivity:{sync(){}},CrewSound:{observe(){}}};
   vm.createContext(sandbox);

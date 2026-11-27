@@ -4,6 +4,7 @@
 .sl-toolbar {display:flex;align-items:end;gap:14px;flex-wrap:wrap}
 .sl-toolbar label,.sl-adopt label {display:flex;flex-direction:column;gap:7px;font-size:12px;color:var(--text-2)}
 .sl-toolbar input,.sl-toolbar select,.sl-adopt input,.sl-adopt select {font:inherit;color:var(--text);border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:9px 11px;min-height:38px}
+.sl-task-mode .sl-toolbar [data-sl-session-filter] {display:none}
 .sl-search {flex:1;min-width:220px}
 .sl-toolbar select {max-width:220px}
 .sl-categories {display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 10px}
@@ -26,6 +27,14 @@
 .sl-running {color:var(--accent)}
 .sl-location {font-size:12px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .sl-row time {font-size:11px;color:var(--text-3)}
+.sl-rooms {font-size:12px;color:var(--text-2);overflow-wrap:anywhere}
+.sl-group {margin-bottom:16px}
+.sl-group h2 {font-size:13px;font-weight:500;margin:0 0 8px}
+.sl-task {display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:42px;text-align:left;color:var(--text);padding:8px 10px;border:0;border-bottom:1px solid var(--line);background:transparent;font:inherit;cursor:pointer;overflow-wrap:anywhere}
+.sl-task:hover,.sl-task[aria-pressed=true],.sl-execution[aria-pressed=true] {background:var(--hover)}
+.sl-task span {color:var(--text-2);font-size:12px}
+.sl-execution {display:block;min-height:36px;text-align:left;white-space:normal;overflow-wrap:anywhere}
+@media(max-width:760px){.sl-execution{min-height:44px}.sl-categories button{min-height:40px}}
 .sl-row-preview {align-self:center;margin-right:12px}
 .sl-more {width:100%;margin-top:8px}
 .sl-empty {padding:50px 20px;text-align:center;color:var(--text-2)}

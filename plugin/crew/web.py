@@ -160,6 +160,7 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
 
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/app-data.js": ("app-data.js", "text/javascript; charset=utf-8"),
+          "/workspace-start.js": ("workspace-start.js", "text/javascript; charset=utf-8"),
           "/themes.js": ("themes.js", "text/javascript; charset=utf-8"),
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
           "/sound-settings-ui.js": ("sound-settings-ui.js", "text/javascript; charset=utf-8"),

@@ -24,7 +24,7 @@ window.CrewMindmap = (() => {
     // armed: an idea picked from the tray by a tap, waiting for the node (or empty canvas) it goes to.
     // pendingAttach: an idea already recorded whose hanging failed; a retry only hangs it.
     let armed = null, pendingAttach = null, capturing = false, captureNote = "";
-    let camera = null, controls = null, marquee = new Set(), resizing = null;
+    let camera = null, controls = null, marquee = new Set(), resizing = null, startRequested = false;
     const cameraKey = `crew.mindmap.camera.${ctx.project}`;
     const $ = selector => host.querySelector(selector);
     const note = id => ctx.byId(t.nodes.get(id).note_id);
@@ -116,6 +116,15 @@ window.CrewMindmap = (() => {
         empty.hidden = false; scroll.hidden = true;
         empty.innerHTML = error ? `<span role="alert">导图读取失败：${esc(error)}</span><button type="button" class="btn sm" data-mm="reload">重新读取</button>` : "正在读取导图…";
         renderActions(); return;
+      }
+      if (startRequested) {
+        startRequested = false;
+        const root = t.roots[0] ?? null;
+        if (root !== null && t.nodes.get(root).collapsed) {
+          select(root, false); $(".mm-capture-input").focus(); return;
+        }
+        startDraft(root, 0);
+        return;
       }
       scroll.hidden = false;
       empty.hidden = t.roots.length > 0;
@@ -225,6 +234,10 @@ window.CrewMindmap = (() => {
     function renderCanvas() {
       pickCovered = picking ? MM.branches(t, picking).covered : new Set();
       const order = MM.visible(t), nodesBox = $(".mm-nodes"), wires = $(".mm-wires");
+      // Refresh can repaint the map while a topic is being typed. Replacing the
+      // input must neither commit it through blur nor erase its current text.
+      const previousEditor = $(".mm-input"), editorFocused = document.activeElement === previousEditor;
+      previousEditor?.removeEventListener("blur", onEditorBlur);
       nodesBox.innerHTML = order.map(nodeHtml).join("");
       const elements = new Map([...nodesBox.children].map(el => [el.dataset.node, el]));
       const sizes = id => { const el = elements.get(id); return {w: el.offsetWidth, h: el.offsetHeight}; };
@@ -239,7 +252,16 @@ window.CrewMindmap = (() => {
         if (saved === null) fit(); else setCamera(JSON.parse(saved), false);
       } else applyCamera();
       const editor = $(".mm-input");
-      if (editor) { editor.focus(); editor.select(); editor.addEventListener("keydown", onEditorKey); editor.addEventListener("blur", onEditorBlur); }
+      if (editor) {
+        if (previousEditor) editor.value = previousEditor.value;
+        if (!previousEditor || editorFocused) {
+          editor.focus({preventScroll:true});
+          if (previousEditor) editor.setSelectionRange(previousEditor.selectionStart, previousEditor.selectionEnd);
+          else editor.select();
+        }
+        editor.addEventListener("keydown", onEditorKey);
+        editor.addEventListener("blur", onEditorBlur);
+      }
       else if (focusAfter && selected !== null) { focusAfter = false; focusNode(selected); }
     }
     const hasPositions = () => map && map.nodes.some(node => node.x !== null);
@@ -724,7 +746,16 @@ window.CrewMindmap = (() => {
     return {
       active: () => host !== null,
       mount(element) { host = element; scaffold(); render(); void load(); },
-      unmount() { controls.destroy(); resizing.disconnect(); host.innerHTML = ""; host = null; picking = null; draft = null; renaming = null; armed = null; },
+      focusStart() {
+        const editor = $(".mm-input");
+        if (editor) { editor.focus({preventScroll:true}); return; }
+        startRequested = true; render();
+      },
+      unmount() {
+        finishEditor(true);
+        controls.destroy(); resizing.disconnect(); host.innerHTML = "";
+        host = null; picking = null; draft = null; renaming = null; armed = null; startRequested = false;
+      },
       render() { if (host) { sync(); render(); const box = $(".mm-capture-input"); if (document.activeElement !== box && box.value !== ctx.draft.get()) { box.value = ctx.draft.get(); resizeBox(); } } },
       refresh: () => host ? load() : Promise.resolve(),
       // The node the tray box would hang a new idea under, or null.

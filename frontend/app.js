@@ -192,11 +192,10 @@
     const subagents = collabs.filter(({task}) => task.source === "native_subagent").length, skills = dispatches - subagents;
     const people = count === 0 ? "" : self ? members > 0 ? `本人和 ${members} 个执行在干活` : "本人在干活" : `${members} 个执行在干活`;
     const label = [people, skills > 0 ? `${skills} 个派工在运行` : "", subagents > 0 ? `${subagents} 个子代理在运行` : ""].filter(Boolean).join(" · ");
-    const brief = [people, skills > 0 ? `派工 ${skills}` : "", subagents > 0 ? `子代理 ${subagents}` : ""].filter(Boolean).join(" · ");
-    return {self, members, count, dispatches, active:count + dispatches > 0, label, brief};
+    return {self, members, count, dispatches, active:count + dispatches > 0, label};
   }
   const groupAvatar = (item, work) => !work.active ? av(item.name, 30) : `<span class="group-work-avatar" title="${esc(work.label)}">${av(item.name, 30)}</span>`;
-  const groupWorkLabel = (work, brief = false) => !work.active ? "" : `<span class="group-work-label" title="${esc(work.label)}"><i aria-hidden="true"></i>${esc(brief ? work.brief : work.label)}</span>`;
+  const groupWorkLabel = work => !work.active ? "" : `<span class="group-work-label" title="${esc(work.label)}"><i aria-hidden="true"></i>${esc(work.label)}</span>`;
   const decisionsOf = id => state.decisions.filter(item => item.leader_session_id === id || item.session_id === id);
   const openTodos = () => (Array.isArray(state?.todos) ? state.todos : []).filter(item => item.status === undefined || item.status === "open");
   const todoById = id => openTodos().find(item => String(item.id) === String(id));
@@ -363,11 +362,23 @@
     return `<section class="leader-notice-history" aria-label="交接历史"><h3>交接历史</h3>${items.map(item =>
       `<p>${esc(item.name)} <span>· ${item.count} 条通知</span></p>`).join("")}</section>`;
   }
+  function leaderStatus(item, work = groupWork(item)) {
+    const related = new Set([item.session_id, ...membersOf(item.session_id).map(person => person.session_id)]);
+    const needs = state.attention.filter(entry => related.has(entry.session_id));
+    const failure = needs.find(entry => entry.kind === "session_error" || entry.kind === "codex_failed");
+    if (failure) return {tone:"failed", label:"执行异常", detail:failure.detail};
+    if (needs.length || item.status === "waiting" || state.native_approvals.some(approval => related.has(approval.session_id)) ||
+      state.goals.some(goal => goal.leader_session_id === item.session_id &&
+      goal.status === "awaiting_acceptance" && !goal.observing)) return {tone:"waiting", label:"等你处理"};
+    if (work.active) return {tone:"working", label:"推进中", detail:work.label};
+    if (leaderUnread(item)) return {tone:"unread", label:"未读"};
+    return {tone:item.status, label:statusText[item.status]};
+  }
   function sidebarLeader(item) {
     // A member conversation stays inside its leader's group: that leader keeps a quieter selection and its tasks.
     const inGroup = view === "chat" && leaderId === item.session_id, selected = inGroup && readOnlyId === null;
-    const work = groupWork(item), unread = leaderUnread(item);
-    return `<div draggable="true" class="leader-row session-surface${item.pinned ? " pinned" : ""} ${selected ? "active" : inGroup ? "in-group" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}${unread ? "，有未读消息" : ""}" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><span class="leader-row-name"><strong>${esc(item.name)}</strong>${contextRing(item)}${trustMark(item)}${unread ? '<span class="leader-unread-dot" title="有未读消息"></span>' : ""}</span><span class="leader-row-sub">${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}${work.active ? groupWorkLabel(work, true) : st(item.status)}</span>${leaderBranches(item)}${leaderQueued(item)}</span>${pinButton(item)}</div>${inGroup ? CrewGoals.leaderTasks(state.goals.filter(task => task.leader_session_id === item.session_id), goalId) : ""}`;
+    const work = groupWork(item), unread = leaderUnread(item), status = leaderStatus(item, work);
+    return `<div draggable="true" class="leader-row session-surface${item.pinned ? " pinned" : ""} ${selected ? "active" : inGroup ? "in-group" : ""}" data-act="leader" data-id="${esc(item.session_id)}" aria-label="${esc(item.name)}${unread ? "，有未读消息" : ""}" ${selected ? 'aria-current="page"' : ""}>${sessionOpen(item.session_id,"leader",item.name,selected)}${groupAvatar(item,work)}<span class="meta"><span class="leader-row-name"><strong>${esc(item.name)}</strong>${contextRing(item)}${trustMark(item)}${unread ? '<span class="leader-unread-dot" title="未读"></span>' : ""}</span><span class="leader-row-sub">${item.goal === null ? "" : `<span class="goal" title="${esc(item.goal)}">${esc(item.goal)}</span>`}<span class="st ${status.tone}"${status.detail ? ` title="${esc(status.detail)}"` : ""}><i class="dot ${status.tone}"></i>${status.label}</span></span>${leaderBranches(item)}${leaderQueued(item)}</span>${pinButton(item)}</div>${inGroup ? CrewGoals.leaderTasks(state.goals.filter(task => task.leader_session_id === item.session_id), goalId) : ""}`;
   }
   function setLeadersOpen(open, remember = true) {
     leadersOpen = open;
@@ -889,7 +900,9 @@
   function renderAll() {
     if (allTab === "overview") {
       replace($("main"), CrewWorkspaceHome.render({name:projectDisplay(state.project), project:state.project.name, git_assistant:state.git_assistant, leaders:state.leaders,
-        members:state.members, goals:state.goals || [], todos:state.todos || [], decisions:state.decisions},
+        members:state.members, goals:state.goals || [], todos:state.todos || [], decisions:state.decisions,
+        errors:state.attention.filter(item => item.kind === "session_error" || item.kind === "codex_failed"),
+        unread:state.leaders.reduce((sum, item) => sum + item.unread, 0), statuses:new Map(state.leaders.map(item => [item.session_id, leaderStatus(item)]))},
         {taskCards:items => CrewGoals.cards(items, state.leaders), decisionCards:items => items.map(decisionCard).join(""), todoCards:items => items.map(todoCard).join(""), todoTint,
           approvalCount:nativeApprovals?.count() || 0, settingsIcon:ic("settings", "sm")}));
       return;
@@ -913,6 +926,7 @@
   function renderAdopt() { mountSessionLibrary($("main")); }
   function mountSessionLibrary(host) {
     if (sessionLibrary === null) sessionLibrary = CrewSessionLibrary.create({api, toast, changed:() => loadState(true),
+      readTask:(path, workspace) => workspaceData().request(path, undefined, workspace),
       open:item => { const owner = item.role === "leader" ? item : state.leaders.find(person => person.name === item.group);
         if (owner) navigate("chat", owner.session_id, item.role === "leader" ? null : item.session_id); }});
     sessionLibrary.mount(host, state);
@@ -1365,6 +1379,17 @@
     render(); syncRoute();
     refreshUsage(true);
   }
+  function startWorkspace(choice) {
+    if (choice === "leader") openModalLeader();
+    else if (choice === "mindmap") location.href = pageHref("notes", project) + "#start=mindmap";
+    else if (choice === "war-room") toast("作战室筹备入口尚未开放。");
+  }
+  function applyWorkspaceStart() {
+    const choice = new URLSearchParams(location.hash.slice(1)).get("start");
+    if (choice !== "leader" && choice !== "war-room") return;
+    syncRoute();
+    startWorkspace(choice);
+  }
   function readRoute() {
     const hash = location.hash.slice(1), params = new URLSearchParams(hash);
     goalId = params.get("goal");
@@ -1448,7 +1473,7 @@
     if (readOnlyId !== null && !state.members.some(item => item.session_id === readOnlyId)) { navigate("all"); toast("该会话已不在下属列表，已返回工作台"); }
     else if (view === "chat" && readOnlyId === null && leader(leaderId) === undefined) { navigate("all"); toast("这个 leader 已结束，已返回工作台"); }
     else if (view === "chat" && goalId != null && !(state.goals || []).some(item => String(item.id) === String(goalId) && item.leader_session_id === leaderId)) { navigate("chat",leaderId,readOnlyId,null); toast("目标已不在本组，已回到总对话。"); }
-    else { render(); syncRoute(); }
+    else { render(); applyWorkspaceStart(); syncRoute(); }
     // Channel posts are not in the snapshot: a change replaces a shown post, a snapshot has the channel re-read its newest page.
     const live = meta.source === "snapshot" ? null : meta.changes, rooms = live === null || live.some(change => change.type.startsWith("war_room."));
     if (mountedChannel) { CrewChannel.changed(live === null ? null : live.filter(change => change.type.startsWith("channel_message."))); if (rooms) CrewChannel.roomsChanged(); }
@@ -1718,6 +1743,7 @@
       else if (act === "leader-general") { leaderTaskChat = null; renderChat(); }
       else if (act === "right-close") { rightOpen = false; syncSidecar(); $("main").querySelector('[data-act="right-open"]')?.focus(); }
       else if (act === "side-section-close") { attentionVisible = false; syncSidecar(); $("chat-head").querySelector('[data-act="attention"]')?.focus(); }
+      else if (act === "workspace-start") startWorkspace(button.dataset.start);
       else if (act === "modal-leader") openModalLeader();
       else if (act === "budget-edit") openBudget();
       else if (act === "budget-clear") void saveBudget(null);
@@ -1839,7 +1865,7 @@
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
       }
     });
-    window.addEventListener("hashchange", () => { if (state === null || project === null) return; CrewChat.unmount(); mountedChat = null; readRoute(); render(); refreshUsage(true); });
+    window.addEventListener("hashchange", () => { if (state === null || project === null) return; CrewChat.unmount(); mountedChat = null; readRoute(); render(); applyWorkspaceStart(); refreshUsage(true); });
     loadState();
     // Minutes-ago and running-for texts move with the clock, not with any change; redraw them locally.
     setInterval(() => { if (state !== null && project !== null) render(); }, 30000);

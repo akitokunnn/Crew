@@ -6,9 +6,9 @@
   // "Waiting for you" = what only the user can unblock; same set the summary counts.
   const ATTENTION = ["approval", "decision", "acceptance", "todo"];
   const KIND = {approval:"权限确认", decision:"等你拍板", acceptance:"待验收", todo:"待你动手", waiting:"等你回复",
-    error:"出错", delivery:"已交付", working:"在干活", reply:"新回复"};
+    error:"执行异常", delivery:"已交付", working:"推进中", reply:"未读"};
   // Card badges in reading order; zero counts are not shown.
-  const BADGES = [["approvals", "approval"], ["decisions", "decision"], ["acceptance", "acceptance"], ["todos", "todo"], ["unread", "reply", "未读"]];
+  const BADGES = [["approvals", "approval"], ["decisions", "decision"], ["acceptance", "acceptance"], ["todos", "todo"], ["errors", "error"], ["chat_unread", "reply", "对话未读"], ["channel_unread", "reply", "交流区未读"]];
   const cache = {key:null, projects:null, error:null, at:0, inflight:false};
   let last = null;
   let pending = false, timer = null;
@@ -70,7 +70,7 @@
       const busy = loaded.filter(item => !item.unknown && item.counts.working > 0).length;
       const unknown = loaded.filter(item => item.unknown).length;
       parts.push(waiting > 0 ? `<strong class="entry-sum-waiting">${waiting} 件等你处理</strong>` : "<span>没有等你处理的事</span>");
-      if (busy > 0) parts.push(`<span class="entry-sum-busy"><i class="entry-pulse" aria-hidden="true"></i>${busy} 个在干活</span>`);
+      if (busy > 0) parts.push(`<span class="entry-sum-busy"><i class="entry-pulse" aria-hidden="true"></i>${busy} 个在推进</span>`);
       if (unknown > 0) parts.push(`<span>${unknown} 个运行状态未确认</span>`);
     }
     const failed = entries.filter(entry => entry.activity?.error !== undefined).length;
@@ -110,8 +110,8 @@
       state = waiting > 0 ? "attention" : counts.working > 0 && !activity.unknown ? "busy" : "quiet";
       if (waiting > 0) top = `<span class="entry-card-waiting">${waiting} 件等你</span>`;
       const badges = [];
-      if (activity.unknown) badges.push(`<span class="entry-badge" data-kind="unknown">在干活 · 状态未确认</span>`);
-      else if (counts.working > 0) badges.push(`<span class="entry-badge" data-kind="working"><i class="entry-pulse" aria-hidden="true"></i>${counts.working} 在干活</span>`);
+      if (activity.unknown) badges.push(`<span class="entry-badge" data-kind="unknown">运行状态未确认</span>`);
+      else if (counts.working > 0) badges.push(`<span class="entry-badge" data-kind="working"><i class="entry-pulse" aria-hidden="true"></i>${counts.working} 个在推进</span>`);
       for (const [key, kind, label = KIND[kind]] of BADGES) if (counts[key] > 0) badges.push(`<span class="entry-badge" data-kind="${kind}"><b>${counts[key]}</b>${label}</span>`);
       const lines = activity.items.filter(task => !ATTENTION.includes(task.kind)).slice(0, 2);
       const quiet = badges.length === 0 && lines.length === 0;

@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const vm = require("node:vm"), fs = require("node:fs"), path = require("node:path");
 const window = {};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../../frontend/goal-ui.js"),"utf8"),{window});
+vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../../frontend/workspace-start.js"),"utf8"), {window});
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../../frontend/workspace-home.js"),"utf8"), {window});
 const ui = window.CrewWorkspaceHome;
 const data = patch => ({name:"健身打卡",project:"fitness",git_assistant:null,leaders:[],members:[],goals:[],todos:[],decisions:[],...patch});
@@ -38,23 +39,21 @@ test("ended tasks list the most recently ended first", () => {
 
 test("empty workspace invites a discussion, without automatically launching or creating a goal", () => {
   const html=render(data());
-  assert.match(html,/开始新对话/);assert.match(html,/data-act="modal-leader"/);
+  assert.match(html,/建第一位 Leader/);assert.match(html,/data-act="workspace-start" data-start="leader"/);
   assert.doesNotMatch(html,/data-goal-act="start"|undefined|NaN/);
 });
 
-test("a blank workspace offers 自己搭 and 助手开局 as two equal entries that start nothing by themselves", () => {
+test("blank workspaces offer the same three starts as the guide and a link to their own assistant", () => {
   const html=render(data({name:"健身 <打卡>",project:"fit & go"}));
-  assert.match(html,/空白工作区，从哪里开始？/);
-  const paths=[...html.matchAll(/<article class="wh-path" data-path="(\w+)">/g)].map(match=>match[1]);
-  assert.deepEqual(paths,["self","assistant"]);
-  assert.match(html,/<h3>自己搭<\/h3>/);assert.match(html,/<h3>助手开局<\/h3>/);
-  assert.match(html,/data-act="modal-leader">开始新对话/);assert.match(html,/data-act="view" data-view="architecture">画架构图/);
-  assert.match(html,/href="\/assistant\.html\?project=fit%20%26%20go#opening=fit%20%26%20go">让助手开局/,"the workspace's own assistant takes the opening");
-  assert.doesNotMatch(html,/wh-overview|wh-empty|任务列表/,"the empty columns step aside for the two entries");
-  assert.doesNotMatch(html,/data-goal-act="start"|\/api\/|undefined|NaN/);
+  assert.match(html,/从哪里开始？/);
+  const paths=[...html.matchAll(/data-act="workspace-start" data-start="([\w-]+)"/g)].map(match=>match[1]);
+  assert.deepEqual(paths,["war-room","leader","mindmap"]);
+  assert.match(html,/开作战室<\/strong><span class="start-recommended">推荐/);
+  assert.match(html,/还不确定？<a href="\/assistant\.html\?project=fit%20%26%20go">直接和工作区助手聊聊/);
+  assert.doesNotMatch(html,/wh-overview|wh-empty|任务列表|data-goal-act="start"|\/api\/|undefined|NaN/);
 });
 
-test("the two entries leave once there is a leader or a task, and pending attention keeps its columns", () => {
+test("the opening choices leave once there is a leader or a task, and pending attention keeps its columns", () => {
   assert.doesNotMatch(render(data({project:"p",leaders:[{session_id:"L",name:"甲",goal:"聊需求",status:"idle"}]})),/wh-start/);
   assert.doesNotMatch(render(data({project:"p",goals:[{id:"g",status:"completed",ended_at:"2026-11-19T09:00:00Z"}]})),/wh-start/);
   const todo=render(data({project:"p",todos:[{id:7,status:"open"}]}));
@@ -80,7 +79,7 @@ test("awaiting acceptance leads the home with report gist and hands-on steps", (
   assert.match(html,/&lt;b&gt;步骤1&lt;\/b&gt;/);assert.doesNotMatch(html,/<b>步骤/);
   assert.match(html,/预期：看到4/);assert.doesNotMatch(html,/看到5/);assert.match(html,/还有 1 步/);
   assert.match(html,/data-goal-act="delivery" data-goal-id="fit"/);assert.match(html,/data-act="goal-review" data-id="fit"/);
-  assert.match(html,/<strong>1<\/strong>待你处理/);
+  assert.match(html,/<strong>1<\/strong>等你处理/);
   assert.deepEqual(ui.project(data({goals:[{id:"fit",status:"awaiting_acceptance",report_available:true,acceptance_brief:{summary:"",user_test:[]}}]})).deliveries,[]);
 });
 
@@ -99,5 +98,5 @@ test("home acceptance supplements preserve folding, version order, authors and e
 });
 test("home names working sessions and dispatches separately from its task total",()=>{
   const html=render(data({leaders:[{session_id:"L",status:"working",codex:[{source:"skill_dispatch",status:"running"}]}],goals:[{id:"g",leader_session_id:"L",status:"running"}]}));
-  assert.match(html,/<strong>1<\/strong>项任务/);assert.match(html,/<strong>2<\/strong><span class="wh-overview-label"><span>个会话 \/<\/span> <span>派工执行中<\/span><\/span>/,"the label breaks only between its two phrases on narrow screens");
+  assert.match(html,/<strong>1<\/strong>项任务/);assert.match(html,/<strong>2<\/strong><span class="wh-overview-label"><span>个会话 \/<\/span> <span>派工在推进<\/span><\/span>/,"the label breaks only between its two phrases on narrow screens");
 });
