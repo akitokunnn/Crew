@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from crew import board, domains, mindmap, mindmap_api, personal, store
+from crew import board, domain_versions, domains, mindmap, mindmap_api, personal, store
 from test_shell import NOW
 
 
@@ -176,6 +176,8 @@ class MindmapConvertTests(MindmapFixture):
         self.assertEqual(result['summary']['create'], 3)
         self.assertEqual(result['board_version'], 2)
         self.assertEqual(result['map']['version'], 2)
+        latest = domain_versions.listing(self.conn, 'demo')['versions'][0]
+        self.assertEqual((latest['source'], latest['note']), ('mindmap', '思维导图转换：新建 3 个 part，放入 1 位 leader'))
         self.assertEqual({link['node_id']: link['domain_name'] for link in result['map']['links']},
                          {'mobile1': '手机端', 'voice01': '语音派活', 'draft01': '离线草稿'})
         coords = {part['name']: (part['x'], part['y']) for part in domains.snapshot(self.conn, 'demo')['parts']}

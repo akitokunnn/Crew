@@ -4,7 +4,8 @@
 // dragged into a part; parts hang under a part when dropped on it or wired from its pin. The tree draws top-down
 // (an architecture tree) or left-to-right (a blueprint); positions, folds and direction are saved with the tree,
 // the camera stays in this browser. Editing needs a window wider than a phone; phones can look, pan, zoom and open
-// a leader.
+// a leader. 版本历史 lists every structural version of the board with its difference to now and rolls back to one;
+// a leader's menu merges or retires it through the restructure preview (docs/ASSISTANT_CAMPAIGN_DESIGN.md §7).
 const CrewArchitecture = (() => {
   const PART_W = 248, HEAD_H = 42, PIN_Y = 21, ROW_H = 48, GAP_TB = 64, GAP_LR = 96, GAP_CROSS = 28;
   const MIN_ZOOM = .2, MAX_ZOOM = 2, SLOP = 4, HISTORY = 100, NAME_MAX = 40;
@@ -19,15 +20,18 @@ const CrewArchitecture = (() => {
     folder:'<path d="M3 6.5h6.5l2 2.5H21v10.5H3z"/>',
     tb:'<rect x="8" y="3" width="8" height="5" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/><rect x="14" y="16" width="7" height="5" rx="1.5"/><path d="M12 8v4M6.5 16v-2.5a1.5 1.5 0 0 1 1.5-1.5h8a1.5 1.5 0 0 1 1.5 1.5V16"/>',
     lr:'<rect x="3" y="9" width="5" height="6" rx="1.5"/><rect x="16" y="3" width="5" height="6" rx="1.5"/><rect x="16" y="15" width="5" height="6" rx="1.5"/><path d="M8 12h3M11 12c2 0 2-6 5-6M11 12c2 0 2 6 5 6"/>',
+    history:'<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/>', close:'<path d="M6 6l12 12M18 6 6 18"/>', back:'<path d="m15 6-6 6 6 6"/>',
     people:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20v-.5a6.5 6.5 0 0 1 13 0v.5M15.5 4.7a3.5 3.5 0 0 1 0 6.6M18 13.6a6.5 6.5 0 0 1 3.5 5.9v.5"/>'
   };
   const STATUS = {working:"在干活", waiting:"等你", idle:"空闲", offline:"离线", closed:"已归档"};
   const DIRECTION = {TB:"上→下", LR:"左→右"};
+  const SOURCE_TONE = {baseline:"base", edit:"edit", mindmap:"map", restructure:"plan", rollback:"back"};
 
   let host = null, options = null, board = null, project = null, errorText = "", loadToken = 0;
   let camera = null, selection = new Set(), undoStack = [], redoStack = [], queue = Promise.resolve(), busy = 0;
   let gesture = null, renaming = null, menu = null, focusRequest = null, spaceDown = false, cached = null, leaderSignature = "";
   let pendingFit = null, resizer = null, pendingDirection = null, shelfOpen = null;
+  let history = null, historyToken = 0, planner = null;
   const pointers = new Map(), pending = new Map(), sizes = new Map();
 
   const editable = () => !phone.matches;
@@ -82,6 +86,7 @@ const CrewArchitecture = (() => {
   function scaffold() {
     return `<div id="arch-view" class="arch-view">
       <div class="head big arch-head"></div>
+      <div class="arch-stage">
       <div class="arch-canvas" tabindex="0" aria-label="架构图画板" aria-describedby="arch-hint">
         <div class="arch-world"><svg class="arch-wires" aria-hidden="true"></svg><div class="arch-nodes"></div></div>
         <div class="arch-marquee" hidden></div><div class="arch-drop-label" hidden></div><div class="arch-ghost" hidden></div>
@@ -90,6 +95,8 @@ const CrewArchitecture = (() => {
         <p class="arch-hint" id="arch-hint"></p>
         <div class="arch-zoom" role="group" aria-label="缩放"><button type="button" data-arch-act="zoom-out" aria-label="缩小">${icon(ICON.minus)}</button><button type="button" class="arch-zoom-value" data-arch-act="zoom-reset" title="恢复 100%"></button><button type="button" data-arch-act="zoom-in" aria-label="放大">${icon(ICON.plus)}</button><button type="button" data-arch-act="fit" title="显示全部 (Home)" aria-label="显示全部">${icon(ICON.fit)}</button></div>
         <div class="arch-menu" role="menu" hidden></div>
+      </div>
+      <aside class="arch-history" aria-label="版本历史" hidden></aside>
       </div>
     </div>`;
   }
@@ -101,7 +108,7 @@ const CrewArchitecture = (() => {
       if (empty) { empty.hidden = !errorText; empty.innerHTML = errorText ? `<p class="arch-error" role="alert">${esc(errorText)}</p><button type="button" class="btn" data-arch-act="reload">重新读取</button>` : ""; }
       return;
     }
-    renderHead(); renderWorld(); applyCamera();
+    renderHead(); renderWorld(); applyCamera(); renderHistory();
   }
   const backToChat = () => options.canReturn ? '<button type="button" class="btn ghost" data-act="architecture-back">返回会话</button>' : "";
   function renderHead() {
@@ -110,7 +117,8 @@ const CrewArchitecture = (() => {
     const picked = edit && selection.size > 1 ? ` · 已选 ${selection.size} 个 part` : "";
     const toggle = `<div class="arch-dir" role="radiogroup" aria-label="架构图方向">${["TB", "LR"].map(value => `<button type="button" role="radio" aria-checked="${dir === value}" data-arch-act="direction" data-direction="${value}" title="${value === "TB" ? "架构树：从上到下" : "蓝图：从左到右"}">${icon(ICON[value.toLowerCase()])}<span>${DIRECTION[value]}</span></button>`).join("")}</div>`;
     const tools = edit ? `${toggle}<span class="arch-tool-gap" aria-hidden="true"></span><button type="button" class="btn primary arch-new" data-arch-act="new">${icon(ICON.plus)}新 part</button><button type="button" class="icon-btn" data-arch-act="undo" title="撤销${undoStack.length ? `：${esc(undoStack.at(-1).label)}` : ""} (${window.CrewBrowser.keyboardShortcut("Z")})" aria-label="撤销" ${undoStack.length ? "" : "disabled"}>${icon(ICON.undo)}</button><button type="button" class="icon-btn" data-arch-act="redo" title="重做${redoStack.length ? `：${esc(redoStack.at(-1).label)}` : ""} (${window.CrewBrowser.keyboardShortcut("Z", {shift:true})})" aria-label="重做" ${redoStack.length ? "" : "disabled"}>${icon(ICON.redo)}</button><button type="button" class="btn ghost" data-arch-act="tidy" title="按当前方向自动排列（可撤销）">${icon(ICON.tidy)}<span class="arch-tidy-label">自动排列</span></button>` : "";
-    const markup = `<div class="arch-heading"><div class="title">${icon(ICON.tb)}架构图${busy ? '<span class="arch-saving">保存中…</span>' : ""}</div><div class="sub">${board.parts.length} 个 part · ${m.leaders.size} 位 leader${m.loose.length ? ` · ${m.loose.length} 位未归属` : ""}${picked}${edit ? "" : ' · <span title="在电脑上打开 Crew 可以编辑">只读</span>'}</div></div><div class="right">${backToChat()}${tools}</div>`;
+    const versions = `<button type="button" class="btn ghost arch-history-open" data-arch-act="history" aria-expanded="${history !== null}" aria-label="版本历史" title="版本历史：每次结构改动的版本、差异与回滚">${icon(ICON.history)}<span class="arch-history-label">版本历史</span></button>`;
+    const markup = `<div class="arch-heading"><div class="title">${icon(ICON.tb)}架构图${busy ? '<span class="arch-saving">保存中…</span>' : ""}</div><div class="sub">${board.parts.length} 个 part · ${m.leaders.size} 位 leader${m.loose.length ? ` · ${m.loose.length} 位未归属` : ""}${picked}${edit ? "" : ' · <span title="在电脑上打开 Crew 可以编辑">只读</span>'}</div></div><div class="right">${backToChat()}${versions}${tools}</div>`;
     if (head.dataset.render !== markup) { head.innerHTML = markup; head.dataset.render = markup; }
     const hint = $(".arch-hint");
     const text = edit ? "把 leader 拖进 part 归入 · 拖 part 到 part 上或从圆点拉线改挂 · 右键 leader 设负责人 · 右键 / 空格拖动平移 · 滚轮缩放" : "拖动平移 · 双指缩放 · 点 leader 进入对话 · 在电脑上可以编辑";
@@ -305,6 +313,7 @@ const CrewArchitecture = (() => {
     render();
     if (first && board !== null) { camera = loadCamera(); if (camera === null) { camera = {x:0, y:0, z:1}; fit(); } applyCamera(); }
     applyFocus();
+    if (history !== null) void loadHistory();
   }
   function run(task) {
     busy++; renderHead();
@@ -319,6 +328,7 @@ const CrewArchitecture = (() => {
   async function send(ops) {
     const result = await options.api("/api/domains", {project, base_version:board.version, ops});
     board = result.board; cached = null;
+    if (history !== null && result.version !== null) void loadHistory();
     return result;
   }
   // The undo batch: each op's opposite in reverse order, from the board before the batch and what the server did.
@@ -739,6 +749,10 @@ const CrewArchitecture = (() => {
         items.push(place.lead ? ["unlead", `不再负责「${part.name}」`] : ["lead", `设为「${part.name}」负责人`]);
         items.push(["leave", "移出到未归属"]);
       }
+      if (edit && m.leaders.get(target.leader)?.status !== "closed") {
+        if (activeLeaders().some(item => item.session_id !== target.leader)) items.push(["merge", "合并到另一位 leader…"]);
+        items.push(["retire", "退役…", null, "danger"]);
+      }
     } else if (target.part) {
       const id = target.part, part = m.parts.get(id);
       if (!selection.has(id)) { selection = new Set([id]); renderSelection(); }
@@ -765,6 +779,8 @@ const CrewArchitecture = (() => {
     else if (cmd === "lead") setLead(leader, true);
     else if (cmd === "unlead") setLead(leader, false);
     else if (cmd === "leave") placeLeader(leader, null);
+    else if (cmd === "merge") openPlan(leader, "merge");
+    else if (cmd === "retire") openPlan(leader, "retire");
     else if (cmd === "rename") startRename(id);
     else if (cmd === "child") createPart(id);
     else if (cmd === "fold") setCollapsed(id, !m.parts.get(id).collapsed);
@@ -791,6 +807,14 @@ const CrewArchitecture = (() => {
     else if (act === "fold") { const part = model().parts.get(button.dataset.id); if (part) setCollapsed(part.id, !part.collapsed); }
     else if (act === "menu") menuCommand(button.dataset.cmd);
     else if (act === "reload") { errorText = ""; render(); load(); }
+    else if (act === "history") { if (history === null) openHistory(); else closeHistory(); }
+    else if (act === "history-close") closeHistory();
+    else if (act === "history-pick") pickVersion(Number(button.dataset.number));
+    else if (act === "history-more") void loadHistory(true);
+    else if (act === "history-back") { history.pane = "list"; history.confirming = false; renderHistory(); $(`.arch-version[data-number="${history.selected}"]`)?.focus(); }
+    else if (act === "history-rollback") { history.confirming = true; renderHistory(); $('[data-arch-act="history-confirm"]')?.focus(); }
+    else if (act === "history-cancel") { history.confirming = false; renderHistory(); $('[data-arch-act="history-rollback"]')?.focus(); }
+    else if (act === "history-confirm") void rollback();
   }
   function doubleClick(event) {
     if (!editable()) return;
@@ -806,6 +830,7 @@ const CrewArchitecture = (() => {
       return;
     }
     if (event.target.closest("input, textarea, select, [contenteditable]")) return;
+    if (event.target.closest(".arch-history")) { if (event.key === "Escape") { event.preventDefault(); closeHistory(); } return; }
     const mod = event.ctrlKey || event.metaKey, k = event.key.toLowerCase();
     if (event.key === " ") { if (!spaceDown) { spaceDown = true; $(".arch-canvas")?.classList.add("panning"); } if (event.target.closest(".arch-canvas")) event.preventDefault(); return; }
     if (event.target.closest(".arch-menu") && event.key === "Escape") { event.preventDefault(); closeMenu(); $(".arch-canvas").focus({preventScroll:true}); return; }
@@ -828,6 +853,122 @@ const CrewArchitecture = (() => {
     if (saved) { camera = saved; applyCamera(); } else fit();
   }
 
+  // ---- version history ------------------------------------------------------------------------------------------
+  const when = iso => { const d = new Date(iso), pad = n => String(n).padStart(2, "0"); return `${d.getFullYear() === new Date().getFullYear() ? "" : `${d.getFullYear()}-`}${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  function openHistory() {
+    history = {list:null, more:false, latest:true, selected:null, detail:null, confirming:false, busy:false, error:"", detailError:"", pane:"list"};
+    renderHead(); renderHistory(); $(".arch-history-close")?.focus(); void loadHistory();
+  }
+  function closeHistory() {
+    if (history === null || history.busy) return;
+    history = null; historyToken++; renderHead(); renderHistory(); $(".arch-history-open")?.focus({preventScroll:true});
+  }
+  async function loadHistory(more = false) {
+    const mine = ++historyToken, name = project, before = more ? history.list.at(-1).number : null;
+    try {
+      const result = await options.api(`/api/domains/versions?project=${encodeURIComponent(name)}${before ? `&before=${before}` : ""}`);
+      if (mine !== historyToken || history === null || name !== project) return;
+      history.list = more ? history.list.concat(result.versions) : result.versions;
+      history.more = result.more; history.latest = result.latest_matches; history.error = "";
+    } catch (error) { if (mine !== historyToken || history === null) return; history.error = error.message || "读取版本历史失败"; }
+    renderHistory();
+    if (!more && history?.selected != null) await loadVersion(history.selected);
+  }
+  function pickVersion(number) {
+    history.selected = number; history.detail = null; history.detailError = ""; history.confirming = false; history.pane = "detail";
+    renderHistory(); void loadVersion(number);
+  }
+  async function loadVersion(number) {
+    const name = project;
+    try {
+      const result = await options.api(`/api/domains/version?project=${encodeURIComponent(name)}&number=${number}`);
+      if (history === null || history.selected !== number || name !== project) return;
+      history.detail = result; history.detailError = "";
+    } catch (error) { if (history === null || history.selected !== number) return; history.detail = null; history.detailError = error.message || "读取版本失败"; }
+    renderHistory();
+  }
+  async function rollback() {
+    const detail = history.detail, number = detail.version.number;
+    history.busy = true; renderHistory();
+    try {
+      const result = await options.api("/api/domains/rollback", {project, number, board_version:detail.board_version});
+      history.busy = false; history.confirming = false; history.selected = result.version; history.pane = "detail";
+      undoStack = []; redoStack = [];
+      options.toast(`已回滚到版本 ${number}，存为版本 ${result.version}。会话没有被删除或恢复。`);
+      await load();
+    } catch (error) {
+      history.busy = false; history.confirming = false;
+      options.toast(error.status === 409 ? "架构图刚被改过，已重新读取差异，请再核对一次。" : error.message || "回滚失败，请重试。");
+      await loadHistory();
+    }
+  }
+  function versionDetailNotes(meta) {
+    const detail = meta.detail; if (!detail) return "";
+    const rows = [];
+    if (detail.changes?.length) rows.push(`<li>变更：${detail.changes.map(esc).join("；")}</li>`);
+    if (detail.archived?.length) rows.push(`<li>归档（原会话保留）：${detail.archived.map(esc).join("、")}</li>`);
+    if (detail.goals?.length) rows.push(`<li>任务：${detail.goals.map(item => `${esc(item.title)} ${item.action === "cancel" ? "作废" : `改派给 ${esc(item.to)}`}`).join("；")}</li>`);
+    if (detail.handoffs?.length) rows.push(`<li>交接稿：${detail.handoffs.map(item => `${esc(item.from)} → ${esc(item.to)}（${item.chars} 字）`).join("；")}</li>`);
+    if (detail.to_start?.length) rows.push(`<li>待启动的新 leader：${detail.to_start.map(esc).join("、")}</li>`);
+    if (detail.unplaced?.length) rows.push(`<li>当时失去归属：${detail.unplaced.map(esc).join("、")}</li>`);
+    if (detail.gone?.length) rows.push(`<li>已删除未恢复：${detail.gone.map(esc).join("、")}</li>`);
+    return rows.length ? `<ul class="arch-version-notes">${rows.join("")}</ul>` : "";
+  }
+  function versionDetail() {
+    if (history.selected === null) return `<p class="arch-history-empty">选一个版本，查看它和现在的差异，需要时回滚过去。</p>`;
+    if (history.detailError) return `<p class="arch-history-error" role="alert">${esc(history.detailError)}</p>`;
+    const detail = history.detail;
+    if (detail === null) return `<p class="arch-history-empty" role="status">正在读取版本 ${history.selected}…</p>`;
+    const meta = detail.version, impact = detail.rollback, gone = new Set(impact.gone.map(item => item.session_id));
+    const target = {...detail.state, leaders:detail.state.leaders.filter(item => !gone.has(item.session_id))};
+    const lists = [];
+    if (impact.unplaced.length) lists.push(`<div class="arch-history-warn"><b>回滚后这些 leader 不在任何 part</b>：${impact.unplaced.map(item => `${esc(item.name)}${item.from.length ? `（现在在「${esc(item.from.join(" › "))}」）` : ""}`).join("、")}</div>`);
+    if (impact.gone.length) lists.push(`<p class="arch-history-note">已永久删除，位置无法恢复：${impact.gone.map(item => esc(item.name)).join("、")}</p>`);
+    if (impact.archived.length) lists.push(`<p class="arch-history-note">恢复位置，但仍是归档状态：${impact.archived.map(item => esc(item.name)).join("、")}</p>`);
+    let actions = "";
+    if (!impact.nothing && editable()) actions = history.confirming
+      ? `<div class="arch-history-confirm" role="group" aria-label="确认回滚"><p>把架构图回滚到版本 ${meta.number}？只恢复 part 与 leader 的位置，不删除、归档或恢复任何会话；回滚本身也存成一个新版本，可以再回滚回来。</p><div class="arch-history-acts"><button type="button" class="btn ghost" data-arch-act="history-cancel" ${history.busy ? "disabled" : ""}>取消</button><button type="button" class="btn primary danger" data-arch-act="history-confirm" ${history.busy ? "disabled" : ""}>${history.busy ? "正在回滚…" : "确认回滚"}</button></div></div>`
+      : `<div class="arch-history-acts"><button type="button" class="btn" data-arch-act="history-rollback">${icon(ICON.undo)}回滚到这个版本…</button></div>`;
+    else if (!impact.nothing) actions = '<p class="arch-history-note">在电脑上打开 Crew 可以回滚。</p>';
+    return `<button type="button" class="btn ghost arch-history-back" data-arch-act="history-back">${icon(ICON.back)}版本列表</button>`
+      + `<div class="arch-version-title"><b>版本 ${meta.number}</b><span class="arch-source ${SOURCE_TONE[meta.source]}">${esc(meta.source_label)}</span><span class="arch-version-time">${esc(when(meta.created_at))}</span></div>`
+      + `<p class="arch-version-note">${esc(meta.note)}</p>${versionDetailNotes(meta)}`
+      + (impact.nothing ? '<p class="arch-history-same">现在的架构和这个版本相同。</p>'
+        : `<p class="arch-history-sum">回滚会：${esc(CrewRestructure.diffSummary(detail.diff))}</p>${CrewRestructure.compare(detail.current, target, {beforeTitle:"现在", afterTitle:"回滚后"})}${lists.join("")}`)
+      + actions;
+  }
+  function renderHistory() {
+    const box = $(".arch-history"); if (!box) return;
+    box.hidden = history === null;
+    if (history === null) { box.innerHTML = ""; return; }
+    const listScroll = box.querySelector(".arch-history-list")?.scrollTop ?? 0, detailScroll = box.querySelector(".arch-history-detail")?.scrollTop ?? 0;
+    const focused = document.activeElement && box.contains(document.activeElement) ? document.activeElement.dataset.archAct + ":" + (document.activeElement.dataset.number || "") : null;
+    box.dataset.pane = history.pane;
+    const rows = history.list === null ? (history.error ? "" : '<p class="arch-history-empty" role="status">正在读取…</p>')
+      : history.list.length ? history.list.map(item => `<button type="button" class="arch-version${item.number === history.selected ? " selected" : ""}" data-arch-act="history-pick" data-number="${item.number}" aria-pressed="${item.number === history.selected}"><span class="arch-version-line"><b>#${item.number}</b><span class="arch-source ${SOURCE_TONE[item.source]}">${esc(item.source_label)}</span>${item.restored_from ? `<span class="arch-version-from">← #${item.restored_from}</span>` : ""}<span class="arch-version-time">${esc(when(item.created_at))}</span></span><span class="arch-version-text">${esc(item.note)}</span><span class="arch-version-count">${item.parts} 个 part · ${item.leaders} 位 leader</span></button>`).join("")
+        + (history.more ? '<button type="button" class="btn ghost arch-history-more" data-arch-act="history-more">加载更早的版本</button>' : "")
+      : '<p class="arch-history-empty">还没有版本。改动架构图的结构（新建、改名、改挂、删除 part，或调整 leader）后，每批改动都会存一个版本。</p>';
+    box.innerHTML = `<div class="arch-history-head"><h2>${icon(ICON.history)}版本历史</h2><button type="button" class="icon-btn arch-history-close" data-arch-act="history-close" aria-label="关闭版本历史" ${history.busy ? "disabled" : ""}>${icon(ICON.close)}</button></div>`
+      + (history.latest ? "" : '<p class="arch-history-warn top">现在的架构有没记成版本的变化（例如永久删除了 leader），回滚前请看清差异。</p>')
+      + (history.error ? `<p class="arch-history-error" role="alert">${esc(history.error)}</p>` : "")
+      + `<div class="arch-history-body"><div class="arch-history-list" role="list" aria-label="版本">${rows}</div><div class="arch-history-detail" aria-live="polite">${versionDetail()}</div></div>`;
+    box.querySelector(".arch-history-list").scrollTop = listScroll; box.querySelector(".arch-history-detail").scrollTop = detailScroll;
+    if (focused) { const [act, number] = focused.split(":"); box.querySelector(`[data-arch-act="${act}"]${number ? `[data-number="${number}"]` : ""}`)?.focus({preventScroll:true}); }
+  }
+
+  // ---- merge / retire a leader through the restructure preview --------------------------------------------------
+  const activeLeaders = () => (options.state.leaders || []).filter(item => item.status !== "closed");
+  function openPlan(leader, kind) {
+    planner ??= CrewRestructure.create({
+      api:(...args) => options.api(...args), toast:message => options.toast(message), leaders:() => options.state.leaders || [],
+      onApplied:async () => { undoStack = []; redoStack = []; await load(); }
+    });
+    const name = model().leaders.get(leader)?.name || leader, other = activeLeaders().find(item => item.session_id !== leader);
+    planner.open(kind === "merge"
+      ? {project, changes:[{type:"leader.merge", leader, into:other.session_id}], note:`合并 leader「${name}」`}
+      : {project, changes:[{type:"leader.retire", leader, successor:null}], note:`退役 leader「${name}」`});
+  }
+
   // ---- lifecycle ------------------------------------------------------------------------------------------------
   const listeners = [["click", click], ["dblclick", doubleClick], ["keydown", keyDown], ["keyup", keyUp], ["focusout", focusOut]];
   const canvasListeners = [["pointerdown", pointerDown], ["pointermove", pointerMove], ["pointerup", pointerUp], ["pointercancel", pointerUp], ["contextmenu", contextMenu]];
@@ -838,7 +979,7 @@ const CrewArchitecture = (() => {
     options = settings;
     if (project !== settings.project) {
       project = settings.project; board = null; cached = null; errorText = ""; camera = null; selection = new Set();
-      undoStack = []; redoStack = []; pending.clear(); renaming = null; pendingDirection = null;
+      undoStack = []; redoStack = []; pending.clear(); renaming = null; pendingDirection = null; history = null;
     }
     if (shelfOpen === null) { try { const saved = localStorage.getItem("crew.architecture.shelf"); if (saved !== null) shelfOpen = saved === "true"; } catch { /* default by width */ } }
     host = element; host.innerHTML = scaffold(); delete host.dataset.render;
@@ -873,7 +1014,7 @@ const CrewArchitecture = (() => {
       resizer?.disconnect(); resizer = null;
       if (camera !== null && pendingFit === null) saveCamera();
     }
-    gesture = null; pointers.clear(); menu = null; spaceDown = false; renaming = null; host = null;
+    gesture = null; pointers.clear(); menu = null; spaceDown = false; renaming = null; host = null; history = null; historyToken++;
   }
   return {mount, update, unmount};
 })();

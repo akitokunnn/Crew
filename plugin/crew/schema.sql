@@ -1070,6 +1070,21 @@ CREATE TABLE IF NOT EXISTS domain_boards (
     updated_at TEXT NOT NULL,
     direction  TEXT NOT NULL DEFAULT 'TB' CHECK (direction IN ('TB', 'LR'))
 );
+-- The board's structure after each batch that changed it (docs/ASSISTANT_CAMPAIGN_DESIGN.md §3). number counts
+-- from 1 per workspace; baseline is the board as it was before the first recorded change. state holds parts and
+-- placed leaders; detail explains a restructure or rollback. A rollback is a version of its own (restored_from).
+CREATE TABLE IF NOT EXISTS domain_board_versions (
+    project       TEXT NOT NULL REFERENCES projects(name),
+    number        INTEGER NOT NULL,
+    board_version INTEGER NOT NULL,
+    source        TEXT NOT NULL CHECK (source IN ('baseline', 'edit', 'mindmap', 'restructure', 'rollback')),
+    note          TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    detail        TEXT,
+    restored_from INTEGER,
+    created_at    TEXT NOT NULL,
+    PRIMARY KEY (project, number)
+);
 
 -- Operation receipts: a write retried with the same request_id runs once (OPERATIONS_REGISTRY_DESIGN §5.5).
 CREATE TABLE IF NOT EXISTS op_requests (

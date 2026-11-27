@@ -459,7 +459,11 @@ def convert(conn, data, now=None):
             ops.append({'op': 'assign', 'session_id': row['leader']['session_id'],
                         'domain_id': created.get(row['node_id'], row['domain_id'])})
     if ops:
-        domains.apply_ops(conn, project, ops, request['board_version'], now)
+        summary = plan['summary']
+        note = '思维导图转换：' + '，'.join(text % summary[key] for key, text in (
+            ('create', '新建 %d 个 part'), ('merge', '并入 %d 个已有 part'), ('leaders', '放入 %d 位 leader'))
+            if summary[key])
+        domains.apply_ops(conn, project, ops, request['board_version'], now, source='mindmap', note=note)
     for row in plan['rows']:
         if row['action'] in ('create', 'merge'):
             conn.execute('INSERT INTO personal_mindmap_links(node_id,project,domain_id,converted_at) VALUES(?,?,?,?) '

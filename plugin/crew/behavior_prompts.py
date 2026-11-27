@@ -87,6 +87,8 @@ SPECS = (
          'CC / Codex', '换载体后的第一条输入（用户可在预览里再改）'),
     Spec('lost_native_handoff', '会话丢失交接开头', 'host', '原生会话丢失、改用新会话时交接材料的开头说明。',
          'CC / Codex', '新会话的第一条输入'),
+    Spec('leader_handoff', 'leader 交接开头', 'host', '合并、退役或拆分 leader 时交接稿的开头说明。',
+         'CC / Codex · leader', '接手 leader 收到的交接通知（用户可在预览里再改）'),
     Spec('git_task', 'Git 助手开工任务', 'host', '启用 Git 管理时交给 Git 助手的第一项任务。',
          'CC / Codex · Git 助手', '启用 Git 管理、创建 Git 助手时', ('policy_command', 'requests_command')),
     Spec('role_reminder', '守则更新提醒', 'host', '内置守则文件更新后提醒 CC 会话重读。',

@@ -174,3 +174,71 @@
   #chat-head .chat-domain-path>span{display:none}
   #chat-head .chat-domain-path svg.i{width:14px;height:14px;color:var(--accent-text)}
 }
+
+/* Version history: a drawer over the canvas; list of versions beside the chosen one's difference to now. */
+.arch-stage{position:relative;flex:1;min-height:0;display:flex}
+.arch-stage>.arch-canvas{flex:1;min-width:0}
+.arch-history-open[aria-expanded="true"]{background:var(--accent-soft);border-color:transparent;color:var(--accent-text)}
+.arch-history{position:absolute;top:0;right:0;bottom:0;z-index:6;width:min(900px,74%);display:flex;flex-direction:column;background:var(--studio-sheet);border-left:1px solid var(--studio-border);box-shadow:var(--studio-shadow-float)}
+.arch-history-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 12px 10px 18px;border-bottom:1px solid var(--line);flex:none}
+.arch-history-head h2{display:flex;align-items:center;gap:8px;margin:0;font-size:calc(14.5px * var(--fs));font-weight:500}
+.arch-history-head h2 svg.i{width:17px;height:17px;color:var(--accent-text)}
+.arch-history-close svg.i{width:16px;height:16px}
+.arch-history-close:hover{background:var(--hover);color:var(--text)}
+.arch-history-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(220px,290px) minmax(0,1fr)}
+.arch-history-list{min-height:0;overflow:auto;padding:10px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
+.arch-history-detail{min-height:0;min-width:0;overflow:auto;padding:14px 18px 20px}
+.arch-version{display:flex;flex-direction:column;gap:3px;width:100%;text-align:left;padding:8px 10px;border:1px solid var(--studio-border);border-radius:10px;background:var(--studio-card);color:var(--text);font:inherit;cursor:pointer;transition:border-color .15s,box-shadow .15s}
+.arch-version:hover{border-color:color-mix(in srgb,var(--accent) 40%,var(--studio-border))}
+.arch-version.selected{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 26%,transparent)}
+.arch-version-line{display:flex;align-items:center;gap:6px;min-width:0;font-size:calc(12px * var(--fs))}
+.arch-version-line b{font-weight:600;font-variant-numeric:tabular-nums}
+.arch-version-time{margin-left:auto;color:var(--text-3);font-size:calc(11px * var(--fs));font-variant-numeric:tabular-nums;white-space:nowrap}
+.arch-version-from{color:var(--text-3);font-size:calc(11px * var(--fs))}
+.arch-version-text{font-size:calc(12.5px * var(--fs));line-height:1.55;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.arch-version-count{font-size:calc(11px * var(--fs));color:var(--text-3)}
+.arch-source{flex:none;padding:0 6px;border-radius:6px;font-size:calc(10.5px * var(--fs));line-height:1.75;background:var(--hover);color:var(--text-2)}
+.arch-source.map{background:color-mix(in srgb,var(--working) 16%,transparent);color:var(--working-text)}
+.arch-source.plan{background:var(--accent-soft);color:var(--accent-text)}
+.arch-source.back{background:color-mix(in srgb,var(--task-running) 16%,transparent);color:var(--task-running)}
+.arch-history-more{align-self:center;margin-top:4px}
+.arch-history-empty{margin:6px 2px;color:var(--text-3);font-size:calc(12.5px * var(--fs));line-height:1.7}
+.arch-history-error{margin:10px 16px 0;color:var(--danger);font-size:calc(12.5px * var(--fs));overflow-wrap:anywhere}
+.arch-history-back{display:none;margin:0 0 10px -6px}
+.arch-history-back svg.i{width:14px;height:14px}
+.arch-version-title{display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:calc(14px * var(--fs))}
+.arch-version-title b{font-weight:600}
+.arch-version-title .arch-version-time{margin-left:0}
+.arch-version-note{margin:6px 0 0;font-size:calc(13px * var(--fs));line-height:1.65;overflow-wrap:anywhere}
+.arch-version-notes{margin:8px 0 0;padding-left:18px;font-size:calc(12px * var(--fs));line-height:1.7;color:var(--text-2);overflow-wrap:anywhere}
+.arch-history-sum,.arch-history-same{margin:14px 0 10px;font-size:calc(12.5px * var(--fs));color:var(--text-2)}
+.arch-history-warn{margin:12px 0 0;padding:9px 12px;border-radius:10px;background:var(--warn-soft);border:1px solid var(--warn-line);color:var(--text);font-size:calc(12.5px * var(--fs));line-height:1.7;overflow-wrap:anywhere}
+.arch-history-warn b{font-weight:500}
+.arch-history-warn.top{margin:10px 14px 0;flex:none}
+.arch-history-note{margin:8px 0 0;font-size:calc(12px * var(--fs));line-height:1.7;color:var(--text-3)}
+.arch-history-acts{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:14px}
+.arch-history-acts .btn svg.i{width:14px;height:14px}
+.arch-history-confirm{margin-top:14px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--danger) 35%,var(--studio-border));border-radius:12px;background:color-mix(in srgb,var(--danger) 5%,var(--studio-card))}
+.arch-history-confirm p{margin:0;font-size:calc(12.5px * var(--fs));line-height:1.7}
+.arch-history-confirm .arch-history-acts{margin-top:10px}
+.btn.primary.danger{background:var(--danger);border-color:var(--danger);color:var(--on-accent)}
+.arch-history .rs-col{max-height:none}
+@media (max-width:1023px){
+  .arch-history{width:min(760px,96%)}
+  .arch-history-body{grid-template-columns:minmax(190px,240px) minmax(0,1fr)}
+  .arch-history-open .arch-history-label{display:none}
+}
+@media (max-width:760px){
+  .arch-history{position:fixed;inset:0;width:auto;z-index:50;border-left:0;box-shadow:none;padding-top:var(--m-safe-t,0px)}
+  .arch-history-head{padding:10px 10px 9px 16px}
+  .arch-history-close{width:40px;height:40px}
+  .arch-history-body{grid-template-columns:minmax(0,1fr)}
+  .arch-history-list{border-right:0;padding:10px 12px calc(16px + var(--m-safe-b,0px))}
+  .arch-history-detail{padding:12px 14px calc(20px + var(--m-safe-b,0px))}
+  .arch-history[data-pane="list"] .arch-history-detail,.arch-history[data-pane="detail"] .arch-history-list{display:none}
+  .arch-history-back{display:inline-flex;min-height:36px}
+  .arch-head .arch-history-open{min-height:38px}
+  .arch-history-open .arch-history-label{display:inline}
+  .arch-version{padding:10px 12px}
+  .arch-history-acts .btn{min-height:40px}
+}

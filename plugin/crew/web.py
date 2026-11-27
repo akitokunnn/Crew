@@ -222,7 +222,9 @@ STATIC.update({'/mindmap.js': ('mindmap.js', 'text/javascript; charset=utf-8'),
 STATIC['/goal-work-ui.js'] = ('goal-work-ui.js', 'text/javascript; charset=utf-8')
 STATIC['/leader-look.js'] = ('leader-look.js', 'text/javascript; charset=utf-8')
 STATIC.update({'/architecture.js': ('architecture.js', 'text/javascript; charset=utf-8'),
-               '/architecture.css': ('architecture.css', 'text/css; charset=utf-8')})
+               '/architecture.css': ('architecture.css', 'text/css; charset=utf-8'),
+               '/restructure-ui.js': ('restructure-ui.js', 'text/javascript; charset=utf-8'),
+               '/restructure-ui.css': ('restructure-ui.css', 'text/css; charset=utf-8')})
 STATIC['/channel.css'] = ('channel.css', 'text/css; charset=utf-8')
 STATIC.update({'/access-context.js': ('access-context.js', 'text/javascript; charset=utf-8'),
                '/browser-utils.js': ('browser-utils.js', 'text/javascript; charset=utf-8'),

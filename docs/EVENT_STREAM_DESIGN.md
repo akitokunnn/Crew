@@ -148,7 +148,7 @@ data: {"reason":"projection","kind":"goal","entity":"g-1","seq":57,"error":"KeyE
 | `ai` | `settings.save`（含 `ai_settings` 与 `ai_task_settings` 的增删） | — |
 | `decision` | 提问 `board.ask`、答复 `board.answer`（含 `trust_mode.auto_answer`、远程渠道作答）、撤回 `board.withdraw`、记录归属 leader `trust_mode.record_decision_scope`、改写 `decision_briefs.revise`、保存简报 `decision_briefs._save`、讨论 / 给选项 `decision_flow.discuss/ready`、关联执行 `goal_links.bind`、工作区清理 `maintenance.Manager._archive` | `snapshot_values.touch_decision` 同时标记关联任务；派生 `conversations` |
 | `goal` | `goals.py` 全部写函数（经 `goals._touch` 或 `goals.touch`）、工作清单 `goal_work.*`、决策模式 `goal_mode.*`、上下文回执改执行版本 `goal_context.mark_applied` | 派生 `conversations` |
-| `domains` | `domains.apply` / `apply_ops`（思维导图转架构图在同一事务里调用，`apply_ops` 内标记）、永久删除 leader 时 `domains.release_leader` | — |
+| `domains` | `domains.apply` / `apply_ops`（思维导图转架构图、架构重整在同一事务里调用，`apply_ops` 内经 `domains.bump` 标记）、回滚 `domains.rollback`、只改任务与编制的重整 `restructure.apply`（都经 `domains.bump`）、永久删除 leader 时 `domains.release_leader`；版本历史随架构图版本变化重读，不另设 kind | — |
 | `channel` | 发言 `channel.post`、自动指引 `channel.settle`、用户已读 `channel._mark_read`、要点卡 `channel_digest.Manager._run`、工作区清理边界 `maintenance.Manager._archive` | — |
 | `sound_settings` | `event_sounds.save`、上传 `add_custom`、删除 `delete_custom` | — |
 
