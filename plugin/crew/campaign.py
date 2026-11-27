@@ -192,7 +192,7 @@ def launch(service, conn, project, plan, board_version, actor, now):
     if not checked['ok']:
         raise board.BoardError('方案还有 %d 处问题：%s' % (len(checked['errors']), checked['errors'][0]))
     if board_version != checked['board_version']:
-        raise board.Conflict('预览之后架构图又被改动过，请重新预览')
+        raise board.VersionConflict('预览之后架构图又被改动过，请重新预览')
     note = '助手开局：' + plan['note'].strip()
     depth = {}
     for part in checked['parts']:

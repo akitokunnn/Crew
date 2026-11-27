@@ -152,6 +152,34 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(self.request(path, body, remote=True)[0], 403)
         self.assertEqual(self.processes, [])
 
+    def test_paired_devices_use_the_workspace_chat_with_their_existing_permissions(self):
+        self.start_remote()
+        self.login()
+        code, assistant, _ = self.request('/api/op/assistant.open', {'project': 'demo'}, remote=True)
+        self.assertEqual(code, 200, assistant)
+        sid = assistant['session_id']
+        message = {'session_id': sid, 'text': '设备上的本区对话', 'message_id': 'remote-workspace'}
+        code, sent, _ = self.request('/api/op/chat.send?project=demo', message, remote=True)
+        self.assertEqual(code, 200, sent)
+        self.assertTrue(sent['accepted'])
+        self.finish_turn(sid, self.processes[0])
+        code, history, _ = self.request('/api/op/chat.history?project=demo&session_id=' + sid, remote=True)
+        self.assertEqual(code, 200, history)
+        self.assertTrue(any(e.get('id') == 'remote-workspace' for e in history['events']))
+        body = {'session_id': sid, 'runtime': 'codex'}
+        self.assertEqual(self.request('/api/op/session.runtime.prepare?project=demo', body, remote=True)[0], 403)
+        _, headers = self.pair_desktop()
+        def desktop(op, args):
+            return self.request('/api/op/' + op + '?project=demo', args, remote=True,
+                                authenticated=False, headers=headers, origin=False)
+        catalog = [{'id': 'claude', 'available': True}, {'id': 'codex', 'available': True, 'models': []}]
+        with mock.patch.object(self.server.service.runtime_catalog, 'refresh', return_value=catalog):
+            code, preview, _ = desktop('session.runtime.prepare', body)
+            self.assertEqual(code, 200, preview)
+            code, result, _ = desktop('session.runtime.switch', {'session_id': sid, 'preview_id': preview['preview_id'],
+                                                                 'confirm': True})
+            self.assertEqual((code, result['status']), (200, 'configured'))
+
     def test_desktop_forbidden_routes_return_403_before_business_dispatch(self):
         self.start_remote()
         _, bearer = self.pair_desktop()

@@ -2,7 +2,7 @@
 from .errors import OpError
 
 ROLE_LABELS = {'human': '用户（本机）', 'device_browser': '远程浏览器', 'device_desktop': '远程桌面客户端',
-               'assistant': '全局助手', 'leader': 'leader', 'execution': '任务执行', 'git_admin': 'Git 助手'}
+               'workspace_assistant': '工作区助手', 'assistant': '系统管理员', 'leader': 'leader', 'execution': '任务执行', 'git_admin': 'Git 助手'}
 
 
 def authorize(op, caller, grants=None):
@@ -35,7 +35,7 @@ def human_payload(op, caller, args):
 
 def confirm(service, op, caller, message_id):
     """AI-side risk gates (design §5.6)."""
-    if op.risk == 'confirm' and caller.role == 'assistant':
+    if op.needs_message(caller.role):
         from contextlib import closing
         from .. import personal, store
         if not isinstance(message_id, str) or not message_id.strip():

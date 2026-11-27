@@ -19,12 +19,12 @@ TEXT_LIMIT = 2000  # 10-23 实测 5000 字也能发；2000 一段是为了手机
 LOG = logging.getLogger(__name__)
 MAX_RETRIES = 2
 PUSH_KINDS = frozenset(('decision', 'todo', 'goal_report', 'session_error', 'codex_failed'))
-ASSISTANT_UNAVAILABLE = '全局助手未启用，请先在 Crew 打开全局助手。'
-REMINDER_FOOTER = '直接回复这里，全局助手会处理。'
+ASSISTANT_UNAVAILABLE = '系统管理员未启用，请先在 Crew 打开系统管理员。'
+REMINDER_FOOTER = '直接回复这里，系统管理员会处理。'
 
-HELP = ('/help（/h）帮助\n/where（/w）确认全局助手是否启用\n'
+HELP = ('/help（/h）帮助\n/where（/w）确认系统管理员是否启用\n'
         '/decisions（/d）所有项目的待拍板\n/todo（/t）查看要你亲手做的待办\n/back（/b）我回来了\n'
-        '普通文字和图片交给全局助手；引用提醒会带上事项来源。拍板可用 /decisions 查看并点按钮作答。')
+        '普通文字和图片交给系统管理员；引用提醒会带上事项来源。拍板可用 /decisions 查看并点按钮作答。')
 
 
 # CommonMark ignores ** that touches punctuation on its inner side and a letter on its outer side, which is
@@ -572,7 +572,7 @@ class Inbox:
                     return
                 self.execute(conn, 'INSERT INTO notification_inbound VALUES(?,?)', (identity, self.service.now().isoformat()))
                 if bound:
-                    self.send_text('已绑定为主人。发 /h 看命令；普通文字和图片交给全局助手。')
+                    self.send_text('已绑定为主人。发 /h 看命令；普通文字和图片交给系统管理员。')
                 elif kind == 'interaction':
                     self.answer_button(conn, event['data'], identity)
                 else:
@@ -681,7 +681,7 @@ class Inbox:
         if command in ('/help', '/h'):
             text = HELP
         elif command in ('/where', '/w'):
-            text = '普通文字和图片将交给全局助手。' if self.assistant_session(conn) else ASSISTANT_UNAVAILABLE
+            text = '普通文字和图片将交给系统管理员。' if self.assistant_session(conn) else ASSISTANT_UNAVAILABLE
         elif command in ('/back', '/b'):
             self.set_away(False)
             self.refresh_presence()
@@ -777,7 +777,7 @@ class Inbox:
                       'queued', None, self.service.now().isoformat()))
         queued = self.execute(conn, "SELECT 1 FROM notification_replies WHERE session_id=? AND status IN ('queued','running') AND message_id!=?",
                               (session_id, reply['message_id'])).fetchone()
-        self.send_text('全局助手正忙，排在后面' if self.service.chat.busy(session_id) or queued else '已转给全局助手')
+        self.send_text('系统管理员正忙，排在后面' if self.service.chat.busy(session_id) or queued else '已转给系统管理员')
 
     def process_replies(self):
         # While an update gate holds, remote replies stay queued for the updated service.

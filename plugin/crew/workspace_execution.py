@@ -34,10 +34,10 @@ def execution_session(conn, session):
     """Stored session paths, never historical spawn JSON, authorize a launch."""
     current = board.session(conn, session['session_id'])
     from . import personal
-    if personal.is_assistant(conn, current['session_id']):
+    if personal.is_admin(conn, current['session_id']):
         personal._active_assistant(conn, current['session_id'])
         if current['project'] is not None:
-            raise board.Conflict('全局助手仍绑定旧工作区，需要先迁移原会话')
+            raise board.Conflict('系统管理员仍绑定旧工作区，需要先迁移原会话')
     else:
         board.project(conn, current['project'])  # Removed workspaces cannot launch.
     directory = Path(current['cwd']).expanduser().resolve(strict=True)

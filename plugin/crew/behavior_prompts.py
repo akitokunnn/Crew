@@ -45,8 +45,10 @@ SPECS = (
          'CC / Codex · 成员', _BUNDLED),
     Spec('git', 'Git 助手守则', 'roles', 'Git 助手的分支规则、权限、合并请求处理和工作区边界。',
          'CC / Codex · Git 助手', _BUNDLED, path='prompts/roles/git.md'),
-    Spec('assistant', '全局助手守则', 'roles', '跨工作区个人助手的查询、写动作、想法墙与授权边界。',
-         'CC / Codex · 全局助手', _BUNDLED, path='prompts/roles/assistant.md'),
+    Spec('workspace_assistant', '工作区助手守则', 'roles', '本工作区的开局、架构与作战室协作。',
+         'CC / Codex · 工作区助手', _BUNDLED, path='prompts/roles/workspace_assistant.md'),
+    Spec('assistant', '系统管理员守则', 'roles', '跨工作区个人助手的查询、写动作、想法墙与授权边界。',
+         'CC / Codex · 系统管理员', _BUNDLED, path='prompts/roles/assistant.md'),
     Spec('language', '回复语言', 'shared', '所有角色对用户和组内输出使用的语言。',
          'CC / Codex · 全部角色', _BUNDLED),
     Spec('common', '通用工作原则', 'shared', '所有角色共用的授权、证据、推进和文档维护原则。',
@@ -93,10 +95,10 @@ SPECS = (
          'CC / Codex · Git 助手', '启用 Git 管理、创建 Git 助手时', ('policy_command', 'requests_command')),
     Spec('workspace_moved', '工作区迁移提示', 'host', '工作区目录迁移后说明新工作目录和旧路径的权限。',
          'CC / Codex', '目录迁移后的会话启动时', ('cwd',)),
-    Spec('operations_chat', '运维助手', 'helper', '后台与运维页的诊断对话；诊断快照和最近对话由宿主附在后面。',
-         '辅助调用 · 运维助手', '每次运维对话'),
-    Spec('idea_discussion', '想法讨论', 'helper', '在想法墙点“去聊聊”时附给全局助手的说明；想法内容填入 {{note}}。',
-         'CC / Codex · 全局助手', '从想法墙发起讨论时', ('note',)),
+    Spec('operations_chat', '系统管理员 · 运维', 'helper', '后台与运维页的诊断对话；诊断快照和最近对话由宿主附在后面。',
+         '辅助调用 · 系统管理员 · 运维', '每次运维诊断时'),
+    Spec('idea_discussion', '想法讨论', 'helper', '在想法墙点“去聊聊”时附给系统管理员的说明；想法内容填入 {{note}}。',
+         'CC / Codex · 系统管理员', '从想法墙发起讨论时', ('note',)),
     Spec('reading_context', '阅读附注', 'helper', '边看任务报告或文档边对话时，附在用户消息前的说明；正在看的内容填入 {{reading}}。',
          'CC / Codex · leader、成员', '用户在阅读区旁边发消息时', ('reading',)),
     Spec('summary', '频道摘要', 'helper', '把交流区新发言整理进累积要点卡。',
@@ -105,11 +107,12 @@ SPECS = (
 SPEC = {spec.key: spec for spec in SPECS}
 LABELS = {spec.key: spec.label for spec in SPECS}
 KEYS = tuple(SPEC)
-ROLE_KEYS = ('leader', 'member', 'assistant', 'git')
+ROLE_KEYS = ('leader', 'member', 'assistant', 'workspace_assistant', 'git')
 BUNDLES = {
     'leader': ('common', 'leader', 'collaboration', 'human_input', 'context', 'final_report', 'language'),
     'member': ('common', 'member', 'member_boundary', 'collaboration', 'human_input', 'context', 'language'),
     'git': ('common', 'git', 'collaboration', 'human_input', 'context', 'final_report', 'language'),
+    'workspace_assistant': ('common', 'workspace_assistant', 'context', 'language'),
     'assistant': ('common', 'assistant', 'context', 'language'),
 }
 _PLACEHOLDER = re.compile(r'\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}')

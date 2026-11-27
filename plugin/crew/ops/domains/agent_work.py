@@ -54,11 +54,11 @@ def goal_get(ctx, args):
 
 
 share('goal.get', goal_get, scopes=(A, L, E), core_for=(A, L, E), ai_params=goal_params(),
-      description='读取任务的状态、要求、验收标准、工作项与最近报告。任务执行内不填 goal_id 即当前任务；全局助手须填 goal_id。')
+      description='读取任务的状态、要求、验收标准、工作项与最近报告。任务执行内不填 goal_id 即当前任务；系统管理员须填 goal_id。')
 share('goal.create', _goal('create'), scopes=(A, L), risk='confirm',
       ai_params=goal_params(('title', 'request', 'acceptance'),
                             title=_string('任务标题', 300), request=_string('用户原话'),
-                            leader_session_id=_string('主责 leader 的会话 ID；全局助手必填，leader 不填即为自己', 300),
+                            leader_session_id=_string('主责 leader 的会话 ID；系统管理员必填，leader 不填即为自己', 300),
                             acceptance={'type': 'array', 'minItems': 1, 'items': {
                                 'type': ['string', 'object'], 'additionalProperties': True,
                                 'description': '一条验收标准：文字，或带自定义编号的对象（如 {id, title}）'}},

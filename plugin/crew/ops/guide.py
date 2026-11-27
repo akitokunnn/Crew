@@ -6,13 +6,12 @@ drift from what the MCP server actually serves.
 """
 from . import registry
 
-ROLE_TITLES = {'leader': 'leader', 'execution': '任务执行', 'git_admin': 'Git 助手', 'assistant': '全局助手'}
+ROLE_TITLES = {'leader': 'leader', 'execution': '任务执行', 'git_admin': 'Git 助手', 'workspace_assistant': '工作区助手', 'assistant': '系统管理员'}
 
 
 def _line(op, role):
-    """``confirm`` only binds the global assistant (it must cite the user's message); others see no note."""
-    risk = {'confirm': '（需附用户原话 message_id）' if role == 'assistant' else '',
-            'high': '（高风险：AI 调用会请用户在界面确认）', 'normal': ''}[op.risk]
+    risk = ('（需附用户原话 message_id）' if op.needs_message(role) else
+            '（高风险：AI 调用会请用户在界面确认）' if op.risk == 'high' else '')
     return '- `%s`：%s%s' % (op.tool_name, op.summary, risk)
 
 

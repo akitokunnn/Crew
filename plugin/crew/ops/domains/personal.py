@@ -131,13 +131,15 @@ route('mindmap.convert', '把思维导图转成工作区架构图', 'POST', '/ap
           'board_version': _field('integer', '预览时取得的工作区架构图版本', minimum=0),
       }, ['project', 'roots', 'parent_id', 'decisions', 'names', 'leaders', 'map_version', 'board_version']))
 
-route('assistant.open', '打开全局助手', 'POST', '/api/assistant/open', personal.post_assistant_open, access='write',
+route('assistant.open', '打开系统管理员或工作区助手', 'POST', '/api/assistant/open', personal.post_assistant_open, access='write',
       params=_object({
-          'context_project': _field(['string', 'null'], '打开全局助手时可关联的工作区名，空值表示不指定'),
+          'project': _field('string', '工作区名，省略时打开系统管理员', minLength=1),
+          'context_project': _field(['string', 'null'], '打开系统管理员时可关联的工作区名，空值表示不指定'),
       }))
 # Reading the assistant page still creates the assistant the first time.
-route('assistant.state', '读取全局助手页面状态', 'GET', '/api/assistant/state', personal.get_assistant_state, access='read',
-      params=_object({}, description='无参数'))
+route('assistant.state', '读取系统管理员或工作区助手页面状态', 'GET', '/api/assistant/state', personal.get_assistant_state, access='read',
+      params=_object({'project': _field('string', '工作区名，省略时打开系统管理员', minLength=1),
+                      'context_project': _field('string', '系统管理员的导航工作区', minLength=1)}))
 
 route('prompt.list', '列出行为提示词', 'GET', '/api/behavior-prompts', admin.get_behavior_prompts, access='read', scopes=HD,
       params=_object({

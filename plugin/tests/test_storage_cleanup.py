@@ -63,6 +63,18 @@ class StorageCleanupTests(unittest.TestCase):
         self.assertEqual(self.category('attachments')['candidate_count'], 1)
         self.assertEqual(result['workspaces'][0]['file_count'], 3)
 
+    def test_workspace_assistant_history_attachment_and_project_root_are_protected(self):
+        from crew import workspace_assistant
+        filename = 'a' * 32 + '-1.png'
+        work = self.write('desktop/logs/startup-42.log')
+        with closing(store.connect(self.home)) as conn:
+            conn.execute('UPDATE projects SET root=? WHERE name=?', (str(work.parent), 'alpha'))
+            sid = workspace_assistant.ensure(conn, self.home, 'alpha')['session_id']
+        journal = self.write(f'chat/{sid}.jsonl', json.dumps({'type': 'message', 'images': [filename]}))
+        image = self.write(f'chat/files/{sid}/{filename}')
+        self.assertEqual(self.manager.preview(['logs', 'attachments'])['file_count'], 0)
+        self.assertTrue(all(path.is_file() for path in (journal, image, work)))
+
     def test_whitelist_and_real_freed_bytes(self):
         old = self.write('desktop/logs/startup-1.log', b'123')
         current = self.write('desktop/logs/startup-2.log', age=1)

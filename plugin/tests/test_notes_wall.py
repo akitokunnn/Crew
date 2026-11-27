@@ -495,7 +495,7 @@ class NotesWallHttpTests(NotesHttpFixture, unittest.TestCase):
         self.assertEqual(again['note']['discussions']['count'], 1)
         code, wrong, _ = self.request('/api/op/chat.send?project=demo', {'session_id': 's3', 'text': '聊聊', 'note_id': note['id']})
         self.assertEqual(code, 400, wrong)
-        self.assertIn('全局助手', wrong['error'])
+        self.assertIn('系统管理员', wrong['error'])
 
 
 class CodexDiscussionTests(NotesHttpFixture, unittest.TestCase):

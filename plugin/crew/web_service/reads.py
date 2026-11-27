@@ -5,14 +5,18 @@ from pathlib import Path
 
 from .. import board, channel, documents, goals, runtimes, store, workspace_settings
 from .. import appearance
-from .. import codex_binding, personal, native_skills
+from .. import codex_binding, personal, native_skills, workspace_assistant
 from ..web_api.common import _text
 
 
 class ReadsMixin:
     def chat_project(self, conn, project_name, session_id):
-        if project_name is None and personal.is_assistant(conn, session_id):
+        if project_name is None and personal.is_admin(conn, session_id):
             return None
+        owner = workspace_assistant.project_for(conn, session_id)
+        if owner is not None:
+            workspace_assistant.require_identity(conn, session_id, owner if project_name is None else project_name)
+            return owner
         return self.selected_project(conn, project_name)
 
     def chat_session(self, conn, project, session_id):

@@ -37,7 +37,7 @@ def _locked(home):
     deadline = time.monotonic() + 10
     while not lock.acquire():
         if time.monotonic() >= deadline:
-            raise OperationsChatError('运维对话正在保存，请稍后重试')
+            raise OperationsChatError('系统管理员 · 运维正在保存，请稍后重试')
         time.sleep(.03)
     try:
         yield
@@ -263,7 +263,7 @@ def _claude(selected, prompt, cwd, emit, register, *, read_roots=()):
         process.wait(timeout=10)
         reader.join(timeout=2)
         if process.returncode or result is None or result.get('is_error'):
-            raise OperationsChatError('Claude 运维对话失败：' +
+            raise OperationsChatError('Claude 系统管理员 · 运维失败：' +
                                       str((result or {}).get('result') or ''.join(errors) or process.returncode))
         return result.get('result') or text
 

@@ -93,6 +93,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_message    TEXT,                  -- first 300 chars of the last assistant message
     ended_at        TEXT
 );
+CREATE TABLE IF NOT EXISTS workspace_assistants (
+ project TEXT PRIMARY KEY REFERENCES projects(name),
+ session_id TEXT NOT NULL UNIQUE REFERENCES sessions(session_id),
+ created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS sessions_project ON sessions (project, crew_name);
 
 -- Crew identity stays stable while each execution tool has its own native id.

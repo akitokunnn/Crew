@@ -8,7 +8,7 @@ import os
 import uuid
 from pathlib import Path
 
-from . import board, hooks, models, runtimes, store, vscode_sessions
+from . import board, hooks, models, runtimes, store, vscode_sessions, workspace_assistant
 
 
 def _time(value):
@@ -31,6 +31,7 @@ def entries(service, conn, project, *, scope='project'):
     projects = {p['name']: p for p in board.projects(conn)}
     selected = projects if scope == 'all' else {project: projects[project]}
     registered = {r['session_id']: dict(r) for r in conn.execute('SELECT * FROM sessions')}
+    assistants = {r[0] for r in conn.execute('SELECT session_id FROM workspace_assistants')}
     bindings = {}
     for sid in registered:
         mapping = runtimes.get(conn, sid)
@@ -72,7 +73,8 @@ def entries(service, conn, project, *, scope='project'):
         # Codex's persisted transcript cannot prove whether another app has an
         # active process. Do not turn "not observed by Crew" into "offline".
         observed = running or runtime == 'claude'
-        category = ('archived' if archived else 'background' if background and not person else
+        category = ('workspace_assistant' if sid in assistants else
+                    'archived' if archived else 'background' if background and not person else
                     'team' if person and person['crew_name'] and
                     (person['role'] == 'leader' or person['group_name']) else
                     'ungrouped' if person and person['crew_name'] else 'available')
@@ -186,6 +188,7 @@ def preview(service, conn, project, key, scope='project'):
 
 def adopt(service, conn, project, key, name, group, now):
     item = get(service, conn, project, key)
+    workspace_assistant.protect(conn, item['session_id'])
     if not item['adoptable']:
         raise board.Conflict('这个会话不能直接接入；归档仅供查阅，团队中的会话请从原团队操作')
     if not group:

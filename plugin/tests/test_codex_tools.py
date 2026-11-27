@@ -456,7 +456,7 @@ class CodexToolsTests(unittest.TestCase):
     def test_goal_create_declares_the_leader_field(self):
         # A real Haiku global assistant first omitted the leader and had to guess the field name.
         leader = registry.operations()['goal.create'].ai_params['properties']['leader_session_id']
-        self.assertIn('全局助手必填', leader['description'])
+        self.assertIn('系统管理员必填', leader['description'])
 
     def test_work_items_declare_their_fields(self):
         # A real Haiku run sent version "1" (text) four times and could never mark its work done.

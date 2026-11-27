@@ -2,7 +2,9 @@
 import tests
 import threading
 import unittest
+from unittest import mock
 from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 from crew import board, store, web
 import test_chat_http
 from test_shell import ShellFixture, PLUGIN, NOW
@@ -79,6 +81,89 @@ class AssistantHttpTests(ShellFixture, unittest.TestCase):
             names.append(person['crew_name'])
             self.assertTrue(any(event.get('text') == text for event in self.server.service.chat.history(value['session_id'])['events']))
         self.assertEqual(names, ['新对话', '新对话 2'])
+
+    def test_workspace_selector_and_scoped_confirmations_over_http(self):
+        from crew import workspace_settings
+        from ops_helpers import ai_call
+        from test_campaign_launch import plan
+        code, opened, _ = self.request('/api/op/assistant.open', {'project': 'demo'})
+        self.assertEqual(code, 200, opened)
+        sid = opened['session_id']
+        code, state, _ = self.request('/api/op/assistant.state?project=demo')
+        self.assertEqual(code, 200, state)
+        self.assertEqual((state['scope'], state['assistant']['kind'], state['assistant']['project']),
+                         ('workspace', 'workspace_assistant', 'demo'))
+        self.assertLessEqual({'name', 'display_name', 'theme', 'root'}, set(state['project']))
+        self.assertEqual(state['project']['name'], 'demo')
+        self.assertEqual(self.processes, [])
+        for path, args in (('assistant.state?project=', None), ('assistant.state?project=demo&project=demo', None),
+                           ('assistant.state?project=demo&context_project=demo', None),
+                           ('assistant.open', {'project': ''}), ('assistant.open', {'project': 'demo', 'context_project': None})):
+            self.assertEqual(self.request('/api/op/' + path, args)[0], 400)
+        request = ai_call(self.server.service, self.conn, sid, 'campaign.launch', plan(board_version=0))
+        rid = request['confirmation_id']
+        for suffix, ids in (('', [rid]), ('?project=demo', [rid]), ('?project=other', [])):
+            code, value, _ = self.request('/api/op/interaction.list' + suffix)
+            self.assertEqual(code, 200, value)
+            self.assertEqual([x['id'] for x in value['requests']], ids)
+        code, refused, _ = self.request('/api/op/interaction.resolve', {'project': 'other', 'id': rid, 'approve': True})
+        self.assertEqual((code, refused['error_code']), (404, 'not_visible'))
+        workspace_settings.remove(self.conn, 'demo', 0)
+        for project in ('demo', 'missing'):
+            for op, data in (('assistant.open', {'project': project}), ('assistant.state?project=' + project, None)):
+                code, error, _ = self.request('/api/op/' + op, data)
+                self.assertEqual((code, error['error_code']), (404, 'project_unavailable'))
+
+    def test_workspace_chat_and_discussion_by_sid(self):
+        board.init_project(self.conn, 'other', self.root / 'other')
+        sid = self.request('/api/op/assistant.open', {'project': 'demo'})[1]['session_id']
+        notes = {}
+        for project in ('demo', 'other'):
+            notes[project] = self.request('/api/op/note.capture', {'data': {'text': '想法', 'project': project}})[1]['note']['id']
+        send = {'session_id': sid, 'text': '讨论', 'note_id': notes['other']}
+        code, error, _ = self.request('/api/op/chat.send?project=demo', send)
+        self.assertEqual((code, error['error_code']), (404, 'not_visible'))
+        self.assertEqual(self.processes, [])
+        send.update(note_id=notes['demo'], message_id='wa-image', images=[{'media_type': 'image/png', 'data': 'eA=='}])
+        code, sent, _ = self.request('/api/op/chat.send?project=demo', send)
+        self.assertEqual(code, 200, sent)
+        self.assertTrue(sent['accepted'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM personal_note_discussions WHERE session_id=?', (sid,)).fetchone()[0], 1)
+        query = '?project=demo&session_id=' + sid
+        self.assertEqual(self.request('/api/op/chat.history' + query)[0], 200)
+        self.assertEqual(self.request('/api/op/chat.read?project=demo', {'session_id': sid, 'seq': 1})[0], 200)
+        self.assertEqual(self.request('/api/op/chat.file' + query + '&name=wa-image-1.png', raw=True)[:2], (200, b'x'))
+        with mock.patch('crew.native_skills.list_skills', return_value={'skills': []}) as scan:
+            self.assertEqual(self.request('/api/op/chat.skills' + query)[:2], (200, {'skills': []}))
+            self.assertEqual(store.norm_path(scan.call_args.args[1]), store.norm_path(self.project))
+        request = Request(self.url + '/api/chat/events' + query, headers={'X-Crew': '1'})
+        with urlopen(request, timeout=5) as stream:
+            self.assertEqual(stream.headers.get_content_type(), 'text/event-stream')
+            self.assertGreater(int(stream.headers['X-Crew-Latest-Seq']), 0)
+            self.assertTrue(stream.readline().startswith(b'id: '))
+        self.assertEqual(self.request('/api/op/chat.interrupt?project=demo', {'session_id': sid})[0], 200)
+
+    def test_workspace_runtime_switch_and_public_error_codes(self):
+        from crew.ops.errors import OpError
+        sid = self.request('/api/op/assistant.open', {'project': 'demo'})[1]['session_id']
+        catalog = [{'id': 'claude', 'available': True}, {'id': 'codex', 'available': True, 'models': []}]
+        with mock.patch.object(self.server.service.runtime_catalog, 'refresh', return_value=catalog):
+            code, preview, _ = self.request('/api/op/session.runtime.prepare?project=demo', {'session_id': sid, 'runtime': 'codex'})
+            self.assertEqual(code, 200, preview)
+            code, switched, _ = self.request('/api/op/session.runtime.switch?project=demo', {
+                'session_id': sid, 'preview_id': preview['preview_id'], 'confirm': True})
+            self.assertEqual((code, switched['status']), (200, 'configured'))
+        self.assertEqual(self.processes, [])
+        for code, public, status in (('project_unavailable', 'project_unavailable', 404), ('not_visible', 'not_visible', 404),
+                                     ('version_conflict', 'version_conflict', 409), ('request_conflict', 'request_conflict', 409),
+                                     ('outcome_unknown', 'outcome_unknown', 202), ('request_id_reused', 'request_conflict', 409),
+                                     ('unknown_outcome', 'outcome_unknown', 409)):
+            error = OpError(code, '原因', {'field': 'x'})
+            with mock.patch.object(self.server.service, 'post', side_effect=error):
+                actual, value, _ = self.request('/api/op/assistant.open', {})
+            self.assertEqual((actual, value['code'], value['error_code']), (status, code, public))
+            self.assertEqual(error.payload()['error_code'], public)
+        self.assertNotIn('error_code', OpError('forbidden', '拒绝').payload())
 
     def test_new_page_assets_are_served_by_the_actual_backend(self):
         for path in ('/app-data.js', '/assistant.html', '/assistant.js', '/assistant.css', '/workspace-home.js', '/workspace-home.css',

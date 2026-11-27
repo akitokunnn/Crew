@@ -123,23 +123,55 @@ def _text(value, label, limit=20000):
     return value
 
 
-def is_assistant(conn, session_id):
+def is_admin(conn, session_id):
     return bool(_has_table(conn, 'personal_assistant') and conn.execute(
         'SELECT 1 FROM personal_assistant WHERE singleton=1 AND session_id=?', (session_id,)).fetchone())
 
 
+def can_lead_as_assistant(conn, session_id):
+    from . import workspace_assistant
+    return is_admin(conn, session_id) or workspace_assistant.project_for(conn, session_id) is not None
+
+
+def leads_room(conn, room, session_id):
+    return room['lead_session_id'] == session_id
+
+
 def _active_assistant(conn, session_id):
-    if not is_assistant(conn, session_id):
-        raise board.BoardError('此入口只接受 Crew 全局助手身份')
+    if not is_admin(conn, session_id):
+        raise board.BoardError('此入口只接受 Crew 系统管理员身份')
     value = board.session(conn, session_id)
     if value['status'] == 'closed' or board.is_archived(conn, session_id):
-        raise board.Conflict('全局助手已关闭或归档，请恢复原会话；不会自动创建另一个助手')
+        raise board.Conflict('系统管理员已关闭或归档，请恢复原会话；不会自动创建另一个助手')
     return value
 
 
 def _configuration(conn):
     ai = settings.get(conn)
     return dict(ai.get('assistant') or ai['default'])
+
+
+def assistant_choice(conn, selection):
+    choice = settings.validate({'default': _configuration(conn) if selection is None else selection})['default']
+    if choice['runtime'] is not None:
+        models.validate_options(choice['model'], choice['effort'], runtime=choice['runtime'], speed=choice['speed'])
+    return choice
+
+
+def bind_assistant(conn, identity, choice):
+    binding = conn.execute('SELECT runtime,native_id FROM session_runtimes WHERE session_id=?', (identity,)).fetchone()
+    if binding is None and choice['runtime'] is not None:
+        now = store.now_iso()
+        # Opening the assistant records a configuration, not an existing
+        # native conversation. The carrier binds its identity on startup.
+        native_id = None
+        conn.execute('INSERT INTO session_runtimes(session_id,runtime,native_id,updated_at) VALUES(?,?,?,?)',
+                     (identity, choice['runtime'], native_id, now))
+        models.set(conn, identity, choice['model'], choice['effort'], runtime=choice['runtime'], speed=choice['speed'])
+        binding = {'runtime': choice['runtime'], 'native_id': None}
+    runtime = dict(binding) if binding is not None else {'runtime': None, 'native_id': None}
+    configuration = {**models.get(conn, identity), 'runtime': runtime['runtime']} if binding else choice
+    return {'runtime': runtime, 'configuration': configuration, 'configured': binding is not None}
 
 
 def ensure_assistant(conn, home, *, context_project=None, selection=None):
@@ -155,9 +187,7 @@ def ensure_assistant(conn, home, *, context_project=None, selection=None):
     database = next((row['file'] for row in conn.execute('PRAGMA database_list') if row['name'] == 'main'), '')
     if store.norm_path(database) != store.norm_path(store.db_path(home)):
         raise board.BoardError('助手 HOME 与数据库不一致')
-    choice = settings.validate({'default': _configuration(conn) if selection is None else selection})['default']
-    if choice['runtime'] is not None:
-        models.validate_options(choice['model'], choice['effort'], runtime=choice['runtime'], speed=choice['speed'])
+    choice = assistant_choice(conn, selection)
     ensure_schema(conn)
     with (nullcontext() if conn.in_transaction else board.transaction(conn)):
         row = conn.execute('SELECT session_id FROM personal_assistant WHERE singleton=1').fetchone()
@@ -175,29 +205,18 @@ def ensure_assistant(conn, home, *, context_project=None, selection=None):
         if session['project'] is not None:
             raise board.Conflict('现有助手仍绑定旧工作区，需要先迁移原会话；不会创建替代助手')
         if store.norm_path(session['cwd']) != store.norm_path(directory):
-            raise board.Conflict('全局助手运行目录与当前 HOME 不一致，请先迁移原会话目录')
-        binding = conn.execute('SELECT runtime,native_id FROM session_runtimes WHERE session_id=?', (identity,)).fetchone()
-        if binding is None and choice['runtime'] is not None:
-            now = store.now_iso()
-            # Opening the assistant records a configuration, not an existing
-            # native conversation. The carrier binds its identity on startup.
-            native_id = None
-            conn.execute('INSERT INTO session_runtimes(session_id,runtime,native_id,updated_at) VALUES(?,?,?,?)',
-                         (identity, choice['runtime'], native_id, now))
-            models.set(conn, identity, choice['model'], choice['effort'], runtime=choice['runtime'], speed=choice['speed'])
+            raise board.Conflict('系统管理员运行目录与当前 HOME 不一致，请先迁移原会话目录')
+        binding = bind_assistant(conn, identity, choice)
         directory.mkdir(parents=True, exist_ok=True)
-    binding = conn.execute('SELECT runtime,native_id FROM session_runtimes WHERE session_id=?', (identity,)).fetchone()
-    runtime = dict(binding) if binding is not None else {'runtime': None, 'native_id': None}
-    configuration = {**models.get(conn, identity), 'runtime': runtime['runtime']} if binding else choice
     return {**session, 'kind': 'assistant', 'scope': 'personal', 'context_project': context_project,
-            'runtime': runtime, 'configuration': configuration, 'configured': binding is not None,
+            **binding,
             'context': assistant_context(conn, identity), 'started_by_operation': False}
 
 
 def assistant_context(conn, session_id):
     _active_assistant(conn, session_id)
     return {'scope': 'personal', 'session_id': session_id, 'cross_workspace': True,
-            'instructions': '个人助手守则已由 Crew 宿主随启动注入（[Crew assistant]），以注入内容为准；这里只返回身份与可用写动作。',
+            'instructions': '系统管理员守则已由 Crew 宿主随启动注入（[Crew assistant]），以注入内容为准；这里只返回身份与可用写动作。',
             'write_actions': sorted(WRITE_ACTIONS), 'permanent_clear': False}
 
 
@@ -712,8 +731,12 @@ def tag_action(conn, action, data, *, request_id, now=None):
     return _local_write(conn, 'tag.', action, data, request_id, now)
 
 
-def discussion_context(conn, note_id):
+def discussion_context(conn, note_id, *, project=None):
     """Context for one explicit "去聊聊" message, read by ID; client text is never trusted."""
+    if project is not None and (not _has_table(conn, 'personal_notes') or not conn.execute(
+            'SELECT 1 FROM personal_notes WHERE id=? AND project=?', (note_id, project)).fetchone()):
+        from .ops.errors import OpError
+        raise OpError('not_visible', '本工作区没有该想法')
     note = get_note(conn, note_id)
     stage = {'new': '未讨论', 'discussed': '讨论过', 'promoted': '已转任务'}[note['stage']]
     lines = ['想法标识：' + note['id'], '标题：' + (note['title'] or '（无）'),
@@ -733,8 +756,11 @@ def record_discussion(conn, note_id, session_id, message_id, seq, *, now=None):
         raise board.BoardError('消息序号必须是正整数')
     ensure_schema(conn)
     with board.transaction(conn):
-        _active_assistant(conn, session_id)
-        _row(conn, note_id)
+        session = _require_chat_assistant(conn, session_id)
+        note = _row(conn, note_id)
+        if session['project'] is not None and note['project'] != session['project']:
+            from .ops.errors import OpError
+            raise OpError('not_visible', '本工作区没有该想法')
         previous = conn.execute('SELECT note_id FROM personal_note_discussions WHERE session_id=? AND message_id=?',
                                 (session_id, message_id)).fetchone()
         if previous is not None:
@@ -884,9 +910,18 @@ def bind_note_leader(conn, note_id, session_id, *, request_id, reason, actor=boa
         return result
 
 
+def _require_chat_assistant(conn, session_id):
+    from . import workspace_assistant
+    project = workspace_assistant.project_for(conn, session_id)
+    if project is None:
+        return _active_assistant(conn, session_id)
+    workspace_assistant.require_identity(conn, session_id, project)
+    return board.session(conn, session_id)
+
+
 def instruction_for_user_action(conn, session_id, message_id, *, read_events):
     """Load authorization from the bound journal, never model-supplied prose."""
-    _active_assistant(conn, session_id)
+    _require_chat_assistant(conn, session_id)
     _text(message_id, '用户消息标识', 300)
     matches = [event for event in read_events(session_id)
                if event.get('type') == 'message' and event.get('id') == message_id]

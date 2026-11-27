@@ -92,9 +92,9 @@ def _gate(conn, room, actor, lead_only=False):
     and the lead for lead-only actions."""
     if actor == board.HUMAN:
         return
-    if personal.is_assistant(conn, actor):
+    if personal.can_lead_as_assistant(conn, actor):
         # The assistant acts in a room on its own only where it leads (a campaign the user confirmed).
-        if room['lead_session_id'] != actor:
+        if not personal.leads_room(conn, room, actor):
             raise board.BoardError('作战室《%s》由「%s」牵头；助手只在自己牵头的作战室里直接操作'
                                    % (room['title'], _name(conn, room['lead_session_id'])))
         return
@@ -115,7 +115,11 @@ def start(conn, project_name, actor, title, goal, member_names, from_message=Non
     """Open a room; a leader leads its own room, the user names the lead. Members are told in the room."""
     board.project(conn, project_name)
     title, goal = _text(title, '作战室标题', TITLE_LIMIT), _text(goal, '目标', GOAL_LIMIT)
-    assistant = actor != board.HUMAN and personal.is_assistant(conn, actor)
+    assistant = actor != board.HUMAN and personal.can_lead_as_assistant(conn, actor)
+    from . import workspace_assistant
+    owner_project = workspace_assistant.project_for(conn, actor) if assistant else None
+    if owner_project is not None and (owner_project != project_name or lead is not None):
+        raise board.BoardError('工作区助手只能在本区开房并由自己牵头')
     if assistant and lead is None:
         # A campaign room: the assistant leads it until the first milestone, then hands over.
         lead_id = actor
@@ -243,7 +247,7 @@ def set_contract(conn, room_id, actor, text, expected_updated_at=None, now=None)
     _gate(conn, room, actor)
     text = _text(text, '契约', CONTRACT_LIMIT, empty=True)
     if expected_updated_at != room['contract_updated_at']:
-        raise board.Conflict('契约在你读之后被 %s 改过（%s），先重新读再改' % (
+        raise board.VersionConflict('契约在你读之后被 %s 改过（%s），先重新读再改' % (
             _name(conn, room['contract_updated_by']) if room['contract_updated_by'] else '别人', room['contract_updated_at']))
     conn.execute('UPDATE war_rooms SET contract=?,contract_updated_at=?,contract_updated_by=? WHERE id=?',
                  (text, board._time(now), actor, room_id))
@@ -270,7 +274,7 @@ def decision_answered(conn, decision_id, text, now=None):
     room = conn.execute('SELECT r.id,r.title,r.project,r.lead_session_id,d.question FROM war_room_decisions wd '
                         'JOIN war_rooms r ON r.id=wd.room_id JOIN decisions d ON d.id=wd.decision_id '
                         'WHERE wd.decision_id=?', (decision_id,)).fetchone()
-    if room is not None and personal.is_assistant(conn, room['lead_session_id']):
+    if room is not None and personal.can_lead_as_assistant(conn, room['lead_session_id']):
         notice = ('作战室 #%d《%s》的拍板卡已由用户答复。\n问题：%s\n答复：%s\n'
                   '请在房里（war_room_post，room=%d）告诉成员结论和接下来谁做什么。'
                   % (room['id'], room['title'], room['question'], text, room['id']))
@@ -292,7 +296,7 @@ def task_returned(conn, goal, outcome, now=None):
                             "WHERE r.project=? AND r.status='open' AND m.session_id=? AND m.left_at IS NULL",
                             (goal['project'], goal['leader_session_id'])).fetchall():
         room = dict(row)
-        if not personal.is_assistant(conn, room['lead_session_id']):
+        if not personal.can_lead_as_assistant(conn, room['lead_session_id']):
             continue
         tasks = conn.execute("SELECT g.title,g.status,s.crew_name FROM goals g JOIN war_room_members m "
                              "ON m.session_id=g.leader_session_id AND m.room_id=? AND m.left_at IS NULL "
@@ -368,7 +372,7 @@ def spent(conn, room):
     growth of their Codex rollouts. Usage scans run in the background, so the figure trails by a scan."""
     joined = {row['session_id']: row['joined_at'] for row in conn.execute(
         'SELECT session_id,joined_at FROM war_room_members WHERE room_id=?', (room['id'],))}
-    if room['lead_session_id'] not in joined and not personal.is_assistant(conn, room['lead_session_id']):
+    if room['lead_session_id'] not in joined and not personal.can_lead_as_assistant(conn, room['lead_session_id']):
         joined[room['lead_session_id']] = room['created_at']
     natives = _natives(conn, set(joined))
     total = 0
@@ -398,7 +402,7 @@ def over_budget(conn, now=None):
                   '等用户确认追加预算后继续。' % (used, room['budget_tokens']), now=now)
             _event(conn, room['id'], room['lead_session_id'], 'budget', {'paused': True, 'spent': used,
                                                                         'budget': room['budget_tokens']}, now)
-            if personal.is_assistant(conn, room['lead_session_id']):
+            if personal.can_lead_as_assistant(conn, room['lead_session_id']):
                 conn.execute('INSERT INTO leader_notices(project,session_id,source,text,created_at,wake) VALUES(?,?,?,?,?,1)',
                              (room['project'], room['lead_session_id'], 'crew',
                               '作战室 #%d《%s》预算到了（约 %d / %d tokens），成员已停下。告诉用户，等用户确认是否追加预算'
@@ -413,7 +417,7 @@ def over_budget(conn, now=None):
 def set_budget(conn, room_id, actor, budget_tokens, now=None):
     """The user sets or raises the cap; a paused room goes on, and the members stopped for it are let go."""
     room = open_room(conn, room_id)
-    if actor != board.HUMAN and not personal.is_assistant(conn, actor):
+    if actor != board.HUMAN and not (personal.leads_room(conn, room, actor) and personal.can_lead_as_assistant(conn, actor)):
         raise board.BoardError('作战室预算只能由用户设置')
     budget_tokens = _budget(budget_tokens)
     if budget_tokens is None:

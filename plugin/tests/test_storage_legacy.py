@@ -67,6 +67,14 @@ class LegacyTests(unittest.TestCase):
         with closing(self.repo.connect()) as conn:
             return conn.execute('SELECT count(*) FROM ' + table).fetchone()[0]
 
+    def test_workspace_assistant_mapping_is_home_local(self):
+        from crew import settings, store, workspace_assistant
+        with closing(store.connect(self.source)) as conn:
+            assistant = workspace_assistant.ensure(conn, self.source, 'a', selection=settings.DEFAULT['default'])
+            self.assertEqual(workspace_assistant.project_for(conn, assistant['session_id']), 'a')
+        rows = legacy._select(legacy._read(self.db), 'a')
+        self.assertEqual(rows['workspace_assistants'], [])
+
     def test_source_unchanged_all_table_slots_scope_and_private_raw(self):
         before = self.db.read_bytes()
         discovery = legacy.inspect_source(self.source)

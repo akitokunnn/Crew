@@ -21,6 +21,10 @@ class Conflict(BoardError):
     """An operation conflicts with another session."""
 
 
+class VersionConflict(Conflict):
+    """The state a preview was based on has changed."""
+
+
 @contextlib.contextmanager
 def transaction(conn):
     conn.execute("BEGIN IMMEDIATE")
@@ -393,6 +397,7 @@ def set_leader_order(conn, project_name, order, pinned=None):
 
 def named_session(conn, project_name, name):
     rows = _rows(conn, "SELECT * FROM sessions WHERE project=? AND crew_name=? "
+                 "AND session_id NOT IN (SELECT session_id FROM workspace_assistants) "
                  "ORDER BY (status NOT IN ('offline','closed')) DESC, last_event_at DESC, started_at DESC",
                  (project_name, name))
     if not rows:
@@ -409,7 +414,13 @@ def _group(conn, project_name, name):
 
 
 def _identity(conn, project_name, session_id, name, role, group_name, now):
+    from . import workspace_assistant
+    if workspace_assistant.project_for(conn, session_id) is not None:
+        if (name, role, group_name) != ('助手', 'member', None):
+            raise Conflict('工作区助手为专用会话，不能更换团队身份')
+        return
     duplicate = conn.execute("SELECT session_id FROM sessions WHERE project=? AND crew_name=? "
+                             "AND session_id NOT IN (SELECT session_id FROM workspace_assistants) "
                              "AND session_id<>? AND status NOT IN ('offline','closed')",
                              (project_name, name, session_id)).fetchone()
     if duplicate:
@@ -434,10 +445,13 @@ def leader_group(name, group_name):
 
 
 def _register(conn, session_id, project_name, cwd, worktree, branch, now, entrypoint, permission_mode, spawn_id):
-    project(conn, project_name)
+    from . import workspace_assistant
+    workspace = project(conn, project_name)
     old = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     if old and old["project"] != project_name:
         raise Conflict("会话已经登记在另一项目")
+    if old and workspace_assistant.project_for(conn, session_id) is not None:
+        cwd, entrypoint = workspace['root'], old['entrypoint']
     conn.execute("INSERT INTO sessions(session_id,project,cwd,worktree,branch,started_at,entrypoint,permission_mode,spawn_id) "
                  "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET cwd=excluded.cwd,"
                  "worktree=excluded.worktree,branch=excluded.branch,entrypoint=excluded.entrypoint,"
@@ -464,6 +478,8 @@ def register_session(conn, session_id, project_name, cwd, worktree, branch, name
 @atomic
 def join(conn, session_id, project_name, name, cwd, worktree, branch, task=None, role="member",
          group_name=None, cc_name=None, now=None):
+    from . import workspace_assistant
+    workspace_assistant.protect(conn, session_id)
     control = session_control(conn, session_id)
     if control is not None:
         conn.execute("UPDATE session_controls SET archived_status=NULL,archived_note=NULL,archived_ended_at=NULL,"
@@ -520,10 +536,12 @@ def groups(conn, project_name):
 
 
 def roster_targets(conn, project_name, names=(), session_ids=()):
+    from . import workspace_assistant
     targets = [named_session(conn, project_name, name) for name in names]
     targets.extend(session(conn, session_id) for session_id in session_ids)
     selected = {}
     for target in targets:
+        workspace_assistant.protect(conn, target["session_id"])
         if target["project"] != project_name:
             raise BoardError("会话不属于当前项目")
         if target["status"] == "closed":
@@ -919,7 +937,8 @@ def status(conn, project_name, agents):
     present = live_sessions(agents)
     hook_times = {row[0]: store.parse_iso(row[1]).timestamp() * 1000 for row in conn.execute(
         "SELECT session_id,MAX(ts) FROM events WHERE project=? AND kind LIKE 'hook:%' GROUP BY session_id", (project_name,))}
-    members = sessions(conn, project_name)
+    members = _rows(conn, 'SELECT * FROM sessions WHERE project=? AND session_id NOT IN '
+                   '(SELECT session_id FROM workspace_assistants) ORDER BY crew_name,started_at', (project_name,))
     for s in members:
         if s["session_id"] not in present and s["status"] != "closed":
             s["status"] = "offline"
@@ -1008,7 +1027,8 @@ def apply_hook(conn, event, data, project_name, identity=None, git_info=None, no
 def available_name(conn, project_name, name, session_id=None):
     """Check spawn names with the same online definition as join."""
     project(conn, project_name)
-    if conn.execute("SELECT 1 FROM sessions WHERE project=? AND crew_name=? AND (? IS NULL OR session_id<>?) "
+    if conn.execute("SELECT 1 FROM sessions WHERE project=? AND crew_name=? "
+                    "AND session_id NOT IN (SELECT session_id FROM workspace_assistants) AND (? IS NULL OR session_id<>?) "
                     "AND status NOT IN ('offline','closed')", (project_name, name, session_id, session_id)).fetchone():
         raise Conflict("\u540c\u9879\u76ee\u5728\u7ebf\u4f1a\u8bdd\u91cd\u540d: " + name)
 

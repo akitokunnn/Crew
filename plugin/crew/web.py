@@ -358,6 +358,15 @@ class Handler(BaseHTTPRequestHandler):
             while chunk := source.read(1024 * 1024):
                 self.wfile.write(chunk)
 
+    @staticmethod
+    def _project_keys(pairs):
+        values = {}
+        for key, value in pairs:
+            if key == 'project' and key in values:
+                raise ValueError('project 只能指定一次')
+            values[key] = value
+        return values
+
     def _dispatch(self, method):
         url = urlsplit(self.path)
         query = parse_qs(url.query)
@@ -399,7 +408,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if length <= 0:
                 raise ValueError("\u8bf7\u63d0\u4f9b JSON \u8bf7\u6c42\u4f53")
-            data = json.loads(payload.decode("utf-8"))
+            assistant_page = url.path in ('/api/op/assistant.open', '/api/op/assistant.state')
+            body = payload.decode("utf-8")
+            data = json.loads(body, object_pairs_hook=self._project_keys if assistant_page else None)
+            if url.path == '/api/op' and isinstance(data, dict) and data.get('op') in ('assistant.open', 'assistant.state'):
+                data = json.loads(body, object_pairs_hook=self._project_keys)
+            if assistant_page:
+                projects = parse_qs(url.query, keep_blank_values=True).get('project', [])
+                if projects:
+                    if not isinstance(data, dict):
+                        raise ValueError('JSON 请求必须是对象')
+                    if len(projects) != 1 or not projects[0].strip() or 'project' in data:
+                        raise ValueError('project 必须为单个非空工作区名')
+                    data = {**data, 'project': projects[0]}
             routes.send(self, service.post(url.path, data, query.get("project", [None])[0], self._caller(),
                                            self.headers.get('X-Crew-Request-Id')))
         elif local_settings_path and not self._owner_access():
@@ -437,9 +458,11 @@ class Handler(BaseHTTPRequestHandler):
             # A closed browser connection cannot receive an error response.
             self.close_connection = True
         except OpError as exc:
-            self._send(HTTP_STATUS[exc.code], {'error': str(exc), 'code': exc.code, 'detail': exc.detail})
+            self._send(HTTP_STATUS[exc.code], {'error': str(exc), 'code': exc.code, 'detail': exc.detail, **exc.public_code()})
         except personal.TagMergeRequired as exc:
             self._send(409, {'error': str(exc), **exc.detail})
+        except board.VersionConflict as exc:
+            self._send(409, {'error': str(exc), 'code': 'version_conflict', 'detail': {}, 'error_code': 'version_conflict'})
         except board.Conflict as exc:
             self._send(409, {"error": str(exc)})
         except (board.BoardError, ValueError) as exc:

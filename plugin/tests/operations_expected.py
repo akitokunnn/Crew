@@ -88,3 +88,11 @@ LOCAL_WORKER_ACTIONS = {
     'reset-deployment': '重置本机后台部署',
     'prepare-home': '为新 HOME 准备启动文件',
 }
+
+
+WORKSPACE_ASSISTANT = frozenset((
+    'session.whoami', 'workspace.state', 'domains.get', 'campaign.preview', 'campaign.launch',
+    'domains.restructure.preview', 'domains.restructure.apply', 'leader.merge', 'leader.retire', 'leader.create',
+    'war_room.list', 'war_room.get', 'war_room.open', 'war_room.members', 'war_room.post', 'war_room.item',
+    'war_room.contract', 'war_room.decide', 'war_room.close', 'war_room.mark_read', 'war_room.budget',
+))

@@ -9,12 +9,13 @@ import datetime
 from contextlib import closing
 
 from ... import board, channel, decision_briefs, documents, domains, goals, guard, message_receipts, personal
-from ... import personal_actions, runtimes, session_ops, store, todo
+from ... import personal_actions, runtimes, session_ops, store, todo, workspace_assistant
 from .. import registry
 from ..errors import OpError
 from ..registry import Operation, register
 
 L, E, G, A = 'leader', 'execution', 'git_admin', 'assistant'
+W = 'workspace_assistant'
 TEAM = frozenset((L, E, G))
 
 
@@ -80,7 +81,7 @@ def _project(ctx):
     if not ctx.caller.is_ai or ctx.as_user:
         return ctx.service.selected_project(ctx.conn, ctx.project_name)
     if not ctx.caller.project:
-        raise OpError('forbidden', '这项操作需要所在工作区；全局助手请改用带 project 参数的操作')
+        raise OpError('forbidden', '这项操作需要所在工作区；系统管理员请改用带 project 参数的操作')
     return ctx.caller.project
 
 
@@ -127,6 +128,8 @@ def _no_identity_fields(args, *names):
 # --- identity, board, cards ----------------------------------------------------------------------
 
 def whoami(ctx, args):
+    if ctx.caller.role == W:
+        return {**_actor(ctx), **workspace_assistant.context(ctx.caller.project)}
     if ctx.caller.role == A:
         return {**_actor(ctx), **personal.assistant_context(ctx.conn, ctx.caller.session_id)}
     value = _identity(ctx.conn, board.whoami(ctx.conn, ctx.caller.session_id))
@@ -135,8 +138,8 @@ def whoami(ctx, args):
     return value
 
 
-op('session.whoami', '读取自己的 Crew 身份、角色、组与 leader', whoami, access='read', scopes=(A, L, E, G),
-   core_for=(L, E, G), description='查看自己的 Crew 身份、角色、所在组和 leader；任务执行还会返回执行与任务编号（派工脚本登记发起人时用）。')
+op('session.whoami', '读取自己的 Crew 身份、角色、组与 leader', whoami, access='read', scopes=(A, W, L, E, G),
+   core_for=(W, L, E, G), description='查看自己的 Crew 身份、角色、所在组和 leader；任务执行还会返回执行与任务编号（派工脚本登记发起人时用）。')
 op('session.who', '查找同一工作区的同事', lambda ctx, args: _identity(ctx.conn, _target(ctx.conn, _project(ctx), args['target'])),
    access='read', scopes=TEAM, params=_object({'target': TARGET}, ('target',)))
 
@@ -152,16 +155,21 @@ def _ended(session, now):
 
 
 def board_state(ctx, args):
-    if ctx.caller.role == A:
+    if ctx.caller.role in (A, W):
+        project = ctx.caller.project if ctx.caller.role == W else args.get('project')
         with closing(guard.readonly(ctx.service.home)) as conn:
-            return personal.overview(conn, project=args.get('project'), limit=args.get('limit', 100))
+            overview = personal.overview(conn, project=project, limit=args.get('limit', 100))
+            if ctx.caller.role == W:
+                overview['scope'] = 'workspace'
+            return overview
     now = ctx.service.now()
     with closing(guard.readonly(ctx.service.home)) as conn:
         project = ctx.caller.project
         groups = [group for group in board.groups(conn, project) if group['closed_at'] is None]
         for group in groups:
             group['members'] = [_identity(conn, member) for member in group['members'] if member['status'] != 'closed']
-        ungrouped = [s for s in board.sessions(conn, project) if s['group_name'] is None]
+        ungrouped = [s for s in board.sessions(conn, project) if s['group_name'] is None
+                     and workspace_assistant.project_for(conn, s['session_id']) is None]
         shown = [s for s in ungrouped if not _ended(s, now)]
         return {'project': board.project(conn, project), 'groups': groups,
                 'ungrouped': [_identity(conn, s) for s in shown], 'hidden_ended_sessions': len(ungrouped) - len(shown),
@@ -169,10 +177,10 @@ def board_state(ctx, args):
                 'open_decisions': len(board.decisions(conn, project)), 'status_source': 'crew_board'}
 
 
-share('workspace.state', board_state, scopes=(A, L, E, G), core_for=(A, L),
-      ai_params=_object({'project': _string('全局助手：只看这个工作区；不填为全部工作区概览', 300),
+share('workspace.state', board_state, scopes=(A, W, L, E, G), core_for=(A, L),
+      ai_params=_object({'project': _string('系统管理员：只看这个工作区；不填为全部工作区概览', 300),
                          'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200}}),
-      description='读取工作区看板：各组成员、状态、借出资源、文件归属与待拍板数。已收起的组、已归档和离线超过一天的未分组会话不列出（hidden_ended_sessions 为未列出数）。状态是看板记录，不探测进程。全局助手不填 project 时得到跨工作区概览。')
+      description='读取工作区看板：各组成员、状态、借出资源、文件归属与待拍板数。已收起的组、已归档和离线超过一天的未分组会话不列出（hidden_ended_sessions 为未列出数）。状态是看板记录，不探测进程。系统管理员不填 project 时得到跨工作区概览。')
 
 
 def task_set(ctx, args):
@@ -269,7 +277,7 @@ def answer(ctx, args):
 share('decision.answer', answer, scopes=(A, L), core_for=(A,), risk='confirm',
       ai_params=_object({'id': ID, 'text': _string('答复内容')}, ('id', 'text')),
       description='记录拍板答复。leader 只能答复本组成员提给自己的拍板（授权模式决定是否要升级给用户）；'
-                  '全局助手代用户答复时附上用户原话的 message_id。')
+                  '系统管理员代用户答复时附上用户原话的 message_id。')
 
 
 # --- todos ---------------------------------------------------------------------------------------
@@ -338,11 +346,11 @@ def doc_list(ctx, args):
 
 
 share('document.list', doc_list, scopes=(A, L, E, G),
-      ai_params=_object({'leader': TARGET, 'project': _string('全局助手：目标工作区', 300),
-                         'goal_id': _string('全局助手：只看这个任务', 160),
-                         'leader_session_id': _string('全局助手：只看这位 leader', 300),
+      ai_params=_object({'leader': TARGET, 'project': _string('系统管理员：目标工作区', 300),
+                         'goal_id': _string('系统管理员：只看这个任务', 160),
+                         'leader_session_id': _string('系统管理员：只看这位 leader', 300),
                          'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100}}),
-      description='列出交付文档。任务执行只看到当前任务的；leader 可按同工作区的 leader 过滤。全局助手须填 project。')
+      description='列出交付文档。任务执行只看到当前任务的；leader 可按同工作区的 leader 过滤。系统管理员须填 project。')
 share('document.refresh', lambda ctx, args: documents.refresh(ctx.conn, ctx.service.home, _project(ctx)),
       scopes=TEAM, ai_params=_object(),
       description='从本工作区已有的对话记录与报告里补登记一批交付文档链接，返回扫描数量、是否还有剩余与错误。')
@@ -463,8 +471,8 @@ def domains_outline(ctx, args):
         return domains.outline(conn, _project(ctx))
 
 
-share('domains.get', domains_outline, scopes=(L,), core_for=(L,), ai_params=_object(),
-      description='只给 leader：读本工作区的架构图——节点（id、名称、父节点）和各 leader 所在节点（lead=true 为节点负责人）。只读。')
+share('domains.get', domains_outline, scopes=(L, W), core_for=(L,), ai_params=_object(),
+      description='读本工作区的架构图——节点（id、名称、父节点）和各 leader 所在节点（lead=true 为节点负责人）。只读。')
 
 
 # --- sessions and executions ---------------------------------------------------------------------
@@ -593,7 +601,14 @@ share('settings.save', lambda ctx, args: _assistant(ctx, 'settings.save', args),
       ai_params=_object({'ai': {'type': 'object', 'additionalProperties': True,
                                 'description': '只含 AI 载体与模型默认值（与设置页“AI”一节相同的字段）'}}, ('ai',)),
       description='代用户保存 AI 载体与模型的默认设置；只改 ai 字段。')
-share('leader.create', lambda ctx, args: _assistant(ctx, 'leader.create', args), scopes=(A,), core_for=(A,),
+def create_leader(ctx, args):
+    if ctx.caller.role == W:
+        return ctx.service.chat._personal_leader(ctx.caller.project, args['message'], name=args.get('name'),
+                                                 request_id=ctx.request_id, instruction=ctx.proof)
+    return _assistant(ctx, 'leader.create', args)
+
+
+share('leader.create', create_leader, scopes=(A, W), core_for=(A, W),
       risk='confirm', ai_params=_object({'project': _string('目标工作区', 300), 'message': _string('项目需求（用户原话与讨论材料）'),
                                          'name': _string('对话名称', 100)}, ('project', 'message')),
       description='代用户在指定工作区新建 leader 并把需求交给它。')

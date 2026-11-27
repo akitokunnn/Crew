@@ -236,7 +236,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
             self.assertIn(command, text)
         for removed in ('/leader', '/1', '/project'):
             self.assertNotIn(removed, text)
-        self.assertIn('全局助手', text)
+        self.assertIn('系统管理员', text)
         self.assertIn('按钮', text)
         self.assertEqual(self.replies(), [])
 
@@ -642,6 +642,10 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
     def test_unknown_or_absent_quote_is_plain_text_to_assistant(self):
         sid = self.assistant()
+        from crew import workspace_assistant
+        for name in ('A', 'B'):
+            board.init_project(self.conn, name, self.root / name)
+            workspace_assistant.ensure(self.conn, self.home, name)
         for quoted_ref in ('REFIDX_unknown', None):
             self.receive('继续检查进展', quoted_ref)
         self.assertEqual(len(self.replies()), 2)
@@ -652,7 +656,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         identity = board.ask(self.conn, 's1', '问题', ['A'], now=NOW)
         message = self.query(identity)
         self.receive('/h', message['result']['ref_idx'])
-        self.assertIn('全局助手', self.client.sent[-1]['text'])
+        self.assertIn('系统管理员', self.client.sent[-1]['text'])
         self.assertEqual(self.decision(identity)['status'], 'open')
         self.assertEqual(self.replies(), [])
 
@@ -660,12 +664,12 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         _, journal = self.web_manager()
         self.assistant()
         self.receive('第一条')
-        self.assertIn('已转给全局助手', self.client.sent[-1]['text'])
+        self.assertIn('已转给系统管理员', self.client.sent[-1]['text'])
         self.receive('已有排队')
-        self.assertIn('全局助手正忙，排在后面', self.client.sent[-1]['text'])
+        self.assertIn('系统管理员正忙，排在后面', self.client.sent[-1]['text'])
         journal.set_status('working')
         self.receive('运行正忙')
-        self.assertIn('全局助手正忙，排在后面', self.client.sent[-1]['text'])
+        self.assertIn('系统管理员正忙，排在后面', self.client.sent[-1]['text'])
         self.assertEqual(len(self.replies()), 3)
 
     def test_web_conversation_preserves_qq_source_and_only_relays_final_message_in_its_turn(self):

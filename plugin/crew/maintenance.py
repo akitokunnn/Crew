@@ -580,6 +580,10 @@ class Manager:
         boundary = board.cleanup_boundary(conn, project)
         sessions = [dict(row) for row in conn.execute('SELECT * FROM sessions WHERE project=? ORDER BY role,crew_name,session_id',
                                                       (project,))]
+        assistant_row = conn.execute('SELECT session_id FROM workspace_assistants WHERE project=?', (project,)).fetchone()
+        assistant_id = assistant_row[0] if assistant_row else None
+        assistants = [s for s in sessions if s['session_id'] == assistant_id]
+        sessions = [s for s in sessions if s['session_id'] != assistant_id]
         active = [s for s in sessions if s['status'] != 'closed' and not board.is_archived(conn, s['session_id'])]
         # Archived or unadopted identities still holding a Crew-owned native are stopped too.
         owned = [s for s in sessions if not (s in active and s['crew_name'])
@@ -599,7 +603,7 @@ class Manager:
         config = board.git_config(conn, project)
         return {
             'boundary': boundary, 'sessions': sessions, 'active': active,
-            'owned': owned, 'groups': groups, 'goals': unfinished,
+            'owned': owned, 'assistants': assistants, 'groups': groups, 'goals': unfinished,
             'channel_max': maximum('channel_messages'), 'digest_max': maximum('channel_digests'), 'handoff_max': maximum('handoffs'),
             'contexts': contexts,
             'todos': ids("SELECT id FROM todos WHERE project=? AND status='open' ORDER BY id", project),
@@ -620,6 +624,7 @@ class Manager:
         value = {'root': root, 'boundary': snapshot['boundary'], 'git_admin': snapshot['git_admin'],
                  'groups': snapshot['groups'], 'goals': [goal['id'] for goal in snapshot['goals']],
                  'active': [s['session_id'] for s in snapshot['active']],
+                 'assistants': [s['session_id'] for s in snapshot['assistants']],
                  'owned': [s['session_id'] for s in snapshot['owned']]}
         return hashlib.sha256(_json(value).encode('utf-8')).hexdigest()
 
@@ -631,7 +636,7 @@ class Manager:
             boundary = snapshot['boundary']
             agents, people = _Agents(chat), []
             group_leaders = {group['leader_session_id']: group['name'] for group in snapshot['groups']}
-            for session in {s['session_id']: s for s in [*snapshot['active'], *snapshot['owned']]}.values():
+            for session in {s['session_id']: s for s in [*snapshot['active'], *snapshot['owned'], *snapshot['assistants']]}.values():
                 sid = session['session_id']
                 keys = chat._identity_keys(conn, sid)
                 claude, _ = self._natives(conn, sid, keys)
@@ -640,8 +645,9 @@ class Manager:
                     live = agents.get()
                     external = None if live is None else any(agent['sessionId'] in claude for agent in live)
                 people.append({'session_id': sid, 'name': session['crew_name'] or session['cc_name'] or sid,
-                               'role': 'git' if sid == snapshot['git_admin'] else session['role'] if session['crew_name'] else 'pending',
-                               'group': session['group_name'], 'archived': session not in snapshot['active'],
+                               'role': 'workspace_assistant' if session in snapshot['assistants'] else
+                                       'git' if sid == snapshot['git_admin'] else session['role'] if session['crew_name'] else 'pending',
+                               'group': session['group_name'], 'archived': session not in snapshot['active'] and session not in snapshot['assistants'],
                                'running': any(chat.running(key) for key in keys), 'busy': any(chat.busy(key) for key in keys),
                                'external': external, 'managed': session['crew_name'] is not None})
             count = lambda sql, *args: conn.execute(sql, args).fetchone()[0]
@@ -653,6 +659,9 @@ class Manager:
                                                 and s['session_id'] != group['leader_session_id'])}
                                 for group in snapshot['groups']],
                 'people': people,
+                'workspace_assistant': ({'session_id': snapshot['assistants'][0]['session_id'],
+                                         'summary': '工作区助手会停止，身份、历史、想法和导图保留'}
+                                        if snapshot['assistants'] else None),
                 'identities': {'total': len(snapshot['active']),
                                'leaders': sum(1 for s in snapshot['active'] if s['role'] == 'leader' and s['crew_name']),
                                'members': sum(1 for s in snapshot['active'] if s['role'] == 'member' and s['crew_name']),
@@ -676,7 +685,8 @@ class Manager:
             }
             preview['empty'] = not (snapshot['active'] or snapshot['groups'] or snapshot['goals'] or preview['channel']['messages']
                                     or preview['channel']['digests'] or preview['handoffs'] or snapshot['contexts'] or snapshot['todos']
-                                    or snapshot['decisions'] or snapshot['claims'] or snapshot['leases'] or snapshot['owned'])
+                                    or snapshot['decisions'] or snapshot['claims'] or snapshot['leases'] or snapshot['owned']
+                                    or any(p['running'] for p in people if p['role'] == 'workspace_assistant'))
             running = conn.execute("SELECT kind FROM maintenance_jobs WHERE project=? AND status='running'", (project,)).fetchone()
             preview['blocked'] = None if running is None else ('工作区清理正在进行' if running['kind'] == 'workspace_cleanup'
                                                                else '部门压缩正在进行，完成后再清理')
@@ -796,6 +806,7 @@ class Manager:
         counts = {'git_admin': False, 'departments': sum(group['closed_at'] is None for group in groups),
                   'identities': conn.execute("SELECT COUNT(*) FROM sessions s LEFT JOIN session_controls c ON c.session_id=s.session_id "
                                             "WHERE s.project=? AND s.status<>'closed' AND "
+                                            "s.session_id NOT IN (SELECT session_id FROM workspace_assistants) AND "
                                             "(c.session_id IS NULL OR (c.archived_status IS NULL AND c.removed=0))", (project,)).fetchone()[0]}
         config = board.git_config(conn, project)
         if config is not None and config['admin_session_id'] is not None:
@@ -803,7 +814,8 @@ class Manager:
             counts['git_admin'] = True
         for group in conn.execute('SELECT name FROM groups WHERE project=? AND closed_at IS NULL ORDER BY name', (project,)).fetchall():
             session_ops._close_group(conn, project, group['name'], True, board.HUMAN, now)
-        for session in [dict(row) for row in conn.execute("SELECT * FROM sessions WHERE project=? AND status<>'closed'", (project,))]:
+        for session in [dict(row) for row in conn.execute("SELECT * FROM sessions WHERE project=? AND status<>'closed' "
+                                                         "AND session_id NOT IN (SELECT session_id FROM workspace_assistants)", (project,))]:
             if not board.is_archived(conn, session['session_id']):
                 session_ops._archive(conn, session, False, now)
         conn.execute('UPDATE groups SET note=NULL WHERE project=?', (project,))
