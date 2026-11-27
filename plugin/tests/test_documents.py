@@ -1,4 +1,5 @@
 """Deliverable metadata, bounded history scans, and real isolated HTTP previews."""
+import uuid
 import tests
 import json
 import os
@@ -11,6 +12,8 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
+from test_core import operation_service
+from tests.ops_helpers import ai_call
 from crew import board, documents, goal_api, goals, web
 from test_shell import NOW, PLUGIN, ShellFixture
 
@@ -83,19 +86,17 @@ class DocumentsTests(DocumentFixture,unittest.TestCase):
         self.assertEqual(documents.list(self.conn, 'demo', goal_id=other['id']), [])
         self.assertEqual(documents.refresh(self.conn, self.home, 'demo', now=NOW)['scanned'], 0)
 
-    def test_cli_document_submission_uses_the_bound_execution_and_stays_readable_after_pause(self):
+    def test_document_operation_uses_bound_execution_and_stays_readable_after_pause(self):
         goal = self.goal()
         execution = goals.create_execution(self.conn, goal['id'], 's3', runtime='claude')
         path = self.file()
-        with mock.patch.dict(os.environ, {'CREW_EXECUTION_ID':execution['id'], 'CREW_GOAL_ID':goal['id']}):
-            code, output, errors = self.run_cli(['--session', 's3', 'doc', 'add', str(path), '--title', '任务报告', '--summary', '已验证的结果', '--json'])
-            self.assertEqual(code, 0, errors)
-            doc = json.loads(output)
-            self.assertEqual(documents.list(self.conn, 'demo', goal_id=goal['id'])[0]['id'], doc['id'])
-            goals.request_pause(self.conn, goal['id'])
-            code, output, errors = self.run_cli(['--session', 's3', 'doc', 'list', '--json'])
-            self.assertEqual(code, 0, errors)
-            self.assertEqual(json.loads(output)[0]['id'], doc['id'])
+        service = operation_service(self, self.project)
+        doc = ai_call(service, self.conn, 's3', 'document.register',
+                      {'path': str(path), 'title': '任务报告', 'summary': '已验证的结果'}, execution_id=execution['id'])
+        self.assertEqual(documents.list(self.conn, 'demo', goal_id=goal['id'])[0]['id'], doc['id'])
+        goals.request_pause(self.conn, goal['id'])
+        listed = ai_call(service, self.conn, 's3', 'document.list', execution_id=execution['id'])
+        self.assertEqual(listed[0]['id'], doc['id'])
 
     def test_register_keeps_original_files_and_deduplicates_canonical_paths(self):
         file=self.file(); original=file.read_bytes()
@@ -251,75 +252,75 @@ class DocumentHTTPTests(DocumentFixture,unittest.TestCase):
 
     def request(self,route,data=None,**query):
         url='http://127.0.0.1:%d'%self.server.server_port+route+('?' + urlencode(query) if query else '')
-        request=Request(url,None if data is None else json.dumps(data).encode(),{'X-Crew':'1'})
+        request=Request(url,None if data is None else json.dumps(data).encode(),{'X-Crew':'1', 'X-Crew-Request-Id': uuid.uuid4().hex})
         try:response=self.opener.open(request,timeout=3)
         except HTTPError as exc:response=exc
         with response:return response.status,json.loads(response.read())
 
     def test_http_register_list_pin_and_safe_document_id_preview(self):
-        file=self.file();code,row=self.request('/api/documents',{'project':'demo','session_id':'s1','path':str(file),'title':'文档','summary':'明确填写的摘要'})
+        file=self.file();code,row=self.request('/api/op/document.register',{'project':'demo','session_id':'s1','path':str(file),'title':'文档','summary':'明确填写的摘要'})
         self.assertEqual(code,200,row);docid=row['id']
-        self.assertEqual(self.request('/api/documents',project='demo')[1]['documents'][0]['id'],docid)
-        self.assertTrue(self.request('/api/documents/pin',{'project':'demo','id':docid,'important':True})[1]['important'])
-        code,info=self.request('/api/files/resolve',{'project':'demo','document_id':docid})
+        self.assertEqual(self.request('/api/op/document.list',project='demo')[1]['documents'][0]['id'],docid)
+        self.assertTrue(self.request('/api/op/document.pin',{'project':'demo','id':docid,'important':True})[1]['important'])
+        code,info=self.request('/api/op/files.resolve',{'project':'demo','document_id':docid})
         self.assertEqual(code,200,info);self.assertEqual(info['path'],str(file));self.assertEqual(info['kind'],'markdown')
         self.assertEqual(info['session_id'],'s1');self.assertEqual(info['document_id'],docid)
-        code,content=self.request('/api/files/content',project='demo',document_id=docid)
+        code,content=self.request('/api/op/files.content',project='demo',document_id=docid)
         self.assertEqual(code,200,content);self.assertEqual(content['content'],'# report')
         with mock.patch('crew.web.sys.platform', 'win32'), mock.patch('crew.web.os.startfile', create=True) as opener:
-            self.assertEqual(self.request('/api/files/open',{'project':'demo','document_id':docid})[0],200)
+            self.assertEqual(self.request('/api/op/files.open',{'project':'demo','document_id':docid})[0],200)
             opener.assert_called_once_with(str(file))
-        self.assertEqual(self.request('/api/documents/refresh',{'project':'demo'})[0],200)
+        self.assertEqual(self.request('/api/op/document.refresh',{'project':'demo'})[0],200)
 
     def test_http_download_returns_original_bytes_with_the_file_name_and_stays_in_scope(self):
         file=self.project/'交付 报告.docx';file.write_bytes(b'PK\x03\x04 binary \x00\xff')
         row=self.register('s1',str(file))
-        url='http://127.0.0.1:%d/api/files/download?'%self.server.server_port+urlencode({'project':'demo','document_id':row['id']})
-        with self.opener.open(Request(url,None,{'X-Crew':'1'}),timeout=3) as response:
+        url='http://127.0.0.1:%d/api/op/files.download?'%self.server.server_port+urlencode({'project':'demo','document_id':row['id']})
+        with self.opener.open(Request(url,None,{'X-Crew':'1', 'X-Crew-Request-Id': uuid.uuid4().hex}),timeout=3) as response:
             self.assertEqual(response.read(),file.read_bytes())
             self.assertEqual(response.headers['Content-Type'],'application/octet-stream')
             self.assertEqual(response.headers['Content-Disposition'],
                              "attachment; filename=\"__ __.docx\"; filename*=UTF-8''%E4%BA%A4%E4%BB%98%20%E6%8A%A5%E5%91%8A.docx")
         outside=self.root/'secret.txt';outside.write_text('private')
-        self.assertEqual(self.request('/api/files/download',project='demo',session_id='s1',path=str(outside))[0],400)
-        self.assertEqual(self.request('/api/files/download',project='demo',session_id='s1',path='missing.docx')[0],400)
+        self.assertEqual(self.request('/api/op/files.download',project='demo',session_id='s1',path=str(outside))[0],400)
+        self.assertEqual(self.request('/api/op/files.download',project='demo',session_id='s1',path='missing.docx')[0],400)
 
     def test_http_task_materials_are_strictly_scoped_in_list_and_detail(self):
         goal = goals.create(self.conn, 'demo', 's3', '这个任务', '任务要求', ['可验收'])
         other = goals.create(self.conn, 'demo', 's3', '下个任务', '另一个要求', ['可验收'])
         self.register('s3', str(self.file('old.md')))
-        code, doc = self.request('/api/documents', {'project':'demo', 'session_id':'s3',
+        code, doc = self.request('/api/op/document.register', {'project':'demo', 'session_id':'s3',
             'path':str(self.file('task.md')), 'title':'交付', 'summary':'这个任务的交付', 'goal_id':goal['id']})
         self.assertEqual(code, 200, doc)
-        self.assertEqual([d['id'] for d in self.request('/api/documents', project='demo', goal_id=goal['id'])[1]['documents']], [doc['id']])
-        self.assertEqual(self.request('/api/documents', project='demo', goal_id=other['id'])[1]['documents'], [])
-        self.assertEqual(self.request('/api/goal', project='demo', id=goal['id'])[1]['documents'][0]['id'], doc['id'])
-        self.assertEqual(self.request('/api/documents', project='demo', goal_id='missing')[0], 400)
+        self.assertEqual([d['id'] for d in self.request('/api/op/document.list', project='demo', goal_id=goal['id'])[1]['documents']], [doc['id']])
+        self.assertEqual(self.request('/api/op/document.list', project='demo', goal_id=other['id'])[1]['documents'], [])
+        self.assertEqual(self.request('/api/op/goal.get', project='demo', id=goal['id'])[1]['documents'][0]['id'], doc['id'])
+        self.assertEqual(self.request('/api/op/document.list', project='demo', goal_id='missing')[0], 400)
 
     def test_http_explicit_registration_requires_a_title_and_summary(self):
         file=self.file()
         for extra in ({'title':'标题'},{'summary':'摘要'},{'title':'标题','summary':' '}):
-            code,result=self.request('/api/documents',{'project':'demo','session_id':'s1','path':str(file),**extra})
+            code,result=self.request('/api/op/document.register',{'project':'demo','session_id':'s1','path':str(file),**extra})
             self.assertEqual(code,400,result)
         self.assertEqual(documents.list(self.conn,'demo'),[])
 
     def test_http_document_ids_and_relative_resources_cannot_cross_projects_or_read_outside(self):
         row=self.register('s1',str(self.file()))
         other=self.root/'other';other.mkdir();board.init_project(self.conn,'other',other,now=NOW)
-        self.assertEqual(self.request('/api/files/content',project='other',document_id=row['id'])[0],400)
+        self.assertEqual(self.request('/api/op/files.content',project='other',document_id=row['id'])[0],400)
         outside=self.root/'secret.txt';outside.write_text('private')
-        for route,data in (('/api/files/resolve',{'project':'demo','session_id':'s1','path':str(outside)}),
-                           ('/api/files/resolve',{'project':'demo','session_id':'s1','path':'../secret.txt','base':str(self.project/'README.md')})):
+        for route,data in (('/api/op/files.resolve',{'project':'demo','session_id':'s1','path':str(outside)}),
+                           ('/api/op/files.resolve',{'project':'demo','session_id':'s1','path':'../secret.txt','base':str(self.project/'README.md')})):
             self.assertEqual(self.request(route,data)[0],400)
-        self.assertEqual(self.request('/api/files/content',project='demo',session_id='s1',path=str(outside))[0],400)
-        self.assertEqual(self.request('/api/documents/pin',{'project':'demo','id':row['id'],'important':True},project='other')[0],400)
-        self.assertEqual(self.request('/api/files/resolve',{'project':'demo','document_id':True})[0],400)
+        self.assertEqual(self.request('/api/op/files.content',project='demo',session_id='s1',path=str(outside))[0],400)
+        self.assertEqual(self.request('/api/op/document.pin',{'project':'demo','id':row['id'],'important':True},project='other')[0],400)
+        self.assertEqual(self.request('/api/op/files.resolve',{'project':'demo','document_id':True})[0],400)
 
     def test_all_registered_document_types_have_a_safe_preview_or_default_open(self):
         for suffix in sorted(documents.EXTENSIONS):
             with self.subTest(suffix=suffix):
                 row=self.register('s1',str(self.file('deliverable'+suffix)))
-                code,info=self.request('/api/files/resolve',{'project':'demo','document_id':row['id']})
+                code,info=self.request('/api/op/files.resolve',{'project':'demo','document_id':row['id']})
                 self.assertEqual(code,200,info);self.assertEqual(info['open_with'],'default')
                 self.assertIn(info['kind'],('markdown','text','image','external'))
 
@@ -329,9 +330,9 @@ class DocumentHTTPTests(DocumentFixture,unittest.TestCase):
         document=worktree/'guide.md';document.write_text('[child](child.txt)')
         (worktree/'child.txt').write_text('relative worktree resource')
         row=self.register('s1',str(document))
-        code,info=self.request('/api/files/resolve',{'project':'demo','document_id':row['id'],'session_id':'s2','path':'../not-used.txt'})
+        code,info=self.request('/api/op/files.resolve',{'project':'demo','document_id':row['id'],'session_id':'s2','path':'../not-used.txt'})
         self.assertEqual(code,200,info);self.assertEqual(info['session_id'],'s1')
-        code,content=self.request('/api/files/content',project='demo',session_id=info['session_id'],base=info['path'],path='child.txt')
+        code,content=self.request('/api/op/files.content',project='demo',session_id=info['session_id'],base=info['path'],path='child.txt')
         self.assertEqual(code,200,content);self.assertEqual(content['content'],'relative worktree resource')
 
 

@@ -110,17 +110,25 @@
 
 ## 5. 操作清单新增条目（`plugin/crew/ops/domains/structure.py`）
 
-| 操作 | 读写 / 风险 | 范围 | HTTP |
-| --- | --- | --- | --- |
-| `domains.versions.list` | 读 | H B D | GET `/api/domains/versions` |
-| `domains.version.get` | 读 | H B D | GET `/api/domains/version` |
-| `domains.rollback` | 写 / **high** | H B D | POST `/api/domains/rollback` |
-| `domains.restructure.preview` | 读 | H B D | POST `/api/domains/restructure/preview` |
-| `domains.restructure.apply` | 写 / **high** | H B D | POST `/api/domains/restructure` |
-| `leader.merge` | 写 / **high** | H B D | POST `/api/leader/merge` |
-| `leader.retire` | 写 / **high** | H B D | POST `/api/leader/retire` |
+按操作清单设计（`docs/OPERATIONS_REGISTRY_DESIGN.md`）§2、§4、§5.6 登记；只经 `/api/op` 调用（界面用 `POST /api/op/<操作名>`），没有单独的 HTTP 地址。
 
-参数都按清单的 JSON Schema 子集声明。局域网设备沿用架构图的远程规则（`remote_routes` 同步登记）。助手角色暂不开放：R5 第二阶段把 `assistant` 加进范围，高风险操作经确认请求执行。
+| 操作 | 读写 / 风险 | 范围 | 准入 | 生成 CLI |
+| --- | --- | --- | --- | --- |
+| `domains.versions.list` | 读 | H B D A | — | `crew domains versions list` |
+| `domains.version.get` | 读 | H B D A | — | `crew domains version get` |
+| `domains.rollback` | 写 / **high** | H B D A | — | `crew domains rollback` |
+| `domains.restructure.preview` | 读 | H B D A | — | `crew domains restructure preview` |
+| `domains.restructure.apply` | 写 / **high** | H B D A | `model_work` | `crew domains restructure apply` |
+| `leader.merge` | 写 / **high** | H B D A | `model_work` | `crew leader merge` |
+| `leader.retire` | 写 / **high** | H B D A | `model_work` | `crew leader retire` |
+
+H = 本机界面，B / D = 远程浏览器 / 远程桌面（与 `domains.apply` 相同），A = 全局助手（经 `assistant_cover` 以用户身份运行同一处理函数，参数带 `project`）。
+
+- **leader、任务执行、Git 助手都不开放**：重整方案会移动其他 leader、收起并归档他们的协作组、改派或作废他们的任务，超出 leader 的“本组 / 自己的目标”范围；leader 之间是平级，架构图本身（`domains.get` / `domains.apply`）也不对 leader 开放。leader 认为结构该变时在交流区或作战室提出，由用户或全局助手预览、确认后执行。
+- **高风险与确认**：回滚、执行重整、合并、退役为 `high`。全局助手调用时不直接执行，生成一条用户确认请求（`interaction_requests`），工具返回 `awaiting_user`；用户在助手页确认后按助手当前权限执行，结果回告助手。用户自己在页面上操作时仍是页面内的预览 / 原地确认。所有写操作都校验预览（或版本差异）给出的 `board_version`，重整与合并 / 退役另校验 `revision`，所以用户确认时架构图或相关任务已经变了会执行失败并提示重新预览，而不会按过期的方案执行。
+- **准入**：执行重整、合并、退役可能投递交接通知并唤醒接手 leader，按 `model_work` 准入（更新暂停时拒绝）；回滚不唤醒任何会话。
+- **说明文字**：每条的 `summary` / `description` 写明何时用、先预览再执行、确认请求，进入全局助手的工具指南（`ops/guide.py`）与 `crew_search`；预览一条的摘要就是“开局 / 重整先预览，再请用户确认执行”。
+- 参数完全由清单的 JSON Schema 校验；未知的变更类型在 schema 里就被拒绝（`type` 是枚举），其余逐条问题由预览列出。生成 CLI 的数组参数是逐项文本，`changes` / `handoffs` 这类对象数组目前无法从命令行传入（生成 CLI 的通用限制）。
 
 ## 6. 事件流
 
@@ -140,6 +148,5 @@
 
 ## 9. 待接线
 
-- R5 第二阶段：七个新操作加 `assistant` 范围；高风险操作的确认请求卡里嵌 `CrewRestructure` 面板（或版本差异），确认后以用户身份执行同一操作；`crew_search` / 指南自动带上新条目。
-- 助手页面（`assistant.html`）加载 `restructure-ui.js` / `.css`，在确认卡中调用 `CrewRestructure.create(...).open(...)`。
+- 助手页面的确认请求目前按通用格式显示操作名与参数；还没有在确认卡里嵌 `CrewRestructure` 面板（或版本差异）——需在 `assistant.html` 加载 `restructure-ui.js` / `.css`，对 `domains.restructure.apply`、`leader.merge` / `retire`、`domains.rollback` 的确认请求用面板展示改前 / 改后。
 - 作战室主题：预算上限与首轮暂停；交接稿投递如需改走作战室消息，由作战室在 `chat_delivery` 侧接。

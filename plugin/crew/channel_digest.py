@@ -112,10 +112,6 @@ def _codex(text, process_factory, selected, cancelled=None):
         elif method == 'turn/completed':
             complete.set()
 
-    def deny_tool(params):
-        actions.append('Codex 摘要请求了工具：' + str(params.get('tool')))
-        return {'success': False, 'contentItems': [{'type': 'inputText', 'text': actions[-1]}]}
-
     def deny_approval(method, params):
         actions.append('Codex 摘要请求了授权：' + method)
         return codex_client.Client._decline(method)
@@ -123,7 +119,7 @@ def _codex(text, process_factory, selected, cancelled=None):
     try:
         with tempfile.TemporaryDirectory(prefix='crew-channel-digest-') as cwd:
             with codex_client.Client(cwd=cwd, env=env, process_factory=process_factory, timeout=remaining(),
-                                     on_notification=notification, tool_handler=deny_tool,
+                                     on_notification=notification,
                                      approval_handler=deny_approval) as client:
                 # Enumerate configured MCP names without a model turn. Override
                 # each server explicitly: an empty map does not erase inherited config.
@@ -143,7 +139,7 @@ def _codex(text, process_factory, selected, cancelled=None):
                     options['serviceTier'] = selected['speed']
                 client.timeout = remaining()
                 started = client.start_thread(cwd=cwd, ephemeral=True, sandbox='read-only', approvalPolicy='never',
-                                               dynamicTools=[], environments=[], config=config, **options,
+                                               environments=[], config=config, **options,
                                                developerInstructions='仅把输入数据整理成指定格式的中文 Markdown 卡片。不要调用工具、执行命令、读取文件或发起协作。')
                 model = started.get('model')
                 if not isinstance(model, str) or not model.strip():
@@ -260,11 +256,11 @@ class Manager:
             after = max(previous["upto_message_id"] if previous is not None else 0, boundary["channel_after"])
             if trigger == "auto":
                 baseline = max(after, self.failed_upto.get(project, 0))
-                count = conn.execute("SELECT COUNT(*) FROM channel_messages WHERE project=? AND id>?",
+                count = conn.execute("SELECT COUNT(*) FROM channel_messages WHERE project=? AND id>? AND room_id IS NULL",
                                      (project, baseline)).fetchone()[0]
                 if count < 20:
                     return False
-            rows = conn.execute("SELECT * FROM channel_messages WHERE project=? AND id>? ORDER BY id",
+            rows = conn.execute("SELECT * FROM channel_messages WHERE project=? AND id>? AND room_id IS NULL ORDER BY id",
                                 (project, after)).fetchall()
             if not rows:
                 raise board.BoardError("没有新发言需要整理")

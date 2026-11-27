@@ -25,16 +25,16 @@
     // Another device saves the registered file; resolving first reports a moved or deleted file instead of saving an error page.
     async function download(item) {
       try {
-        const info = await options.api("/api/files/resolve", {document_id:item.id});
+        const info = await options.api("/api/op/files.resolve", {document_id:item.id});
         if (info.error !== null) throw Error(info.error);
-        window.CrewBrowser.download("/api/files/download?" + new URLSearchParams({project:options.project, document_id:String(item.id)}));
+        window.CrewBrowser.download("/api/op/files.download?" + new URLSearchParams({project:options.project, document_id:String(item.id)}));
         options.toast("正在下载到本机：" + info.path.split(/[\\/]/).pop());
       } catch (caught) { options.toast(caught.message); }
     }
     async function pin(item, value) {
       const id = String(item.id); if (saving.has(id)) return; saving.add(id); notify();
       try {
-        const response = await options.api("/api/documents/pin", {project:options.project, id:item.id, important:value});
+        const response = await options.api("/api/op/document.pin", {project:options.project, id:item.id, important:value});
         const updated = response.document || response;
         if (String(updated.id) !== id) throw new Error("文档已经更新，请重新读取。");
         for (const collection of collections.values()) collection.items = collection.items.map(entry => String(entry.id) === id ? updated : entry);
@@ -48,7 +48,7 @@
       if (item && act === "pin") void pin(item, !item.important);
       else if (item && act === "reset-pin") void pin(item, null);
       else if (item && act === "source") options.onSource(item);
-      else if (item && act === "open") void options.api("/api/files/open", {document_id:item.id}).catch(caught => options.toast(caught.message));
+      else if (item && act === "open") void options.api("/api/op/files.open", {document_id:item.id}).catch(caught => options.toast(caught.message));
       else if (item && act === "download") void download(item);
     });
     return {

@@ -6,8 +6,9 @@ import json
 import unittest
 from unittest import mock
 
-from crew import (behavior_prompts, board, chat, codex_tools, decision_briefs, goal_actions, goal_links, goal_reports, goal_runtime, goals,
-                  notifications, personal, personal_actions, session_ops, store, todo,
+from tests.ops_helpers import ai_call
+from crew import (behavior_prompts, board, chat, decision_briefs, goal_actions, goal_links, goal_reports, goal_runtime, goals,
+                  notifications, personal, session_ops, store, todo,
                   web, workspace_settings)
 from test_goals import GoalFixture
 from test_notifications import FakeQQ
@@ -377,6 +378,18 @@ class ReportDecisionTests(GoalFixture):
 
 
 class RemoteDecisionActionTests(GoalFixture):
+    def setUp(self):
+        super().setUp()
+        self.service = web.Service(self.home, PLUGIN, cwd=self.root, agents_provider=lambda: [],
+                                   process_factory=mock.Mock(side_effect=AssertionError('unexpected model launch')),
+                                   isolated_sources=True)
+        self.addCleanup(self.service.close)
+
+    def answer(self, sid, number, message_id, request_id, events, runtime='claude'):
+        with mock.patch.object(self.service.chat, 'history', return_value={'events': events}):
+            return ai_call(self.service, self.conn, sid, 'decision.answer', {'id': number, 'text': 'Yes'},
+                           message_id=message_id, request_id=request_id, runtime=runtime)
+
     def test_verified_original_message_answers_user_controlled_goal_with_true_actor(self):
         assistant = personal.ensure_assistant(self.conn, self.home)
         target = self.goal()
@@ -389,16 +402,14 @@ class RemoteDecisionActionTests(GoalFixture):
                 with self.assertRaisesRegex(board.BoardError, 'AI 不能代替用户'):
                     board.answer(self.conn, number, 'Yes', actor=source if source != 'human' else 'assistant')
                 event = dict(type='message', role='user', source=source, id='original-' + source, text='Yes')
-                payload = dict(data={'decision_id': number, 'answer': 'Yes'},
-                               message_id=event['id'], request_id='answer-' + source)
-                result = personal_actions.dispatch(self.home, assistant['session_id'], 'decision.answer', payload,
-                                                   read_events=lambda _: [event])
+                def answer():
+                    return self.answer(assistant['session_id'], number, event['id'], 'answer-' + source, [event])
+
+                result = answer()
                 self.assertTrue(result['ok'])
                 row = self.conn.execute('SELECT status,answer,answered_by FROM decisions WHERE id=?', (number,)).fetchone()
                 self.assertEqual(tuple(row), ('answered', 'Yes', actor))
-                replay = personal_actions.dispatch(self.home, assistant['session_id'], 'decision.answer', payload,
-                                                   read_events=lambda _: [event])
-                self.assertTrue(replay['duplicate'])
+                self.assertTrue(answer()['replayed'])
 
     def test_assistant_answer_wakes_owning_leader_unless_goal_linked(self):
         assistant = personal.ensure_assistant(self.conn, self.home)
@@ -410,17 +421,13 @@ class RemoteDecisionActionTests(GoalFixture):
         goal_links.bind(self.conn, 'decision', linked, execution['id'])
         before = len(board.pending_notices(self.conn, 'chief-id'))
         event = dict(type='message', role='user', source='qq', id='remote-ship', text='发吧')
-        result = personal_actions.dispatch(self.home, assistant['session_id'], 'decision.answer',
-            dict(data={'decision_id': loose, 'answer': 'Yes'}, message_id=event['id'], request_id='ship'),
-            read_events=lambda _: [event])
+        result = self.answer(assistant['session_id'], loose, event['id'], 'ship', [event])
         self.assertEqual(result['result']['routed_to'], {'leader_session_id': 'chief-id'})
         notices = board.pending_notices(self.conn, 'chief-id')
         self.assertEqual(len(notices), before + 1)
         self.assertIn('答复：Yes', json.dumps(notices, ensure_ascii=False))
         event = dict(event, id='remote-linked')
-        result = personal_actions.dispatch(self.home, assistant['session_id'], 'decision.answer',
-            dict(data={'decision_id': linked, 'answer': 'Yes'}, message_id=event['id'], request_id='linked'),
-            read_events=lambda _: [event])
+        result = self.answer(assistant['session_id'], linked, event['id'], 'linked', [event])
         self.assertEqual(result['result']['routed_to'], {'goal_id': target['id']})
         self.assertEqual(len(board.pending_notices(self.conn, 'chief-id')), before + 1)
 
@@ -429,26 +436,23 @@ class RemoteDecisionActionTests(GoalFixture):
             'runtime': 'codex', 'model': None, 'effort': None})
         number = board.ask(self.conn, 'chief-id', 'Release?', ['Yes'])
         event = dict(type='message', role='user', source='lark', id='remote-answer', text='Yes')
-        tool = codex_tools.CodexTools(self.home, assistant['session_id'], personal_handler=lambda action, payload, actor:
-            personal_actions.dispatch(self.home, actor, action, payload, read_events=lambda _: [event]))
-        result = tool({'tool': 'crew_personal', 'arguments': {'action': 'decision.answer',
-            'data': {'decision_id': number, 'answer': 'Yes'}, 'message_id': event['id'], 'request_id': 'codex-answer'}})
-        self.assertTrue(result['success'], result)
+        result = self.answer(assistant['session_id'], number, event['id'], 'codex-answer', [event], runtime='codex')
+        self.assertTrue(result['ok'])
         self.assertEqual(self.conn.execute('SELECT answered_by FROM decisions WHERE id=?', (number,)).fetchone()[0], 'lark')
 
     def test_effective_prompts_cover_remote_actions_task_split_and_report_review(self):
         assistant = personal.ensure_assistant(self.conn, self.home)
         assistant_rules = behavior_prompts.DEFAULTS['assistant']
         context = personal.assistant_context(self.conn, assistant['session_id'])
-        for part in ('QQ/Lark', 'decision.answer', 'todo.resolve', 'session.message', '含糊时先回问一句'):
+        for part in ('QQ / Lark', 'decision_answer', 'todo_resolve', 'chat_send', '含糊时先回问一句'):
             self.assertIn(part, assistant_rules)
         # The tool result points at the injected rules instead of repeating them.
         self.assertIn('[Crew assistant]', context['instructions'])
         leader_rules = behavior_prompts.DEFAULTS['leader']
-        for part in ('各建一个目标并分别 start', '已有同一任务就补充原目标'):
+        for part in ('各建一个任务分别开始', '已有同一任务就补充原任务'):
             self.assertIn(part, leader_rules)
         human_input_rules = behavior_prompts.DEFAULTS['human_input']
-        for part in ('crew todo list', 'crew decisions', 'todo withdraw', '撤回拍板', 'user_todos', 'user_decisions'):
+        for part in ('todo_list', 'decision_list', 'todo_withdraw', 'decision_withdraw', 'user_todos', 'user_decisions'):
             self.assertIn(part, human_input_rules)
         self.assertIn('final_report', behavior_prompts.bundle('leader'))
 
@@ -462,9 +466,7 @@ class RemoteDecisionActionTests(GoalFixture):
                                         (number, [], '原始用户消息'),
                                         (number, [{**event, 'source': 'crew'}], '真实用户输入')):
             with self.subTest(identity=identity, events=events), self.assertRaisesRegex(board.BoardError, label):
-                personal_actions.dispatch(self.home, assistant['session_id'], 'decision.answer',
-                    dict(data={'decision_id': identity, 'answer': 'Yes'}, message_id='original', request_id='invalid'),
-                    read_events=lambda _: events)
+                self.answer(assistant['session_id'], identity, 'original', 'invalid-' + label, events)
         self.assertEqual(self.conn.execute('SELECT status FROM decisions WHERE id=?', (number,)).fetchone()[0], 'open')
 
 

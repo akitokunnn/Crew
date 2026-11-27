@@ -1,8 +1,9 @@
 "use strict";
 const {test}=require("node:test"),assert=require("node:assert/strict"),vm=require("node:vm"),fs=require("node:fs"),path=require("node:path");
 const source=fs.readFileSync(path.join(__dirname,"../../frontend/app-data.js"),"utf8");
+const browserUtils=fs.readFileSync(path.join(__dirname,"../../frontend/browser-utils.js"),"utf8");
 
-function load(){const sandbox={window:{},URL};vm.runInNewContext(source,sandbox);return sandbox.window.CrewAppData;}
+function load(){const sandbox=vm.createContext({window:{},URL});vm.runInContext(browserUtils,sandbox);vm.runInContext(source,sandbox);return sandbox.window.CrewAppData;}
 const todo=(id,extra={})=>({id,title:`待办 ${id}`,blocking:false,created_at:`2026-11-27T00:00:0${id}.000Z`,status:"open",...extra});
 
 // A fake server: snapshots, SSE streams, writes and timers, all under the test's control.
@@ -21,7 +22,7 @@ function harness({project="demo",snapshots=[]}={}){
   const ctx={
     origin:"http://127.0.0.1:47811",get project(){return project;},get state(){return shellState;},
     EventSource:FakeEventSource,
-    fetch:async(url,init)=>{requests.push({url,method:init.method||"GET",body:init.body});return {ok:true,json:async()=>({ok:true})};},
+    fetch:async(url,init)=>{requests.push({url,method:init.method||"GET",body:init.body,requestId:init.headers?.["X-Crew-Request-Id"]});return {ok:true,json:async()=>({ok:true})};},
     api:async path=>{requests.push({url:path,method:"GET"});const next=queue.shift();if(next instanceof Error)throw next;if(next===undefined)throw new Error("no snapshot queued");return next;},
     setTimeout:(fn,delay)=>{const id=nextTimer++;timers.push({id,fn,delay});return id;},
     clearTimeout:id=>{const index=timers.findIndex(timer=>timer.id===id);if(index>=0)timers.splice(index,1);},
@@ -78,7 +79,7 @@ test("a dropped stream resumes from the last applied sequence without a new snap
   h.streams[2].emit("ready",{seq:4});
   assert.equal(h.data.status,"live");
   // Only the first load asked for a snapshot.
-  eq(h.requests.map(request=>request.url),["/api/snapshot"]);
+  eq(h.requests.map(request=>request.url),["/api/op/workspace.snapshot"]);
   // A successful subscription resets the back-off.
   h.streams[2].fail();assert.equal(h.fire(),1000);
 });
@@ -103,13 +104,14 @@ test("snapshot-required closes the stream, takes one new snapshot and opens exac
 test("reconnecting and resyncing never send a write again",async()=>{
   const h=harness({snapshots:[snapshot(1),snapshot(9)]});
   await h.data.loadState();
-  await h.data.request("/api/todo/resolve",{id:1,status:"done"});
+  await h.data.request("/api/op/todo.resolve",{id:1,status:"done"});
   h.streams[0].fail();h.fire();
   h.streams[1].emit("snapshot-required",{reason:"ahead"});await tick();
   h.streams[2].fail();h.fire();
   const writes=h.requests.filter(request=>request.method==="POST");
-  eq(writes,[{url:"/api/todo/resolve?project=demo",method:"POST",body:JSON.stringify({id:1,status:"done"})}]);
-  assert.equal(h.requests.filter(request=>request.url==="/api/snapshot").length,2);
+  eq(writes.map(({requestId,...write})=>write),[{url:"/api/op/todo.resolve?project=demo",method:"POST",body:JSON.stringify({id:1,status:"done"})}]);
+  assert.match(writes[0].requestId,/\S/,"a write carries its own request id");
+  assert.equal(h.requests.filter(request=>request.url==="/api/op/workspace.snapshot").length,2);
 });
 
 test("a failed snapshot is reported to the caller, shown as disconnected and taken again later",async()=>{
@@ -156,10 +158,10 @@ test("project scoping and write errors follow the former api helper",async()=>{
   const h=harness({project:null,snapshots:[snapshot(0)]});
   assert.equal(h.data.queryPath("/api/events?after=0"),"/api/events?after=0");
   const scoped=harness();
-  assert.equal(scoped.data.queryPath("/api/settings"),"/api/settings");
-  assert.equal(scoped.data.queryPath("/api/state?x=1"),"/api/state?x=1&project=demo");
+  assert.equal(scoped.data.queryPath("/api/op/settings.get"),"/api/op/settings.get");
+  assert.equal(scoped.data.queryPath("/api/op/workspace.state?x=1"),"/api/op/workspace.state?x=1&project=demo");
   scoped.ctx.fetch=async()=>({ok:false,status:409,json:async()=>({error:"人工待办已被更新"})});
-  await assert.rejects(scoped.data.request("/api/todo/resolve",{id:1}),error=>error.status===409&&error.message==="人工待办已被更新");
+  await assert.rejects(scoped.data.request("/api/op/todo.resolve",{id:1}),error=>error.status===409&&error.message==="人工待办已被更新");
 });
 
 test("merge is pure and keeps the snapshot order of each kind",()=>{

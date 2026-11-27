@@ -76,7 +76,7 @@
       catch (caught) { error = caught.message; render(); return; }
       busy = true; error = ""; render();
       try {
-        await options.api('/api/member-defaults',{leader_session_id:owner.session_id,selection:choice});
+        await options.api('/api/op/member_defaults.set',{leader_session_id:owner.session_id,selection:choice});
         const parent = owner.session_id; busy = false; close();
         options.toast("本组执行默认大脑已保存。");
         await options.onChanged(null,parent);

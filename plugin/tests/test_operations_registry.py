@@ -2,12 +2,14 @@
 import tests
 from http.server import ThreadingHTTPServer
 import json
+from pathlib import Path
+import re
 import threading
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from crew import goal_actions, personal, remote_routes, report_preview, web
+from crew import board, goal_actions, personal, remote_routes, report_preview, web
 from crew.ops import executor, registry
 from crew.ops.caller import Caller, HUMAN
 from crew.ops.errors import OpError
@@ -20,6 +22,7 @@ from crew import store
 GOAL_ACTION_VALUES = ('accept', 'reject', 'observe', 'pause', 'start', 'resume', 'cancel', 'reopen', 'transfer')
 GOAL_CONTEXT_VALUES = ('add', 'correct', 'expire')
 PROMPT_POST_VALUES = ('save', 'reset')
+GOAL_PAGE_ACTIONS = ('mode.set', 'report.publish', 'versions.list', 'versions.preview', 'version.capture', 'version.restore')
 PROMPT_GET_VALUES = ('get', 'history', 'applied')
 # Reads that still write today. Each belongs to a later step and may only shrink.
 READS_WITH_WRITES = {
@@ -33,36 +36,54 @@ READS_WITH_WRITES = {
 
 
 class RegistryCoverageTests(unittest.TestCase):
-    def test_every_business_route_is_an_operation_binding(self):
-        self.assertEqual(registry.paths('POST'), expected.POST)
-        self.assertEqual(registry.paths('GET'), expected.GET)
-        self.assertEqual(routes.post_paths(), expected.POST | report_preview.WORKER_PATHS | {routes.OP_PATH})
-        self.assertEqual(routes.get_paths(), expected.GET | expected.TRANSPORT_GET)
+    def test_http_serves_only_the_operation_entry(self):
+        self.assertEqual(routes.post_paths(), report_preview.WORKER_PATHS | {routes.OP_PATH})
+        self.assertEqual(routes.get_paths(), expected.TRANSPORT_GET)
         self.assertEqual(routes.get_paths() & web.STATIC.keys(), set())
 
-    def test_every_action_of_a_multi_action_url_is_bound(self):
-        bound = {}
-        for (method, path, when), op in registry.bindings().items():
-            bound.setdefault((method, path), {})[dict(when).get('action')] = op.name
-        cases = {('POST', '/api/personal/notes'): personal.UI_NOTE_ACTIONS,
-                 ('POST', '/api/personal/tags'): personal.UI_TAG_ACTIONS,
-                 ('POST', '/api/goals/agent'): goal_actions.GOAL_ACTIONS | goal_actions.CONTEXT_ACTIONS,
-                 ('POST', '/api/goals/action'): GOAL_ACTION_VALUES,
-                 ('POST', '/api/goals/context'): GOAL_CONTEXT_VALUES,
-                 ('POST', '/api/behavior-prompts'): PROMPT_POST_VALUES,
-                 ('GET', '/api/behavior-prompts'): PROMPT_GET_VALUES + (None,)}
-        for address, actions in cases.items():
-            with self.subTest(address=address):
-                self.assertEqual(set(bound[address]), set(actions))
+    def test_every_action_of_the_old_multi_action_urls_is_an_operation(self):
+        cases = {'note.': personal.UI_NOTE_ACTIONS, 'tag.': personal.UI_TAG_ACTIONS,
+                 'goal.': GOAL_ACTION_VALUES + GOAL_PAGE_ACTIONS, 'goal.context.': ('put', 'correct', 'expire'),
+                 'prompt.': PROMPT_POST_VALUES + PROMPT_GET_VALUES + ('list',)}
+        for prefix, actions in cases.items():
+            for action in actions:
+                with self.subTest(op=prefix + action):
+                    self.assertIsNotNone(registry.get(prefix + action))
 
-    def test_bindings_resolve_by_discriminator(self):
-        op, binding = registry.resolve('POST', '/api/goals/agent', {'action': 'start'})
-        self.assertEqual((op.name, binding.path), ('goal.start', '/api/goals/agent'))
-        op, binding = registry.resolve('POST', '/api/goals/action', {'action': 'start'})
-        self.assertEqual((op.name, binding.path), ('goal.start', '/api/goals/action'))
-        self.assertEqual(registry.resolve('GET', '/api/behavior-prompts', {})[0].name, 'prompt.list')
-        self.assertEqual(registry.resolve('GET', '/api/behavior-prompts', {'action': 'history'})[0].name, 'prompt.history')
-        self.assertIsNone(registry.resolve('POST', '/api/personal/notes', {'action': 'nonsense'}))
+    def test_every_page_call_names_a_registered_operation(self):
+        """Design §10 item 3: a page or desktop call outside the registry fails here."""
+        repo = Path(__file__).resolve().parents[2]
+        files = [*repo.glob('frontend/*.js'), *repo.glob('frontend/*.html'), *repo.glob('desktop/src/*.cjs'),
+                 *repo.glob('desktop/src/*.js'), *repo.glob('desktop/src/*.html')]
+        ops = registry.operations()
+        literal = re.compile(r"""['"`]/api/op/([a-z_.]+?)(?=['"`?])""")
+        dynamic = re.compile(r"""['"`]/api/op/([a-z_.]+\.)['"`]\s*\+""")
+        other = re.compile(r"""['"`](/api/[A-Za-z0-9/_-]+)""")
+        used = set()
+        for file in files:
+            source = file.read_text(encoding='utf-8')
+            declared = {name for line in re.findall(r'crew-op:([^\n]*)', source) for name in line.split()}
+            for match in other.findall(source):
+                if not match.startswith(('/api/op', '/api/report-preview/worker/')):
+                    self.assertIn(match, expected.TRANSPORT_GET | report_preview.WORKER_PATHS | {'/api/access/context'},
+                                  '%s calls an address outside /api/op: %s' % (file.name, match))
+            for prefix in dynamic.findall(source):
+                self.assertTrue(any(name.startswith(prefix) for name in declared),
+                                '%s builds /api/op/%s… without a crew-op comment' % (file.name, prefix))
+            for name in {name for name in literal.findall(source) if not name.endswith('.')} | declared:
+                with self.subTest(file=file.name, op=name):
+                    self.assertTrue(name in ops, '%s calls an unregistered operation %s' % (file.name, name))
+                    self.assertTrue(ops[name].scopes & {'human', 'device_browser', 'device_desktop'})
+                    used.add(name)
+        self.assertGreater(len(used), 100)
+
+    def test_every_goal_action_is_an_ai_operation(self):
+        renamed = {'status': 'goal.get', 'report-template': 'goal.report.template'}
+        for action in goal_actions.GOAL_ACTIONS | goal_actions.CONTEXT_ACTIONS:
+            with self.subTest(action=action):
+                op = registry.get(renamed.get(action, 'goal.' + action))
+                self.assertIsNotNone(op)
+                self.assertTrue(op.scopes & {'leader', 'execution'})
 
     def test_field_rules(self):
         tools = set()
@@ -78,6 +99,36 @@ class RegistryCoverageTests(unittest.TestCase):
         self.assertLessEqual(set(READS_WITH_WRITES), {name for name, op in registry.operations().items()
                                                       if op.access == 'read'})
 
+    def test_desktop_worker_actions_are_operations_or_local(self):
+        repo = Path(__file__).resolve().parents[2]
+        source = (repo / 'desktop' / 'src' / 'operations.cjs').read_text(encoding='utf-8')
+        actions = set(re.findall(r"'([a-z-]+)'", re.search(r'const ACTIONS = new Set\(\[([^\]]*)\]\)', source).group(1)))
+        bound = {binding.split(':', 1)[1]: op.name for op in registry.operations().values() for binding in op.ipc}
+        self.assertEqual(actions, set(bound) | set(expected.LOCAL_WORKER_ACTIONS))
+        self.assertEqual(set(bound) & set(expected.LOCAL_WORKER_ACTIONS), set())
+
+    def test_cli_is_generated_from_human_operations(self):
+        import argparse
+        from crew import cli
+        from crew.ops import cli as ops_cli
+        root = ops_cli.parser()
+        leaves = set()
+
+        def walk(parser, path):
+            for action in parser._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    for name, child in action.choices.items():
+                        walk(child, path + (name,))
+                    return
+            leaves.add(path)
+        walk(root, ())
+        human = {op.name for op in registry.operations().values() if 'human' in op.scopes}
+        self.assertEqual({'.'.join(path) for path in leaves}, human)
+        self.assertEqual(set(ops_cli.HOST_COMMANDS), {'web', 'start', 'install', 'autostart', 'menu', 'doctor', 'usage'})
+        host = {action.dest for action in cli.parser()._actions if isinstance(action, argparse._SubParsersAction)}
+        self.assertEqual(host, {'command'})
+        self.assertNotIn('join', ops_cli.HOST_COMMANDS)
+
     def test_registration_rejects_incomplete_entries(self):
         good = registry.get('channel.post') if registry.operations() else None
         from dataclasses import replace
@@ -85,21 +136,30 @@ class RegistryCoverageTests(unittest.TestCase):
                                 ({'name': 'Bad Name'}, 'lowercase'), ({'lock': 'outer', 'project': 'selected'}, 'project'),
                                 ({'params': {'type': 'object', 'patternProperties': {}}}, 'unsupported')):
             with self.subTest(change=change), self.assertRaisesRegex(ValueError, message):
-                registry.register(replace(good, name=change.get('name', 'test.bad'), http=(), **{
+                registry.register(replace(good, name=change.get('name', 'test.bad'), **{
                     key: value for key, value in change.items() if key != 'name'}))
 
-    def test_remote_device_scopes_match_route_rules(self):
-        """A device may call an operation when the remote rules admit at least one of its addresses."""
-        def admitted(binding, kind):
-            allowed = remote_routes.permitted(binding.method, binding.path, web.STATIC, kind)
-            if binding.path == '/api/goals/agent':
-                allowed = allowed and dict(binding.when)['action'] in remote_routes.HUMAN_GOAL_ACTIONS
-            return allowed
+    def test_remote_device_scopes_match_frozen_rules(self):
+        ops = registry.operations()
+        self.assertEqual({name for name, op in ops.items() if 'device_browser' in op.scopes}, expected.DEVICE_BROWSER)
+        self.assertEqual({name for name, op in ops.items() if 'device_desktop' in op.scopes}, expected.DEVICE_DESKTOP)
+        for kind in ('browser', 'desktop'):
+            self.assertTrue(remote_routes.permitted('POST', '/api/op', web.STATIC, kind))
+            self.assertTrue(remote_routes.permitted('GET', '/api/op/channel.list', web.STATIC, kind))
+            self.assertFalse(remote_routes.permitted('POST', '/mcp', web.STATIC, kind))
+        self.assertFalse(remote_routes.permitted('GET', '/api/settings', web.STATIC, 'desktop'))
+        self.assertTrue(remote_routes.permitted('GET', '/api/admin/health', web.STATIC, 'desktop'))
+        self.assertFalse(remote_routes.permitted('GET', '/api/admin/health', web.STATIC, 'browser'))
 
-        for op in registry.operations().values():
-            with self.subTest(op=op.name):
-                self.assertEqual('device_browser' in op.scopes, any(admitted(b, 'browser') for b in op.http))
-                self.assertEqual('device_desktop' in op.scopes, any(admitted(b, 'desktop') for b in op.http))
+    def test_devices_cannot_name_an_ai_identity(self):
+        from crew.ops import scopes
+        device = Caller('device_browser', device_id='d1')
+        for args in ({'caller_session_id': 's3'}, {'data': {'execution_id': 'e1'}}, {'actor_session_id': 's3'}, {'caller_execution_id': 'e1'}):
+            with self.subTest(args=args), self.assertRaises(OpError):
+                scopes.human_payload(registry.get('goal.mode.set'), device, args)
+        scopes.human_payload(registry.get('goal.mode.set'), device, {'actor_session_id': 'user', 'data': {}})
+        with self.assertRaises(OpError):
+            scopes.human_payload(registry.get('leader.create'), device, {'candidate_members': []})
 
 class OperationCallTests(ShellFixture, unittest.TestCase):
     def setUp(self):
@@ -128,10 +188,13 @@ class OperationCallTests(ShellFixture, unittest.TestCase):
         with self.assertRaises(OpError) as caught:
             self.call('channel.post', {'project': 'demo', 'body': 'x'})
         self.assertEqual(caught.exception.code, 'invalid_arguments')
-        with self.assertRaises(ValueError):
-            self.call('decision.answer', {'id': 'not-a-number', 'text': 'x'}, 'r-2')
         with self.assertRaises(OpError) as caught:
             self.call('decision.answer', {'id': 'not-a-number', 'text': 'x'}, 'r-2')
+        self.assertEqual(caught.exception.code, 'invalid_arguments')
+        with self.assertRaisesRegex(board.BoardError, '999999'):
+            self.call('decision.answer', {'id': 999999, 'text': 'x'}, 'r-3')
+        with self.assertRaises(OpError) as caught:
+            self.call('decision.answer', {'id': 999999, 'text': 'x'}, 'r-3')
         self.assertEqual((caught.exception.code, caught.exception.detail['replayed']), ('invalid_arguments', True))
 
     def test_reads_leave_no_receipt_and_roles_are_checked(self):
@@ -188,6 +251,10 @@ class OperationHttpTests(OperationCallTests):
         self.assertEqual((code, refused['code']), (400, 'invalid_arguments'))
         code, missing = self.request('/api/op/channel.post?project=demo')
         self.assertEqual((code, missing['code']), (404, 'not_found'))
+        code, page = self.request('/api/op/channel.post?project=demo', {'body': '页面形式'})
+        self.assertEqual(code, 400)
+        code, gone = self.request('/api/channel?project=demo', {'project': 'demo', 'body': '旧地址'})
+        self.assertEqual(code, 404)
 
 
 if __name__ == '__main__':

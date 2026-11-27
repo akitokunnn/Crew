@@ -50,17 +50,17 @@ test("the panel previews the plan as given and executes it with the edited draft
     archived:[], to_start:[], summary:{merged:1}, handoffs:[{index:0, from:{session_id:"a", name:"甲"}, to:{session_id:"b", name:"乙"}, delivers:true, text:"草稿", chars:2, truncated:false}]};
   const panel = ui.create({toast:text => toasts.push(text), leaders:() => [{session_id:"a", name:"甲"}, {session_id:"b", name:"乙"}],
     onApplied:async result => calls.push(["applied", result.version]),
-    api:async (url, body) => { calls.push([url, JSON.parse(JSON.stringify(body))]); return url.endsWith("/preview") ? plan : {version:9, to_start:[], starts_turn:true, wakes:[{name:"乙"}]}; }});
+    api:async (url, body) => { calls.push([url, JSON.parse(JSON.stringify(body))]); return url === "/api/op/domains.restructure.preview" ? plan : {version:9, to_start:[], starts_turn:true, wakes:[{name:"乙"}]}; }});
   const changes = [{type:"leader.merge", leader:"a", into:"b"}];
   panel.open({project:"demo", changes, note:"合并甲"});
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(calls[0], ["/api/domains/restructure/preview", {project:"demo", changes}]);
+  assert.deepEqual(calls[0], ["/api/op/domains.restructure.preview", {project:"demo", changes}]);
   assert.match(overlay.innerHTML, /会唤醒 乙 开工/);
   assert.match(overlay.innerHTML, /执行后会唤醒：乙（任务「登录」）/);
   handlers.input({target:{dataset:{rsDraft:"0:a:b"}, value:"改过的交接稿"}});
   handlers.click({target:{closest:() => ({dataset:{rsAct:"confirm"}, disabled:false})}});
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(calls[1], ["/api/domains/restructure", {project:"demo", changes, note:"合并甲", board_version:7, revision:"r1",
+  assert.deepEqual(calls[1], ["/api/op/domains.restructure.apply", {project:"demo", changes, note:"合并甲", board_version:7, revision:"r1",
     handoffs:[{index:0, text:"改过的交接稿", wake:false}]}]);
   assert.deepEqual(calls[2], ["applied", 9]);
   assert.match(toasts[0], /存为版本 9.*已唤醒 乙/);
@@ -73,7 +73,7 @@ test("a stale preview is recomputed instead of executed", async () => {
   const plan = {ok:true, nothing:false, board_version:1, revision:"r", errors:[], before:{parts:[], leaders:[]}, after:{parts:[], leaders:[]},
     changes:[{index:0, label:"x", error:null}], leaders:[], goals:[], archived:[], to_start:[], summary:{}, handoffs:[]};
   const panel = ui.create({toast(){}, leaders:() => [], onApplied:async () => {}, api:async url => {
-    if (url.endsWith("/preview")) { previews++; return plan; }
+    if (url === "/api/op/domains.restructure.preview") { previews++; return plan; }
     const error = Error("预览之后架构图又被改动过"); error.status = 409; throw error;
   }});
   panel.open({project:"demo", changes:[{type:"part.delete", part:"p"}], note:"删"});

@@ -107,8 +107,8 @@ function fakeServer() {
   const exact = (body, keys) => assert.deepEqual(Object.keys(body).sort(), [...keys].sort());
   async function api(pathname, body) {
     state.calls.push([pathname, body === undefined ? "GET" : "POST"]);
-    if (pathname === "/api/personal/mindmap" && body === undefined) return structuredClone(state.map);
-    if (pathname === "/api/personal/mindmap") {
+    if (pathname === "/api/op/mindmap.get" && body === undefined) return structuredClone(state.map);
+    if (pathname === "/api/op/mindmap.edit") {
       exact(body, ["ops", "base_version"]);
       if (body.base_version !== state.map.version) throw conflict("导图已在别处改动，请刷新后再改");
       const effects = body.ops.map(op => {
@@ -121,11 +121,11 @@ function fakeServer() {
       return {map: structuredClone(state.map), effects};
     }
     const keys = ["project", "roots", "parent_id", "decisions", "names", "leaders"];
-    if (pathname === "/api/personal/mindmap/preview") {
+    if (pathname === "/api/op/mindmap.preview") {
       exact(body, keys);
       return {map_version: state.map.version, board_version: state.board, rows: body.roots.map(id => ({node_id: id, action: "create"})), nothing: false};
     }
-    if (pathname === "/api/personal/mindmap/convert") {
+    if (pathname === "/api/op/mindmap.convert") {
       exact(body, [...keys, "map_version", "board_version"]);
       if (body.map_version !== state.map.version || body.board_version !== state.board) throw conflict("导图或架构图在预览之后又有改动，请重新预览");
       state.board++; state.map.version++;
@@ -154,6 +154,6 @@ test("the map client speaks the documented endpoints, carries versions and surfa
   assert.deepEqual(done.map.links.map(link => link.node_id), ["n1"]);
   await assert.rejects(client.convert(request, plan), error => error.status === 409, "a second confirm with the old preview is refused");
   assert.deepEqual(server.state.calls.map(([pathname, method]) => `${method} ${pathname}`), [
-    "GET /api/personal/mindmap", "POST /api/personal/mindmap", "POST /api/personal/mindmap", "POST /api/personal/mindmap",
-    "POST /api/personal/mindmap/preview", "POST /api/personal/mindmap/convert", "POST /api/personal/mindmap/convert"]);
+    "GET /api/op/mindmap.get", "POST /api/op/mindmap.edit", "POST /api/op/mindmap.edit", "POST /api/op/mindmap.edit",
+    "POST /api/op/mindmap.preview", "POST /api/op/mindmap.convert", "POST /api/op/mindmap.convert"]);
 });

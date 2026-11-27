@@ -19,6 +19,7 @@ function harness(api){
     setTimeout:(fn,delay)=>{const id=nextTimer++;timers.push({id,fn,delay});return id;},clearTimeout:id=>{const index=timers.findIndex(timer=>timer.id===id);if(index>=0)timers.splice(index,1);},
     setInterval(){throw Error("工作台不应再定时轮询");},CrewActivity:{sync(){}},CrewSound:{observe(){}}};
   vm.createContext(sandbox);
+  vm.runInContext(read("browser-utils.js"),sandbox);
   vm.runInContext(read("app-data.js"),sandbox);
   sandbox.CrewAppData=sandbox.window.CrewAppData;
   vm.runInContext(read("app.js").replace("  setup();\n})();",`window.ui={loadState,services(values){api=values.api;toast=values.toast;applyTheme=()=>{};renderSettings=()=>{};readRoute=()=>{view="all";};render=()=>{values.rendered();document.getElementById("main").innerHTML="已恢复的工作区";};syncRoute=()=>{};refreshUsage=()=>{};}};\n})();`),sandbox);
@@ -43,7 +44,7 @@ test("a later state failure preserves the current workspace and reports the real
 });
 
 test("a dropped stream shows the disconnection, resumes from the last sequence and live changes render without a request",async()=>{
-  let calls=0;const h=harness(async path=>{calls+=1;assert.equal(path,"/api/snapshot");return snapshot(4);});
+  let calls=0;const h=harness(async path=>{calls+=1;assert.equal(path,"/api/op/workspace.snapshot");return snapshot(4);});
   await h.ui.loadState();
   const [first]=h.streams;first.emit("ready",{seq:4});assert.equal(h.connection.hidden,true);
   first.onmessage({data:JSON.stringify({seq:5,type:"todo.updated",entity:"1",data:{id:1,title:"新待办",blocking:false,created_at:"2026-11-27T00:00:00.000Z"}})});

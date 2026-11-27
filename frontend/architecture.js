@@ -298,7 +298,7 @@ const CrewArchitecture = (() => {
   async function load(clearHistory = false) {
     const token = ++loadToken, name = project;
     try {
-      const result = await options.api(`/api/domains?project=${encodeURIComponent(name)}`);
+      const result = await options.api(`/api/op/domains.get?project=${encodeURIComponent(name)}`);
       if (token !== loadToken || name !== project) return;
       board = result; errorText = ""; cached = null; pendingDirection = null;
       if (clearHistory) { undoStack = []; redoStack = []; }
@@ -326,7 +326,7 @@ const CrewArchitecture = (() => {
     return queue;
   }
   async function send(ops) {
-    const result = await options.api("/api/domains", {project, base_version:board.version, ops});
+    const result = await options.api("/api/op/domains.apply", {project, base_version:board.version, ops});
     board = result.board; cached = null;
     if (history !== null && result.version !== null) void loadHistory();
     return result;
@@ -866,7 +866,7 @@ const CrewArchitecture = (() => {
   async function loadHistory(more = false) {
     const mine = ++historyToken, name = project, before = more ? history.list.at(-1).number : null;
     try {
-      const result = await options.api(`/api/domains/versions?project=${encodeURIComponent(name)}${before ? `&before=${before}` : ""}`);
+      const result = await options.api("/api/op/domains.versions.list", before ? {project:name, before} : {project:name});
       if (mine !== historyToken || history === null || name !== project) return;
       history.list = more ? history.list.concat(result.versions) : result.versions;
       history.more = result.more; history.latest = result.latest_matches; history.error = "";
@@ -881,7 +881,7 @@ const CrewArchitecture = (() => {
   async function loadVersion(number) {
     const name = project;
     try {
-      const result = await options.api(`/api/domains/version?project=${encodeURIComponent(name)}&number=${number}`);
+      const result = await options.api("/api/op/domains.version.get", {project:name, number});
       if (history === null || history.selected !== number || name !== project) return;
       history.detail = result; history.detailError = "";
     } catch (error) { if (history === null || history.selected !== number) return; history.detail = null; history.detailError = error.message || "读取版本失败"; }
@@ -891,7 +891,7 @@ const CrewArchitecture = (() => {
     const detail = history.detail, number = detail.version.number;
     history.busy = true; renderHistory();
     try {
-      const result = await options.api("/api/domains/rollback", {project, number, board_version:detail.board_version});
+      const result = await options.api("/api/op/domains.rollback", {project, number, board_version:detail.board_version});
       history.busy = false; history.confirming = false; history.selected = result.version; history.pane = "detail";
       undoStack = []; redoStack = [];
       options.toast(`已回滚到版本 ${number}，存为版本 ${result.version}。会话没有被删除或恢复。`);

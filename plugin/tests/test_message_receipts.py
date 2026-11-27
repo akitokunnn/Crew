@@ -1,51 +1,35 @@
 """Mail receipts describe persistence, dispatch and native acceptance separately."""
 import tests
-from contextlib import redirect_stdout, redirect_stderr
-import io
-import json
-import os
+from tests.ops_helpers import ai_call
 import unittest
 from unittest import mock
 
-from crew import board, cli, codex_tools, goal_messages, goals, messaging, runtimes
+from crew import board, message_receipts, web, goal_messages, goals, messaging, runtimes
 from tests.test_goals import GoalFixture
-from test_shell import ShellFixture
+from test_shell import PLUGIN, ShellFixture
 import test_mixed_messaging as mixed
 
 
 class MessageReceiptPresentationTests(unittest.TestCase):
-    def emit(self, value, as_json=False):
-        output = io.StringIO()
-        with redirect_stdout(output):
-            cli._emit(value, as_json=as_json, command='send')
-        return output.getvalue()
-
     def test_archive_is_explicitly_not_delivery_or_wake(self):
-        output = self.emit({'ok': True, 'message_id': 'm1', 'kind': 'information', 'status': 'archived'})
-        self.assertIn('仅归档，未投递到执行', output)
-        self.assertIn('information', output)
-        self.assertNotIn('消息已交给 Crew', output)
+        receipt = message_receipts.normalize({'ok': True, 'message_id': 'm1', 'kind': 'information', 'status': 'archived'})
+        self.assertIn('仅归档', receipt['message'])
+        self.assertFalse(receipt['accepted'])
 
     def test_queued_is_not_a_native_receipt_and_accepted_is_not_a_reply(self):
-        queued = self.emit({'ok': True, 'message_id': 'm2', 'queued': True, 'kind': 'decision'})
-        self.assertIn('已排队', queued)
-        self.assertIn('尚未交给执行输入', queued)
-        accepted = self.emit({'ok': True, 'message_id': 'm2', 'status': 'accepted', 'kind': 'decision', 'accepted_at': 'now'})
-        self.assertIn('已交给执行输入', accepted)
-        self.assertIn('尚不代表模型已读、已答复或任务完成', accepted)
+        queued = message_receipts.normalize({'ok': True, 'message_id': 'm2', 'queued': True, 'kind': 'decision'})
+        self.assertIn('尚未交给执行输入', queued['message'])
+        accepted = message_receipts.normalize({'ok': True, 'message_id': 'm2', 'status': 'accepted',
+                                              'kind': 'decision', 'accepted_at': 'now'})
+        self.assertIn('尚不代表模型已读', accepted['message'])
 
     def test_json_preserves_old_fields_and_adds_explicit_delivery_facts(self):
-        receipt = json.loads(self.emit({'ok': True, 'message_id': 'm1', 'queued': False,
-                                        'status': 'archived', 'kind': 'information'}, True))
+        receipt = message_receipts.normalize({'ok': True, 'message_id': 'm1', 'queued': False,
+                                              'status': 'archived', 'kind': 'information'})
         self.assertTrue(receipt['ok'])
         self.assertFalse(receipt['queued'])
         self.assertFalse(receipt['accepted'])
         self.assertIn('仅归档', receipt['message'])
-
-    def test_cli_has_explicit_kind_guidance_and_stable_message_key(self):
-        args = cli.parser().parse_args(['send', 'builder', 'Use the approved format', '--kind', 'decision', '--message-id', 'format-v1'])
-        self.assertEqual(args.kind, 'decision')
-        self.assertEqual(args.message_id, 'format-v1')
 
 
 class GoalMessageReceiptTests(GoalFixture):
@@ -122,48 +106,43 @@ class GoalMessageReceiptTests(GoalFixture):
         self.controller.send.assert_called_once()
 
     def test_codex_native_tool_uses_same_receipt_and_forwards_explicit_kind(self):
-        def route(sender, target, text, **options):
-            return goal_messages.queue(self.conn, sender, target, text, self.leader['id'], message_id='tool-key', **options)
-        tool = codex_tools.CodexTools(self.home, 'chief-id', execution_id=self.leader['id'], send_message=route)
-        result = tool({'tool': 'crew_send_message', 'arguments': {'to': 'builder', 'text': 'Approve the format',
-                                                                'kind': 'decision'}})
-        self.assertTrue(result['success'], result)
-        receipt = json.loads(result['contentItems'][0]['text'])['receipt']
+        service = web.Service(self.home, PLUGIN, cwd=self.home.parent, agents_provider=lambda: [], isolated_sources=True)
+        self.addCleanup(service.close)
+        def route(sender, target, text, message_id, *, execution_id, kind, reply_to):
+            return goal_messages.queue(self.conn, sender, target, text, execution_id, message_id='tool-key', kind=kind)
+        service.chat.send_message = route
+        def send():
+            return ai_call(service, self.conn, 'chief-id', 'message.send',
+                           {'to': 'builder', 'text': 'Approve the format', 'kind': 'decision'},
+                           runtime='codex', execution_id=self.leader['id'])['receipt']
+        receipt = send()
         self.assertEqual(receipt['kind'], 'decision')
         self.assertEqual(receipt['status'], 'queued')
         self.assertFalse(receipt['accepted'])
         self.assertIn('尚未交给执行输入', receipt['message'])
         goal_messages.deliver(self.controller, self.conn)
-        replay = tool({'tool': 'crew_send_message', 'arguments': {'to': 'builder', 'text': 'Approve the format',
-                                                                'kind': 'decision'}})
-        self.assertTrue(json.loads(replay['contentItems'][0]['text'])['receipt']['accepted'])
+        self.assertTrue(send()['accepted'])
 
     def test_ordinary_codex_legacy_router_never_implies_native_acceptance(self):
         runtimes.set(self.conn, 'member-id', 'codex')
         router = mock.Mock(return_value={'ok': True, 'message_id': 'ordinary', 'queued': True})
-        tool = codex_tools.CodexTools(self.home, 'member-id', send_message=router)
-        result = tool({'tool': 'crew_send_message', 'arguments': {'to': 'chief', 'text': 'ordinary evidence'}})
-        self.assertTrue(result['success'])
-        receipt = json.loads(result['contentItems'][0]['text'])['receipt']
+        service = web.Service(self.home, PLUGIN, cwd=self.home.parent, agents_provider=lambda: [], isolated_sources=True)
+        self.addCleanup(service.close)
+        service.chat.send_message = router
+        receipt = ai_call(service, self.conn, 'member-id', 'message.send',
+                          {'to': 'chief', 'text': 'ordinary evidence'}, runtime='codex')['receipt']
         self.assertEqual(receipt['status'], 'queued')
         self.assertFalse(receipt['accepted'])
         self.assertIn('尚未交给执行输入', receipt['message'])
 
 
 class OrdinaryMessageReceiptTests(ShellFixture, unittest.TestCase):
-    def invoke_send(self, arguments, stdin=''):
-        output, errors = io.StringIO(), io.StringIO()
-        input_stream = io.StringIO(stdin) if isinstance(stdin, str) else stdin
-        def route(home, project, endpoint, data):
-            self.assertEqual(endpoint, '/api/messages')
-            target = board.named_session(self.conn, project, data['name'])
-            return self.manager.send_message(data['caller_session_id'], target['session_id'], data['text'],
-                                             message_id=data.get('message_id'), kind=data['kind'])
-        with mock.patch('crew.spawn.request_start', side_effect=route), \
-             mock.patch.dict(os.environ, {'CREW_HOME': str(self.home), 'CREW_EXECUTION_ID': '', 'CREW_GOAL_ID': ''}), \
-             mock.patch('sys.stdin', input_stream), redirect_stdout(output), redirect_stderr(errors):
-            code = cli.main(['--home', str(self.home), '--session', 's3', *arguments], agents_provider=lambda: [], cwd=self.project)
-        return code, output.getvalue(), errors.getvalue()
+    def setUp(self):
+        super().setUp()
+        self.service = web.Service(self.home, PLUGIN, cwd=self.project, agents_provider=lambda: [],
+                                   process_factory=self.process_factory, isolated_sources=True)
+        self.addCleanup(self.service.close)
+        self.manager = self.service.chat
 
     def attach(self, sid, runtime):
         previous = self.manager.processes.get(sid)
@@ -247,70 +226,24 @@ class OrdinaryMessageReceiptTests(ShellFixture, unittest.TestCase):
             arguments = {'to': 'one', 'text': 'Use format' if kind else 'For records'}
             if kind:
                 arguments['kind'] = kind
-            result = sender._tool({'threadId': sender.thread_id, 'callId': kind or 'default',
-                                   'tool': 'crew_send_message', 'arguments': arguments})
-            self.assertTrue(result['success'], result)
-            receipt = json.loads(result['contentItems'][0]['text'])['receipt']
+            receipt = ai_call(self.service, self.conn, 's3', 'message.send', arguments, runtime='codex')['receipt']
             self.assertEqual(receipt['status'], expected)
             self.assertEqual(receipt['kind'], kind or 'information')
 
-    def test_cli_utf8_file_preserves_bom_quotes_and_original_newlines(self):
-        text = '批准格式："Markdown"\r\n第二行保持\r\n\n原样反斜杠 \\n 和空白  \n'
-        path = self.root / '批准决定.txt'
-        with path.open('w', encoding='utf-8-sig', newline='') as stream:
-            stream.write(text)
-        code, output, errors = self.invoke_send(['send', 'one', '--text-file', str(path), '--kind', 'decision',
-                                                '--message-id', 'file-key', '--json'])
-        self.assertEqual(code, 0, errors)
-        receipt = json.loads(output)
-        self.assertEqual(receipt['kind'], 'decision')
-        self.assertEqual(receipt['status'], 'queued')
-        row = self.conn.execute('SELECT body FROM peer_messages WHERE id=?', (receipt['message_id'],)).fetchone()
-        self.assertEqual(row['body'], text)
-        self.assertNotIn('\ufeff', row['body'])
+    def test_message_send_preserves_multiline_decision_and_quotes(self):
+        body = '批准格式："Markdown"\r\n第二行保持\r\n\n反斜杠 \\n 和空白  \n'
+        for original in (body, '采用 "第一版"\n多行资料\n结尾换行\n', '采用 "第一版"\r\n中文 😀 与原始换行\r\n'):
+            receipt = ai_call(self.service, self.conn, 's3', 'message.send',
+                              {'to': 'one', 'text': original, 'kind': 'decision'})['receipt']
+            self.assertEqual((receipt['kind'], receipt['status']), ('decision', 'queued'))
+            saved = self.conn.execute('SELECT body FROM peer_messages WHERE id=?', (receipt['message_id'],)).fetchone()
+            self.assertEqual(saved[0], original)
 
-    def test_cli_stdin_preserves_multiline_decision_and_quotes(self):
-        text = '采用 "第一版"\n多行资料\n结尾换行\n'
-        code, output, errors = self.invoke_send(['send', 'one', '--text-file', '-', '--kind', 'decision', '--json'], text)
-        self.assertEqual(code, 0, errors)
-        receipt = json.loads(output)
-        self.assertEqual(self.conn.execute('SELECT body FROM peer_messages WHERE id=?', (receipt['message_id'],)).fetchone()[0], text)
-
-    def test_cli_binary_stdin_ignores_locale_and_preserves_utf8_bom_crlf_and_quotes(self):
-        text = '采用 "第一版"\r\n中文 😀 与原始换行\r\n'
-        with io.TextIOWrapper(io.BytesIO(b'\xef\xbb\xbf' + text.encode('utf-8')), encoding='cp1252') as input_stream:
-            code, output, errors = self.invoke_send(['send', 'one', '--text-file', '-', '--kind', 'decision', '--json'], input_stream)
-        self.assertEqual(code, 0, errors)
-        receipt = json.loads(output)
-        self.assertEqual(self.conn.execute('SELECT body FROM peer_messages WHERE id=?', (receipt['message_id'],)).fetchone()[0], text)
-
-    def test_cli_binary_stdin_rejects_invalid_utf8_without_locale_fallback_or_queue(self):
-        with io.TextIOWrapper(io.BytesIO(b'\xffinvalid utf8'), encoding='cp1252') as input_stream:
-            code, _, errors = self.invoke_send(['send', 'one', '--text-file', '-', '--kind', 'decision'], input_stream)
-        self.assertEqual(code, 1)
-        self.assertIn('UnicodeDecodeError', errors)
-        self.assertIn('utf-8', errors)
-        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM peer_messages').fetchone()[0], 0)
-
-    def test_cli_missing_file_and_empty_file_keep_real_error_without_queuing(self):
-        missing = self.root / '确实不存在.txt'
-        code, _, errors = self.invoke_send(['send', 'one', '--text-file', str(missing), '--kind', 'decision'])
-        self.assertEqual(code, 1)
-        self.assertIn('FileNotFoundError', errors)
-        self.assertIn(str(missing), errors)
-        empty = self.root / 'empty.txt'
-        empty.write_bytes(b'\xef\xbb\xbf')
-        code, _, errors = self.invoke_send(['send', 'one', '--text-file', str(empty), '--kind', 'decision'])
-        self.assertEqual(code, 1)
-        self.assertIn('消息正文不能为空', errors)
-        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM peer_messages').fetchone()[0], 0)
-
-    def test_cli_requires_exactly_one_body_source(self):
-        for arguments in (['send', 'one'], ['send', 'one', 'inline', '--text-file', '-']):
-            with self.subTest(arguments=arguments), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
-                cli.parser().parse_args(arguments)
-            self.assertEqual(error.exception.code, 2)
-
-
-if __name__ == '__main__':
-    unittest.main()
+    def test_explicit_message_kind_and_stable_request_id(self):
+        args = {'to': 'one', 'text': 'Use the approved format', 'kind': 'decision'}
+        first = ai_call(self.service, self.conn, 's3', 'message.send', args, request_id='format-v1')
+        replay = ai_call(self.service, self.conn, 's3', 'message.send', args, request_id='format-v1')
+        self.assertTrue(replay['replayed'])
+        self.assertEqual(first['receipt']['kind'], 'decision')
+        self.assertEqual(replay['receipt']['message_id'], first['receipt']['message_id'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM peer_messages').fetchone()[0], 1)

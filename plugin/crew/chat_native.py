@@ -168,7 +168,7 @@ class NativeMixin:
         session_id = session["session_id"]
         if self.running(session_id):
             if not self._runs_in_claude(session_id):
-                raise board.Conflict('它在后台在线，请用 crew send 发给 ' + session['crew_name'])
+                raise board.Conflict('它在后台在线，请用 Crew 工具 `message_send` 发消息，`to` 填 ' + session['crew_name'])
             raise board.Conflict("它在后台在线，直接用 SendMessage 发给 " + session["crew_name"])
         with closing(store.connect(self.home)) as conn:
             runtime = runtimes.get(conn, session_id)["runtime"]

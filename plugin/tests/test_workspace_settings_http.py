@@ -37,12 +37,12 @@ class WorkspaceSettingsHttpTests(ShellFixture, unittest.TestCase):
         self.destination.mkdir()
 
     def update(self, **changes):
-        return self.request('/api/project/update?project=demo', {
+        return self.request('/api/op/workspace.update?project=demo', {
             'project': 'demo', 'display_name': None, 'root': str(self.project), 'revision': 0, **changes})
 
     def test_snapshot_and_rename_preserve_stable_identity_and_live_process(self):
         sid, process = self.start_leader()
-        code, snapshot, _ = self.request('/api/project/settings?project=demo')
+        code, snapshot, _ = self.request('/api/op/workspace.settings.get?project=demo')
         self.assertEqual(code, 200, snapshot)
         self.assertEqual(snapshot['revision'], 0)
         self.assertTrue(next(item for item in snapshot['sessions'] if item['session_id'] == sid)['running'])
@@ -50,7 +50,7 @@ class WorkspaceSettingsHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(code, 200, saved)
         self.assertEqual(saved['project']['name'], 'demo')
         self.assertEqual(saved['project']['display_name'], '改名后的工作区')
-        code, state, _ = self.request('/api/state?project=demo')
+        code, state, _ = self.request('/api/op/workspace.state?project=demo')
         self.assertEqual(code, 200)
         self.assertEqual(state['project']['name'], 'demo')
         self.assertEqual(state['project']['display_name'], '改名后的工作区')
@@ -58,7 +58,7 @@ class WorkspaceSettingsHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(saved['revision'], 1)
         self.assertEqual(board.session(self.conn, sid)['project'], 'demo')
         self.assertIsNone(process.poll())
-        code, listed, _ = self.request('/api/projects')
+        code, listed, _ = self.request('/api/op/workspace.list')
         self.assertEqual(listed['projects'][0]['display_name'], '改名后的工作区')
 
     def test_parent_directory_relink_stops_and_moves_all_session_cwds(self):
@@ -79,7 +79,7 @@ class WorkspaceSettingsHttpTests(ShellFixture, unittest.TestCase):
             for changes, error in (
                 ({'root': str(self.destination)}, '明确确认'),
                 ({'root': str(self.destination / 'missing'), 'stop': True}, '目录'),
-                ({'root': str(self.destination), 'display_name': 'x' * 101, 'stop': True}, '100'),
+                ({'root': str(self.destination), 'display_name': 'x' * 101, 'stop': True}, 'arguments.display_name 长度超出范围'),
                 ({'root': str(self.destination), 'revision': 99, 'stop': True}, '更改'),
             ):
                 with self.subTest(changes=changes):
@@ -93,7 +93,7 @@ class WorkspaceSettingsHttpTests(ShellFixture, unittest.TestCase):
 
     def test_migration_stops_idle_native_pauses_queued_goal_and_resumes_in_new_directory(self):
         sid, process = self.start_leader()
-        code, created, _ = self.request('/api/goals/create?project=demo', {
+        code, created, _ = self.request('/api/op/goal.create?project=demo', {
             'leader_session_id': sid, 'title': 'Keep this goal', 'request': 'Keep original requirements',
             'acceptance': ['A reproducible result']})
         self.assertEqual(code, 200, created)
@@ -109,7 +109,7 @@ class WorkspaceSettingsHttpTests(ShellFixture, unittest.TestCase):
         self.assertTrue((self.server.service.chat.path(sid)).read_text(encoding='utf-8').startswith(old_text))
         for row in self.conn.execute('SELECT cwd FROM sessions WHERE project=?', ('demo',)):
             self.assertEqual(Path(row['cwd']).resolve(), self.destination.resolve())
-        code, sent, _ = self.request('/api/chat/send?project=demo', {'session_id': sid, 'text': 'Continue in the selected folder'})
+        code, sent, _ = self.request('/api/op/chat.send?project=demo', {'session_id': sid, 'text': 'Continue in the selected folder'})
         self.assertEqual(code, 200, sent)
         self.assertEqual(Path(self.processes[-1].options['cwd']).resolve(), self.destination.resolve())
 
@@ -129,7 +129,7 @@ class WorkspaceSettingsHttpTests(ShellFixture, unittest.TestCase):
                            ('relocated.md', '# Relocated original document')):
             path = old_folder / name
             path.write_text(body, encoding='utf-8')
-            code, document, _ = self.request('/api/documents?project=demo', {
+            code, document, _ = self.request('/api/op/document.register?project=demo', {
                 'session_id': sid, 'path': str(path), 'title': name, 'summary': 'Original metadata'})
             self.assertEqual(code, 200, document)
             entries.append((path, body, document))
@@ -140,7 +140,7 @@ class WorkspaceSettingsHttpTests(ShellFixture, unittest.TestCase):
         code, saved, _ = self.update(root=str(self.destination), stop=True)
         self.assertEqual(code, 200, saved)
         self.assertIsNotNone(process.poll())
-        code, listed, _ = self.request('/api/documents?project=demo')
+        code, listed, _ = self.request('/api/op/document.list?project=demo')
         self.assertEqual(code, 200, listed)
         documents = {item['id']: item for item in listed['documents']}
         for (old_path, body, original), expected in zip(entries, (entries[0][0], moved)):
@@ -150,17 +150,17 @@ class WorkspaceSettingsHttpTests(ShellFixture, unittest.TestCase):
                                  (original['path'], original['title'], original['summary'], sid))
                 self.assertTrue(card['exists'])
                 self.assertEqual(card['resolved_path'], str(expected.resolve()))
-                code, content, _ = self.request('/api/files/content?project=demo&document_id=' + str(original['id']))
+                code, content, _ = self.request('/api/op/files.content?project=demo&document_id=' + str(original['id']))
                 self.assertEqual(code, 200, content)
                 self.assertEqual((content['path'], content['content']), (str(expected.resolve()), body))
-                code, refused, _ = self.request('/api/files/resolve?project=demo', {'session_id': sid, 'path': str(old_path)})
+                code, refused, _ = self.request('/api/op/files.resolve?project=demo', {'session_id': sid, 'path': str(old_path)})
                 self.assertEqual(code, 400, refused)
                 self.assertIn('不在当前项目', refused['error'])
         other = self.destination.parent / 'Other Workspace'
         other.mkdir()
-        code, initialized, _ = self.request('/api/project/init', {'name': 'other', 'root': str(other)})
+        code, initialized, _ = self.request('/api/op/workspace.register', {'name': 'other', 'root': str(other)})
         self.assertEqual(code, 200, initialized)
-        code, refused, _ = self.request('/api/files/content?project=other&document_id=' + str(entries[0][2]['id']))
+        code, refused, _ = self.request('/api/op/files.content?project=other&document_id=' + str(entries[0][2]['id']))
         self.assertEqual(code, 400, refused)
         self.assertIn('不属于当前工作区', refused['error'])
         self.assertEqual(len(self.processes), process_count, 'Document reads and migration must not wake AI')
@@ -170,21 +170,21 @@ class WorkspaceSettingsHttpTests(ShellFixture, unittest.TestCase):
         keep = self.project / 'keep.txt'
         keep.write_text('User data stays here', encoding='utf-8')
         identities = [row[0] for row in self.conn.execute('SELECT session_id FROM sessions WHERE project=? ORDER BY session_id', ('demo',))]
-        code, removed, _ = self.request('/api/project/remove?project=demo', {'project': 'demo', 'revision': 0, 'stop': True})
+        code, removed, _ = self.request('/api/op/workspace.remove?project=demo', {'project': 'demo', 'revision': 0, 'stop': True})
         self.assertEqual(code, 200, removed)
         self.assertTrue(removed['removed'])
         self.assertIsNotNone(process.poll())
-        self.assertEqual(self.request('/api/projects')[1]['projects'], [])
+        self.assertEqual(self.request('/api/op/workspace.list')[1]['projects'], [])
         self.assertEqual(keep.read_text(encoding='utf-8'), 'User data stays here')
         self.assertEqual([row[0] for row in self.conn.execute('SELECT session_id FROM sessions WHERE project=? ORDER BY session_id', ('demo',))], identities)
         count = len(self.processes)
-        code, rejected, _ = self.request('/api/chat/send?project=demo', {'session_id': sid, 'text': 'Do not launch'})
+        code, rejected, _ = self.request('/api/op/chat.send?project=demo', {'session_id': sid, 'text': 'Do not launch'})
         self.assertEqual(code, 409, rejected)
         self.assertEqual(len(self.processes), count)
-        code, restored, _ = self.request('/api/project/init', {'name': 'folder-basename', 'root': str(self.project)})
+        code, restored, _ = self.request('/api/op/workspace.register', {'name': 'folder-basename', 'root': str(self.project)})
         self.assertEqual(code, 200, restored)
         self.assertEqual(restored['name'], 'demo')
-        self.assertEqual(self.request('/api/project/settings?project=demo')[1]['revision'], 2)
+        self.assertEqual(self.request('/api/op/workspace.settings.get?project=demo')[1]['revision'], 2)
         self.assertEqual(len(self.processes), count)
 
     def test_project_query_and_body_must_match(self):

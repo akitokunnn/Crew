@@ -66,7 +66,7 @@ const CrewRestructure = (() => {
     async function refresh(message = "") {
       const mine = ++token; busy = true; render();
       try {
-        const next = await options.api("/api/domains/restructure/preview", {project, changes});
+        const next = await options.api("/api/op/domains.restructure.preview", {project, changes});
         if (mine !== token) return;
         plan = next; error = ""; status = message;
         const kept = new Map();
@@ -140,7 +140,7 @@ const CrewRestructure = (() => {
       try {
         const handoffs = plan.handoffs.map(draft => { const value = drafts.get(draftKey(draft)); return {index:draft.index, text:value.text, wake:draft.delivers && value.wake}; });
         const empty = handoffs.find(item => !item.text.trim()); if (empty) throw Error("交接稿不能为空。");
-        const result = await options.api("/api/domains/restructure", {project, changes, note:note.trim(), board_version:plan.board_version, revision:plan.revision, handoffs});
+        const result = await options.api("/api/op/domains.restructure.apply", {project, changes, note:note.trim(), board_version:plan.board_version, revision:plan.revision, handoffs});
         busy = false; close();
         options.toast(`已执行重整，存为版本 ${result.version}${result.to_start.length ? `；${result.to_start.length} 位新 leader 待确认费用后启动` : ""}${result.starts_turn ? `；已唤醒 ${[...new Set(result.wakes.map(item => item.name))].join("、")}` : ""}。`);
         await options.onApplied(result);

@@ -1,4 +1,5 @@
 """Owned approval lifecycle, real SQLite/HTTP, and real no-model JSONL transport."""
+import uuid
 import tests
 from contextlib import closing
 import json
@@ -138,7 +139,7 @@ for line in sys.stdin:
         journal = chat.Journal(self.home / 'chat' / 'worker.jsonl', None)
         with mock.patch('crew.codex_runtime._ObservedClient', self.real_client):
             running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {'agent': None},
-                {'model': None, 'effort': None}, journal, None, process_factory=process_factory)
+                {'model': None, 'effort': None}, journal, process_factory=process_factory)
         self.addCleanup(running.close)
         for number, allow in ((1, False), (2, True)):
             running.send('Protocol fixture turn', 'message-' + str(number))
@@ -251,7 +252,7 @@ for line in sys.stdin:
         self.addCleanup(close)
         def request(path, data=None):
             payload = json.dumps(data).encode() if data is not None else None
-            req = Request('http://127.0.0.1:%d%s' % (server.server_port, path), payload, {'X-Crew': '1'})
+            req = Request('http://127.0.0.1:%d%s' % (server.server_port, path), payload, {'X-Crew': '1', 'X-Crew-Request-Id': uuid.uuid4().hex})
             try:
                 response = urlopen(req, timeout=10)
             except HTTPError as exc:
@@ -268,17 +269,17 @@ for line in sys.stdin:
         for allow in (True, False):
             result, done = self.pending(running, client, itemId=str(allow))
             identity = running.pending_approvals()[0]['id']
-            code, value = request('/api/state?project=demo')
+            code, value = request('/api/op/workspace.state?project=demo')
             self.assertEqual(code, 200, value)
             self.assertEqual(value['native_approvals'][0]['id'], identity)
-            code, _ = request('/api/native-approval?project=other', {'id': identity, 'allow': True})
+            code, _ = request('/api/op/approval.resolve?project=other', {'id': identity, 'allow': True})
             self.assertEqual(code, 409)
             self.assertFalse(done.is_set())
-            code, value = request('/api/native-approval?project=demo', {'id': identity, 'allow': allow})
+            code, value = request('/api/op/approval.resolve?project=demo', {'id': identity, 'allow': allow})
             self.assertEqual(code, 200, value)
             self.assertTrue(done.wait(2))
             self.assertEqual(result, {'decision': 'accept' if allow else 'decline'})
-            code, _ = request('/api/native-approval?project=demo', {'id': identity, 'allow': allow})
+            code, _ = request('/api/op/approval.resolve?project=demo', {'id': identity, 'allow': allow})
             self.assertEqual(code, 409)
 
     def test_real_http_stopped_and_expired_native_cannot_be_approved(self):
@@ -288,7 +289,7 @@ for line in sys.stdin:
         identity = running.pending_approvals()[0]['id']
         with closing(store.connect(self.home)) as conn:
             conn.execute('INSERT INTO session_stop_gates VALUES(?,?,?)', ('worker', store.now_iso(), 'user'))
-        code, _ = request('/api/native-approval?project=demo', {'id': identity, 'allow': True})
+        code, _ = request('/api/op/approval.resolve?project=demo', {'id': identity, 'allow': True})
         self.assertEqual(code, 409)
         self.assertTrue(done.wait(2))
         self.assertEqual(result, {'decision': 'decline'})
@@ -302,7 +303,7 @@ for line in sys.stdin:
             execution = goals.create_execution(conn, goal['id'], 'worker', runtime='codex')
         journal = chat.Journal(self.home / 'chat' / 'goal.jsonl', None)
         running = codex_runtime.CodexRunning(self.home, self.plugin, self.session, {'agent': None},
-            {'model': None, 'effort': None}, journal, None, execution=execution)
+            {'model': None, 'effort': None}, journal, execution=execution)
         self.addCleanup(running.close)
         client = self.clients[-1]
         running.send('One bounded task', 'initial')
@@ -311,7 +312,7 @@ for line in sys.stdin:
         identity = running.pending_approvals()[0]['id']
         with closing(store.connect(self.home)) as conn:
             goals.request_pause(conn, goal['id'])
-        code, _ = request('/api/native-approval?project=demo', {'id': identity, 'allow': True})
+        code, _ = request('/api/op/approval.resolve?project=demo', {'id': identity, 'allow': True})
         self.assertEqual(code, 409)
         self.assertTrue(done.wait(2))
         self.assertEqual(result, {'decision': 'decline'})

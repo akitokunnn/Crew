@@ -24,16 +24,15 @@ class GitContextTests(CoreCase):
             self.assertIn('你现在负责', context)
             self.assertIn('Git 助手守则', context)
             self.assertNotIn('SKILL.md', context)
-            self.assertIn('crew_git' if runtime == 'codex' else 'crew git policy', context)
+            self.assertIn('git_policy_get', context)
             self.assertLess(len(context), 650)
             self.assertEqual(git_admin.input_context(self.conn, 's1', version, PLUGIN), (version, None))
         _, worker_context = git_admin.input_context(self.conn, 's2', None, PLUGIN)
         self.assertIn('chief', worker_context)
         self.assertIn('本项目 Git 助手为「chief」', worker_context)
         self.assertIn('推送、开 PR、合并交给 Git 助手', worker_context)
-        self.assertIn('crew git request "<改动、验证、后续>" [--blocking]', worker_context)
-        self.assertIn('crew send "chief" "<内容>"', worker_context)
-        self.assertIn('crew_send_message', worker_context)
+        self.assertIn('`git_request_add` 申请', worker_context)
+        self.assertIn('`message_send`（`to` 填「chief」', worker_context)
 
     def test_context_names_the_local_integration_branch_and_never_a_release_branch(self):
         for runtime in ('claude', 'codex'):

@@ -1,6 +1,7 @@
 """Leader pins use isolated HTTP, temporary homes and fake processes."""
 import tests
 from contextlib import closing
+import uuid
 import json
 import threading
 import unittest
@@ -39,7 +40,7 @@ class LeaderPinTests(ShellFixture, unittest.TestCase):
         board.join(self.conn, sid, project, name, self.project, self.project, 'main', role='leader', now=NOW)
 
     def request(self, path, data=None):
-        req = Request(self.server.url + path, None if data is None else json.dumps(data).encode(), {'X-Crew': '1'})
+        req = Request(self.server.url + path, None if data is None else json.dumps(data).encode(), {'X-Crew': '1', 'X-Crew-Request-Id': uuid.uuid4().hex})
         try:
             response = self.opener.open(req, timeout=5)
         except HTTPError as exc:
@@ -51,10 +52,10 @@ class LeaderPinTests(ShellFixture, unittest.TestCase):
         data = {'project': project, 'order': order}
         if pinned is not None:
             data['pinned'] = pinned
-        return self.request('/api/leaders/order', data)
+        return self.request('/api/op/leaders.order.set', data)
 
     def leaders(self, project='demo'):
-        code, state = self.request('/api/state?project=' + project)
+        code, state = self.request('/api/op/workspace.state?project=' + project)
         self.assertEqual(code, 200, state)
         return [(s['session_id'], s['pinned']) for s in state['leaders']]
 

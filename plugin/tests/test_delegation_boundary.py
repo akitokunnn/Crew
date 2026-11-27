@@ -8,6 +8,9 @@ import tempfile
 import unittest
 from unittest import mock
 
+from test_core import operation_service
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
 from crew import board, goals, guard, spawn
 from test_shell import ShellFixture
 
@@ -37,27 +40,13 @@ class DelegationBoundaryTests(ShellFixture, unittest.TestCase):
         self.assertEqual(board.session(self.conn, result['session_id'])['group_name'], 'lead')
         self.assertEqual(len(self.processes), 1)
 
-    def test_cli_denies_member_dry_run_and_launch_without_http_side_effects(self):
-        for carrier_env in ('CREW_SESSION_ID', 'CLAUDE_CODE_SESSION_ID'):
-            for argv in (['spawn', '--name', 'child', '--task', 'finite'],
-                         ['leader', 'start', '--name', 'child']):
-                for dry in ([], ['--dry-run']):
-                    with self.subTest(carrier=carrier_env, argv=argv, dry=dry), \
-                            mock.patch.dict(os.environ, {carrier_env: 's1'}), \
-                            mock.patch('crew.spawn.request_start') as request:
-                        code, _, errors = self.run_cli(argv + dry)
-                    self.assertNotEqual(code, 0)
-                    self.assertIn('只有本项目当前 leader', errors)
-                    request.assert_not_called()
-
-    def test_cli_cannot_replace_host_member_identity_with_leader_or_owner(self):
-        for claimed in ('s3', board.HUMAN):
-            with self.subTest(claimed=claimed), mock.patch.dict(os.environ, {'CREW_SESSION_ID': 's1'}), \
-                    mock.patch('crew.spawn.request_start') as request:
-                code, _, errors = self.run_cli(['--session', claimed, 'spawn', '--name', 'child', '--task', 'finite'])
-            self.assertNotEqual(code, 0)
-            self.assertIn('不能用 --session', errors)
-            request.assert_not_called()
+    def test_member_cannot_launch_an_execution_or_leader(self):
+        service = operation_service(self, self.project)
+        for operation in ('execution.spawn', 'leader.create'):
+            with self.subTest(operation=operation), self.assertRaises(OpError) as denied:
+                ai_call(service, self.conn, 's1', operation, {'name': 'child', 'task': 'finite'})
+            self.assertEqual(denied.exception.code, 'forbidden')
+        self.assertEqual(self.processes, [])
 
     def test_native_claude_tools_are_disabled_for_members_on_start_and_resume(self):
         for role in ('member', 'leader'):

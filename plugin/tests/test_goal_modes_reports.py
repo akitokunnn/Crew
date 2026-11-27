@@ -1,14 +1,12 @@
 """Per-task authorization and published milestones through real domain/carriers."""
 import tests
-from contextlib import redirect_stdout, redirect_stderr
-import io
 import json
-import os
 import threading
 import unittest
 from unittest import mock
 
-from crew import board, cli, codex_tools, goal_actions, goal_context, goal_mode, goal_reports, goals, runtimes, spawn, store, trust_mode, web
+from tests.ops_helpers import ai_call
+from crew import board, goal_actions, goal_context, goal_mode, goal_reports, goals, runtimes, store, trust_mode, web
 from tests.test_goals import GoalFixture
 from test_shell import ShellFixture, PLUGIN, NOW
 import test_chat_http as chat_helpers
@@ -16,14 +14,12 @@ from test_codex_runtime import FakeClient
 
 
 class GoalModeReportTests(GoalFixture):
-    def invoke(self, args, execution):
-        output, errors = io.StringIO(), io.StringIO()
-        with (mock.patch.dict(os.environ, {'CREW_SESSION_ID': 'chief-id', 'CREW_EXECUTION_ID': execution['id'],
-                                          'CREW_GOAL_ID': execution['goal_id']}),
-              redirect_stdout(output), redirect_stderr(errors)):
-            code = cli.main(['--home', str(self.home), '--session', 'chief-id', *args], cwd=self.root)
-        self.assertEqual(code, 0, errors.getvalue())
-        return json.loads(output.getvalue())
+    def setUp(self):
+        super().setUp()
+        self.service = web.Service(self.home, PLUGIN, cwd=self.root, agents_provider=lambda: [],
+                                   process_factory=mock.Mock(side_effect=AssertionError('unexpected model launch')),
+                                   isolated_sources=True)
+        self.addCleanup(self.service.close)
 
     def test_new_goals_ignore_retired_leader_trust_and_mode_changes_are_only_configuration(self):
         first = self.goal()
@@ -51,13 +47,9 @@ class GoalModeReportTests(GoalFixture):
                     trust_mode.set(self.conn, 'demo', mode == 'human', 'Leader default conflicts with task', leader_session_id='chief-id')
                     goal = self.goal(decision_mode=mode)
                     execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime=runtime)
-                    if runtime == 'claude':
-                        identity = self.invoke(['ask', 'Choose a layout', '--option', 'A', '--option', 'B', '--recommend', 'B'], execution)
-                    else:
-                        tool = codex_tools.CodexTools(self.home, 'chief-id', execution_id=execution['id'])
-                        result = tool({'tool': 'crew_ask', 'arguments': {'question': 'Choose a layout', 'options': ['A','B'], 'recommendation': 'B'}})
-                        self.assertTrue(result['success'], result)
-                        identity = json.loads(result['contentItems'][0]['text'])['id']
+                    identity = ai_call(self.service, self.conn, 'chief-id', 'decision.ask',
+                        {'question': 'Choose a layout', 'options': ['A', 'B'], 'recommendation': 'B'},
+                        runtime=runtime, execution_id=execution['id'])['id']
                     decision = next(item for item in board.decisions(self.conn, 'demo', all=True) if item['id'] == identity)
                     self.assertEqual(decision['status'], 'open' if mode == 'human' else 'answered')
                     if mode == 'human':
@@ -142,27 +134,18 @@ class GoalModeReportTests(GoalFixture):
         with self.assertRaises(board.BoardError):
             goals.review_acceptance(self.conn, goal['id'], True, actor='chief-id')
 
-    def test_stage_publish_uses_cli_and_codex_same_action_with_one_durable_receipt(self):
+    def test_stage_publish_uses_claude_and_codex_same_action_with_one_durable_receipt(self):
         for runtime in ('claude', 'codex'):
             goal = self.goal()
             goals.transition(self.conn, goal['id'], 'running')
             execution = goals.create_execution(self.conn, goal['id'], 'chief-id', runtime=runtime)
-            payload = {'report': self.report('progress'), 'request_id': runtime + '-milestone'}
-            def handler(action, data, actor, execution_id=None):
-                return goal_actions.dispatch(self.home, actor, execution_id, action, data)
-            if runtime == 'claude':
-                with mock.patch.object(spawn, 'request_start', side_effect=lambda home, project, route, body: handler(
-                        body['action'], body['data'], body['actor_session_id'], body['execution_id'])):
-                    first = self.invoke(['goal', 'report.publish', '--data', json.dumps(payload)], execution)
-                    again = self.invoke(['goal', 'report.publish', '--data', json.dumps(payload)], execution)
-            else:
-                tool = codex_tools.CodexTools(self.home, 'chief-id', execution_id=execution['id'], goal_handler=handler)
-                response = tool({'tool': 'crew_goal', 'arguments': {'action': 'report.publish', 'data': payload}})
-                self.assertTrue(response['success'], response)
-                first = json.loads(response['contentItems'][0]['text'])
-                response = tool({'tool': 'crew_goal', 'arguments': {'action': 'report.publish', 'data': payload}})
-                again = json.loads(response['contentItems'][0]['text'])
-            self.assertTrue(again['duplicate'])
+            def publish():
+                return ai_call(self.service, self.conn, 'chief-id', 'goal.report.publish',
+                               {'goal_id': goal['id'], 'report': self.report('progress'), 'request_id': runtime + '-milestone'},
+                               request_id=runtime + '-milestone', execution_id=execution['id'], runtime=runtime)
+
+            first, again = publish(), publish()
+            self.assertTrue(again['replayed'])
             self.assertEqual(first['report_id'], again['report_id'])
             self.assertEqual(first['report']['data']['publication']['execution_id'], execution['id'])
             self.assertTrue(goals.dispatch_check(self.conn, goal['id'])['allowed'])
@@ -182,17 +165,7 @@ class GoalModeCarrierTests(ShellFixture, unittest.TestCase):
         self.assertTrue(self.server.service.agents_ready.wait(5)); self.url = self.server.url
 
     def agent(self, runtime, action, data, session_id):
-        if runtime == 'codex':
-            tool = codex_tools.CodexTools(self.home, session_id,
-                goal_handler=self.server.service.chat.goal_controller.agent_action)
-            result = tool({'tool': 'crew_goal', 'arguments': {'action': action, 'data': data}})
-            self.assertTrue(result['success'], result)
-            return json.loads(result['contentItems'][0]['text'])
-        output, errors = io.StringIO(), io.StringIO()
-        with mock.patch.dict(os.environ, {'CREW_SESSION_ID': session_id}), redirect_stdout(output), redirect_stderr(errors):
-            code = cli.main(['--home', str(self.home), 'goal', action, '--data', json.dumps(data), '--json'], cwd=self.project)
-        self.assertEqual(code, 0, errors.getvalue())
-        return json.loads(output.getvalue())
+        return ai_call(self.server.service, self.conn, session_id, 'goal.' + action, data, runtime=runtime)
 
     def test_leader_grant_reaches_both_general_carriers_and_allows_autonomous_task_start(self):
         for runtime in ('claude', 'codex'):
@@ -201,12 +174,12 @@ class GoalModeCarrierTests(ShellFixture, unittest.TestCase):
                 board.join(self.conn, session_id, 'demo', session_id, self.project, self.project, 'main', role='leader')
                 runtimes.set(self.conn, session_id, runtime)
                 before = len(self.processes)
-                code, saved, _ = self.request('/api/trust?project=demo', {
+                code, saved, _ = self.request('/api/op/trust.set?project=demo', {
                     'leader_session_id': session_id, 'enabled': True, 'goal': 'User-authorized scope'})
                 self.assertEqual(code, 200, saved)
                 self.assertEqual(len(self.processes), before)
                 with mock.patch('crew.codex_runtime._ObservedClient', FakeClient):
-                    code, sent, _ = self.request('/api/chat/send?project=demo', {
+                    code, sent, _ = self.request('/api/op/chat.send?project=demo', {
                         'session_id': session_id, 'text': 'Coordinate the work', 'message_id': runtime + '-general'})
                 self.assertEqual(code, 200, sent)
                 current = self.server.service.chat.processes[session_id]
@@ -217,7 +190,7 @@ class GoalModeCarrierTests(ShellFixture, unittest.TestCase):
                     text = json.loads(current.process.stdin.getvalue().splitlines()[-1])['message']['content']
                     chat_helpers.ChatHttpTests.finish_turn(self, session_id, current.process)
                 self.assertIn('User-authorized scope', text)
-                self.assertIn('mode.set', text)
+                self.assertIn('goal_mode_set', text)
                 created = self.agent(runtime, 'create', {'title': 'Autonomous ' + runtime,
                     'request': 'Deliver the user request', 'acceptance': ['Evidence']}, session_id)
                 self.assertEqual(created['decision_mode']['mode'], 'autonomous')
@@ -233,19 +206,19 @@ class GoalModeCarrierTests(ShellFixture, unittest.TestCase):
                 self.assertIn('execution_id', started)
                 self.assertEqual(goals.get(self.conn, created['id'])['status'], 'running')
                 self.assertFalse(self.server.service.chat.busy(session_id))
-                self.request('/api/trust?project=demo', {'leader_session_id': session_id, 'enabled': False})
+                self.request('/api/op/trust.set?project=demo', {'leader_session_id': session_id, 'enabled': False})
 
     def test_http_modes_reach_claude_and_codex_goal_inputs_without_changing_general_default(self):
         trust_mode.set(self.conn, 'demo', True, 'Leader-wide default must not override task', leader_session_id='s3')
         for runtime in ('claude', 'codex'):
             runtimes.set(self.conn, 's3', runtime)
             before = len(self.server.service.chat.processes)
-            code, body, _ = self.request('/api/goals/create?project=demo', {'leader_session_id': 's3', 'title': runtime,
+            code, body, _ = self.request('/api/op/goal.create?project=demo', {'leader_session_id': 's3', 'title': runtime,
                 'request': 'A concrete task', 'acceptance': ['A real result'], 'decision_mode': 'human'})
             self.assertEqual(code, 200, body); goal = body['goal']
             self.assertEqual(len(self.server.service.chat.processes), before)
             with mock.patch('crew.codex_runtime._ObservedClient', FakeClient):
-                code, sent, _ = self.request('/api/chat/send?project=demo', {'session_id': 's3', 'goal_id': goal['id'], 'text': 'Proceed'})
+                code, sent, _ = self.request('/api/op/chat.send?project=demo', {'session_id': 's3', 'goal_id': goal['id'], 'text': 'Proceed'})
             self.assertEqual(code, 200, sent)
             process = self.server.service.chat.processes[sent['execution_id']]
             if runtime == 'codex':
@@ -257,7 +230,7 @@ class GoalModeCarrierTests(ShellFixture, unittest.TestCase):
             self.assertIn('仅作用于本任务', text)
             self.assertNotIn('Leader-wide default must not override task', text)
             count = len(self.server.service.chat.processes)
-            code, changed, _ = self.request('/api/goals/agent?project=demo', {'actor_session_id': 'user', 'action': 'mode.set',
+            code, changed, _ = self.request('/api/op/goal.mode.set?project=demo', {'actor_session_id': 'user',
                 'data': {'goal_id': goal['id'], 'mode': 'autonomous', 'expected_version': 1}})
             self.assertEqual(code, 200, changed)
             self.assertEqual(len(self.server.service.chat.processes), count)

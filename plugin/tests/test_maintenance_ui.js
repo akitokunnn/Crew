@@ -36,16 +36,16 @@ const finishedJob = {...runningJob, status:"partial", counts:{pending:0, running
 test("department preview lists real states, keeps unavailable items unselectable and submits the chosen contexts once", async () => {
   let resolveStart; let jobs = [];
   const h = harness((route, body) => {
-    if (route.startsWith("/api/maintenance/jobs?")) return {jobs, cleanups:0};
-    if (route === "/api/maintenance/department/preview") return departmentPreview;
-    if (route === "/api/maintenance/department/compact") return new Promise(resolve => { resolveStart = resolve; });
+    if (route.startsWith("/api/op/maintenance.jobs?")) return {jobs, cleanups:0};
+    if (route === "/api/op/maintenance.department.preview") return departmentPreview;
+    if (route === "/api/op/maintenance.department.compact") return new Promise(resolve => { resolveStart = resolve; });
     throw Error("unexpected " + route);
   });
   const opening = h.ui.openDepartment("demo", {session_id:"boss", name:"boss"});
   assert.equal(h.dialog.open, true);
   assert.equal(h.document.activeElement, h.dialog.querySelector("#maintenance-title"), "Focus moves into the dialog title");
   await opening;
-  assert.deepEqual(h.calls.map(call => call.route), ["/api/maintenance/jobs?project=demo&kind=department_compact&leader_session_id=boss", "/api/maintenance/department/preview"]);
+  assert.deepEqual(h.calls.map(call => call.route), ["/api/op/maintenance.jobs?project=demo&kind=department_compact&leader_session_id=boss", "/api/op/maintenance.department.preview"]);
   assert.deepEqual(h.calls[1].body, {project:"demo", leader_session_id:"boss"});
   assert.equal(visibleText(h.dialog.querySelector("#maintenance-title")), "压缩整个部门「boss」");
   assert.match(h.text(), /对话与任务记忆.*保留现有团队/);
@@ -68,7 +68,7 @@ test("department preview lists real states, keeps unavailable items unselectable
   assert.equal(h.action("start").disabled, true);
   h.action("start").click();
   await flush();
-  assert.equal(h.calls.filter(call => call.route === "/api/maintenance/department/compact").length, 1, "Pending submission cannot be repeated");
+  assert.equal(h.calls.filter(call => call.route === "/api/op/maintenance.department.compact").length, 1, "Pending submission cannot be repeated");
   assert.deepEqual(h.calls.at(-1).body, {project:"demo", leader_session_id:"boss", preview_id:"p1", targets:["boss", "exec-1"]});
   jobs = [runningJob];
   resolveStart(runningJob); await flush(); await flush();
@@ -90,7 +90,7 @@ test("department preview lists real states, keeps unavailable items unselectable
 
 test("closing keeps the background job and reopening shows its stored progress; Escape restores focus", async () => {
   const h = harness(route => {
-    if (route.startsWith("/api/maintenance/jobs?")) return {jobs:[runningJob], cleanups:0};
+    if (route.startsWith("/api/op/maintenance.jobs?")) return {jobs:[runningJob], cleanups:0};
     throw Error("A running job must not be previewed again: " + route);
   });
   await h.ui.openDepartment("demo", {session_id:"boss", name:"boss"});
@@ -111,9 +111,9 @@ test("closing keeps the background job and reopening shows its stored progress; 
 test("failed preview and failed submission show the real error and allow an explicit retry", async () => {
   let failPreview = true, failStart = true;
   const h = harness(route => {
-    if (route.startsWith("/api/maintenance/jobs?")) return {jobs:[], cleanups:0};
-    if (route === "/api/maintenance/department/preview") { if (failPreview) throw Error("leader 不属于当前工作区，或部门已经结束"); return departmentPreview; }
-    if (route === "/api/maintenance/department/compact") { if (failStart) throw Error("预览已超过 10 分钟，请重新预览"); return runningJob; }
+    if (route.startsWith("/api/op/maintenance.jobs?")) return {jobs:[], cleanups:0};
+    if (route === "/api/op/maintenance.department.preview") { if (failPreview) throw Error("leader 不属于当前工作区，或部门已经结束"); return departmentPreview; }
+    if (route === "/api/op/maintenance.department.compact") { if (failStart) throw Error("预览已超过 10 分钟，请重新预览"); return runningJob; }
     throw Error("unexpected " + route);
   });
   await h.ui.openDepartment("demo", {session_id:"boss", name:"boss"});
@@ -148,10 +148,10 @@ test("cleanup preview states the workspace scope, everything kept and the extern
     detail:{boundary:{channel:{after:9, upto:21}, digest:{after:1, upto:2}, handoff:{after:3, upto:7}}}, counts:{completed:2, failed:0},
     items:[item(0, "session:boss", "停止「boss」的托管执行", "completed"), item(1, "archive", "归档部门与身份，旧交流、交接与上下文退出后续装载", "completed")]};
   const h = harness((route, body) => {
-    if (route.startsWith("/api/maintenance/jobs?")) return {jobs, cleanups:jobs.filter(job => job.status === "completed").length};
-    if (route === "/api/maintenance/cleanup/preview") return cleanupPreview;
-    if (route === "/api/maintenance/cleanup") { jobs = [doneJob, oldCleanup]; return {...doneJob, status:"running", counts:{running:1}}; }
-    if (route.startsWith("/api/maintenance/archive?")) {
+    if (route.startsWith("/api/op/maintenance.jobs?")) return {jobs, cleanups:jobs.filter(job => job.status === "completed").length};
+    if (route === "/api/op/maintenance.cleanup.preview") return cleanupPreview;
+    if (route === "/api/op/maintenance.cleanup.run") { jobs = [doneJob, oldCleanup]; return {...doneJob, status:"running", counts:{running:1}}; }
+    if (route.startsWith("/api/op/maintenance.archive.get?")) {
       const params = new URLSearchParams(route.split("?")[1]);
       if (params.get("kind") === "channel" && !params.has("before")) return {kind:"channel", has_more:true, digest:{body:"## 已定结论\n旧要点", created_at:"2026-10-25T01:00:00Z"},
         messages:[{id:20, speaker_name:"boss", created_at:"2026-10-25T02:00:00Z", body:"较新的旧发言", mentions:[]}]};
@@ -174,7 +174,7 @@ test("cleanup preview states the workspace scope, everything kept and the extern
   assert.equal(visibleText(confirm), "归档旧工作并重新开始");
   assert.ok(confirm.classList.contains("mt-danger"));
   confirm.click(); confirm.click(); await flush(); await flush();
-  assert.deepEqual(h.calls.filter(call => call.route === "/api/maintenance/cleanup").map(call => call.body), [{project:"demo", preview_id:"c1", confirm:true}]);
+  assert.deepEqual(h.calls.filter(call => call.route === "/api/op/maintenance.cleanup.run").map(call => call.body), [{project:"demo", preview_id:"c1", confirm:true}]);
   await h.tick();
   assert.match(h.text(), /已归档旧工作。新的 leader 不会收到旧交流、旧交接或旧上下文/);
   assert.deepEqual(h.cleaned, ["demo"], "The workspace reloads exactly once after success");
@@ -196,12 +196,12 @@ test("cleanup preview states the workspace scope, everything kept and the extern
 
 test("an empty or blocked workspace cannot be confirmed", async () => {
   for (const preview of [{...cleanupPreview, empty:true}, {...cleanupPreview, blocked:"部门压缩正在进行，完成后再清理"}]) {
-    const h = harness(route => route.startsWith("/api/maintenance/jobs?") ? {jobs:[], cleanups:0} : preview);
+    const h = harness(route => route.startsWith("/api/op/maintenance.jobs?") ? {jobs:[], cleanups:0} : preview);
     await h.ui.openCleanup("demo", "演示");
     assert.equal(h.action("start").disabled, true);
     assert.match(visibleText(h.dialog.querySelector(".mt-warning")), preview.empty ? /没有可清理的旧工作/ : /部门压缩正在进行/);
     h.action("start").click(); await flush();
-    assert.equal(h.calls.filter(call => call.route === "/api/maintenance/cleanup").length, 0);
+    assert.equal(h.calls.filter(call => call.route === "/api/op/maintenance.cleanup.run").length, 0);
   }
 });
 
@@ -210,7 +210,7 @@ test("a failed cleanup keeps its real partial result visible without reloading t
     counts:{completed:1, failed:2}, items:[item(0, "session:boss", "停止「boss」的托管执行", "completed"),
       item(1, "session:m1", "停止「vscode-member」的托管执行", "failed", {error_type:"external", error:"Claude 会话仍在外部运行，Crew 没有持有该进程，请到原工具停止后重试"}),
       item(2, "archive", "归档", "failed", {error_type:"blocked", error:"有身份未确认停止或目标未确认取消；没有归档，也没有建立清理边界。处理后请重新预览"})]};
-  const h = harness(route => route.startsWith("/api/maintenance/jobs?") ? {jobs:[failed], cleanups:0} : cleanupPreview);
+  const h = harness(route => route.startsWith("/api/op/maintenance.jobs?") ? {jobs:[failed], cleanups:0} : cleanupPreview);
   await h.ui.openCleanup("demo", "演示");
   h.dialog.querySelector('[data-focus-key="show-job-bad"]').click();
   assert.match(h.text(), /部分完成/);

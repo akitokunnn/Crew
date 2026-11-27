@@ -38,7 +38,7 @@ class FakeProcess:
 class DigestTests(unittest.TestCase):
     setUp = test_channel.ChannelTests.setUp
     post = test_channel.ChannelTests.post
-    run_cli = test_channel.ChannelTests.run_cli
+    call = test_channel.ChannelTests.call
 
     def manager(self, process):
         ai = settings.get(self.conn)
@@ -288,28 +288,23 @@ class DigestTests(unittest.TestCase):
         self.assertTrue(text.startswith('[Crew 交流区]'))
         self.assertNotIn(CARD, text)
 
-    def test_cli_card_limit_raw_and_empty_after_card(self):
+    def test_consume_limit_and_empty_after_card(self):
         self.save_card()
-        code, output, error = self.run_cli(['channel'])
-        self.assertEqual(code, 0, error)
-        self.assertIn(CARD, output)
-        self.assertIn('要点之后暂无新发言', output)
+        result = self.call('channel.consume')
+        self.assertEqual((result['card'], result['posts']), (CARD, []))
         for n in range(3):
             self.post('new %s' % n)
-        code, output, error = self.run_cli(['channel', '--limit', '2'])
-        self.assertEqual(code, 0, error)
-        self.assertIn(CARD, output)
-        self.assertNotIn('new 0', output)
-        self.assertLess(output.index(CARD), output.index('new 1'))
-        code, output, error = self.run_cli(['channel', '--raw'])
-        self.assertEqual(code, 0, error)
-        self.assertNotIn(CARD, output)
-        self.assertIn('原文应折叠', output)
-        code, output, error = self.run_cli(['channel', '--json'])
-        self.assertEqual(code, 0, error)
-        self.assertEqual(len(json.loads(output)), 3)
+        result = self.call('channel.consume', {'limit': 2})
+        self.assertEqual(result['card'], CARD)
+        self.assertEqual([p['body'] for p in result['posts']], ['new 1', 'new 2'])
 
-    def test_cli_keeps_card_and_messages_consistent_when_card_changes_during_read(self):
+    def test_leader_can_read_raw_posts_covered_by_a_digest(self):
+        self.save_card()
+        result = self.call('channel.consume', {'raw': True})
+        self.assertIn('原文应折叠', [p['body'] for p in result['posts']])
+        self.assertIsNone(result['card'])
+
+    def test_consume_keeps_card_and_messages_consistent_when_card_changes_during_read(self):
         self.save_card()
         last = self.post('这次读取的卡后原文')
         real_read = channel.read
@@ -321,12 +316,10 @@ class DigestTests(unittest.TestCase):
                          ('demo', last['id'], '刚发布的新卡', 1, 'auto', models.HAIKU, .01, test_channel.NOW))
             return result
 
-        with mock.patch('crew.cli.channel.read', side_effect=read_and_publish):
-            code, output, error = self.run_cli(['channel'])
-        self.assertEqual(code, 0, error)
-        self.assertIn(CARD, output)
-        self.assertIn('这次读取的卡后原文', output)
-        self.assertNotIn('刚发布的新卡', output)
+        with mock.patch('crew.channel.read', side_effect=read_and_publish):
+            result = self.call('channel.consume')
+        self.assertEqual(result['card'], CARD)
+        self.assertEqual([p['body'] for p in result['posts']], ['这次读取的卡后原文'])
 
 
 if __name__ == '__main__':

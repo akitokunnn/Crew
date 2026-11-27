@@ -165,7 +165,7 @@ def _existing_server(timeout=3, home=None):
     url = service_url(home)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
     try:
-        with opener.open(url + "/api/state", timeout=timeout) as response:
+        with opener.open(url + "/api/op/workspace.state", timeout=timeout) as response:
             state = json.load(response)
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, ConnectionRefusedError):

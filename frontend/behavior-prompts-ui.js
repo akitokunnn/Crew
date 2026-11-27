@@ -39,5 +39,13 @@
     void load();if(session)void proof();
     return ()=>{keep();disposed=true;generation++;host.onclick=null;host.oninput=null;};
   }
-  window.CrewBehaviorPrompts={mount,evidenceMarkup};
+  function requests(api) {
+    return {
+      // crew-op: prompt.list prompt.get prompt.history prompt.applied
+      read: ({action = "list", ...query}) => api("/api/op/prompt." + action + "?" + new URLSearchParams(query)),
+      // crew-op: prompt.save prompt.reset
+      save: ({action, ...body}) => api("/api/op/prompt." + action, body)
+    };
+  }
+  window.CrewBehaviorPrompts={mount,evidenceMarkup,requests};
 })();

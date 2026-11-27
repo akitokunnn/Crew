@@ -225,11 +225,11 @@
       if (base !== null) params.set("base", base);
     }
     if (raw) params.set("raw", "1");
-    return "/api/files/content?" + params;
+    return "/api/op/files.content?" + params;
   }
   // Another device (phone browser or a Crew desktop client on a LAN host) saves host files instead of opening them.
   function fileDownloadUrl(path, sessionId, documentId = null) {
-    return fileContentUrl(path, sessionId, null, false, documentId).replace("/api/files/content?", "/api/files/download?");
+    return fileContentUrl(path, sessionId, null, false, documentId).replace("/api/op/files.content?", "/api/op/files.download?");
   }
   function initFiles(api, toast) {
     let request = 0;
@@ -270,7 +270,7 @@
       const data = documentLink ? {document_id:Number(rawDocumentId)} : {path:link.dataset.filePath, session_id:link.dataset.fileSession};
       if (!documentLink && link.hasAttribute("data-file-base")) data.base = link.dataset.fileBase;
       try {
-        const info = await api("/api/files/resolve", data);
+        const info = await api("/api/op/files.resolve", data);
         if (sequence !== request) return;
         if (info.error !== null) throw Error(info.error);
         const renderingSession = documentLink ? (typeof info.session_id === "string" ? info.session_id : "") : data.session_id;
@@ -280,7 +280,7 @@
         const downloadUrl = fileDownloadUrl(info.path, data.session_id || "", documentLink ? data.document_id : null);
         if (info.type === "external" && info.open_with === "default") {
           if (!localDesktop) { window.CrewBrowser.download(downloadUrl); toast("正在下载到本机：" + info.path.split(/[\\/]/).pop()); return; }
-          await api("/api/files/open", resolved); return;
+          await api("/api/op/files.open", resolved); return;
         }
         let content;
         if (info.type === "preview" && info.kind !== "image") {
@@ -311,7 +311,8 @@
           panel.querySelector(".file-close").onclick = () => { request++; panel.classList.remove("show"); };
         }
         for (const action of (!localDesktop ? [] : info.open_with === "blocked" ? ["reveal"] : ["open", "reveal"])) host.querySelector(".file-" + action).onclick = async () => {
-          try { await api("/api/files/" + action, resolved); } catch (error) { toast(error.message); }
+          // crew-op: files.open files.reveal
+          try { await api("/api/op/files." + action, resolved); } catch (error) { toast(error.message); }
         };
         if (!localDesktop) host.querySelector(".file-download").onclick = () => window.CrewBrowser.download(downloadUrl);
         if (inPane) host.querySelector(".file-close").focus({preventScroll:true}); else panel.classList.add("show");
@@ -481,7 +482,7 @@
     context.interrupting = true; context.interruptError = ""; context.interruptConfirmed = false;
     composerState(context); schedule(context);
     try {
-      const result = await context.api("/api/session/stop", {session_id:context.session.session_id});
+      const result = await context.api("/api/op/session.stop", {session_id:context.session.session_id});
       if (!result.ok) throw new Error("中断请求未被确认，请重试。");
       if (current(context)) { context.cache.pendingSendSeq = null; context.busy = false; context.interrupting = false; context.interruptConfirmed = true; composerState(context); schedule(context); }
     } catch (error) {
@@ -659,7 +660,7 @@
     const images = item.taskImages ? `<div class="message-images">${item.taskImages.map((image, index) => `<img src="data:${escape(image.media_type)};base64,${escape(image.data)}" alt="图片 ${index + 1}">`).join("")}</div>` : item.images ? `<div class="message-images">${item.images.map((name, index) => {
       const params = query(context);
       params.set("name", name);
-      const url = `/api/chat/file?${params}`;
+      const url = `/api/op/chat.file?${params}`;
       return `<a href="${escape(url)}" target="_blank" rel="noopener noreferrer"><img src="${escape(url)}" alt="图片 ${index + 1}" loading="lazy"></a>`;
     }).join("")}</div>` : "";
     const remoteSource = {qq:"QQ", lark:"Lark / 飞书"}[item.source];
@@ -859,7 +860,7 @@
       const seq = context.cursor;
       context.cache.lastReadAt = Date.now(); context.reading = true;
       try {
-        const result = await context.api("/api/chat/read", { session_id: context.session.session_id, seq, ...goalScope(context) });
+        const result = await context.api("/api/op/chat.read", { session_id: context.session.session_id, seq, ...goalScope(context) });
         context.readSeq = result.read_seq; context.reading = false;
         if (current(context)) scheduleRead(context);
       } catch (error) { context.reading = false; context.toast(error.message); }
@@ -927,7 +928,7 @@
     if (context.historyFailed) connectionError(context, "正在重新连接对话记录…");
     try {
       const params = query(context); params.set("tail", 1500);
-      const history = await context.api(`/api/chat/history?${params}`);
+      const history = await context.api(`/api/op/chat.history?${params}`);
       if (!current(context) || generation !== context.loadGeneration) return;
       const pending = context.items.filter(item => item.delivery && (context.executionId === (history.execution_id ?? null) || item.id === context.cache.pendingMessage?.id));
       context.executionId = history.execution_id ?? null;
@@ -976,7 +977,7 @@
     context.loadingEarlier = true; render(context);
     const params = query(context); params.set("tail", 1500); params.set("before", context.firstSeq);
     try {
-      const history = await context.api(`/api/chat/history?${params}`);
+      const history = await context.api(`/api/op/chat.history?${params}`);
       if (!current(context) || generation !== context.loadGeneration) return;
       if ((history.execution_id ?? null) !== executionId) { disconnect(context); void load(context); return; }
       const pending = context.items.filter(item => item.delivery);
@@ -1032,7 +1033,7 @@
     composerState(context); render(context);
     let uncertain = false;
     try {
-      const result = await context.api("/api/chat/send", payload);
+      const result = await context.api("/api/op/chat.send", {...payload, request_id:payload.message_id});
       uncertain = result.accepted === "unknown" || result.delivery === "unknown";
       if (result.accepted === false || result.accepted === "unknown" || result.delivery === "unknown") throw Error(result.error || "无法确认当前执行是否已接收，请先核对消息记录，保留同一消息编号。");
       context.cache.pendingMessage = null;
@@ -1132,7 +1133,7 @@
       CrewBrowser.enableChatLists(context.input);
       context.skills = CrewSkillPicker.attach({input: context.input, host: options.host.querySelector("form"), load: refresh => {
         const params = query(context); if (refresh) params.set("refresh", "1");
-        return context.api(`/api/chat/skills?${params}`);
+        return context.api(`/api/op/chat.skills?${params}`);
       }});
       context.input.oninput = () => { context.cache.version += 1; saveDraft(context); resizeInput(context); composerState(context); context.skills.update(); };
       context.input.onkeydown = event => {
@@ -1201,7 +1202,7 @@
     toast(`压缩完成：${CrewContext.compactSize(event.pre_tokens)} → ${CrewContext.compactSize(event.post_tokens)}`);
   }
   async function watchCompact(id, options) {
-    const path = '/api/chat/history?' + new URLSearchParams({session_id:id,...projectQuery(options)});
+    const path = '/api/op/chat.history?' + new URLSearchParams({session_id:id,...projectQuery(options)});
     // Capture the baseline before the caller submits compaction. Each later read
     // releases its HTTP connection instead of reserving another long-lived stream.
     const history = await options.api(path);

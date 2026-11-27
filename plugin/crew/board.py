@@ -250,7 +250,7 @@ def request_git_merge(conn, project_name, session_id, branch, description, *, ti
         who += "（未收编%s）" % ("" if requester["cc_name"] is None else "，SendMessage 地址：" + requester["cc_name"])
     if session_id != config['admin_session_id']:
         _queue_leader_notice(conn, config["admin_session_id"],
-                             "合并请求 #%s，%s 提交分支 %s：%s。用 crew git requests 查看并处理。" %
+                             "合并请求 #%s，%s 提交分支 %s：%s。用 Crew 工具 `git_requests_list` 查看，再用 `git_request_resolve` 处理。" %
                              (request_id, who, branch, description), "crew", now)
     _event(conn, "git:request", project_name, session_id, {"id": request_id, "branch": branch}, now)
     return request
@@ -318,7 +318,7 @@ def init_project(conn, name, root, now=None):
 def session(conn, session_id):
     row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     if row is None:
-        raise BoardError("会话未登记，请先 crew join: " + session_id)
+        raise BoardError("会话未登记，请由用户在 Crew 的会话库里收编。会话 ID：" + session_id)
     return dict(row)
 
 

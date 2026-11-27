@@ -14,6 +14,7 @@
     back:'<path d="m14.5 5.5-6.5 6.5 6.5 6.5"/>', x:'<path d="m6.5 6.5 11 11M17.5 6.5l-11 11"/>',
     room:'<rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M3.5 9.5h17M8 14h3M8 16.5h6"/>', send:'<path d="m5 11 7-7 7 7M12 4v16"/>',
     thread:'<path d="M6 4v9a3 3 0 0 0 3 3h9"/><path d="m15 13 3 3-3 3"/>', sparkle:'<path d="M12 4.5 13.6 10l5.4 2-5.4 2L12 19.5 10.4 14 5 12l5.4-2z"/>',
+    blocked:'<path d="M8.7 3.5h6.6l5.2 5.2v6.6l-5.2 5.2H8.7l-5.2-5.2V8.7z"/><path d="M8.5 12h7"/>',
     chev:'<path d="m9 6 6 6-6 6"/>', hourglass:'<path d="M7 4h10M7 20h10M8 4c0 4.5 8 5.5 8 8s-8 3.5-8 8M16 4c0 4.5-8 5.5-8 8s8 3.5 8 8"/>'
   };
   const icon = (name, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${PATHS[name]}</svg>`;
@@ -78,9 +79,108 @@
       + `<span class="cx-thread-avs" aria-hidden="true">${people.slice(0, 4).map(item => avatar(context, item, 18)).join("")}</span><span class="cx-thread-who">${escape(people.map(item => item.speaker_name).join("、"))}</span>${icon("chev", "xs cx-thread-chev")}</button>`;
     const tree = open ? `<ol class="cx-thread-tree">${rows.map(({message:item, depth}) => `<li${depth ? ' class="is-child"' : ""} style="--d:${Math.min(depth, 4)}"><button type="button" class="cx-thread-row" data-channel-jump="${item.id}" aria-label="跳到 #${item.id} ${escape(item.speaker_name)} 的发言">`
       + `${avatar(context, item, 18)}<span class="cx-thread-name">${escape(item.speaker_name)}</span><span class="cx-id">#${item.id}</span><span class="cx-thread-text${item.auto ? " is-auto" : ""}">${escape(item.auto ? "回复在私聊里" : plain(item.body))}</span><time>${escape(clock(item.created_at))}</time></button></li>`).join("")}</ol>` : "";
-    return `<div class="cx-thread${open ? " is-open" : ""}${message.speaker_session_id === "user" ? " is-user" : ""}">${head}${tree}</div>`;
+    return `<div class="cx-thread wr-thread-up${open ? " is-open" : ""}${message.speaker_session_id === "user" ? " is-user" : ""}">${head}${upgradeHTML(context, message, rows)}${tree}</div>`;
   }
+  /* ---------- 作战室入口：脉络升级、开房 / 收尾公告、页头列表 ---------- */
+  // 脉络参与者：发言人、被点名、被回复通知的 leader（只留本工作区在用的）。
+  function participants(context, message, rows) {
+    const ids = new Set();
+    for (const post of [message, ...rows.map(row => row.message)]) { ids.add(post.speaker_session_id); for (const item of post.mentions.concat(post.notified)) ids.add(item.session_id); }
+    return context.state.leaders.filter(item => ids.has(item.session_id));
+  }
+  function upgradeHTML(context, message, rows) {
+    const room = context.rooms.find(item => item.origin_message_id === message.id);
+    if (room) return `<button type="button" class="wr-upgrade is-done" data-channel-room="${room.id}">${icon("room", "sm")}<span>已升级：${escape(room.title)}</span></button>`;
+    const people = participants(context, message, rows);
+    if (message.room || people.length < 2) return "";
+    const hint = rows.length >= 4 || people.length >= 3 ? `<span class="wr-upgrade-hint">${icon("alert", "xs")}${rows.length} 条回复还没收口，${people.length} 位 leader 在聊</span>` : "";
+    return `<button type="button" class="wr-upgrade" data-channel-upgrade="${message.id}">${icon("room", "sm")}<span>升级为作战室</span></button>${hint}`;
+  }
+  const lasted = (from, to) => { const m = Math.max(1, Math.round((new Date(to) - new Date(from)) / 60000)); return m < 60 ? `${m} 分钟` : `${Math.floor(m / 60)} 小时${m % 60 ? ` ${m % 60} 分` : ""}`; };
+  function announceHTML(context, message) {
+    const ref = message.room, info = context.rooms.find(item => item.id === ref.id), opened = ref.event === "opened", live = (info ? info.status : ref.status) === "open";
+    const by = `${avatar(context, message, 14)}${escape(message.speaker_name)} ${opened ? "开了作战室" : "收尾了作战室"} · <time datetime="${escape(message.created_at)}">${escape(clock(message.created_at))}</time>${opened && info && info.origin_message_id ? ` · 从 #${info.origin_message_id} 升级` : ""}`;
+    const status = live ? '<span class="wr-status" data-s="open"><span class="dot working" aria-hidden="true"></span>进行中</span>' : `<span class="wr-status" data-s="closed">${icon("archive", "xs")}已收尾</span>`;
+    const text = info ? (opened ? `目标：${escape(info.goal)}` : `结论：${escape(info.summary)}`) : escape(message.body);
+    const facts = info === undefined ? "" : `<span class="cx-thread-avs" aria-hidden="true">${info.members.slice(0, 5).map(item => context.avatar(item.crew_name, 18, true)).join("")}</span>`
+      + `<span>${opened ? `${info.members.length} 位成员 · 牵头 ${escape(info.lead_name)}` : `${info.closed_at ? `用时 ${lasted(info.created_at, info.closed_at)} · ` : ""}${info.items.done} 项完成`}</span>`
+      + `${live && info.items.blocked ? `<span class="wr-chip" data-s="blocked">${icon("blocked", "xs")}${info.items.blocked} 阻塞</span>` : ""}${live && info.open_decisions ? `<span class="wr-dc-state" data-s="pending">${icon("hourglass", "xs")}${info.open_decisions} 待拍板</span>` : ""}`;
+    return `<div class="wr-ann-row" data-channel-id="${message.id}"><span class="av round" style="--s:28px;--tint:var(--accent)" aria-hidden="true">${icon("room", "sm")}</span><div class="wr-announce" data-s="${live ? "open" : "closed"}">`
+      + `<div class="wr-ann-top"><span class="wr-title-ic" aria-hidden="true">${icon(live ? "room" : "archive")}</span><div class="wr-ann-t"><small>${by}</small><strong>${escape(ref.title)}</strong></div>${status}</div>`
+      + `<p class="wr-ann-goal">${text}</p><div class="wr-ann-foot">${facts}<button type="button" class="cx-btn${live ? " cx-primary" : ""}" data-channel-room="${ref.id}">${live ? "进入作战室" : "查看（只读）"}${icon("chev", "xs")}</button></div></div></div>`;
+  }
+  function roomsHTML(context) {
+    const open = context.rooms.filter(item => item.status === "open").length;
+    const list = context.rooms.map(item => {
+      const live = item.status === "open";
+      const sub = live ? `<span class="dot working" aria-hidden="true"></span>${item.members.length} 人${item.items.blocked ? ` · ${icon("blocked", "xs")}${item.items.blocked} 阻塞` : ""}${item.open_decisions ? ` · ${icon("hourglass", "xs")}${item.open_decisions} 待拍板` : ""}`
+        : `已收尾 · ${escape(time(item.closed_at))}`;
+      return `<button type="button" class="wr-side-room${live ? "" : " is-closed"}" data-channel-room="${item.id}" aria-label="${escape(`${item.title}，${live ? "进行中" : "已收尾"}${item.unread ? `，${item.unread} 条未读` : ""}${item.open_decisions ? `，${item.open_decisions} 张拍板卡待你答复` : ""}`)}">`
+        + `<span class="wr-title-ic" aria-hidden="true">${icon(live ? "room" : "archive")}</span><span class="wr-side-txt"><strong>${escape(item.title)}</strong><small>${sub}</small></span>${item.unread ? `<span class="b-unread">${item.unread}</span>` : ""}</button>`;
+    }).join("");
+    return `<div class="wr-rooms-head">作战室 <span>${open} 进行中</span></div>${list || '<p class="wr-rooms-empty">还没有作战室。同一件事要 3 位以上 leader 一起推时开作战室：在一条脉络旁点“升级为作战室”，或让 leader 自己开。</p>'}`;
+  }
+  function renderRoomButton(context) {
+    const open = context.rooms.filter(item => item.status === "open").length;
+    put(context.roomButton, `${icon("room", "sm")}<span class="cx-room-label">作战室</span>${open ? `<span class="cx-count">${open}</span>` : ""}`);
+    context.roomButton.setAttribute("aria-label", `作战室，${open} 个进行中`);
+  }
+  async function loadRooms(context) {
+    try {
+      const result = await context.api("/api/op/war_room.list");
+      if (!current(context)) return;
+      context.rooms = result.rooms; renderRoomButton(context);
+      if (!context.loading) renderMessages(context);
+      if (context.roomsOpen) put(context.host.querySelector(".wr-rooms"), roomsHTML(context));
+    } catch (error) { if (current(context)) context.toast(error.message); }
+  }
+  function toggleRooms(context, open) {
+    const pop = context.host.querySelector(".wr-rooms");
+    context.roomsOpen = open; pop.hidden = !open; context.roomButton.setAttribute("aria-expanded", String(open));
+    if (!open) return;
+    put(pop, roomsHTML(context));
+    const rect = context.roomButton.getBoundingClientRect();
+    pop.style.left = `${Math.max(8, Math.min(rect.right - pop.offsetWidth, window.innerWidth - pop.offsetWidth - 8))}px`; pop.style.top = `${rect.bottom + 6}px`;
+    pop.querySelector("button")?.focus({preventScroll:true});
+    loadRooms(context);
+  }
+  // 升级表单：成员默认是脉络参与者，牵头默认是起头的 leader（起头是用户时取第一位）。
+  function openUpgrade(context, id) {
+    const message = all(context).find(item => item.id === Number(id)), people = participants(context, message, descendants(context, message.id));
+    context.upgrade = {message, members:people.map(item => item.session_id), lead:(people.find(item => item.session_id === message.speaker_session_id) || people[0]).session_id};
+    const layer = context.host.querySelector(".wr-layerbox");
+    layer.innerHTML = `<form class="wr-dialog wr-up-form" role="dialog" aria-modal="true" aria-labelledby="wr-up-title"><h2 id="wr-up-title">${icon("room")}升级为作战室</h2>`
+      + `<p>从 #${message.id} 这条脉络升级。原脉络留在交流区，作战室顶部引用它；交流区会出现一条开房公告。</p>`
+      + `<label class="wr-field"><span>名字</span><input name="title" required maxlength="30" value="${escape(plain(message.body).slice(0, 24))}"></label>`
+      + '<label class="wr-field"><span>目标（一句话）</span><input name="goal" required maxlength="200" placeholder="几位 leader 要一起推到什么结果"></label>'
+      + '<div class="wr-up-label">成员 <small>脉络里发言、被点名、被回复的 leader 已默认加入；点名字设为牵头，牵头负责收口、发拍板卡和收尾</small></div><div class="wr-up-members"></div>'
+      + `<p class="wr-dialog-error" role="alert"></p><div class="wr-dialog-acts"><button type="button" class="cx-btn" data-up-cancel>取消</button><button type="submit" class="cx-btn cx-primary">${icon("room", "sm")}开房</button></div></form>`;
+    renderUpgrade(context); layer.hidden = false;
+    layer.querySelector("input[name=goal]").focus();
+    layer.querySelector("form").onsubmit = event => { event.preventDefault(); submitUpgrade(context, event.target); };
+  }
+  function renderUpgrade(context) {
+    const up = context.upgrade, chosen = context.state.leaders.filter(item => up.members.includes(item.session_id)), others = context.state.leaders.filter(item => !up.members.includes(item.session_id));
+    context.host.querySelector(".wr-up-members").innerHTML = chosen.map(item => {
+      const lead = item.session_id === up.lead;
+      return `<span class="wr-up-chip${lead ? " is-lead" : ""}"><button type="button" class="wr-up-pick" data-up-lead="${escape(item.session_id)}" aria-pressed="${lead}" title="${lead ? "牵头" : "设为牵头"}">${context.avatar(item.name, 18, true)}${escape(item.name)}${lead ? '<span class="wr-lead">牵头</span>' : ""}</button>`
+        + `${lead ? "" : `<button type="button" class="wr-up-x" data-up-remove="${escape(item.session_id)}" aria-label="移出 ${escape(item.name)}">${icon("x", "xs")}</button>`}</span>`;
+    }).join("") + (others.length ? `<select class="wr-up-add" data-up-add aria-label="添加成员"><option value="">＋ 添加</option>${others.map(item => `<option value="${escape(item.session_id)}">${escape(item.name)}</option>`).join("")}</select>` : "");
+  }
+  async function submitUpgrade(context, form) {
+    const up = context.upgrade, error = form.querySelector(".wr-dialog-error"), button = form.querySelector("[type=submit]");
+    const name = id => context.state.leaders.find(item => item.session_id === id).name;
+    if (up.members.length < 2) { error.textContent = "作战室至少要两位 leader"; return; }
+    button.disabled = true; error.textContent = "";
+    try {
+      const room = await context.api("/api/op/war_room.open", {project:context.state.project.name, title:form.elements.title.value.trim(), goal:form.elements.goal.value.trim(),
+        members:up.members.map(name), from_message:up.message.id, lead:name(up.lead)});
+      if (current(context)) context.openRoom(room.id);
+    } catch (err) { error.textContent = err.message; button.disabled = false; }
+  }
+  function closeUpgrade(context) { const layer = context.host.querySelector(".wr-layerbox"); layer.hidden = true; layer.innerHTML = ""; context.upgrade = null; }
   function messageHTML(context, message, original = false) {
+    if (message.room) return announceHTML(context, message);
     const user = message.speaker_session_id === "user", name = escape(message.speaker_name), at = `<time datetime="${escape(message.created_at)}" title="${escape(time(message.created_at))}">${escape(clock(message.created_at))}</time>`;
     if (message.auto) {
       return `<article class="cx-msg cx-auto" data-channel-id="${message.id}">${avatar(context, message, 22)}<div class="cx-auto-body"><span><strong>${name}</strong> 在私聊里回复了 `
@@ -285,7 +385,7 @@
     if (context.digestButton.disabled) return;
     context.requestingDigest = true; digestState(context);
     try {
-      await context.api("/api/channel/digest", {project:context.state.project.name});
+      await context.api("/api/op/channel.digest.start", {project:context.state.project.name});
       context.state.channel.digesting = true; context.digestError = null;
     } catch (error) {
       if (current(context)) context.toast(error.message);
@@ -300,7 +400,7 @@
     context.loadingOriginals = true; renderMessages(context);
     try {
       const before = context.originalMessages.length === 0 ? context.digest.upto_message_id + 1 : context.originalMessages[0].id;
-      const result = await context.api(`/api/channel?limit=20&before=${before}`);
+      const result = await context.api(`/api/op/channel.list?limit=20&before=${before}`);
       if (!current(context) || context.digest.id !== digestId) return;
       context.originalMessages = [...result.messages, ...context.originalMessages];
       context.hasMoreOriginals = result.has_more;
@@ -318,7 +418,7 @@
     context.reading = true;
     let succeeded = false;
     try {
-      const result = await context.api("/api/channel/read", {project:context.state.project.name, id:context.latestId});
+      const result = await context.api("/api/op/channel.mark_read", {project:context.state.project.name, id:context.latestId});
       context.readId = result.read_id;
       succeeded = true;
       if (current(context)) context.onRead(result);
@@ -329,7 +429,7 @@
   async function load(context) {
     context.loading = true;
     try {
-      const result = await context.api("/api/channel?limit=20");
+      const result = await context.api("/api/op/channel.list?limit=20");
       if (!current(context)) return;
       context.digest = result.digest; context.messages = []; context.originalMessages = [];
       context.originalsOpen = false; context.hasMoreOriginals = context.digest !== null;
@@ -343,6 +443,7 @@
       renderMessages(context, "unread");
       if (context.focus != null) { const id = context.focus; context.focus = null; jump(context, id); }
       if (context.stale || context.state.channel.latest_id > context.latestId) refresh(context);
+      loadRooms(context);
     } catch (error) {
       if (current(context)) { context.loading = false; context.inner.textContent = "Leader 交流区加载失败"; context.toast(error.message); }
     }
@@ -351,7 +452,7 @@
     if (context.loadingOlder || !context.hasMore) return;
     context.loadingOlder = true; context.older.disabled = true; context.older.textContent = "正在加载…";
     try {
-      const result = await context.api(`/api/channel?limit=20&before=${context.pageBefore}`);
+      const result = await context.api(`/api/op/channel.list?limit=20&before=${context.pageBefore}`);
       if (!current(context)) return;
       merge(context, afterDigest(context, result.messages));
       context.pageBefore = result.messages[0].id;
@@ -367,7 +468,7 @@
     let before = null, succeeded = false;
     try {
       while (true) {
-        const result = await context.api(`/api/channel?limit=20${before === null ? "" : `&before=${before}`}`);
+        const result = await context.api(`/api/op/channel.list?limit=20${before === null ? "" : `&before=${before}`}`);
         if (!current(context)) return;
         if ((result.digest === null ? null : result.digest.id) !== (context.digest === null ? null : context.digest.id)) {
           await load(context); return;
@@ -413,7 +514,7 @@
     const to = allLeaders ? ["*"] : context.state.leaders.filter(item => context.selected.has(item.session_id)).map(item => item.name);
     context.sending = true; composerState(context);
     try {
-      const result = await context.api("/api/channel", {project:context.state.project.name, body, to, ...(reply === null ? {} : {reply_to:reply.id})});
+      const result = await context.api("/api/op/channel.post", {project:context.state.project.name, body, to, ...(reply === null ? {} : {reply_to:reply.id})});
       if (!current(context)) return;
       if (context.version === version) { context.input.value = ""; resizeInput(context); }
       context.selected.clear(); context.allLeaders = false; context.replyTo = null; renderTargets(context);
@@ -426,23 +527,24 @@
   }
   const LAYOUT = `<header class="cx-head"><button type="button" class="cx-icon-btn cx-back" data-act="view" data-view="all" aria-label="返回工作台">${icon("back")}</button>`
     + `<div class="cx-title"><h1>${icon("msg")}Leader 交流区</h1><p class="cx-sub"><span class="cx-sub-long">所有 leader 和用户的</span>公共频道 · 点名才叫醒</p></div>`
-    + `<div class="cx-head-actions"><button type="button" class="cx-btn cx-digest-btn"></button><button type="button" class="cx-btn cx-room" disabled aria-disabled="true" title="后续版本：把一串讨论升级为跨 Leader 作战室">${icon("room", "sm")}<span class="cx-room-label">作战室</span><span class="cx-soon">后续</span></button></div></header>`
+    + `<div class="cx-head-actions"><button type="button" class="cx-btn cx-digest-btn"></button><button type="button" class="cx-btn cx-room" aria-haspopup="dialog" aria-expanded="false" title="几位 leader 为同一个目标持续协作的房间">${icon("room", "sm")}<span class="cx-room-label">作战室</span></button></div></header>`
     + '<button type="button" class="cx-pendingbar" aria-haspopup="dialog" aria-controls="cx-aside" aria-expanded="false" hidden></button>'
     + '<div class="cx-body"><section class="cx-feed" aria-label="Leader 交流区"><div class="cx-pin" hidden></div><div class="cx-scroll" tabindex="0" aria-label="Leader 交流区发言"><div class="cx-history"><button type="button" class="cx-btn cx-ghost cx-older" hidden>加载更早的</button></div><div class="cx-inner"><div class="cx-empty">正在加载…</div></div></div>'
     + `<div class="cx-composer-wrap"><div class="cx-replybar" hidden></div><div class="cx-targets" role="group" aria-label="点名 leader"></div><form class="cx-composer"><textarea rows="1" aria-label="发到 Leader 交流区" placeholder="和所有 leader 说…"></textarea><div class="cx-c-row"><span class="cx-hint">Enter 发送 · Shift+Enter 换行或续列表</span><button type="submit" class="cx-send" aria-label="发送到 Leader 交流区" disabled>${icon("send")}</button></div></form></div></section>`
     + `<aside class="cx-aside" id="cx-aside" aria-label="投递追踪"><div class="cx-aside-head"><strong>投递追踪</strong><button type="button" class="cx-icon-btn cx-aside-close" aria-label="关闭投递追踪">${icon("x")}</button></div>`
     + '<section class="cx-aside-sec"><h2>成员</h2><ul class="cx-members"></ul></section><section class="cx-aside-sec"><h2>等待回应 <span class="cx-count"></span></h2><ul class="cx-pending"></ul></section>'
     + `<section class="cx-aside-sec"><h2>状态说明</h2><ul class="cx-legend">${LEGEND.map(([s, text]) => `<li>${staticBadge(s)}<span>${text}</span></li>`).join("")}</ul></section></aside></div>`
-    + '<div class="cx-backdrop" hidden></div><div class="cx-pop" id="cx-pop" role="dialog" aria-modal="false" aria-labelledby="cx-pop-title" hidden></div>';
+    + '<div class="cx-backdrop" hidden></div><div class="cx-pop" id="cx-pop" role="dialog" aria-modal="false" aria-labelledby="cx-pop-title" hidden></div>'
+    + '<div class="wr-menu wr-rooms" role="dialog" aria-label="作战室列表" hidden></div><div class="wr-layerbox" hidden></div>';
   function mount(options) {
     unmount();
     const context = {...options, digest:null, digestError:null, requestingDigest:false, originalMessages:[], originalsOpen:false, hasMoreOriginals:false, loadingOriginals:false, messages:[], children:new Map(), threads:new Set(), selected:new Set(), allLeaders:false, replyTo:null,
-      latestId:0, readId:0, unreadFrom:null, unreadCount:0, loading:true, loadingOlder:false, refreshing:false, reading:false, sending:false, composing:false, version:0, digestOpen:!narrow(), asideOpen:false, popFor:null, popKey:null, pinned:false, hoverTimer:0, hideTimer:0, minute:0, stale:false};
+      rooms:[], roomsOpen:false, upgrade:null, latestId:0, readId:0, unreadFrom:null, unreadCount:0, loading:true, loadingOlder:false, refreshing:false, reading:false, sending:false, composing:false, version:0, digestOpen:!narrow(), asideOpen:false, popFor:null, popKey:null, pinned:false, hoverTimer:0, hideTimer:0, minute:0, stale:false};
     active = context;
     const host = options.host, find = selector => host.querySelector(selector);
     host.innerHTML = LAYOUT;
     Object.assign(context, {digestButton:find(".cx-digest-btn"), pendingbar:find(".cx-pendingbar"), pin:find(".cx-pin"), scroll:find(".cx-scroll"), inner:find(".cx-inner"), older:find(".cx-older"), wrap:find(".cx-composer-wrap"), replybar:find(".cx-replybar"),
-      targets:find(".cx-targets"), input:find("textarea"), send:find(".cx-send"), aside:find(".cx-aside"), members:find(".cx-members"), pending:find(".cx-pending"), pendingCount:find(".cx-count"), backdrop:find(".cx-backdrop"), pop:find(".cx-pop")});
+      targets:find(".cx-targets"), input:find("textarea"), send:find(".cx-send"), aside:find(".cx-aside"), members:find(".cx-members"), pending:find(".cx-pending"), pendingCount:find(".cx-count"), backdrop:find(".cx-backdrop"), pop:find(".cx-pop"), roomButton:find(".cx-room")});
     CrewBrowser.enableChatLists(context.input);
     context.pin.addEventListener("toggle", event => { context.digestOpen = event.target.open; }, true);
     const actions = [
@@ -469,13 +571,21 @@
       [".cx-pop-x", () => hidePop(context, true)],
       [".cx-aside-close", () => { setAside(context, false); context.pendingbar.focus(); }],
       [".cx-pendingbar", () => setAside(context, true)],
-      [".cx-backdrop", () => { hidePop(context); setAside(context, false); }]];
+      [".cx-backdrop", () => { hidePop(context); setAside(context, false); }],
+      ["[data-channel-room]", node => { toggleRooms(context, false); context.openRoom(Number(node.dataset.channelRoom)); }],
+      ["[data-channel-upgrade]", node => openUpgrade(context, node.dataset.channelUpgrade)],
+      ["[data-up-lead]", node => { context.upgrade.lead = node.dataset.upLead; renderUpgrade(context); }],
+      ["[data-up-remove]", node => { context.upgrade.members = context.upgrade.members.filter(id => id !== node.dataset.upRemove); renderUpgrade(context); }],
+      ["[data-up-cancel]", () => closeUpgrade(context)],
+      [".wr-layerbox", (node, event) => { if (event.target === node) closeUpgrade(context); }],
+      [".cx-room", () => toggleRooms(context, !context.roomsOpen)]];
     host.onclick = event => {
       for (const [selector, run] of actions) {
         const node = event.target.closest(selector);
-        if (node) { if (!node.disabled) run(node); return; }
+        if (node) { if (!node.disabled) run(node, event); return; }
       }
     };
+    host.onchange = event => { if (event.target.matches("[data-up-add]") && event.target.value) { context.upgrade.members.push(event.target.value); renderUpgrade(context); } };
     host.onmouseover = event => {
       if (narrow() || !window.matchMedia("(hover:hover)").matches) return;
       const anchor = event.target.closest("[data-badge]");
@@ -489,10 +599,15 @@
     };
     context.scroll.onscroll = () => { if (context.popFor && !context.pop.classList.contains("is-sheet")) hidePop(context); markRead(context); };
     context.visibility = () => markRead(context);
-    context.outside = event => { if (context.pinned && !event.target.closest(".cx-pop, [data-badge]")) hidePop(context); };
+    context.outside = event => {
+      if (context.pinned && !event.target.closest(".cx-pop, [data-badge]")) hidePop(context);
+      if (context.roomsOpen && !event.target.closest(".wr-rooms, .cx-room")) toggleRooms(context, false);
+    };
     context.keys = event => {
       if (event.key !== "Escape") return;
-      if (context.popFor) hidePop(context, true);
+      if (context.upgrade) closeUpgrade(context);
+      else if (context.roomsOpen) { toggleRooms(context, false); context.roomButton.focus(); }
+      else if (context.popFor) hidePop(context, true);
       else if (context.asideOpen) { setAside(context, false); context.pendingbar.focus(); }
     };
     // A popover or drawer opened on one layout must not linger once the layout switches between desktop and sheet.
@@ -533,5 +648,9 @@
     active.media.removeEventListener("change", active.relayout);
     active = null;
   }
-  window.CrewChannel = {mount, update, changed, focus, unmount};
+  // The war room reuses the channel's delivery badges, explanation popover and presence.
+  window.CrewChannelKit = {deliveryHTML, explain, presence, clock, time, plain};
+  // A war room's card changed (or a new snapshot came): the header's room list re-reads.
+  function roomsChanged() { if (active) loadRooms(active); }
+  window.CrewChannel = {mount, update, changed, roomsChanged, focus, unmount};
 })();

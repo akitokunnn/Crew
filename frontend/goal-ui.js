@@ -10,7 +10,7 @@
   const latestEndedFirst = (a, b) => b.ended_at.localeCompare(a.ended_at);
   const when = value => value ? new Date(value).toLocaleString("zh-CN", {month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "时间未记录";
   function reportPath(project, goalId, reportId) {
-    return "/api/goals/report?" + new URLSearchParams({project, goal_id:goalId, report_id:reportId});
+    return "/api/op/goal.report.view?" + new URLSearchParams({project, goal_id:goalId, report_id:reportId});
   }
   // prelude runs before the report's own markup, so a stricter policy the report declares later does not stop it.
   function reportDocument(html, prelude = "") {
@@ -111,7 +111,7 @@
       requestedVersion.set(key, signature(id)); errors.delete(key);
       const task = (async () => {
         try {
-          const result = await options.api(`/api/goal?id=${encodeURIComponent(id)}`);
+          const result = await options.api(`/api/op/goal.get?id=${encodeURIComponent(id)}`);
           if (!result.goal || String(result.goal.id) !== key) throw Error("目标详情不匹配，请重新读取。");
           details.set(key, result);
         } catch (error) { errors.set(key, error.message); }
@@ -278,7 +278,8 @@
     async function runAction(active, action, note, extra = {}) {
       if (actionBusy) return false; actionBusy = true; pendingAction = action; actionError = ""; changed();
       try {
-        const result = await options.api("/api/goals/action", {goal_id:active.id,action,version:active.version,...(active.report_id ? {report_id:active.report_id} : {}),...(action === "accept" ? {note:note || ""} : note === undefined ? {} : {note}),...extra});
+        // crew-op: goal.accept goal.cancel goal.observe goal.pause goal.reject goal.reopen goal.resume goal.start goal.transfer
+      const result = await options.api("/api/op/goal." + action, {goal_id:active.id,version:active.version,...(active.report_id ? {report_id:active.report_id} : {}),...(action === "accept" ? {note:note || ""} : note === undefined ? {} : {note}),...extra});
         if (action === "accept") options.toast("已验收通过，任务完成。");
         else if (action === "observe") options.toast("已标记观察中：任务保持打开，随时可以通过或需修改。");
         else if (action === "reject") options.toast(result.resumed === false ? `修改意见已保存；没能直接续上任务（${result.resume_error}），已通知 leader。` : "修改意见已交给 leader，在本任务里继续修改。");
@@ -317,7 +318,7 @@
       if (!form.hasAttribute("data-goal-create")) return; event.preventDefault(); const button = form.querySelector('[type="submit"]'); if (button.disabled) return; button.disabled = true;
       const overlay = formOverlay;
       try {
-        const result = await options.api("/api/goals/create", {leader_session_id:form.dataset.goalCreate, title:form.elements.title.value.trim(), request:form.elements.request.value.trim(), acceptance:form.elements.acceptance.value.split(/\r?\n/).map(item => item.trim()).filter(Boolean)});
+        const result = await options.api("/api/op/goal.create", {leader_session_id:form.dataset.goalCreate, title:form.elements.title.value.trim(), request:form.elements.request.value.trim(), acceptance:form.elements.acceptance.value.split(/\r?\n/).map(item => item.trim()).filter(Boolean)});
         await options.refreshState(); overlay?.remove(); if (formOverlay === overlay) formOverlay = null; options.onNavigate(result.goal.id);
       } catch (error) { form.querySelector(".error-line").textContent = error.message; }
       finally { button.disabled = false; }
@@ -331,7 +332,7 @@
       else if (act === "mode" && !actionBusy) {
         const active=goal();if(!active || active.decision_mode?.mode===button.dataset.mode)return;
         actionBusy=true;changed();
-        try{await options.api("/api/goals/agent",{actor_session_id:"user",action:"mode.set",data:{goal_id:active.id,mode:button.dataset.mode,expected_version:active.decision_mode?.version || 0}});await options.refreshState();await load(active.id);options.toast("已保存本任务的决策方式；不会因此启动执行。");}
+        try{await options.api("/api/op/goal.mode.set",{actor_session_id:"user",data:{goal_id:active.id,mode:button.dataset.mode,expected_version:active.decision_mode?.version || 0}});await options.refreshState();await load(active.id);options.toast("已保存本任务的决策方式；不会因此启动执行。");}
         catch(error){options.toast(error.message);}
         finally{actionBusy=false;changed();}
       }
@@ -340,7 +341,7 @@
       else if (act === "delivery") void openDelivery(button.dataset.goalId);
       else if (act === "open-folder") {
         button.disabled = true;
-        try { await options.api("/api/goals/report/folder", {goal_id:button.dataset.goalId, report_id:button.dataset.reportId}); }
+        try { await options.api("/api/op/goal.report.folder", {goal_id:button.dataset.goalId, report_id:button.dataset.reportId}); }
         catch (error) { options.toast(error.message); }
         finally { button.disabled = false; }
       }

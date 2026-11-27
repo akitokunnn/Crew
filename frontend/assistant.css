@@ -35,3 +35,14 @@
 .assistant-chat .chat-note-chip{align-self:flex-start;display:inline-flex;align-items:center;gap:8px;max-width:100%;margin:2px 0 6px;padding:2px 9px;border:1px solid var(--accent);border-radius:7px;background:var(--accent-soft);color:var(--accent-text);font:inherit;font-size:12px;line-height:1.7;cursor:pointer}
 .assistant-chat .chat-note-chip>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .assistant-chat .chat-note-chip[hidden]{display:none}
+
+.assistant-confirmations{flex:none;margin:8px 22px 0;padding:14px 16px;border:1px solid var(--warn-line);border-radius:12px;background:var(--warn-soft);display:flex;flex-direction:column;gap:10px;max-height:40dvh;overflow:auto}
+.assistant-confirmations h2{font-size:13px;font-weight:500;margin:0;color:var(--text)}
+.assistant-confirmation{padding:10px 12px;border-radius:10px;background:var(--surface);border:1px solid var(--line);display:flex;flex-direction:column;gap:4px;min-width:0}
+.assistant-confirmation strong{font-size:13px;font-weight:500;line-height:1.5}
+.assistant-confirmation p{margin:0;font-size:12px;color:var(--text-2);line-height:1.6;overflow-wrap:anywhere}
+.assistant-confirmation .assistant-confirmation-args{color:var(--text-3)}
+.assistant-confirmation-actions{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+.assistant-confirmations[hidden]{display:none}
+@media(min-width:761px){.assistant-confirmation{background:var(--studio-card)}}
+@media(max-width:620px){.assistant-confirmations{margin:6px 12px 0}.assistant-confirmation-actions .btn{min-height:40px;flex:1}}

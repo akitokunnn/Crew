@@ -74,9 +74,9 @@ class CodexGuardTests(unittest.TestCase):
         self.conn.execute("INSERT INTO git_management(project,enabled_at,base,admin_session_id) VALUES(?,?,?,?)",
                           ("demo", store.now_iso(), "main", "admin"))
         # Native ids (including a spoofed admin id) never choose the actor.
-        self.assertIn("crew git request", self.check("git push origin main", session_id="admin"))
+        self.assertIn("git_request_add", self.check("git push origin main", session_id="admin"))
         self.assertIsNone(self.check("git push origin main", session="admin"))
-        self.assertIn("crew git request", self.check("gh pr merge 12 --squash"))
+        self.assertIn("git_request_add", self.check("gh pr merge 12 --squash"))
         self.assertIsNone(self.check("git status"))
 
     def test_patch_claims_cover_add_update_delete_and_both_move_paths(self):
@@ -260,7 +260,7 @@ class CodexGuardTests(unittest.TestCase):
                 code, out, err = self.run_claim_hook(self.payload('git push; git switch -c blocked'), execution=scoped)
                 self.assertEqual(code, 0)
                 self.assertEqual(json.loads(out)['hookSpecificOutput']['permissionDecision'], 'deny')
-                self.assertIn('crew git request', err)
+                self.assertIn('git_request_add', err)
                 self.assertEqual(self.branch_claims(), [])
 
     def test_main_apply_patch_does_not_enter_branch_recorder(self):

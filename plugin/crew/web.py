@@ -33,7 +33,8 @@ from . import domains
 from .web_api import personal as personal_api
 from .web_api import behavior_prompts as behavior_prompts_api
 from .web_api import routes
-from .ops import executor
+from .ops import executor, mcp, tokens
+from .ops.caller import HUMAN, device as device_caller
 from .ops.errors import HTTP_STATUS, OpError
 from .web_api.common import _text, _optional_text
 from .web_service.workers import WorkersMixin
@@ -65,7 +66,11 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
     def __init__(self, home, plugin_root, agents_provider=None,
                  claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None, process_factory=subprocess.Popen,
                  notification_client=None, lock_status=notifications.desktop_locked, notification_batch_seconds=30,
-                 vscode_state_db=None, isolated_sources=False):
+                 vscode_state_db=None, isolated_sources=False, mcp_exposure='core'):
+        if mcp_exposure not in ('core', 'all'):
+            raise ValueError('mcp_exposure 只能是 core 或 all')
+        # core: core tools + crew_search (user ruling 7); all: every permitted tool (A/B candidate, design §5.2).
+        self.mcp_exposure = mcp_exposure
         if agents_provider is None:
             from .cli import claude_agents
             agents_provider = claude_agents
@@ -86,6 +91,8 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
         self.codex_root = native_home.codex_sessions() if codex_root is None else Path(codex_root)
         self.runs_file = self.home / "codex_runs.jsonl" if runs_file is None else Path(runs_file)
         self.agents_lock, self.scan_lock, self.write_lock = threading.Lock(), threading.Lock(), threading.Lock()
+        # One usage scan at a time; the scan itself takes write_lock only per transcript (UsageMixin.scan_usage).
+        self.usage_scan_lock = threading.Lock()
         self.channel_digest = channel_digest.Manager(home, self.write_lock, self.chat.changes, process_factory)
         self.agents, self.agents_at = [], None
         self.agents_error = "\u6b63\u5728\u83b7\u53d6\u8fdb\u7a0b\u72b6\u6001"
@@ -138,11 +145,11 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
             return dt.datetime.now(dt.timezone.utc)
         return self.clock() if callable(self.clock) else self.clock
 
-    def post(self, path, data, project_name=None):
-        """The legacy URL entry: each business path is a binding of a registered operation."""
+    def post(self, path, data, project_name=None, caller=HUMAN, request_id=None):
+        """POST entry: /api/op and the business paths bound to registered operations."""
         if not isinstance(data, dict):
             raise ValueError("JSON 请求必须是对象")
-        return routes.post(self, path, data, project_name)
+        return routes.post(self, path, data, project_name, caller, request_id)
 
     def op(self, name, args=None, *, request_id=None, project=None):
         """Run one operation as the local user (tests and host code)."""
@@ -155,6 +162,8 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js",
           "/sounds.js": ("sounds.js", "text/javascript; charset=utf-8"),
           "/sound-settings-ui.js": ("sound-settings-ui.js", "text/javascript; charset=utf-8"),
           "/channel.js": ("channel.js", "text/javascript; charset=utf-8"),
+          "/war-room.js": ("war-room.js", "text/javascript; charset=utf-8"),
+          "/war-room.css": ("war-room.css", "text/css; charset=utf-8"),
           "/git.js": ("git.js", "text/javascript; charset=utf-8"),
           "/git.css": ("git.css", "text/css; charset=utf-8"),
           "/git-settings.js": ("git-settings.js", "text/javascript; charset=utf-8"),
@@ -245,6 +254,10 @@ class Handler(BaseHTTPRequestHandler):
     def _request_active(self):
         controller = getattr(self.server, 'remote_controller', None)
         return controller is None or controller.request_active(getattr(self, 'remote_identity', None))
+
+    def _caller(self):
+        identity = getattr(self, 'remote_identity', None)
+        return HUMAN if identity is None else device_caller(identity)
 
     def _owner_access(self):
         identity = getattr(self, 'remote_identity', None)
@@ -349,6 +362,15 @@ class Handler(BaseHTTPRequestHandler):
         local_settings_path = local_settings_path or url.path in report_preview.WORKER_PATHS
         local_settings_path = local_settings_path or url.path in (
             '/api/host/folders', '/api/host/workspace/existing', '/api/host/workspace/new')
+        if url.path == '/mcp':
+            # MCP clients send no X-Crew header; the bearer token is the credential.
+            # Only the local listener serves it (remote rules reject the path).
+            if method != 'POST' or getattr(self.server, 'remote_controller', None) is not None:
+                self._send(405, {'error': 'MCP 只接受本机 POST'})
+                return
+            length = int(self.headers.get('Content-Length', '0'))
+            mcp.handle(self, service, self.rfile.read(length) if length > 0 else b'')
+            return
         if method == "POST":
             length = int(self.headers.get('Content-Length', '0'))
             if url.path in report_preview.WORKER_PATHS and length > report_preview.MAX_BODY:
@@ -365,19 +387,20 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get("X-Crew") != "1":
                 self._send(403, {"error": "\u7f3a\u5c11 X-Crew: 1 \u8bf7\u6c42\u5934"})
                 return
-            if url.path not in routes.post_paths():
+            if url.path not in routes.post_paths() and not routes.is_op_path(url.path):
                 self._send(404, {"error": "\u63a5\u53e3\u4e0d\u5b58\u5728"})
                 return
             if length <= 0:
                 raise ValueError("\u8bf7\u63d0\u4f9b JSON \u8bf7\u6c42\u4f53")
             data = json.loads(payload.decode("utf-8"))
-            self._send(200, service.post(url.path, data, query.get("project", [None])[0]))
+            routes.send(self, service.post(url.path, data, query.get("project", [None])[0], self._caller(),
+                                           self.headers.get('X-Crew-Request-Id')))
         elif local_settings_path and not self._owner_access():
             self._send(403, {'error': '此设置只允许本机 Crew 页面访问'})
         elif url.path == '/api/access/context':
             self._send(200, {'remote': False, 'client': 'local', 'authenticated': True,
                              'local_controls': True, 'local_desktop': True, 'host_admin': True})
-        elif routes.get(self, service, url, query):
+        elif routes.get(self, service, url, query, self._caller()):
             return
         elif url.path in STATIC:
             filename, content_type = STATIC[url.path]
@@ -463,7 +486,11 @@ class Server(ThreadingHTTPServer):
             raise board.BoardError('系统连续分配浏览器禁用端口，未启动 Crew 后端；请显式选择可用端口')
         self.url = "http://127.0.0.1:%d" % self.server_port
         try:
-            (service.home / "web.json").write_text(json.dumps({"url": self.url}), encoding="utf-8")
+            # A new backend trusts no earlier session token; managed sessions resume with new ones.
+            with closing(store.connect(service.home)) as conn:
+                tokens.revoke_all(conn, service.now().isoformat())
+            (service.home / "web.json").write_text(json.dumps({"url": self.url, "mcp_exposure": service.mcp_exposure}),
+                                                   encoding="utf-8")
             service.start()
         except BaseException:
             super().server_close()
@@ -521,11 +548,11 @@ def _open_registered_service(home, cwd):
         def read(route):
             with opener.open(url + route, timeout=3) as response:
                 return json.load(response)
-        state = read('/api/state')
+        state = read('/api/op/workspace.state')
         if not isinstance(state, dict) or not all(key in state for key in ('projects', 'leaders', 'candidates')):
             raise ValueError('登记地址不是可识别的 Crew 服务')
         try:
-            projects = read('/api/projects')['projects']
+            projects = read('/api/op/workspace.list')['projects']
         except HTTPError as exc:
             if exc.code != 404:
                 raise
@@ -538,7 +565,7 @@ def _open_registered_service(home, cwd):
             if not isinstance(name, str) or not name:
                 raise ValueError('项目名称无效')
             if not project.get('root'):
-                project = read('/api/state?' + urlencode({'project': name}))['project']
+                project = read('/api/op/workspace.state?' + urlencode({'project': name}))['project']
                 if project['name'] != name:
                     raise ValueError('登记项目与服务响应不一致')
             root = project['root']
@@ -562,7 +589,7 @@ def _serve_locked(home, plugin_root, port, open_browser, **options):
     workspace_url = project_url(port, project['name'] if project else None)
     if open_browser:
         try:
-            with build_opener(ProxyHandler({})).open(url + 'api/state', timeout=3) as response:
+            with build_opener(ProxyHandler({})).open(url + 'api/op/workspace.state', timeout=3) as response:
                 state = json.load(response)
         except URLError as exc:
             if not isinstance(exc.reason, ConnectionRefusedError):

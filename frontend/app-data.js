@@ -22,6 +22,7 @@
     domains: {field:"domains"},
     channel: {part:"channel", keys:["unread", "latest_id", "digest_id"]},
     channel_message: {page:"channel"},
+    war_room: {page:"war-room"},
     sound_settings: {part:"sounds", keys:["preferences", "revision", "catalog", "missing"]},
     limits: {part:null, keys:["limits", "usage_scanned_at", "usage_error"]},
     conversations: {part:null, keys:["leaders", "members", "attention", "native_approvals", "git_assistant", "git_branches", "candidates"]},
@@ -66,10 +67,10 @@
     let seq = null, stream = null, retryTimer = null, attempts = 0, pending = [], catchingUp = false;
     let busy = false, settled = Promise.resolve(), status = "idle";
 
-    function queryPath(path) { const url = new URL(path, ctx.origin); if (ctx.project !== null && url.pathname !== "/api/settings") url.searchParams.set("project", ctx.project); return url.pathname + url.search; }
+    function queryPath(path) { const url = new URL(path, ctx.origin); if (ctx.project !== null && !["/api/op/settings.get", "/api/op/settings.save"].includes(url.pathname)) url.searchParams.set("project", ctx.project); return url.pathname + url.search; }
     // One request per call. Nothing here repeats a request, so a write is never sent twice by a reconnect.
     async function request(path, data) {
-      const response = await ctx.fetch(queryPath(path), data === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json", "X-Crew":"1"}, body:JSON.stringify(data)});
+      const response = await ctx.fetch(queryPath(path), data === undefined ? {} : window.CrewBrowser.postOptions(data));
       const result = await response.json();
       if (!response.ok) { const error = new Error(result.error || "请求失败，请重试。"); error.status = response.status; error.details = result; throw error; }
       return result;
@@ -126,7 +127,7 @@
       closeStream(); cancelRetry();
       setStatus(seq === null ? "connecting" : "resyncing", reason);
       let snapshot;
-      try { snapshot = await ctx.api("/api/snapshot"); }
+      try { snapshot = await ctx.api("/api/op/workspace.snapshot"); }
       catch (error) { setStatus("disconnected", error.message); throw error; }
       const previous = ctx.state;
       seq = snapshot.seq; attempts = 0;

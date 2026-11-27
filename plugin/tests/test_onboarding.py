@@ -140,19 +140,20 @@ class OnboardingHttpTests(ShellFixture, unittest.TestCase):
         self.addCleanup(server.shutdown)
 
     def test_the_guide_outcome_round_trips_and_rejects_other_values(self):
-        code, result, _ = self.request("/api/onboarding")
+        code, result, _ = self.request("/api/op/onboarding.get")
         self.assertEqual((code, result["status"]), (200, "pending"))
-        code, result, _ = self.request("/api/onboarding", {"status": "maybe"})
+        code, result, _ = self.request("/api/op/onboarding.set", {"status": "maybe"})
         self.assertEqual(code, 400)
-        self.assertIn("completed 或 skipped", result["error"])
-        code, result, _ = self.request("/api/onboarding", {"status": "skipped"})
+        self.assertEqual(result["code"], "invalid_arguments")
+        self.assertIn("completed、skipped", result["error"])
+        code, result, _ = self.request("/api/op/onboarding.set", {"status": "skipped"})
         self.assertEqual((code, result["status"]), (200, "skipped"))
-        self.assertEqual(self.request("/api/onboarding")[1]["status"], "skipped")
+        self.assertEqual(self.request("/api/op/onboarding.get")[1]["status"], "skipped")
 
     def test_readiness_is_served_without_starting_a_model_session(self):
         report = [{"id": "claude", "name": "Claude Code", "installed": True, "logged_in": True, "detail": None, "error": None}]
         with patch.object(runtime_catalog, "readiness", return_value=report) as check:
-            code, result, _ = self.request("/api/runtimes/readiness")
+            code, result, _ = self.request("/api/op/runtimes.readiness")
         self.assertEqual((code, result), (200, {"runtimes": report}))
         check.assert_called_once_with()
         self.assertEqual(self.processes, [])

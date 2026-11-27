@@ -1,8 +1,8 @@
 """Run one operation: authorize, validate, admit, lock, deduplicate (design §2, §5.5).
 
-There is one execution path for every entry point. Legacy HTTP bindings,
-``/api/op``, MCP and the generated CLI all call :func:`call`; they differ only
-in how they establish the caller and the arguments.
+There is one execution path for every entry point. ``/api/op``, MCP and the
+generated CLI all call :func:`call`; they differ only in how they establish the
+caller and the arguments.
 """
 from contextlib import closing, nullcontext
 import hashlib
@@ -23,29 +23,17 @@ RECEIPT_DAYS = 7
 class Context:
     """What a handler may use. ``conn``/``now``/``project`` follow ``op.lock``."""
 
-    def __init__(self, service, caller, op, *, binding=None, request_id=None, project_name=None,
-                 http=None, url=None, query=None):
-        primary = binding or (op.http[0] if op.http else None)
+    def __init__(self, service, caller, op, *, request_id=None, project_name=None, http=None, query=None):
         self.service, self.caller, self.op = service, caller, op
-        self.binding, self.request_id, self.project_name = binding, request_id, project_name
-        self.path = primary.path if primary else None
-        self.when = dict(primary.when) if primary else {}
-        self.http, self.url, self.query = http, url, query
+        self.request_id, self.project_name = request_id, project_name
+        self.http, self.query = http, query
         self.conn = self.now = self.project = None
         self.proof = None  # A verified original user message for assistant writes.
-        self.handler = binding.handler if binding is not None and binding.handler is not None else op.handler
-
-    @property
-    def legacy(self):
-        """A request that arrived through an old URL keeps its old body untouched."""
-        return self.binding is not None
+        self.as_user = op.as_user(caller)  # the assistant running the user's handler
 
     def body(self, args):
-        """The body the legacy route handler expects: discriminators + arguments."""
-        data = {**self.when, **args}
-        if self.op.forward_request_id and not self.legacy:
-            data['request_id'] = self.request_id
-        return data
+        """The arguments, plus the request id for handlers whose old body carried it."""
+        return {**args, 'request_id': self.request_id} if self.op.forward_request_id else dict(args)
 
 
 def _stamp(service):
@@ -105,14 +93,14 @@ def _gate(ctx):
 
 def _run(service, op, ctx, args):
     if op.lock == 'none':
-        return ctx.handler(ctx, args)
+        return op.handler(ctx, args)
     if op.lock == 'read':
         with closing(guard.readonly(service.home)) as conn:
             ctx.conn = conn
-            return ctx.handler(ctx, args)
+            return op.handler(ctx, args)
     with service.write_lock, closing(store.connect(service.home)) as conn:
         ctx.conn, ctx.now = conn, _stamp(service)
-        if op.lock == 'project' and ctx.caller.is_ai:
+        if op.lock == 'project' and ctx.caller.is_ai and not ctx.as_user:
             # An AI acts in its own workspace; the assistant names one in its arguments.
             ctx.project = ctx.caller.project
         elif op.lock == 'project':
@@ -127,27 +115,35 @@ def _run(service, op, ctx, args):
                 ctx.project = service.chat_project(conn, ctx.project_name, body.get('session_id'))
             else:
                 ctx.project = service.selected_project(conn, ctx.project_name)
-        elif ctx.caller.is_ai:
+        elif ctx.caller.is_ai and not ctx.as_user:
             ctx.project = ctx.caller.project
         _gate(ctx)
-        return ctx.handler(ctx, args)
+        return op.handler(ctx, args)
 
 
-def call(service, caller, name, args, *, request_id=None, project_name=None, binding=None,
-         http=None, url=None, query=None, grants=None, message_id=None):
+def call(service, caller, name, args, *, request_id=None, project_name=None, http=None, query=None,
+         grants=None, message_id=None, confirmed=False):
     op = registry.get(name) if registry.operations() else None
     if op is None:
         raise OpError('not_found', '没有这项操作：%s' % name)
     if not isinstance(args, dict):
         raise ValueError('JSON 请求必须是对象')
     scopes.authorize(op, caller, grants)
-    ctx = Context(service, caller, op, binding=binding, request_id=request_id, project_name=project_name,
-                  http=http, url=url, query=query)
-    if binding is None and query is None:
+    if op.as_user(caller):
+        project_name = args.get('project')
+    ctx = Context(service, caller, op, request_id=request_id, project_name=project_name, http=http, query=query)
+    if query is None:
         validate(args, op.schema_for(caller))
     if caller.is_ai:
         ctx.proof = scopes.confirm(service, op, caller, message_id)
-    receipt = op.access != 'read' and binding is None
+    else:
+        scopes.human_payload(op, caller, args)
+    receipt = op.access != 'read' and not op.query_get
+    if caller.is_ai and op.risk == 'high' and not confirmed:
+        if request_id is None:
+            raise OpError('invalid_arguments', '写操作必须带 request_id（同一操作重试时保持不变）')
+        from . import confirmations
+        return confirmations.request(service, caller, op, args, request_id, _args_hash(name, args), _stamp(service))
     if receipt:
         if request_id is None:
             raise OpError('invalid_arguments', '写操作必须带 request_id（同一操作重试时保持不变）')
@@ -170,16 +166,6 @@ def call(service, caller, name, args, *, request_id=None, project_name=None, bin
     if receipt:
         _receipt_end(service, caller, request_id, 'done', result)
     return result
-
-
-def call_binding(service, caller, method, path, data, *, project_name=None, http=None, url=None, query=None):
-    found = registry.resolve(method, path, data if method == 'POST' else {
-        key: value[0] for key, value in (query or {}).items() if len(value) == 1})
-    if found is None:
-        raise OpError('not_found', '接口不存在')
-    op, binding = found
-    return call(service, caller, op.name, data if method == 'POST' else {}, binding=binding,
-                project_name=project_name, http=http, url=url, query=query)
 
 
 def new_request_id():

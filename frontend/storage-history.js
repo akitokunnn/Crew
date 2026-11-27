@@ -5,9 +5,9 @@
   let snapshot, selected = null, oldest = null, requestGeneration = 0;
   const node = (tag, text, className) => { const n=document.createElement(tag);if(text!=null)n.textContent=text;if(className)n.className=className;return n; };
   async function read(query={}) {
-    const r=await fetch('/api/workspace-data/history?'+new URLSearchParams({workspace_id:workspace,...query}));const value=await r.json();if(!r.ok)throw Error(value.error);return value;
+    const r=await fetch('/api/op/data.history?'+new URLSearchParams({workspace_id:workspace,...query}));const value=await r.json();if(!r.ok)throw Error(value.error);return value;
   }
-  const artifactURL = id => '/api/workspace-data/artifact?'+new URLSearchParams({workspace_id:workspace,version_id:id});
+  const artifactURL = id => '/api/op/data.artifact?'+new URLSearchParams({workspace_id:workspace,version_id:id});
   const stateLabel = value => ({informational:'信息记录',completed:'已完成',failed:'失败',awaiting_acceptance:'等待验收',cancelled:'已取消',paused:'已暂停',running:'执行中',draft:'草稿',active:'有效',archived:'已归档',open:'待处理'}[value]||value);
   function link(parent,id,label) { const a=node('a',label);a.href=artifactURL(id);a.target='_blank';a.rel='noopener';parent.append(a); }
   function card(title,body,meta) { const n=node('article',null,'card');if(title)n.append(node('strong',title));if(meta)n.append(node('p',meta,'meta'));if(body)n.append(node('div',body,'body'));return n; }
@@ -39,13 +39,13 @@
         if(part.text_content)c.append(node('div',part.text_content,'body'));
         else if(part.json_content)c.append(node('pre',part.json_content,'body'));
         else if(part.artifact_version_id)link(c,part.artifact_version_id,'查看附件');
-        else if(part.blob_id){const a=node('a',part.kind==='image'?'查看图片':'查看附件');a.href='/api/workspace-data/blob?'+new URLSearchParams({workspace_id:workspace,blob_id:part.blob_id});a.target='_blank';a.rel='noopener';c.append(a);}
+        else if(part.blob_id){const a=node('a',part.kind==='image'?'查看图片':'查看附件');a.href='/api/op/data.blob?'+new URLSearchParams({workspace_id:workspace,blob_id:part.blob_id});a.target='_blank';a.rel='noopener';c.append(a);}
         else if(part.tool_call_id||part.tool_result_id){
           const call=page.tool_calls.find(t=>t.id===part.tool_call_id),result=page.tool_results.find(t=>t.id===part.tool_result_id);
           const details=node('details'),summary=node('summary',call?('工具调用 · '+(call.display_label||call.tool_name)):('工具结果 · '+stateLabel(result?.outcome||'记录')));details.append(summary);
           if(call?.arguments_json)details.append(node('pre',call.arguments_json,'body'));
           if(result?.result_text)details.append(node('pre',result.result_text,'body'));
-          const blob=call?.arguments_blob_id||result?.result_blob_id;if(blob){const a=node('a','查看完整工具内容');a.href='/api/workspace-data/blob?'+new URLSearchParams({workspace_id:workspace,blob_id:blob});a.target='_blank';a.rel='noopener';details.append(a);}
+          const blob=call?.arguments_blob_id||result?.result_blob_id;if(blob){const a=node('a','查看完整工具内容');a.href='/api/op/data.blob?'+new URLSearchParams({workspace_id:workspace,blob_id:blob});a.target='_blank';a.rel='noopener';details.append(a);}
           if(result?.artifact_version_id)link(details,result.artifact_version_id,'查看工具产出');
           if(result?.is_truncated)details.append(node('p','此记录在来源处已截断。','meta'));
           c.append(details);
@@ -72,7 +72,7 @@
   }
   $('export').onclick=async()=>{
     $('export').disabled=true;$('status').textContent='正在校验并打包…';
-    try{const response=await fetch('/api/workspace-data/export',{method:'POST',headers:{'Content-Type':'application/json','X-Crew':'1'},body:JSON.stringify({workspace_id:workspace})});const result=await response.json();if(!response.ok)throw Error(result.error);const a=node('a','下载工作区包');a.href='/api/workspace-data/download?id='+result.download_id;$('status').replaceChildren(a);a.click();}
+    try{const response=await fetch('/api/op/data.export',window.CrewBrowser.postOptions({workspace_id:workspace}));const result=await response.json();if(!response.ok)throw Error(result.error);const a=node('a','下载工作区包');a.href='/api/op/data.download?id='+result.download_id;$('status').replaceChildren(a);a.click();}
     catch(error){fail(error);}finally{$('export').disabled=false;}
   };
   read().then(value=>{

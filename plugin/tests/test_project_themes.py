@@ -1,5 +1,6 @@
 """Project palette persistence and HTTP changes use temporary homes only."""
 import tests  # Install the production-service connection guard.
+import uuid
 import json
 import tempfile
 import threading
@@ -138,7 +139,7 @@ class ProjectThemeHttpTests(ShellFixture, unittest.TestCase):
 
     def request(self, path, data=None, header=True):
         payload = None if data is None else json.dumps(data).encode('utf-8')
-        headers = {'X-Crew': '1'} if header else {}
+        headers = {'X-Crew': '1', 'X-Crew-Request-Id': uuid.uuid4().hex} if header else {}
         try:
             response = self.opener.open(Request(self.server.url + path, payload, headers), timeout=5)
         except HTTPError as exc:
@@ -148,30 +149,30 @@ class ProjectThemeHttpTests(ShellFixture, unittest.TestCase):
 
     def test_state_exposes_catalogue_and_each_project_choice(self):
         board.init_project(self.conn, 'other', self.root / 'other', now=NOW)
-        code, landing = self.request('/api/state')
+        code, landing = self.request('/api/op/workspace.state')
         self.assertEqual(code, 200)
         self.assertIsNone(landing['project'])
         self.assertEqual(landing['themes'], themes.THEMES)
         self.assertEqual(landing['projects'], [{'name': 'demo', 'display_name': None, 'theme': 'celadon'}, {'name': 'other', 'display_name': None, 'theme': 'indigo'}])
-        code, selected = self.request('/api/state?project=other')
+        code, selected = self.request('/api/op/workspace.state?project=other')
         self.assertEqual(code, 200)
         self.assertEqual(selected['project']['theme'], 'indigo')
 
     def test_change_is_immediate_persisted_and_project_scoped(self):
         board.init_project(self.conn, 'other', self.root / 'other', now=NOW)
-        self.assertEqual(self.request('/api/project/theme', {'project': 'other', 'theme': 'lotus'}),
+        self.assertEqual(self.request('/api/op/workspace.theme.set', {'project': 'other', 'theme': 'lotus'}),
                          (200, {'ok': True, 'theme': 'lotus'}))
-        self.assertEqual(self.request('/api/state?project=other')[1]['project']['theme'], 'lotus')
+        self.assertEqual(self.request('/api/op/workspace.state?project=other')[1]['project']['theme'], 'lotus')
         self.assertEqual(board.project(self.conn, 'other')['theme'], 'lotus')
         self.assertEqual(board.project(self.conn, 'demo')['theme'], 'celadon')
-        self.assertEqual(self.request('/api/project/theme?project=demo', {'theme': 'mist'}),
+        self.assertEqual(self.request('/api/op/workspace.theme.set?project=demo', {'theme': 'mist'}),
                          (200, {'ok': True, 'theme': 'mist'}))
 
     def test_invalid_theme_and_mismatched_project_are_rejected_without_change(self):
         for data in ({'theme': 'unknown'}, {'theme': ''}, {'theme': 42}, {'theme': None}):
-            code, error = self.request('/api/project/theme?project=demo', data)
+            code, error = self.request('/api/op/workspace.theme.set?project=demo', data)
             self.assertEqual(code, 400, error)
-        self.assertEqual(self.request('/api/project/theme?project=demo', {'project': 'other', 'theme': 'mist'})[0], 400)
-        self.assertEqual(self.request('/api/project/theme', {'project': 'missing', 'theme': 'mist'})[0], 400)
-        self.assertEqual(self.request('/api/project/theme?project=demo', {'theme': 'mist'}, header=False)[0], 403)
+        self.assertEqual(self.request('/api/op/workspace.theme.set?project=demo', {'project': 'other', 'theme': 'mist'})[0], 400)
+        self.assertEqual(self.request('/api/op/workspace.theme.set', {'project': 'missing', 'theme': 'mist'})[0], 400)
+        self.assertEqual(self.request('/api/op/workspace.theme.set?project=demo', {'theme': 'mist'}, header=False)[0], 403)
         self.assertEqual(board.project(self.conn, 'demo')['theme'], 'celadon')

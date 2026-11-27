@@ -4,11 +4,13 @@ from contextlib import closing
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
-from crew import board, change_feed, domain_versions, domains, goals, session_ops, store, web
-from crew.ops import executor
-from crew.web_api import routes
+from crew import board, change_feed, domain_versions, domains, goals, personal, session_ops, store, web
+from crew.ops import executor, registry
+from crew.ops.errors import OpError
+from ops_helpers import ai_call
 from test_shell import NOW, PLUGIN, ShellFixture
 
 
@@ -206,16 +208,17 @@ class RestructureTests(ShellFixture, unittest.TestCase):
 
     def test_preview_lists_each_bad_change(self):
         bad = [{'type': 'part.move', 'part': 'app0001', 'parent': 'front01'}, {'type': 'part.rename', 'part': 'nope', 'name': 'x'},
-               {'type': 'leader.assign', 'leader': 'l-ui', 'part': 'front01', 'extra': 1}, {'type': 'party'}]
-        plan = routes.post(self.service, '/api/domains/restructure/preview', {'project': 'demo', 'changes': bad}, 'demo')
+               {'type': 'leader.assign', 'leader': 'l-ui', 'part': 'front01', 'extra': 1}]
+        plan = self.preview(*bad)
         self.assertFalse(plan['ok'])
         self.assertIsNone(plan['after'])
         self.assertEqual([(e['index'], e['message']) for e in plan['errors']],
-                         [(0, '不能把 part 挂到它自己或它的下级下面'), (1, 'part 不存在：nope'), (2, '字段不对：多了 extra'),
-                          (3, '不认识的变更：party')])
-        with self.assertRaisesRegex(board.BoardError, '方案还有 4 处问题'):
-            routes.post(self.service, '/api/domains/restructure', {'project': 'demo', 'changes': bad, 'note': '坏方案',
-                                                                   'board_version': 1, 'revision': 'x', 'handoffs': []}, 'demo')
+                         [(0, '不能把 part 挂到它自己或它的下级下面'), (1, 'part 不存在：nope'), (2, '字段不对：多了 extra')])
+        with self.assertRaisesRegex(board.BoardError, '方案还有 3 处问题'):
+            self.call('domains.restructure.apply', {'project': 'demo', 'changes': bad, 'note': '坏方案',
+                                                    'board_version': 1, 'revision': 'x', 'handoffs': []})
+        with self.assertRaisesRegex(OpError, 'changes'):
+            self.preview({'type': 'party'})
 
     def test_apply_matches_the_preview_and_saves_one_version(self):
         changes = [{'type': 'part.create', 'ref': 'mobile1', 'name': '手机端', 'parent': 'app0001'},
@@ -351,9 +354,8 @@ class RestructureTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM sessions').fetchone()[0], sessions, 'no leader is started')
         self.assertFalse(result['starts_turn'])
 
-    def test_standalone_merge_and_retire_operations_and_their_http_bindings(self):
-        plan = routes.post(self.service, '/api/domains/restructure/preview',
-                           {'project': 'demo', 'changes': [{'type': 'leader.retire', 'leader': 'l-net', 'successor': 'l-ui'}]}, 'demo')
+    def test_standalone_merge_and_retire_operations(self):
+        plan = self.preview({'type': 'leader.retire', 'leader': 'l-net', 'successor': 'l-ui'})
         result = self.call('leader.retire', {'project': 'demo', 'leader': 'l-net', 'successor': 'l-ui',
                                              'handoff': {'text': plan['handoffs'][0]['text'], 'wake': False},
                                              'board_version': plan['board_version'], 'revision': plan['revision']})
@@ -378,3 +380,37 @@ class RestructureTests(ShellFixture, unittest.TestCase):
         self.assertEqual(len(detail['rollback']['unplaced']), 3)
         result = self.call('domains.rollback', {'project': 'demo', 'number': 1, 'board_version': detail['board_version']})
         self.assertEqual(result['board']['parts'], [])
+
+
+    def test_only_the_user_and_the_assistant_change_the_structure_and_ai_writes_wait_for_confirmation(self):
+        names = ('domains.versions.list', 'domains.version.get', 'domains.rollback', 'domains.restructure.preview',
+                 'domains.restructure.apply', 'leader.merge', 'leader.retire')
+        for name in names:
+            op = registry.get(name)
+            self.assertEqual(op.scopes, {'human', 'device_browser', 'device_desktop', 'assistant'}, name)
+            self.assertEqual(op.risk, 'normal' if op.access == 'read' else 'high', name)
+            self.assertTrue(op.assistant_as_user, name)
+        with self.assertRaisesRegex(OpError, 'leader不能调用 domains.restructure.preview'):
+            ai_call(self.service, self.conn, 'l-ui', 'domains.restructure.preview',
+                    {'changes': [{'type': 'part.rename', 'part': 'front01', 'name': '客户端'}]})
+        assistant = personal.ensure_assistant(self.conn, self.home)['session_id']
+        changes = [{'type': 'part.rename', 'part': 'front01', 'name': '客户端'}]
+        plan = ai_call(self.service, self.conn, assistant, 'domains.restructure.preview', {'project': 'demo', 'changes': changes})
+        self.assertTrue(plan['ok'])
+        args = {'project': 'demo', 'changes': changes, 'note': '前端改名', 'board_version': plan['board_version'],
+                'revision': plan['revision'], 'handoffs': []}
+        before = self.counts()
+        waiting = ai_call(self.service, self.conn, assistant, 'domains.restructure.apply', args, request_id='rename-1')
+        self.assertEqual(waiting['status'], 'awaiting_user')
+        self.assertEqual(self.counts(), before, 'nothing runs before the user confirms')
+        with mock.patch.object(self.service.chat, 'send') as send:
+            done = executor.human_call(self.service, 'interaction.resolve', {'id': waiting['confirmation_id'], 'approve': True})
+        self.assertEqual(done['status'], 'approved', done)
+        self.assertIn('已确认并执行', send.call_args.args[1])
+        self.assertEqual(domain_versions.listing(self.conn, 'demo')['versions'][0]['note'], '前端改名')
+        stale = ai_call(self.service, self.conn, assistant, 'domains.rollback',
+                        {'project': 'demo', 'number': 1, 'board_version': plan['board_version']}, request_id='back-1')
+        with mock.patch.object(self.service.chat, 'send') as send:
+            failed = executor.human_call(self.service, 'interaction.resolve', {'id': stale['confirmation_id'], 'approve': True})
+        self.assertEqual(failed['status'], 'failed')
+        self.assertIn('已在别处改动', failed['error'])

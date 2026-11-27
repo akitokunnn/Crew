@@ -1,9 +1,9 @@
 """Channel operations and hooks use temporary project databases only."""
 import tests  # Install the production-service connection guard.
-import contextlib
-import io
-import json
-import os
+from test_core import operation_service
+from crew.ops import tokens
+from crew.ops.errors import OpError
+from tests.ops_helpers import ai_call
 import sqlite3
 import tempfile
 from contextlib import closing
@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from crew import session_ops, board, channel, cli, hooks, rules, store
+from crew import session_ops, board, channel, hooks, store
 
 PLUGIN = Path(__file__).resolve().parents[1]
 NOW = "2026-10-23T08:00:00.000Z"
@@ -30,24 +30,18 @@ class ChannelTests(unittest.TestCase):
         board.init_project(self.conn, "demo", self.root, now=NOW)
         for sid, name, role in (("a", "alpha", "leader"), ("b", "beta", "leader"), ("m", "member", "member")):
             board.join(self.conn, sid, "demo", name, self.root, None, None, role=role, now=NOW)
-            rules.record_read(self.conn, sid, role, PLUGIN, now=NOW)
+            tokens.issue(self.conn, session_id=sid, runtime='claude', now=NOW)
+        self.service = operation_service(self, self.root)
 
     def post(self, body="hello", actor="a", to=()):
         return channel.post(self.conn, "demo", actor, body, to, now=NOW)
 
-    def run_cli(self, arguments, sid="a"):
-        out, err = io.StringIO(), io.StringIO()
-        real_get = os.environ.get
-        def environ_get(key, default=None):
-            return None if key == "CLAUDE_CODE_SESSION_ID" else real_get(key, default)
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(os.environ, "get", side_effect=environ_get):
-            result = cli.main(["--home", str(self.home), "--session", sid, *arguments], cwd=self.root,
-                              agents_provider=lambda: [], plugin_root=PLUGIN)
-        return result, out.getvalue(), err.getvalue()
+    def call(self, name, args=None, sid='a'):
+        return ai_call(self.service, self.conn, sid, name, args)
 
     def hook(self, sid="b"):
         return hooks.handle("user-prompt-submit", {"session_id": sid, "cwd": str(self.root), "prompt": "continue"},
-                            self.home, PLUGIN, {}, now=NOW)
+                            self.home, PLUGIN, now=NOW)
 
     def test_leader_post_mentions_queue_full_notice(self):
         message = self.post("**plan**\nsecond line", to=["beta"])
@@ -58,7 +52,7 @@ class ChannelTests(unittest.TestCase):
         notice = board.pending_notices(self.conn, "b")[0]
         self.assertEqual(notice["source"], "crew")
         self.assertEqual(notice["text"], '交流区：「alpha」点名你（交流区发言 #%d）：\n**plan**\nsecond line\n\n'
-                         '回复用 crew say --reply-to %d "…"（Codex 用 crew_say）；只是回"收到"就不用回。' % (message["id"], message["id"]))
+                         '回复用 Crew 工具 `channel_post`（参数 `text`、`reply_to=%d`）；只是回“收到”就不用回。' % (message["id"], message["id"]))
         # A leader naming another leader waits for nothing.
         self.assertEqual(self.conn.execute("SELECT await_reply FROM channel_mentions").fetchone()[0], 0)
 
@@ -150,11 +144,10 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in message["mentions"]], ["beta"])
         self.assertEqual(len(board.pending_notices(self.conn, "b")), 2)
 
-    def test_cli_say_with_at_name_wakes_the_leader(self):
-        result, output, error = self.run_cli(["say", "@beta 合并前先 rebase", "--json"])
-        self.assertEqual(result, 0, error)
+    def test_channel_post_with_at_name_wakes_the_leader(self):
+        result = self.call("channel.post", {"text": "@beta 合并前先 rebase"})
         self.assertEqual([{key: item[key] for key in ("session_id", "name", "replied", "delivery")}
-                          for item in json.loads(output)["mentions"]],
+                          for item in result["mentions"]],
                          [{"session_id": "b", "name": "beta", "replied": False, "delivery": "queued"}])
         self.assertEqual(len(board.pending_notices(self.conn, "b")), 1)
 
@@ -164,8 +157,8 @@ class ChannelTests(unittest.TestCase):
         notice = board.pending_notices(self.conn, "b")[0]
         self.assertEqual(notice["source"], "web")
         self.assertTrue(notice["text"].startswith("交流区：用户点名你（交流区发言 #%d）：\nuser request\n\n（这是用户本人的话）" % message["id"]))
-        self.assertIn("crew say --reply-to %d" % message["id"], notice["text"])
-        self.assertIn("--detail", notice["text"])
+        self.assertIn("reply_to=%d" % message["id"], notice["text"])
+        self.assertIn("detail=true", notice["text"])
 
     def test_human_mention_wakes_a_stopped_leader_but_leader_mention_does_not(self):
         from crew import messaging
@@ -222,7 +215,7 @@ class ChannelTests(unittest.TestCase):
         self.assertIn("- #%d " % message["id"], text)
         self.assertIn("alpha @alpha：first line", text)
         self.assertNotIn("full detail", text)
-        self.assertTrue(text.endswith("要接话用 crew say --reply-to <编号>"))
+        self.assertTrue(text.endswith("要接话用 `channel_post`（参数 `text`，`reply_to` 填发言编号）。"))
         self.assertEqual(channel.mark_read(self.conn, "demo", "b", message["id"])["read_id"], message["id"])
         code, result = self.hook()
         self.assertEqual(code, 0)
@@ -275,13 +268,12 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIsNone(result)
 
-    def test_cli_say_and_member_rejection(self):
-        result, output, error = self.run_cli(["say", "cli full text", "--to", "beta", "--json"])
-        self.assertEqual(result, 0, error)
-        self.assertEqual(json.loads(output)["body"], "cli full text")
-        result, output, error = self.run_cli(["say", "member attempt"], sid="m")
-        self.assertEqual(result, 1)
-        self.assertIn("交流区只给 leader 用；有事告诉你的 leader", error)
+    def test_channel_post_and_member_rejection(self):
+        message = self.call('channel.post', {'text': 'cli full text', 'to': ['beta']})
+        self.assertEqual(message['body'], 'cli full text')
+        with self.assertRaises(OpError) as denied:
+            self.call('channel.post', {'text': 'member attempt'}, sid='m')
+        self.assertEqual(denied.exception.code, 'forbidden')
 
     def test_leader_posts_stay_short_and_the_user_is_not_limited(self):
         with self.assertRaisesRegex(board.BoardError, "交流区像群聊一样说短话：这条 151 字 1 行"):
@@ -310,9 +302,9 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual([row[0] for row in self.conn.execute("SELECT await_reply FROM channel_mentions ORDER BY rowid")], [0, 0])
         with self.assertRaisesRegex(board.BoardError, "要回复的交流区发言不存在: 99"):
             channel.post(self.conn, "demo", "a", "x", reply_to=99, now=NOW)
-        result, output, error = self.run_cli(["channel"], sid="m")
-        self.assertIn("回复 #%d 用户「两位看下登录为什么慢" % asked["id"], output)
-        self.assertIn("（细节在私聊）", output)
+        posts = self.call('channel.consume')['posts']
+        self.assertIn('回复 #%d' % asked['id'], posts[-1]['heading'])
+        self.assertIn('细节在私聊', posts[-1]['heading'])
 
     def test_settle_points_to_private_only_after_the_mention_was_delivered(self):
         asked = channel.post(self.conn, "demo", board.HUMAN, "进度怎样", ["alpha"], source="web", now=NOW)
@@ -326,7 +318,7 @@ class ChannelTests(unittest.TestCase):
         # Answering in the channel first means no pointer is needed.
         again = channel.post(self.conn, "demo", board.HUMAN, "再问一次", ["alpha"], source="web", now=NOW)
         board.mark_notice_sent(self.conn, board.pending_notices(self.conn, "a")[0]["id"], now=NOW)
-        self.run_cli(["say", "好了", "--reply-to", str(again["id"])])
+        self.call('channel.post', {'text': '好了', 'reply_to': again['id']})
         self.assertEqual(channel.settle(self.conn, "a", {again["id"]}, now=NOW), [])
 
     def test_older_database_gains_reply_columns_and_keeps_posts(self):
@@ -345,32 +337,29 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT await_reply FROM channel_mentions").fetchone()[0], 0)
         self.assertEqual(channel.post(self.conn, "demo", "b", "ok", reply_to=message["id"], now=NOW)["reply_to"], message["id"])
 
-    def test_cli_unknown_and_unadopted_sessions_get_channel_rejection(self):
-        board.register_session(self.conn, "new", "demo", self.root, None, None, now=NOW)
-        for sid in ("unknown", "new"):
-            result, output, error = self.run_cli(["say", "attempt"], sid=sid)
-            self.assertEqual(result, 1)
-            self.assertIn("交流区只给 leader 用；有事告诉你的 leader", error)
+    def test_unknown_and_unadopted_sessions_get_channel_rejection(self):
+        board.register_session(self.conn, 'new', 'demo', self.root, None, None, now=NOW)
+        for sid in ('unknown', 'new'):
+            with self.subTest(sid=sid), self.assertRaises((OpError, board.BoardError)):
+                self.call('channel.post', {'text': 'attempt'}, sid=sid)
+        self.assertEqual(channel.messages(self.conn, 'demo')['messages'], [])
 
-    def test_cli_channel_full_text_and_member_read_cursor(self):
-        first = self.post("first\nfull detail", to=["beta"])
-        last = self.post("last")
-        result, output, error = self.run_cli(["channel"], sid="m")
-        self.assertEqual(result, 0, error)
-        self.assertIn("first\nfull detail", output)
-        self.assertIn("@beta", output)
-        self.assertLess(output.index("first"), output.index("last"))
-        self.assertEqual(channel.mark_read(self.conn, "demo", "m", first["id"])["read_id"], last["id"])
+    def test_channel_full_text_for_leaders_only(self):
+        """The Leader channel is for leaders (design §8.4); members talk to their leader."""
+        self.post('first\nfull detail', to=['beta'])
+        self.post('last')
+        posts = self.call('channel.consume')['posts']
+        self.assertEqual([p['body'] for p in posts], ['first\nfull detail', 'last'])
+        self.assertIn('@beta', posts[0]['heading'])
+        with self.assertRaises(OpError):
+            self.call('channel.consume', sid='m')
 
-    def test_cli_channel_defaults_to_recent_twenty_and_accepts_limit(self):
+    def test_channel_defaults_to_recent_twenty_and_accepts_limit(self):
         for n in range(21):
-            self.post("post %d" % n)
-        result, output, error = self.run_cli(["channel", "--json"])
-        self.assertEqual(result, 0, error)
-        self.assertEqual(len(json.loads(output)), 20)
-        result, output, error = self.run_cli(["channel", "--limit", "2", "--json"])
-        self.assertEqual(result, 0, error)
-        self.assertEqual([m["body"] for m in json.loads(output)], ["post 19", "post 20"])
+            self.post('post %d' % n)
+        self.assertEqual(len(self.call('channel.consume')['posts']), 20)
+        posts = self.call('channel.consume', {'limit': 2})['posts']
+        self.assertEqual([m['body'] for m in posts], ['post 19', 'post 20'])
 
 
 if __name__ == "__main__":

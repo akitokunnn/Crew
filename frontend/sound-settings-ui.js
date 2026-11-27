@@ -72,7 +72,7 @@
         busy = true; controls(); status("正在上传…");
         try {
           const data = await new Promise((resolve,reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(",")[1]); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
-          const {preset} = await options.api("/api/sounds/custom", {name, filename:file.name, data});
+          const {preset} = await options.api("/api/op/sounds.custom.add", {name, filename:file.name, data});
           if (!active) return;
           catalog.presets[preset.id] = preset; CrewSound.configure(saved, catalog, revision); render(); status("自定义音效已上传。");
         } catch (error) { if (active) { status(error.message, true); options.toast(error.message); } }
@@ -81,7 +81,7 @@
         busy = true; controls(); status("正在删除…");
         try {
           const id = button.dataset.soundDelete;
-          await options.api("/api/sounds/custom/delete", {id});
+          await options.api("/api/op/sounds.custom.delete", {id});
           if (!active) return;
           delete catalog.presets[id]; CrewSound.forget(id); CrewSound.configure(saved, catalog, revision); render(); status("自定义音效已删除。");
         } catch (error) { if (active) { status(error.message, true); options.toast(error.message); } }

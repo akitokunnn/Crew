@@ -110,6 +110,13 @@ def statements():
     result[name] = ('CREATE TRIGGER %s AFTER UPDATE ON leader_notices WHEN %s BEGIN INSERT INTO change_log(at,scope,type,entity,data) '
                     "SELECT %s,'workspace:'||m.project,'channel_message.invalidated',m.id,NULL FROM channel_mentions t "
                     'JOIN channel_messages m ON m.id=t.message_id WHERE t.notice_id=NEW.id; END' % (name, _BADGE, _AT))
+    # A war room's decision card is answered through the ordinary decision flow (board.answer); its room's
+    # card counts open decisions, so the room changes with it (docs/WAR_ROOM_DESIGN.md §10).
+    name = 'feed_war_room_decisions_update'
+    result[name] = ('CREATE TRIGGER %s AFTER UPDATE ON decisions WHEN NEW.status IS NOT OLD.status BEGIN '
+                    'INSERT INTO change_log(at,scope,type,entity,data) '
+                    "SELECT %s,'workspace:'||r.project,'war_room.invalidated',r.id,NULL FROM war_room_decisions w "
+                    'JOIN war_rooms r ON r.id=w.room_id WHERE w.decision_id=NEW.id; END' % (name, _AT))
     return result
 
 

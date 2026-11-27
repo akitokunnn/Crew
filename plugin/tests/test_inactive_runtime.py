@@ -1,5 +1,7 @@
 """Stale Claude hooks may not act on the new runtime's identity or mail."""
 import tests
+from crew.ops import tokens
+from test_core import NOW
 import contextlib
 import io
 from unittest import mock
@@ -9,6 +11,10 @@ from test_core import CoreCase
 
 
 class InactiveRuntimeTests(CoreCase):
+    def setUp(self):
+        super().setUp()
+        tokens.issue(self.conn, session_id="s1", runtime="claude", now=NOW)
+
     def switch_to_codex(self):
         runtimes.set(self.conn,'s1','codex','native-new')
         board.set_status(self.conn,'s1','working','new Codex turn')
@@ -34,7 +40,7 @@ class InactiveRuntimeTests(CoreCase):
         with contextlib.redirect_stderr(io.StringIO()) as error, \
              mock.patch('crew.store.connect',side_effect=AssertionError('must not migrate or write')), \
              mock.patch('crew.guard.check',side_effect=AssertionError('inactive carrier cannot reach policy')):
-            self.assertEqual(hooks.handle('guard',data,self.home,self.fake_plugin,{}),(2,None))
+            self.assertEqual(hooks.handle('guard',data,self.home,self.fake_plugin),(2,None))
         self.assertIn('Codex',error.getvalue())
         self.assertEqual(board.session(self.conn,'s1')['status'],'working')
         self.assertEqual(len(messaging.pending(self.conn,'s1')),1)

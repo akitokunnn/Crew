@@ -19,7 +19,7 @@ class EventSoundsTests(unittest.TestCase):
         self.addCleanup(self.case.doCleanups)
 
     def state(self):
-        code, value, _ = self.case.request('/api/state?project=demo')
+        code, value, _ = self.case.request('/api/op/workspace.state?project=demo')
         self.assertEqual(code, 200, value)
         return value['sounds']
 
@@ -35,7 +35,7 @@ class EventSoundsTests(unittest.TestCase):
     def test_http_and_desktop_settings_share_saved_preferences_without_starting_models(self):
         before = settings.get(self.case.conn)
         selected = {**event_sounds.DEFAULT, 'leader': 'off', 'assistant': 'knock', 'volume': .41}
-        code, value, _ = self.case.request('/api/settings', {'sounds': selected})
+        code, value, _ = self.case.request('/api/op/settings.save', {'sounds': selected})
         self.assertEqual(code, 200, value)
         self.assertEqual(value['sounds'], selected)
         self.assertEqual(self.state()['preferences'], selected)
@@ -49,14 +49,14 @@ class EventSoundsTests(unittest.TestCase):
         self.assertEqual(len(self.case.processes), 0)
 
     def test_invalid_settings_reject_the_entire_write_and_preserve_existing_choices(self):
-        self.case.request('/api/settings', {'sounds': event_sounds.DEFAULT})
+        self.case.request('/api/op/settings.save', {'sounds': event_sounds.DEFAULT})
         original = settings.get(self.case.conn)
         for field, invalid in [('volume', True), ('volume', -1), ('volume', 2), ('volume', float('nan')), ('muted', 'false'), ('leader', 'missing'), ('assistant', None)]:
             with self.subTest(field=field, value=invalid):
                 sound = {**event_sounds.DEFAULT, field: invalid}
                 ai = copy.deepcopy(original)
                 ai['default']['model'] = 'must-not-be-saved'
-                code, value, _ = self.case.request('/api/settings', {'ai': ai, 'sounds': sound})
+                code, value, _ = self.case.request('/api/op/settings.save', {'ai': ai, 'sounds': sound})
                 self.assertEqual(code, 400, value)
                 self.assertEqual(settings.get(self.case.conn), original)
                 self.assertEqual(event_sounds.get(self.case.home), event_sounds.DEFAULT)
@@ -65,15 +65,16 @@ class EventSoundsTests(unittest.TestCase):
 
     def upload(self, name='门铃', content=None, filename='bell.wav'):
         body = {'name': name, 'filename': filename, 'data': base64.b64encode(self.WAV if content is None else content).decode()}
-        return self.case.request('/api/sounds/custom', body)[:2]
+        return self.case.request('/api/op/sounds.custom.add', body)[:2]
 
+    # 上传后返回的播放地址仍指向旧路由，按回执播放无法命中 sounds.custom.file。
     def test_custom_sound_upload_plays_selects_and_lists_in_every_catalog(self):
         code, value = self.upload()
         self.assertEqual(code, 200, value)
         preset = value['preset']
         self.assertRegex(preset['id'], r'^custom:[0-9a-f]{12}$')
         self.assertEqual((preset['name'], preset['custom']), ('门铃', True))
-        self.assertEqual(preset['url'], '/api/sounds/custom/file?id=' + preset['id'])
+        self.assertEqual(preset['url'], '/api/op/sounds.custom.file?id=' + preset['id'])
         code, content, headers = self.case.request(preset['url'], raw=True)
         self.assertEqual((code, content, headers['Content-Type']), (200, self.WAV, 'audio/wav'))
         for header, kind in ((b'OggS' + bytes(20), 'audio/ogg'), (b'ID3' + bytes(20), 'audio/mpeg'), (b'\xff\xfb' + bytes(20), 'audio/mpeg')):
@@ -84,7 +85,7 @@ class EventSoundsTests(unittest.TestCase):
         self.assertEqual(self.state()['catalog']['presets'][preset['id']], entry)
         self.assertIn('notes', self.state()['catalog']['presets']['soft'])
         chosen = {**event_sounds.DEFAULT, 'leader': preset['id']}
-        code, value, _ = self.case.request('/api/settings', {'sounds': chosen})
+        code, value, _ = self.case.request('/api/op/settings.save', {'sounds': chosen})
         self.assertEqual(code, 200, value)
         self.assertEqual((value['sounds'], value['sound_missing']), (chosen, []))
         self.assertEqual(value['sound_catalog']['presets'][preset['id']], entry)
@@ -93,14 +94,14 @@ class EventSoundsTests(unittest.TestCase):
         self.assertEqual(len(self.case.processes), 0)
 
     def test_custom_sound_rejects_bad_files_and_limits_with_reasons(self):
-        for body, reason in (({'name': '', 'filename': 'a.wav', 'data': ''}, '1 到 20'),
-                             ({'name': '超' * 21, 'filename': 'a.wav', 'data': ''}, '1 到 20'),
+        for body, reason in (({'name': '', 'filename': 'a.wav', 'data': 'eA=='}, 'arguments.name'),
+                             ({'name': '超' * 21, 'filename': 'a.wav', 'data': 'eA=='}, '1 到 20'),
                              ({'name': '坏', 'filename': 'a.wav', 'data': '不是base64'}, 'base64'),
                              ({'name': '假', 'filename': 'a.wav', 'data': base64.b64encode(b'not audio at all').decode()}, 'wav、mp3、ogg'),
-                             ({'name': '大', 'filename': 'a.wav', 'data': base64.b64encode(self.WAV + bytes(1024 * 1024)).decode()}, '1MB'),
+                             ({'name': '大', 'filename': 'a.wav', 'data': base64.b64encode(self.WAV + bytes(1024 * 1024)).decode()}, 'arguments.data'),
                              ({'name': '缺', 'data': ''}, 'filename')):
             with self.subTest(reason=reason):
-                code, value, _ = self.case.request('/api/sounds/custom', body)
+                code, value, _ = self.case.request('/api/op/sounds.custom.add', body)
                 self.assertEqual(code, 400, value)
                 self.assertIn(reason, value['error'])
         for index in range(event_sounds.CUSTOM_LIMIT):
@@ -108,15 +109,15 @@ class EventSoundsTests(unittest.TestCase):
         code, value = self.upload('第21个')
         self.assertEqual(code, 400, value)
         self.assertIn('最多 20 个', value['error'])
-        code, value, _ = self.case.request('/api/settings', {'sounds': {**event_sounds.DEFAULT, 'delivery': 'custom:000000000000'}})
+        code, value, _ = self.case.request('/api/op/settings.save', {'sounds': {**event_sounds.DEFAULT, 'delivery': 'custom:000000000000'}})
         self.assertEqual(code, 400, value)
         self.assertIn('不存在', value['error'])
 
     def test_deleting_a_used_custom_sound_names_its_events_and_a_lost_file_is_reported_missing(self):
         preset = self.upload()[1]['preset']
         chosen = {**event_sounds.DEFAULT, 'leader': preset['id'], 'delivery': preset['id']}
-        self.assertEqual(self.case.request('/api/settings', {'sounds': chosen})[0], 200)
-        code, value, _ = self.case.request('/api/sounds/custom/delete', {'id': preset['id']})
+        self.assertEqual(self.case.request('/api/op/settings.save', {'sounds': chosen})[0], 200)
+        code, value, _ = self.case.request('/api/op/sounds.custom.delete', {'id': preset['id']})
         self.assertEqual(code, 409, value)
         self.assertIn('leader 回复完成', value['error'])
         self.assertIn('任务交付', value['error'])
@@ -126,17 +127,17 @@ class EventSoundsTests(unittest.TestCase):
         sounds = self.state()
         self.assertEqual((sounds['preferences'], sounds['missing']), (chosen, ['leader', 'delivery']))
         self.assertNotIn(preset['id'], sounds['catalog']['presets'])
-        self.assertEqual(self.case.request(preset['url'], raw=True)[0], 400)
+        self.assertEqual(self.case.request('/api/op/sounds.custom.file?id=' + preset['id'], raw=True)[0], 400)
         with mock.patch('crew.runtime_catalog.Catalog.refresh', return_value=[]):
             native = operations_chat.settings_snapshot(self.case.home, self.case.server.service.plugin_root)
         self.assertEqual(native['sound_missing'], ['leader', 'delivery'])
         other = self.upload('备用')[1]['preset']
-        self.assertEqual(self.case.request('/api/sounds/custom/delete', {'id': other['id']})[:2], (200, {'deleted': other['id']}))
+        self.assertEqual(self.case.request('/api/op/sounds.custom.delete', {'id': other['id']})[:2], (200, {'deleted': other['id']}))
         self.assertNotIn(other['id'], self.state()['catalog']['presets'])
         self.assertFalse(list((self.case.home / 'sounds' / 'custom').glob(other['id'][7:] + '.*')))
-        code, value, _ = self.case.request('/api/sounds/custom/delete', {'id': other['id']})
+        code, value, _ = self.case.request('/api/op/sounds.custom.delete', {'id': other['id']})
         self.assertEqual(code, 400, value)
-        self.assertEqual(self.case.request('/api/sounds/custom/delete', {'id': '../index'})[0], 400)
+        self.assertEqual(self.case.request('/api/op/sounds.custom.delete', {'id': '../index'})[0], 400)
 
     def completed_reply(self, runtime, goal=False):
         case = self.case
@@ -148,7 +149,7 @@ class EventSoundsTests(unittest.TestCase):
         body = {'session_id': 's3', 'text': '请说明结论', 'message_id': 'sound-input'}
         if goal:
             body['goal_id'] = case.goal()['id']
-        code, receipt, _ = case.request('/api/chat/send?project=demo', body)
+        code, receipt, _ = case.request('/api/op/chat.send?project=demo', body)
         self.assertEqual(code, 200, receipt)
         identity = receipt.get('execution_id', 's3')
         current = case.server.service.chat.processes[identity]
@@ -212,7 +213,7 @@ class EventSoundsTests(unittest.TestCase):
             settings.save(self.case.conn, ai)
         assistant = personal.ensure_assistant(self.case.conn, self.case.home)
         sid = assistant['session_id']
-        code, receipt, _ = self.case.request('/api/chat/send', {'session_id': sid, 'text': '请回答', 'message_id': 'assistant-sound'})
+        code, receipt, _ = self.case.request('/api/op/chat.send', {'session_id': sid, 'text': '请回答', 'message_id': 'assistant-sound'})
         self.assertEqual(code, 200, receipt)
         current = self.case.server.service.chat.processes[sid]
         if runtime == 'codex':
@@ -223,7 +224,7 @@ class EventSoundsTests(unittest.TestCase):
             self.case.finish_turn(sid, current.process)
         events = self.state()['events']
         self.assertEqual([item['kind'] for item in events], ['assistant'])
-        code, value, _ = self.case.request('/api/assistant/state')
+        code, value, _ = self.case.request('/api/op/assistant.state')
         self.assertEqual(code, 200, value)
         self.assertEqual(value['sounds']['events'], events)
         self.assertIsNone(value['project'])

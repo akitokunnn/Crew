@@ -40,7 +40,7 @@ class PromptCatalogTests(unittest.TestCase):
         self.assertNotIn('final_report', prompts.bundle('member'))
         self.assertIn('member_boundary', prompts.bundle('member'))
         # Each rule lives in exactly one default text.
-        for phrase in ('crew goal report-template', 'archived 是“仅归档', 'operation_key', 'known_versions'):
+        for phrase in ('goal_report_template', 'archived 是“仅归档', 'operation_key', 'known_versions'):
             owners = [key for key, text in prompts.DEFAULTS.items() if phrase in text]
             self.assertEqual(len(owners), 1, (phrase, owners))
         for name in ('leader.md', 'git.md'):

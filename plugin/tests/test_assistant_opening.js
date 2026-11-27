@@ -19,13 +19,16 @@ function assistantPage(hash, {projects, filled = true}) {
     document: {documentElement: {dataset: {}}, addEventListener() {}, createElement: stub, createTextNode: text => ({text}), getElementById: id => { if (!nodes.has(id)) nodes.set(id, stub()); return nodes.get(id); }},
     fetch: async (url, options) => {
       calls.push({url, method: options.method});
-      const value = url === "/api/assistant/state" ? {assistant: {session_id: "assistant"}, projects, todos: [], goals: [], sounds: {}, now: "now"} : {};
+      const value = url === "/api/op/assistant.state" ? {assistant: {session_id: "assistant"}, projects, todos: [], goals: [], sounds: {}, now: "now"}
+        : url === "/api/op/interaction.list" ? {requests: []} : {};
       return {ok: true, status: 200, json: async () => value};
     },
     CrewSound: {observe() {}}, CrewPersonalNotes: {create: () => ({open() {}})},
     CrewChat: {initFiles() {}, unmount() {}, update() {}, mount() {}, setNote() {}, prefill: text => { prefills.push(text); return filled; }}};
   sandbox.window = sandbox;
-  vm.runInNewContext(web("assistant.js"), sandbox);
+  vm.createContext(sandbox);
+  vm.runInContext(web("browser-utils.js"), sandbox);
+  vm.runInContext(web("assistant.js"), sandbox);
   return {sandbox, nodes, calls, replaced, listeners, prefills};
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
@@ -40,7 +43,7 @@ test("the opening intent names the workspace, asks for a plan before acting, and
   assert.match(text, /leader 编制/);
   assert.match(text, /首批任务/);
   assert.match(text, /等我确认方案后再创建和启动/);
-  assert(!page.calls.some(call => call.url === "/api/chat/send"), "the opening is only written into the composer");
+  assert(!page.calls.some(call => call.url === "/api/op/chat.send"), "the opening is only written into the composer");
   assert.deepEqual(page.replaced, ["/assistant.html"], "the hash is used once, so a reload does not write it again");
   await settle();
   page.listeners.get("hashchange")(); await settle();

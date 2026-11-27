@@ -22,7 +22,7 @@
     if (key === cache.key && Date.now() - cache.at < THROTTLE_MS) return;
     cache.inflight = true;
     const query = new URLSearchParams(names.map(name => ["project", name]));
-    fetch(`/api/workspaces/activity?${query}`, {headers:{"X-Crew":"1"}})
+    fetch(`/api/op/workspace.activity?${query}`, {headers:{"X-Crew":"1"}})
       .then(async response => {
         const body = await response.json();
         if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);

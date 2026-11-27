@@ -1,13 +1,12 @@
 """Structured choices and in-place clarification on temporary Crew boards."""
 import tests
-import contextlib
-import io
-import json
-import os
 import unittest
 from unittest import mock
 
-from crew import board, cli, decision_briefs, trust_mode
+from test_shell import PLUGIN
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
+from crew import board, web, decision_briefs, trust_mode
 from tests.test_runtimes import RuntimeFixture
 
 
@@ -150,7 +149,7 @@ class DecisionBriefTests(RuntimeFixture):
         self.assertIsNone(decision_briefs.queue_review(self.conn, number))
         pending = board.pending_notices(self.conn, "chief-id")
         self.assertEqual(len(pending), 1)
-        for text in ("crew decision revise", "一事一问", "推荐方案和理由", "后果", "crew todo add", "信任模式", "不要另发重复题"):
+        for text in ("decision_revise", "一事一问", "推荐方案和理由", "后果", "todo_add", "信任模式", "不要另发重复题"):
             self.assertIn(text, pending[0]["text"])
         self.assertEqual(len(board.decisions(self.conn, "demo")), 1)
         self.assertIsNone(decision_briefs.queue_review(self.conn, self.ask()))
@@ -190,58 +189,42 @@ class DecisionBriefTests(RuntimeFixture):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0], 1)
 
 
-class DecisionBriefCliTests(RuntimeFixture):
-    def run_cli(self, arguments):
-        output, errors = io.StringIO(), io.StringIO()
-        with mock.patch.dict(os.environ, {"CREW_HOME": str(self.home), "CREW_SESSION_ID": "member-id"}), \
-                contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
-            code = cli.main(arguments, cwd=self.root)
-        return code, output.getvalue(), errors.getvalue()
+class DecisionBriefOperationTests(RuntimeFixture):
+    def setUp(self):
+        super().setUp()
+        self.service = web.Service(self.home, PLUGIN, cwd=self.root, agents_provider=lambda: [],
+                                   isolated_sources=True)
+        self.addCleanup(self.service.close)
 
-    def flags(self):
-        value = brief()
-        result = ["--title", value["title"], "--context", value["context"], "--why-user", value["why_user"],
-                  "--recommend-reason", value["recommendation_reason"], "--impact", value["impact"]]
-        for item in value["options"]:
-            result += ["--option", item["label"], "--consequence", item["consequence"]]
-        return result + ["--recommend", "等待用户验收后再发布"]
+    def test_legacy_and_structured_questions_persist_the_supplied_fields(self):
+        old = ai_call(self.service, self.conn, "member-id", "decision.ask",
+                      {"question": "old raw question", "options": ["A", "B"]})
+        self.assertIsNone(decision_briefs.get(self.conn, old["id"]))
+        saved = ai_call(self.service, self.conn, "member-id", "decision.ask",
+                        {"question": "original text", "brief": brief(), "recommendation": "等待用户验收后再发布"})
+        self.assertEqual(decision_briefs.get(self.conn, saved["id"]), brief())
 
-    def test_cli_legacy_ask_warns_and_structured_ask_persists_explicit_fields(self):
-        code, output, error = self.run_cli(["ask", "old raw question", "--option", "A", "--option", "B"])
-        self.assertEqual(code, 0, error)
-        self.assertIn("结构化摘要", error)
-        original = int(output)
-        self.assertIsNone(decision_briefs.get(self.conn, original))
-        code, output, error = self.run_cli(["ask", "original text", *self.flags()])
-        self.assertEqual(code, 0, error)
-        self.assertEqual(error, "")
-        self.assertEqual(decision_briefs.get(self.conn, int(output)), brief())
-
-    def test_cli_revise_updates_the_original_question_with_positionally_matched_consequences(self):
+    def test_revise_updates_the_original_question_with_matched_consequences(self):
         number = board.ask(self.conn, "member-id", "old", ["A", "B"])
-        code, output, errors = self.run_cli(["decision", "revise", str(number), "--question", "clear question", *self.flags(), "--json"])
-        self.assertEqual(code, 0, errors)
-        value = json.loads(output)
+        value = ai_call(self.service, self.conn, "member-id", "decision.revise",
+                        {"id": number, "question": "clear question", "brief": brief(),
+                         "recommendation": "等待用户验收后再发布"})
         self.assertEqual(value["id"], number)
         self.assertEqual(value["brief"], brief())
-        code, _, errors = self.run_cli(["ask", "bad", "--title", "one question", "--option", "one action", "--consequence", "one", "--option", "another action"])
-        self.assertEqual(code, 1)
-        self.assertIn("一一对应", errors)
+        with self.assertRaises((ValueError, OpError, board.BoardError)):
+            ai_call(self.service, self.conn, "member-id", "decision.ask",
+                    {"question": "bad", "brief": brief(), "options": ["unmatched"]})
 
-    def test_cli_trust_status_set_and_report_use_the_bound_project(self):
-        code, output, errors = self.run_cli(["trust", "status", "--json"])
-        self.assertEqual(code, 0, errors)
-        self.assertFalse(json.loads(output)["enabled"])
-        code, output, errors = self.run_cli(["trust", "set", "on", "--goal", "Deliver the requested work", "--json"])
-        self.assertEqual(code, 1)
-        self.assertIn('只能由用户', errors)
-        code, _, errors = self.run_cli(['--session', 'user', 'trust', 'set', 'on', '--leader', 'chief-id', '--goal', 'Spoofed grant'])
-        self.assertEqual(code, 1)
-        self.assertFalse(trust_mode.get(self.conn, 'demo', 'chief-id')['enabled'])
-        trust_mode.set(self.conn, 'demo', True, 'Deliver the requested work', leader_session_id='chief-id')
-        code, report, errors = self.run_cli(["trust", "report"])
-        self.assertEqual(code, 0, errors)
-        self.assertIn("Deliver the requested work", report)
+    def test_trust_settings_require_user_and_report_uses_selected_project(self):
+        args = {"leader_session_id": "chief-id", "enabled": True, "goal": "Deliver the requested work"}
+        self.assertFalse(trust_mode.get(self.conn, "demo", "chief-id")["enabled"])
+        with self.assertRaises(OpError) as caught:
+            ai_call(self.service, self.conn, "member-id", "trust.set", args)
+        self.assertEqual(caught.exception.code, "forbidden")
+        self.assertFalse(trust_mode.get(self.conn, "demo", "chief-id")["enabled"])
+        self.service.op("trust.set", args, project="demo")
+        report = self.service.op("trust.report", {"leader_session_id": "chief-id"}, project="demo")
+        self.assertIn("Deliver the requested work", report.body.decode("utf-8"))
 
 
 if __name__ == "__main__":

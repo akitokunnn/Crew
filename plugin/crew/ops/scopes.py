@@ -14,11 +14,27 @@ def authorize(op, caller, grants=None):
         raise OpError('forbidden', 'AI 调用必须带会话令牌')
 
 
+AI_IDENTITY_FIELDS = ('caller_session_id', 'caller_execution_id')
+
+
+def human_payload(op, caller, args):
+    """People act as the user and can never name an AI identity (from the former remote_routes.human_payload).
+
+    Goal actions also may not name an execution; elsewhere a top-level
+    ``execution_id`` is an expected-version check, not an identity.
+    """
+    nested = args.get('data') if isinstance(args.get('data'), dict) else {}
+    goal = op.name.startswith('goal.')
+    for scope, fields in ((args, AI_IDENTITY_FIELDS + (('execution_id',) if goal else ())),
+                          (nested, AI_IDENTITY_FIELDS + ('execution_id',))):
+        if any(key in scope for key in fields) or scope.get('actor_session_id', 'user') != 'user':
+            raise OpError('forbidden', '只有 AI 会话自己的令牌能代表 AI 身份')
+    if caller.role == 'device_browser' and op.name == 'leader.create' and 'candidate_members' in args:
+        raise OpError('forbidden', '收编原生会话只能在电脑上的 Crew 中进行')
+
+
 def confirm(service, op, caller, message_id):
     """AI-side risk gates (design §5.6)."""
-    if op.risk == 'high':
-        raise OpError('awaiting_user', '%s 是高风险操作，AI 不能直接执行；请让用户在 Crew 界面操作' % op.name,
-                      {'op': op.name})
     if op.risk == 'confirm' and caller.role == 'assistant':
         from contextlib import closing
         from .. import personal, store

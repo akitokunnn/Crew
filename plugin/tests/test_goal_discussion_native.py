@@ -44,8 +44,7 @@ class GoalDiscussionNativeTests(GoalFixture):
                         return codex_guard.check(self.home, 'chief-id', payload, execution['id'])
                     output = io.StringIO()
                     with redirect_stderr(output):
-                        code, _ = hooks.handle('guard', payload, self.home, PLUGIN,
-                            {'CREW_SESSION_ID': 'chief-id', 'CREW_EXECUTION_ID': execution['id']})
+                        code, _ = hooks.handle('guard', payload, self.home, PLUGIN)
                     return output.getvalue() if code else None
 
                 self.assertIsNone(check('Bash', {'command': 'pwd'}))
@@ -67,7 +66,7 @@ class GoalDiscussionNativeTests(GoalFixture):
         journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'), None)
         with mock.patch('crew.codex_runtime._ObservedClient', FakeClient):
             running = codex_runtime.CodexRunning(self.home, PLUGIN, board.session(self.conn, 'chief-id'),
-                {'agent': None}, {'model': None, 'effort': None}, journal, None, execution=execution)
+                {'agent': None}, {'model': None, 'effort': None}, journal, execution=execution)
         def close():
             running.close()
             self.assertTrue(running.reader_done.wait(2))
@@ -95,7 +94,7 @@ class GoalDiscussionNativeTests(GoalFixture):
         journal = chat.Journal(self.home / 'chat' / (execution['id'] + '.jsonl'), None)
         with mock.patch('crew.codex_runtime._ObservedClient', FakeClient):
             running = codex_runtime.CodexRunning(self.home, PLUGIN, board.session(self.conn, 'chief-id'),
-                {'agent': None}, {'model': None, 'effort': None}, journal, None, execution=execution)
+                {'agent': None}, {'model': None, 'effort': None}, journal, execution=execution)
         def close():
             running.close()
             self.assertTrue(running.reader_done.wait(2))

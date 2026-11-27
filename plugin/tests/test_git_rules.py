@@ -1,15 +1,15 @@
-"""Git management context, central-operation guard, and Git skill reminders."""
+"""Git management context, central-operation guard and injected roles."""
 import tests  # Install the production-service connection guard.
-from crew import board, hooks, rules, store
+from crew import board, store
+from crew.ops import tokens
 from test_core import CoreCase, NOW
 
 
 class GitRulesTests(CoreCase):
     def setUp(self):
         super().setUp()
-        skill = self.fake_plugin / "skills" / "git" / "SKILL.md"
-        skill.parent.mkdir(parents=True)
-        skill.write_text("# git rules\n", encoding="utf-8")
+        for sid in ('s1', 's2', 's3'):
+            tokens.issue(self.conn, session_id=sid, runtime='claude', now=NOW)
 
     def enable(self, policy=None):
         board.join(self.conn, "s3", "demo", "git管理员", self.root, store.norm_path(self.root), "main",
@@ -25,12 +25,12 @@ class GitRulesTests(CoreCase):
     def test_session_start_shows_first_six_policy_lines(self):
         self.enable("\n".join("规则%d" % i for i in range(1, 9)))
         context = self.context()
-        self.assertIn("本项目的推送、开 PR、合并交给 Git 助手「git管理员」：做完用 `crew git request` 交给它", context)
-        self.assertIn('crew send git管理员 "<内容>" --kind task', context)
+        self.assertIn("本项目的推送、开 PR、合并交给 Git 助手「git管理员」：做完用 Crew 工具 git_request_add 交给它", context)
+        self.assertIn('message_send', context)
         self.assertIn("发版分支由用户自己处理", context)
         self.assertIn("规则1\n规则2\n规则3\n规则4\n规则5\n规则6", context)
         self.assertNotIn("规则7", context)
-        self.assertIn("全文用 crew git policy 看", context)
+        self.assertIn("全文用 git_policy_get 看", context)
 
     def test_session_start_without_policy_tells_sessions_to_ask_admin(self):
         self.enable()
@@ -61,9 +61,9 @@ class GitRulesTests(CoreCase):
         for sid in ("s1", "s2"):
             for command in ("git push origin feature/x", "gh pr merge 12 --squash", "gh pr create --title test", "cd repo && GIT PUSH origin main"):
                 with self.subTest(sid=sid, command=command):
-                    self.assertIn("本项目的推送、开 PR、合并交给 Git 助手：用 crew git request 交给它；发版分支由用户自己处理。", self.guard(sid, command=command))
+                    self.assertIn("本项目的推送、开 PR、合并交给 Git 助手：用 Crew 工具 git_request_add 交给它；发版分支由用户自己处理。", self.guard(sid, command=command))
         event = self.conn.execute("SELECT detail FROM events WHERE kind='hook:guard' ORDER BY id DESC LIMIT 1").fetchone()
-        self.assertIn("crew git request", event["detail"])
+        self.assertIn("git_request_add", event["detail"])
 
     def test_git_admin_can_push_create_and_merge(self):
         self.enable()
@@ -84,7 +84,7 @@ class GitRulesTests(CoreCase):
                 'echo "safe; text"; gh pr merge 12',
             ):
                 with self.subTest(tool=tool, command=command):
-                    self.assertIn("crew git request", self.guard(tool=tool, command=command))
+                    self.assertIn("git_request_add", self.guard(tool=tool, command=command))
 
     def test_help_read_commands_and_quoted_strings_are_allowed(self):
         self.enable()
@@ -122,21 +122,13 @@ class GitRulesTests(CoreCase):
         self.enable()
         self.assertIn("blacklist.txt", self.guard("s3", command="git push --force origin feature/x"))
 
-    def test_git_admin_startup_and_rule_reminder_use_git_skill(self):
+    def test_git_admin_startup_identifies_the_injected_role(self):
         self.enable()
-        self.assertIn("[Crew git]", self.context("s3"))
-        self.assertIn("/crew:git", self.context("s3"))
-        self.assertIn("/crew:git", rules.reminder(self.conn, "s3", self.fake_plugin))
-        data = self.data("s3", tool_name="Skill", tool_input={"skill": "crew:git"})
-        self.assertEqual(hooks.handle("guard", data, self.home, self.fake_plugin, {}, now=NOW), (0, None))
-        self.assertIsNone(rules.reminder(self.conn, "s3", self.fake_plugin))
-        (self.fake_plugin / "skills" / "git" / "SKILL.md").write_text("# updated git rules\n", encoding="utf-8")
-        self.assertIn("/crew:git", rules.reminder(self.conn, "s3", self.fake_plugin))
+        self.assertIn('[Crew git]', self.context('s3'))
 
-    def test_ordinary_leader_keeps_leader_skill(self):
+    def test_ordinary_leader_receives_the_leader_role(self):
         self.enable()
-        board.join(self.conn, "s2", "demo", "lead", self.root, store.norm_path(self.root), "main", role="leader", now=NOW)
-        self.assertIn("[Crew leader]", self.context("s2"))
-        self.assertIn("/crew:leader", self.context("s2"))
-        self.assertIn("/crew:leader", rules.reminder(self.conn, "s2", self.fake_plugin))
-        self.assertNotIn("/crew:git", rules.reminder(self.conn, "s2", self.fake_plugin))
+        board.join(self.conn, 's2', 'demo', 'lead', self.root, store.norm_path(self.root), 'main', role='leader', now=NOW)
+        context = self.context('s2')
+        self.assertIn('[Crew leader]', context)
+        self.assertNotIn('[Crew git]', context)

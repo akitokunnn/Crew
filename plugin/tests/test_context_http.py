@@ -1,5 +1,6 @@
 """Context state and compaction routes with isolated transcripts and fake processes."""
 import tests  # Install the production-service connection guard.
+import uuid
 import json
 import threading
 import unittest
@@ -8,12 +9,19 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from crew import board, runtimes, store, web
+from crew.ops.errors import OpError
+from ops_helpers import ai_call
 from test_codex_runtime import FakeClient
 from test_shell import NOW, PLUGIN, ShellFixture
 from test_usage import token_count
 
 
 class ContextHttpTests(ShellFixture, unittest.TestCase):
+    def ai_compact(self, caller, target=None, **options):
+        """A leader compacts itself or a member through its own identity (MCP session.compact)."""
+        args = {**({'target': target} if target is not None else {}), **options}
+        return ai_call(self.server.service, self.conn, caller, 'session.compact', args)
+
     def setUp(self):
         super().setUp()
         self.provider = mock.Mock(return_value=[])
@@ -38,14 +46,14 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
     def request(self, path, data=None):
         payload = None if data is None else json.dumps(data).encode("utf-8")
         try:
-            response = urlopen(Request(self.url + path, payload, {"X-Crew": "1"}), timeout=5)
+            response = urlopen(Request(self.url + path, payload, {"X-Crew": "1", 'X-Crew-Request-Id': uuid.uuid4().hex}), timeout=5)
         except HTTPError as exc:
             response = exc
         with response:
             return response.status, json.load(response)
 
     def state(self):
-        code, result = self.request("/api/state?project=demo")
+        code, result = self.request("/api/op/workspace.state?project=demo")
         self.assertEqual(code, 200, result)
         return {row["session_id"]: row for row in result["leaders"] + result["members"]}
 
@@ -57,7 +65,7 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
                                    "cache_creation_input_tokens": 0}}}], append=append)
 
     def start_session(self, role="leader"):
-        route = "/api/leader" if role == "leader" else "/api/spawn"
+        route = "/api/op/leader.create" if role == "leader" else "/api/op/execution.spawn"
         data = {"name": "context-" + role, "task": "verify compaction"}
         if role == "member":
             data["group"] = "lead"
@@ -97,7 +105,7 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         state = self.state()[sid]
         self.assertEqual(state["where"], "offline")
         self.assertEqual(state["context"], expected)
-        self.assertEqual(self.request("/api/chat/history?project=demo&session_id=" + sid)[1]["context"], expected)
+        self.assertEqual(self.request("/api/op/chat.history?project=demo&session_id=" + sid)[1]["context"], expected)
 
     def test_state_keeps_last_live_claude_reading_when_the_process_exits(self):
         sid, process = self.start_session()
@@ -114,7 +122,7 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         self.stop_process(sid, process)
         expected = {"used": 850000, "max": 1000000, "source": "last_observed"}
         self.assertEqual(self.state()[sid]["context"], expected)
-        history = self.request("/api/chat/history?project=demo&session_id=" + sid)[1]
+        history = self.request("/api/op/chat.history?project=demo&session_id=" + sid)[1]
         self.assertEqual(history["context"], expected)
         self.assertIsNone(self.chat.context(sid))
 
@@ -135,7 +143,7 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         self.server.service.scanned_at = None
         self.server.service.scan_usage()
         self.assertEqual(self.state()["s3"]["context"], expected)
-        self.assertEqual(self.request("/api/chat/history?project=demo&session_id=s3")[1]["context"], expected)
+        self.assertEqual(self.request("/api/op/chat.history?project=demo&session_id=s3")[1]["context"], expected)
         archive = self.codex.parent / "archived_sessions"
         archive.mkdir()
         archived = path.rename(archive / path.name)
@@ -152,7 +160,7 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         runtimes.set(self.conn, sid, "codex")
         with mock.patch("crew.codex_binding.home_for", return_value=self.root / "codex-home"), \
                 mock.patch("crew.codex_runtime._ObservedClient", FakeClient):
-            self.assertEqual(self.request("/api/chat/send?project=demo", {"session_id": sid, "text": "Begin"})[0], 200)
+            self.assertEqual(self.request("/api/op/chat.send?project=demo", {"session_id": sid, "text": "Begin"})[0], 200)
             first = self.chat.processes[sid]
             first.client.emit("thread/tokenUsage/updated", tokenUsage={
                 "last": {"totalTokens": 57554, "outputTokens": 100}, "modelContextWindow": 258400})
@@ -160,7 +168,7 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
             self.chat.stop_managed(sid)
             expected = {"used": 57554, "max": 258400, "source": "last_observed"}
             self.assertEqual(self.state()[sid]["context"], expected)
-            self.assertEqual(self.request("/api/chat/send?project=demo", {"session_id": sid, "text": "Resume"})[0], 200)
+            self.assertEqual(self.request("/api/op/chat.send?project=demo", {"session_id": sid, "text": "Resume"})[0], 200)
             resumed = self.chat.processes[sid]
             self.assertEqual(resumed.thread_id, first.thread_id)
             self.assertEqual(self.state()[sid]["context"], expected)
@@ -172,7 +180,7 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
     def test_idle_leader_compact_writes_command_and_records_system_separators(self):
         sid, process = self.start_session()
         self.finish_turn(sid, process)
-        code, result = self.request("/api/session/compact", {"session_id": sid})
+        code, result = self.request("/api/op/session.compact", {"session_id": sid})
         self.assertEqual(code, 200, result)
         command = json.loads(process.stdin.getvalue().splitlines()[-1])
         self.assertEqual(command["message"]["content"], "/compact")
@@ -187,7 +195,7 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         process.emit({"type": "result", "is_error": False, "local_command": "compact", "num_turns": 0})
         with journal.condition:
             self.assertTrue(journal.condition.wait_for(lambda: journal.status == "idle", timeout=3))
-        events = self.request("/api/chat/history?session_id=" + sid)[1]["events"]
+        events = self.request("/api/op/chat.history?session_id=" + sid)[1]["events"]
         self.assertEqual(len([event for event in events if event["type"] == "compact_request"]), 1)
         compact = next(event for event in events if event["type"] == "compact")
         self.assertEqual((compact["pre_tokens"], compact["post_tokens"]), (46123, 9925))
@@ -200,7 +208,7 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         self.assertEqual(state["where"], "bg")
         self.assertFalse(state["busy"])
         self.assertTrue(state["running"])
-        self.assertEqual(self.request("/api/session/compact", {"session_id": sid})[0], 200)
+        self.assertEqual(self.request("/api/op/session.compact", {"session_id": sid})[0], 200)
         self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])["message"]["content"], "/compact")
 
     def test_compact_own_leader_and_explicit_user_are_allowed(self):
@@ -208,9 +216,11 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         for caller in ("s3", board.HUMAN):
             with self.subTest(caller=caller):
                 self.finish_turn(sid, process)
-                code, result = self.request("/api/session/compact", {
-                    "session_id": sid, "caller_session_id": caller})
-                self.assertEqual(code, 200, result)
+                if caller == board.HUMAN:
+                    code, result = self.request("/api/op/session.compact", {"session_id": sid})
+                    self.assertEqual(code, 200, result)
+                else:
+                    self.ai_compact(caller, sid)
                 self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])["message"]["content"], "/compact")
 
     def test_compact_foreign_leader_and_members_are_denied_before_writing(self):
@@ -218,34 +228,35 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         self.finish_turn(sid, process)
         board.join(self.conn, "other-lead", "demo", "other", self.project, self.project, "main", role="leader", now=NOW)
         before = process.stdin.getvalue()
-        for caller in ("other-lead", "s2", sid, "missing"):
-            with self.subTest(caller=caller):
-                self.assertEqual(self.request("/api/session/compact", {
-                    "session_id": sid, "caller_session_id": caller}),
-                    (400, {"error": "只有它自己的 leader 或用户能压缩它"}))
+        with self.assertRaisesRegex(board.BoardError, "只有它自己的 leader 或用户能压缩它"):
+            self.ai_compact("other-lead", sid)
+        for caller in ("s2", sid):
+            with self.subTest(caller=caller), self.assertRaises(OpError) as denied:
+                self.ai_compact(caller, sid)
+            self.assertEqual(denied.exception.code, 'forbidden')
         self.assertEqual(process.stdin.getvalue(), before)
 
     def test_compact_leader_receives_original_busy_vscode_and_missing_record_errors(self):
         sid, process = self.start_session("member")
         before = process.stdin.getvalue()
-        self.assertEqual(self.request("/api/session/compact", {"session_id": sid, "caller_session_id": "s3"}),
-                         (409, {"error": "正在干活，等这一轮结束再压缩"}))
+        with self.assertRaisesRegex(board.Conflict, "正在干活，等这一轮结束再压缩"):
+            self.ai_compact("s3", sid)
         self.assertEqual(process.stdin.getvalue(), before)
         self.provider.return_value = [{"sessionId": "s1", "name": "cc-one", "status": "idle"}]
         self.server.service.refresh_agents()
-        self.assertEqual(self.request("/api/session/compact", {"session_id": "s1", "caller_session_id": "s3"}),
-                         (409, {"error": "它在 VS Code 里运行，去那边输入 /compact"}))
+        with self.assertRaisesRegex(board.Conflict, "它在 VS Code 里运行，去那边输入 /compact"):
+            self.ai_compact("s3", "s1")
         self.provider.return_value = []
         self.server.service.refresh_agents()
-        self.assertEqual(self.request("/api/session/compact", {"session_id": "s1", "caller_session_id": "s3"}),
-                         (400, {"error": "会话没有网页聊天记录或启动记录，请先叫醒它，或在 VS Code 打开后输入 /compact"}))
+        with self.assertRaisesRegex(board.BoardError, "会话没有网页聊天记录或启动记录，请先叫醒它，或在 VS Code 打开后输入 /compact"):
+            self.ai_compact("s3", "s1")
         self.assertEqual(len(self.processes), 1)
 
     def test_self_compact_http_queues_busy_web_leader_and_rejects_unmanaged_leader(self):
         sid, process = self.start_session()
         before = process.stdin.getvalue()
-        self.assertEqual(self.request("/api/session/compact", {"session_id": sid, "caller_session_id": sid}),
-                         (200, {"ok": True, "message": "这一轮说完后压缩"}))
+        # A leader compacting itself waits for its turn to end by default.
+        self.assertEqual(self.ai_compact(sid), {"ok": True, "message": "这一轮说完后压缩", "queued": True})
         self.assertEqual(process.stdin.getvalue(), before)
         self.assertTrue(self.chat.processes[sid].pending_compact)
         process.emit({"type": "result"})
@@ -255,13 +266,13 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
                 lambda: any(event["type"] == "compact_request" for event in journal.events), timeout=3))
         with self.chat.processes[sid].input_lock:
             self.assertEqual(json.loads(process.stdin.getvalue().splitlines()[-1])["message"]["content"], "/compact")
-        self.assertEqual(self.request("/api/session/compact", {"session_id": "s3", "caller_session_id": "s3"}),
-                         (409, {"error": "它在 VS Code 里运行，去那边输入 /compact"}))
+        with self.assertRaisesRegex(board.Conflict, "它在 VS Code 里运行，去那边输入 /compact"):
+            self.ai_compact("s3")
 
     def test_busy_session_returns_exact_conflict_without_writing(self):
         sid, process = self.start_session()
         before = process.stdin.getvalue()
-        self.assertEqual(self.request("/api/session/compact", {"session_id": sid}),
+        self.assertEqual(self.request("/api/op/session.compact", {"session_id": sid}),
                          (409, {"error": "正在干活，等这一轮结束再压缩"}))
         self.assertEqual(process.stdin.getvalue(), before)
 
@@ -271,7 +282,7 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
                 sid, process = self.start_session(role)
                 before = process.stdin.getvalue()
                 for _ in range(2):
-                    code, result = self.request('/api/session/compact', {'session_id': sid, 'after_turn': True})
+                    code, result = self.request('/api/op/session.compact', {'session_id': sid, 'after_turn': True})
                     self.assertEqual((code, result), (200, {'ok': True, 'message': '这一轮说完后压缩', 'queued': True}))
                 self.assertEqual(process.stdin.getvalue(), before)
                 self.assertTrue(self.chat.processes[sid].pending_compact)
@@ -288,19 +299,19 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
     def test_ring_click_requires_a_boolean_and_never_queues_for_another_ai(self):
         sid, process = self.start_session('member')
         before = process.stdin.getvalue()
-        self.assertEqual(self.request('/api/session/compact', {'session_id': sid, 'after_turn': 'true'})[0], 400)
-        self.assertEqual(self.request('/api/session/compact', {
-            'session_id': sid, 'after_turn': True, 'caller_session_id': 's3'})[0], 409)
+        self.assertEqual(self.request('/api/op/session.compact', {'session_id': sid, 'after_turn': 'true'})[0], 400)
+        with self.assertRaises(board.Conflict):
+            self.ai_compact('s3', sid, after_turn=True)
         self.assertEqual(process.stdin.getvalue(), before)
         self.assertFalse(self.chat.processes[sid].pending_compact)
 
     def test_vscode_online_returns_guidance_and_offline_without_log_never_launches(self):
         self.provider.return_value = [{"sessionId": "s1", "name": "cc-one", "status": "idle"}]
         self.server.service.refresh_agents()
-        self.assertEqual(self.request("/api/session/compact", {"session_id": "s1"}),
+        self.assertEqual(self.request("/api/op/session.compact", {"session_id": "s1"}),
                          (409, {"error": "它在 VS Code 里运行，去那边输入 /compact"}))
         self.assertEqual(self.state()["s1"]["where"], "vscode")
-        code, result = self.request("/api/session/compact", {"session_id": "s2"})
+        code, result = self.request("/api/op/session.compact", {"session_id": "s2"})
         self.assertEqual(code, 400, result)
         self.assertIn("叫醒", result["error"])
         self.assertIn("VS Code", result["error"])
@@ -310,7 +321,7 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         sid, process = self.start_session()
         self.finish_turn(sid, process)
         self.stop_process(sid, process)
-        self.assertEqual(self.request("/api/session/compact", {"session_id": sid})[0], 200)
+        self.assertEqual(self.request("/api/op/session.compact", {"session_id": sid})[0], 200)
         self.assertEqual(len(self.processes), 2)
         command = self.commands[-1]
         self.assertEqual(command[command.index('--resume') + 1], sid)
@@ -323,6 +334,6 @@ class ContextHttpTests(ShellFixture, unittest.TestCase):
         board.join(self.conn, "foreign", "other", "foreign", other, other, "main", now=NOW)
         for sid in ("foreign", "missing"):
             with self.subTest(session_id=sid):
-                code, result = self.request("/api/session/compact?project=demo", {"session_id": sid})
+                code, result = self.request("/api/op/session.compact?project=demo", {"session_id": sid})
                 self.assertEqual(code, 400, result)
         self.assertEqual(self.processes, [])

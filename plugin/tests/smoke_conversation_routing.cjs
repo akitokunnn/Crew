@@ -44,7 +44,7 @@ if(!process.versions.electron){
           await check('autonomy is not saved without a written scope','document.querySelector("#trust-error").textContent.includes("授权范围")&&!!document.querySelector("#trust-form")');
           await js(`document.querySelector('#trust-goal').value='推进本组交办的工作，遵守各任务原始要求与约束';document.querySelector("#trust-form").requestSubmit();true;`);
         }
-        await wait(`(async()=>{const state=await fetch('/api/state?project=demo').then(r=>r.json());return state.leaders.find(item=>item.session_id===${JSON.stringify(bootstrap.leader)}).trust.enabled===${mode==='autonomous'}})()`);
+        await wait(`(async()=>{const state=await fetch('/api/op/workspace.state?project=demo').then(r=>r.json());return state.leaders.find(item=>item.session_id===${JSON.stringify(bootstrap.leader)}).trust.enabled===${mode==='autonomous'}})()`);
       }
       async function type(text){await js(`document.querySelector('#chat-host textarea').value=${JSON.stringify(text)};document.querySelector('#chat-host textarea').dispatchEvent(new Event('input',{bubbles:true}));true;`);}
       async function capture(name){await js('document.fonts.ready.then(()=>true)');await pause(120);wc.debugger.attach('1.3');try{const result=await wc.debugger.sendCommand('Page.captureScreenshot',{format:'png',fromSurface:true});const file=path.join(out,name+'.png');await fs.writeFile(file,Buffer.from(result.data,'base64'));evidence.screenshots.push(file);}finally{wc.debugger.detach();}}
@@ -100,7 +100,7 @@ if(!process.versions.electron){
       await check('leader authorization saves through real HTTP without starting its general conversation',
         '!document.querySelector("#chat-host .chat-activity")');
       await check('leader authorization leaves the existing task modes intact',
-        `(async()=>{const state=await fetch('/api/state?project=demo').then(r=>r.json());return state.leaders.find(item=>item.session_id===${JSON.stringify(bootstrap.leader)}).trust.enabled&&state.goals.filter(item=>item.leader_session_id===${JSON.stringify(bootstrap.leader)}).every(item=>item.decision_mode.mode==='human')})()`);
+        `(async()=>{const state=await fetch('/api/op/workspace.state?project=demo').then(r=>r.json());return state.leaders.find(item=>item.session_id===${JSON.stringify(bootstrap.leader)}).trust.enabled&&state.goals.filter(item=>item.leader_session_id===${JSON.stringify(bootstrap.leader)}).every(item=>item.decision_mode.mode==='human')})()`);
       await capture('00-leader-autonomy');
       window.setSize(390,844);await capture('00-leader-autonomy-mobile');window.setSize(1280,900);
       await trust("human");

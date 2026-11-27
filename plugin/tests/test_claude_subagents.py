@@ -161,7 +161,7 @@ class ClaudeChildHttpTests(ShellFixture, unittest.TestCase):
         self.url = self.server.url
 
     def start(self, sid='s3', goal_id=None):
-        code, receipt, _ = self.request('/api/chat/send?project=demo',
+        code, receipt, _ = self.request('/api/op/chat.send?project=demo',
             {'session_id': sid, 'text': '隔离子代理验收', **({'goal_id': goal_id} if goal_id else {})})
         self.assertEqual(code, 200, receipt)
         key = receipt.get('execution_id', sid)
@@ -176,7 +176,7 @@ class ClaudeChildHttpTests(ShellFixture, unittest.TestCase):
                     row['status'] == status for row in current.journal.subagents.values()), timeout=3))
 
     def state(self):
-        code, value, _ = self.request('/api/state?project=demo')
+        code, value, _ = self.request('/api/op/workspace.state?project=demo')
         self.assertEqual(code, 200, value)
         return value
 

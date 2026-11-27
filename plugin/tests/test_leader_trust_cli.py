@@ -1,15 +1,12 @@
-"""Leader-specific trust CLI, temporary homes and no service/model startup."""
+"""Leader-specific trust operations in an isolated workspace."""
 import tests
-import contextlib
-import io
-import json
-import os
+from test_core import operation_service
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
 from pathlib import Path
 import tempfile
 import unittest
-from unittest import mock
-
-from crew import board, cli, store, trust_mode
+from crew import board, store, trust_mode
 
 
 class LeaderTrustCliTests(unittest.TestCase):
@@ -25,21 +22,12 @@ class LeaderTrustCliTests(unittest.TestCase):
         for sid in ('a','b'):
             board.join(self.conn,sid,'demo',sid,self.root,self.root,'main',role='leader')
         board.join(self.conn,'member','demo','worker',self.root,self.root,'main',group_name='a')
-        environment=mock.patch.dict(os.environ,{'CREW_SESSION_ID':'','CLAUDE_CODE_SESSION_ID':''})
-        environment.start();self.addCleanup(environment.stop)
-
-    def command(self, *args, session=None, expected=0):
-        out,err=io.StringIO(),io.StringIO()
-        prefix=['--home',str(self.home)]
-        if session:prefix.extend(['--session',session])
-        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
-            code=cli.main(prefix+['trust',*args],cwd=self.root,agents_provider=lambda:self.fail('No discovery or activation'))
-        self.assertEqual(code,expected,err.getvalue())
-        return json.loads(out.getvalue()) if code==0 else err.getvalue()
+        self.service = operation_service(self, self.root)
 
     def test_human_must_choose_leader_and_settings_do_not_activate_sessions(self):
-        self.command('set','on','--goal','goal',expected=1)
-        value=self.command('set','on','--goal','A target','--leader','a','--json')
+        with self.assertRaises((OpError, ValueError, board.BoardError)):
+            self.service.op('trust.set', {'enabled': True, 'goal': 'goal'}, project='demo')
+        value = self.service.op('trust.set', {'enabled': True, 'goal': 'A target', 'leader_session_id': 'a'}, project='demo')
         self.assertEqual(value['leader_session_id'],'a')
         self.assertTrue(value['enabled'])
         self.assertFalse(trust_mode.get(self.conn,'demo','b')['enabled'])
@@ -47,11 +35,14 @@ class LeaderTrustCliTests(unittest.TestCase):
         self.assertEqual(board.session(self.conn,'a')['status'],'idle')
 
     def test_member_defaults_to_own_leader_and_cannot_choose_another_group(self):
-        value=self.command('status','--json',session='member')
-        self.assertEqual(value['leader_session_id'],'a')
-        self.command('status','--leader','b','--json',session='member',expected=1)
-        self.command('set','on','--goal','wrong','--leader','b',session='a',expected=1)
-        self.command('status','--leader','member','--json',expected=1)
+        value = ai_call(self.service, self.conn, 'member', 'trust.get')
+        self.assertEqual(value['leader_session_id'], 'a')
+        with self.assertRaises((OpError, board.BoardError)):
+            ai_call(self.service, self.conn, 'member', 'trust.get', {'leader_session_id': 'b'})
+        with self.assertRaises((OpError, board.BoardError)):
+            ai_call(self.service, self.conn, 'a', 'trust.set', {'enabled': True, 'goal': 'wrong', 'leader_session_id': 'b'})
+        with self.assertRaises((ValueError, OpError, board.BoardError)):
+            self.service.op('trust.get', {'leader_session_id': 'member'}, project='demo')
 
 
 if __name__=='__main__':unittest.main()

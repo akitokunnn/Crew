@@ -1,4 +1,7 @@
 """Selected interfaces use real HTTP authentication and fail before false binding."""
+import tests
+import uuid
+from contextlib import closing
 import http.client
 import json
 from pathlib import Path
@@ -6,8 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from crew import network_addresses, remote_access, remote_http
-from tests.test_remote_access import BrowserHandler
+from crew import board, network_addresses, store, remote_access, remote_http
+from tests.test_remote_access import BrowserHandler, business_service
 from tests.test_network_addresses import row
 
 
@@ -41,6 +44,7 @@ class RemoteNetworkTests(unittest.TestCase):
         values = {'Origin': 'http://127.0.0.1:%s' % port, **(headers or {})}
         if data is not None:
             values['X-Crew'] = '1'
+            values['X-Crew-Request-Id'] = uuid.uuid4().hex
         if cookie:
             values['Cookie'] = cookie
         connection.request('POST' if data is not None else 'GET', path,
@@ -51,20 +55,24 @@ class RemoteNetworkTests(unittest.TestCase):
         return result
 
     def test_selected_interface_keeps_cookie_host_origin_and_route_boundaries(self):
+        business_service(self)
+        with closing(store.connect(self.home)) as conn:
+            board.init_project(conn, 'demo', self.home)
         value = self.controller.action({'action': 'start', 'bind': '127.0.0.1', 'port': 0})
         self.assertTrue(value['binding_available'])
         self.assertTrue(value['addresses'][0]['bound'])
-        self.assertEqual(401, self.request('/api/state')[0])
+        self.assertEqual(401, self.request('/api/op/workspace.state')[0])
         code = self.controller.action({'action': 'pair'})['code']
         status, _, headers = self.request('/remote/login', {'code': code, 'kind': 'browser'})
         self.assertEqual(200, status)
         cookie = headers['Set-Cookie'].split(';')[0]
-        self.assertEqual(200, self.request('/api/chat/send', {'text': 'one input'}, cookie)[0])
-        self.assertEqual(403, self.request('/api/state', cookie=cookie, headers={'Host': '10.80.1.2'})[0])
-        self.assertEqual(403, self.request('/api/chat/send', {'text': 'wrong origin'}, cookie,
+        self.assertEqual(200, self.request('/api/op/channel.post?project=demo', {'body': 'one input'}, cookie)[0])
+        self.assertEqual(403, self.request('/api/op/workspace.state', cookie=cookie, headers={'Host': '10.80.1.2'})[0])
+        self.assertEqual(403, self.request('/api/op/chat.send', {'text': 'wrong origin'}, cookie,
                                          {'Origin': 'http://10.80.1.2'})[0])
-        self.assertEqual(403, self.request('/api/admin/config', {}, cookie)[0])
-        self.assertEqual(1, len(self.controller.listener.server.business))
+        self.assertEqual(403, self.request('/api/op/ops_config.get', {}, cookie)[0])
+        with closing(store.connect(self.home)) as conn:
+            self.assertEqual(1, conn.execute('SELECT COUNT(*) FROM channel_messages').fetchone()[0])
 
     def test_unknown_or_disconnected_bind_is_rejected_before_listener_or_saved_config(self):
         self.rows.append(row('10.80.1.2', 'ZeroTier One', up=False))

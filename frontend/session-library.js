@@ -57,7 +57,7 @@
     async function load() {
       const revision = ++request, requestedScope = scope; loading = true; error = ""; notices();
       try {
-        const result = await options.api(`/api/session-library?scope=${requestedScope}`);
+        const result = await options.api(`/api/op/session_library.list?scope=${requestedScope}`);
         if (revision !== request) return;
         items = result.items; warning = result.warning || ""; loadedAt = Date.now();
         if (selected && !items.some(item => item.key === selected)) { selected = null; detail = null; ++previewRequest; renderDetail(); }
@@ -68,7 +68,7 @@
     async function preview(key) {
       const revision = ++previewRequest; selected = key; detail = null; dirty = false; error = ""; renderList(); renderDetail();
       try {
-        const result = await options.api(`/api/session-library/preview?scope=${scope}&key=${encodeURIComponent(key)}`);
+        const result = await options.api(`/api/op/session_library.preview?scope=${scope}&key=${encodeURIComponent(key)}`);
         if (revision !== previewRequest) return;
         detail = result; draft = {name:result.item.name || result.item.title.slice(0,20),group:""}; renderDetail();
         const panel = find(".sl-preview"); panel.tabIndex = -1; panel.focus({preventScroll:true}); panel.scrollIntoView({block:"nearest"});
@@ -108,7 +108,7 @@
       if (!name || !group) { error = "请填写名字并选择 leader。"; notices(); return; }
       busy = true; error = ""; renderDetail(); notices();
       try {
-        await options.api('/api/session-library/adopt', {key,name,group});
+        await options.api('/api/op/session_library.adopt', {key,name,group});
         // A completed join is never reissued because a subsequent refresh fails.
         selected = null; detail = null; dirty = false; ++previewRequest;
         options.toast(`已接入 ${group}，通知已交给 leader`); renderDetail();

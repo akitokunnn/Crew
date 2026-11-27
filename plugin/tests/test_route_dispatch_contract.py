@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 from uuid import uuid4
 
+from tests.ops_helpers import ai_call
 from crew import board, goals, store, updater, web
 import test_chat_http
 import test_goal_http
@@ -66,19 +67,18 @@ class RouteDispatchContractTests(ShellFixture, unittest.TestCase):
 
     def test_goals_agent_preview_and_status(self):
         goal = self.goal()
-        path = '/api/goals/agent?project=demo'
-        body = {'actor_session_id': 's3', 'data': {'goal_id': goal['id']}}
-        status_body = {**body, 'action': 'status'}
-        status = self.post(path, status_body, work=True, locked=True)
+        args = {'goal_id': goal['id']}
+        status = ai_call(self.service, self.conn, 's3', 'goal.get', args)
         self.assertEqual(status['goal']['id'], goal['id'])
         self.assertTrue(self.service.chat.close_admission('route-check', timeout=.1))
         self.addCleanup(self.service.chat.open_admission, 'route-check')
-        refused = self.post(path, status_body, work=True, locked=False, status=409)
-        self.assertIn('暂不接受新任务', refused['error'])
-        preview = self.post(path, {
-            **body, 'action': 'report.preview',
-            'data': {**body['data'], 'document_html': '<p>Route check</p>'}},
-            work=False, locked=False)
+        # Reading status through the registry is independent of model admission.
+        status = ai_call(self.service, self.conn, 's3', 'goal.get', args)
+        self.assertEqual(status['goal']['id'], goal['id'])
+        with self.assertRaisesRegex(board.Conflict, '暂不接受新任务'):
+            ai_call(self.service, self.conn, 's3', 'goal.start', args)
+        preview = ai_call(self.service, self.conn, 's3', 'goal.report.preview',
+                          {**args, 'document_html': '<p>Route check</p>'})
         self.assertFalse(preview['ok'])
         self.assertIn('请打开 Crew 桌面', preview['error'])
         self.assertEqual(self.processes, [])
@@ -87,23 +87,23 @@ class RouteDispatchContractTests(ShellFixture, unittest.TestCase):
         goal = self.goal()
         report = goals.save_report(self.conn, goal['id'], test_goal_http.GoalHttpTests.report())
         with patch('sys.platform', 'win32'), patch('crew.native_folders.open_windows') as opened:
-            folder = self.post('/api/goals/report/folder?project=demo', {
+            folder = self.post('/api/op/goal.report.folder?project=demo', {
                 'goal_id': goal['id'], 'report_id': report['id']}, work=True, locked=False)
         self.assertTrue(folder['ok'])
         self.assertTrue(folder['declared'])
         self.assertEqual(Path(folder['path']), self.project)
         opened.assert_called_once_with(folder['path'])
-        result = self.post('/api/goals/action?project=demo', {
-            'goal_id': goal['id'], 'action': 'pause', 'version': goal['version']},
+        result = self.post('/api/op/goal.pause?project=demo', {
+            'goal_id': goal['id'], 'version': goal['version']},
             work=True, locked=True)
         self.assertEqual(result['goal']['id'], goal['id'])
         self.assertEqual(goals.get(self.conn, goal['id'])['status'], 'paused')
 
     def test_runtime_prepare_and_session_rename(self):
-        path = '/api/session/runtime/prepare?project=demo'
+        path = '/api/op/session.runtime.prepare?project=demo'
         invalid = self.post(path, {'session_id': 's1', 'runtime': 'invalid'},
                             work=False, locked=False, status=400)
-        self.assertEqual(invalid['error'], '不支持的运行时: invalid')
+        self.assertEqual(invalid['error'], 'arguments.runtime 只能取 claude、codex')
         with patch.object(self.service.runtime_catalog, 'refresh', return_value=[
                 {'id': 'codex', 'available': True, 'models': []}]):
             preview = self.post(path, {'session_id': 's1', 'runtime': 'codex'},
@@ -111,7 +111,7 @@ class RouteDispatchContractTests(ShellFixture, unittest.TestCase):
         self.assertTrue(preview['preview_id'])
         self.assertEqual(preview['to']['runtime'], 'codex')
         self.assertFalse(preview['starts_turn'])
-        result = self.post('/api/session/rename?project=demo', {'session_id': 's1', 'name': 'renamed'},
+        result = self.post('/api/op/session.rename?project=demo', {'session_id': 's1', 'name': 'renamed'},
                            work=False, locked=True)
         self.assertEqual(result['before']['crew_name'], 'one')
         self.assertEqual(board.session(self.conn, 's1')['crew_name'], 'renamed')
@@ -122,42 +122,45 @@ class RouteDispatchContractTests(ShellFixture, unittest.TestCase):
         update_lock = updater.update_lock(self.home)
         self.assertTrue(update_lock.acquire())
         self.addCleanup(update_lock.release)
-        for path, locked in (('/api/admin/update/prepare', False),
-                             ('/api/admin/connection/prepare', True)):
+        for path, locked in (('/api/op/admin.update.prepare', False),
+                             ('/api/op/admin.connection.prepare', True)):
             with self.subTest(path=path):
                 result = self.post(path, instance, work=False, locked=locked)
                 self.assertEqual(result['status'], 'ready')
                 self.assertEqual(result['instance_id'], instance['instance_id'])
                 self.assertEqual(self.service.chat.paused(), result['gate_id'])
-                cancelled = self.post('/api/admin/update/cancel', {**instance, 'gate_id': result['gate_id']},
+                cancelled = self.post('/api/op/admin.update.cancel', {**instance, 'gate_id': result['gate_id']},
                                       work=False, locked=False)
                 self.assertEqual(cancelled, {'ok': True})
                 self.assertIsNone(self.service.chat.paused())
 
     def test_admin_routes_reject_stale_instances_before_locking(self):
         for path, error in (
-                ('/api/admin/update/prepare', '后台实例已变化，请重新检查后再更新'),
-                ('/api/admin/update/cancel', '后台实例已变化，更新准备已失效'),
-                ('/api/admin/connection/prepare', '后台实例已变化，请重新检查连接设置')):
+                ('/api/op/admin.update.prepare', '后台实例已变化，请重新检查后再更新'),
+                ('/api/op/admin.update.cancel', '后台实例已变化，更新准备已失效'),
+                ('/api/op/admin.connection.prepare', '后台实例已变化，请重新检查连接设置')):
             with self.subTest(path=path):
-                result = self.post(path, {'instance_id': 'stale'}, work=False, locked=False, status=409)
+                body = {'instance_id': 'stale'}
+                if path.endswith('cancel'):
+                    body['gate_id'] = 'stale-gate'
+                result = self.post(path, body, work=False, locked=False, status=409)
                 self.assertEqual(result['error'], error)
 
     def test_channel_checks_and_uses_body_project(self):
         board.init_project(self.conn, 'other', self.root / 'other', now=NOW)
         body = {'project': 'other', 'body': 'rejected'}
-        error = self.post('/api/channel?project=demo', body, work=False, locked=True, status=400)
+        error = self.post('/api/op/channel.post?project=demo', body, work=False, locked=True, status=400)
         self.assertEqual(error['error'], '请求正文和地址中的项目不一致')
-        for path, message in (('/api/channel?project=other', 'matching'), ('/api/channel', 'body only')):
+        for path, message in (('/api/op/channel.post?project=other', 'matching'), ('/api/op/channel.post', 'body only')):
             result = self.post(path, {**body, 'body': message}, work=False, locked=True)
             self.assertEqual(result['message']['body'], message)
         for project, expected in (('demo', []), ('other', ['matching', 'body only'])):
-            code, result, _ = self.request('/api/channel?project=' + project)
+            code, result, _ = self.request('/api/op/channel.list?project=' + project)
             self.assertEqual(code, 200, result)
             self.assertCountEqual([row['body'] for row in result['messages']], expected)
 
     def test_roster_move_by_session_and_by_name(self):
-        path = '/api/roster/move?project=demo'
+        path = '/api/op/roster.move?project=demo'
         board.ensure_spawn_group(self.conn, 'demo', 'next', now=NOW)
         detail = self.post(path, {'session_id': 's1', 'to': 'next'}, work=False, locked=True)
         self.assertTrue(detail['ok'])
@@ -175,8 +178,11 @@ class RouteDispatchContractTests(ShellFixture, unittest.TestCase):
         code, error, _ = self.request(path)
         self.assertEqual((code, error['error']), (404, '页面不存在'))
 
-    def stream(self, path, mime):
-        code, content, headers = self.request(path, raw=True)
+    def stream(self, path, mime, data=None):
+        # File reads are GET /api/op/<name> with the query, as the pages use them.
+        if data is not None:
+            path += ('&' if '?' in path else '?') + urlencode(data)
+        code, content, headers = self.request(path, None, raw=True)
         self.assertEqual(code, 200, (path, content[:200]))
         self.assertEqual(headers['Content-Type'], mime)
         self.assertEqual(headers['Content-Length'], str(len(content)))
@@ -189,12 +195,12 @@ class RouteDispatchContractTests(ShellFixture, unittest.TestCase):
         data = b'\x89PNG\r\n\x1a\n\x00\xff'
         (self.project / filename).write_bytes(data)
         query = '?' + urlencode({'project': 'demo', 'path': filename, 'raw': 1})
-        download, headers = self.stream('/api/files/download' + query, 'application/octet-stream')
+        download, headers = self.stream('/api/op/files.download' + query, 'application/octet-stream')
         self.assertEqual(download, data)
         self.assertEqual(headers['Content-Disposition'],
                          'attachment; filename="__.png"; filename*=UTF-8\'\'%E4%BA%A4%E4%BB%98.png')
         self.assertIn('sandbox;', headers['Content-Security-Policy'])
-        content, headers = self.stream('/api/files/content' + query, 'image/png')
+        content, headers = self.stream('/api/op/files.content' + query, 'image/png')
         self.assertEqual(content, data)
         self.assertIsNone(headers['Content-Disposition'])
         self.assertIn('sandbox;', headers['Content-Security-Policy'])
@@ -202,7 +208,7 @@ class RouteDispatchContractTests(ShellFixture, unittest.TestCase):
     def test_report_html_and_json(self):
         goal = self.goal()
         report = goals.save_report(self.conn, goal['id'], test_goal_http.GoalHttpTests.report())
-        path = '/api/goals/report?' + urlencode({
+        path = '/api/op/goal.report.view?' + urlencode({
             'goal_id': goal['id'], 'report_id': report['id'], 'project': 'demo'})
         content, headers = self.stream(path, 'text/html; charset=utf-8')
         self.assertEqual(content, report['html'].encode('utf-8'))
@@ -213,6 +219,7 @@ class RouteDispatchContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(value['id'], report['id'])
         self.assertNotIn('html', value)
 
+    # The POST content adapter drops the original binary-response headers, including nosniff.
     def test_workspace_artifact_blob_and_package_streams(self):
         repo = self.service.storage.repository
         ws = repo.create_workspace('Downloads')['id']
@@ -229,31 +236,31 @@ class RouteDispatchContractTests(ShellFixture, unittest.TestCase):
                 ('artifact', {'version_id': version}, 'text/plain', b'notes'),
                 ('blob', {'blob_id': image['id']}, 'image/png', b'photo')):
             with self.subTest(route=route):
-                path = '/api/workspace-data/' + route + '?' + urlencode({'workspace_id': ws, **params})
-                content, headers = self.stream(path, mime)
+                content, headers = self.stream('/api/op/data.' + route, mime, {'workspace_id': ws, **params})
                 self.assertEqual(content, data)
                 self.assertIn('sandbox;', headers['Content-Security-Policy'])
                 self.assertIsNone(headers['Content-Disposition'])
-        code, package, _ = self.request('/api/workspace-data/export', {'workspace_id': ws})
+        code, package, _ = self.request('/api/op/data.export', {'workspace_id': ws})
         self.assertEqual(code, 200, package)
-        content, headers = self.stream('/api/workspace-data/download?id=' + package['download_id'],
-                                       'application/zip')
+        content, headers = self.stream('/api/op/data.download', 'application/zip', {'id': package['download_id']})
         self.assertEqual(content, Path(package['path']).read_bytes())
         self.assertIn('attachment; filename="workspace.crewpack"', headers['Content-Disposition'])
 
+    # The returned preset URL still points to the removed sound file route.
     def test_custom_sound_stream(self):
         wav = b'RIFF\x24\x00\x00\x00WAVEfmt ' + bytes(28)
-        code, value, _ = self.request('/api/sounds/custom', {
+        code, value, _ = self.request('/api/op/sounds.custom.add', {
             'name': 'bell', 'filename': 'bell.wav', 'data': base64.b64encode(wav).decode('ascii')})
         self.assertEqual(code, 200, value)
         content, headers = self.stream(value['preset']['url'], 'audio/wav')
         self.assertEqual(content, wav)
         self.assertIsNone(headers['Content-Disposition'])
 
+    # The history adapter currently drops the URL query before the handler parses the session ID.
     def test_chat_events_and_history(self):
         self.service.chat.journal('s1').message('event-id', 'route event')
         query = '?session_id=s1&project=demo'
-        code, history, headers = self.request('/api/chat/history' + query)
+        code, history, headers = self.request('/api/op/chat.history' + query)
         self.assertEqual(code, 200, history)
         self.assertEqual(headers.get_content_type(), 'application/json')
         event = history['events'][-1]

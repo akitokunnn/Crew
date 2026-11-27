@@ -1,5 +1,5 @@
 "use strict";
-// Idea wall: one page over /api/personal/notes and /api/personal/tags.
+// Idea wall and tag management.
 // Every write goes to the server and the wall re-reads; nothing is guessed locally.
 (() => {
   const M = window.CrewNotesModel;
@@ -19,13 +19,15 @@
   theme(); systemTheme.addEventListener("change", theme); window.addEventListener("storage", theme); window.addEventListener("crew:theme-change", theme);
 
   async function api(path, body) {
-    const response = await fetch(path, {method: body === undefined ? "GET" : "POST", headers: {"X-Crew": "1", ...(body === undefined ? {} : {"Content-Type": "application/json"})}, ...(body === undefined ? {} : {body: JSON.stringify(body)})});
+    const response = await fetch(path, body === undefined ? {method:"GET", headers:{"X-Crew":"1"}} : window.CrewBrowser.postOptions(body));
     const value = await response.json();
     if (!response.ok) { const error = Error(value.error || `请求失败 (${response.status})`); error.status = response.status; error.body = value; throw error; }
     return value;
   }
-  const write = (action, data) => api("/api/personal/notes", {action, data, request_id: window.CrewBrowser.requestId()});
-  const tagWrite = (action, data) => api("/api/personal/tags", {action, data, request_id: window.CrewBrowser.requestId()});
+  // crew-op: note.annotate note.archive note.bulk note.keep note.merge note.pin note.restore note.snooze note.unmerge note.update
+  const write = (action, data) => api("/api/op/note." + action, {data});
+  // crew-op: tag.create tag.merge tag.pin tag.recolor tag.remove tag.rename tag.reorder
+  const tagWrite = (action, data) => api("/api/op/tag." + action, {data});
 
   const byId = id => notes.find(note => note.id === id);
   const tagInfo = name => tags.find(tag => tag.name === name);
@@ -45,7 +47,7 @@
 
   // ---- data ---------------------------------------------------------------
   async function refresh() {
-    const [list, registry] = await Promise.all([api("/api/personal/notes?include_archived=1"), api("/api/personal/tags")]);
+    const [list, registry] = await Promise.all([api("/api/op/notes.list?include_archived=1"), api("/api/op/tags.list")]);
     notes = list.notes; staleDays = list.stale_days; tags = M.orderTags(registry.tags); dupes = M.duplicates(notes);
     for (const id of [...selected]) if (byId(id)?.state !== "open") selected.delete(id);
     loaded = true; $("nw-error").hidden = true;
@@ -57,7 +59,7 @@
   async function boot() {
     $("nw-error").hidden = true;
     try {
-      const listing = await api("/api/projects");
+      const listing = await api("/api/op/workspace.list");
       allProjects = listing.projects; projects = listing.projects.filter(item => !item.read_only);
       window.CrewGlobalRail?.update({projects: allProjects});
       await refresh();
@@ -279,7 +281,7 @@
       if (!starting.has(note.id)) starting.set(note.id, window.CrewBrowser.requestId());
       lockForm(node, true); formStatus(node, "正在新建 leader 讨论…");
       try {
-        const result = await commit(() => api("/api/personal/notes/start", {note_id: note.id, project, request_id: starting.get(note.id)}));
+        const result = await commit(() => api("/api/op/note.start", {note_id: note.id, project, request_id: starting.get(note.id)}));
         starting.delete(note.id); node.close();
         toast(`已转任务：在「${projectName(result.project)}」新建了 leader 讨论。`, {label: "打开对话", run: () => { location.href = leaderUrl({project: result.project, session_id: result.session_id}); }});
         after?.();
@@ -292,7 +294,7 @@
     const node = dialog("nw-recover", `${head("核实转任务", "上次转任务没有确认结果。这里只建立关联，不发送想法，也不新建会话。")}<div data-body><p class="nw-loading" role="status">正在查找已有对话…</p></div>`, "核实转任务");
     const bodyNode = node.querySelector("[data-body]");
     let result;
-    try { result = await api(`/api/personal/notes/recovery?note_id=${encodeURIComponent(note.id)}`); }
+    try { result = await api(`/api/op/note.recovery.get?note_id=${encodeURIComponent(note.id)}`); }
     catch (error) { bodyNode.innerHTML = `<p class="nw-form-error" role="alert">${esc(error.message)}</p>`; return; }
     if (!result.leaders.length) { bodyNode.innerHTML = `<p>未找到可关联的对话。该次创建结果仍需核实，暂不重复创建。</p>`; return; }
     bodyNode.innerHTML = `<form><label>选择你核实过的原讨论<select name="session">${result.leaders.map(person => `<option value="${esc(person.session_id)}">${esc(person.crew_name)} · ${esc(person.task || person.session_id.slice(0, 8))}</option>`).join("")}</select></label><p role="status" class="nw-form-status"></p><div class="nw-dialog-acts"><button type="button" class="btn ghost" data-close>取消</button><button type="submit" class="btn primary">确认这是原讨论</button></div></form>`;
@@ -302,7 +304,7 @@
       const session_id = form.session.value;
       lockForm(node, true);
       try {
-        await commit(() => api("/api/personal/notes/recovery", {note_id: note.id, session_id, request_id: `note-recovery:${note.id}:${session_id}`, reason: "用户在想法墙中核实并选择了原讨论"}));
+        await commit(() => api("/api/op/note.recover", {note_id: note.id, session_id, request_id: `note-recovery:${note.id}:${session_id}`, reason: "用户在想法墙中核实并选择了原讨论"}));
         node.close(); toast("已关联原讨论，没有重新发送内容。");
       } catch (error) { formStatus(node, error.message); lockForm(node, false); }
     };
@@ -654,7 +656,7 @@
     button.disabled = true; status.textContent = "正在记下…";
     const hang = view.layout === "map" ? mindmap.captureTarget() : null;
     let captured;
-    try { captured = await api("/api/personal/notes", {action: "capture", data, request_id: capturePending.id}); }
+    try { captured = await api("/api/op/note.capture", {data, request_id: capturePending.id}); }
     catch (error) { status.textContent = `没记下：${error.message}（内容还在输入框里）`; button.disabled = false; input.focus(); return; }
     capturePending = null; input.value = ""; saveDraft(); resizeInput(); captureProject = view.ws;
     button.disabled = false; input.focus();

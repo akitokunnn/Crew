@@ -627,3 +627,61 @@ CODEX_HOME=<临时> codex exec --skip-git-repo-check --json "$PROMPT"
 | 4 | 迁移期旧 URL 作为清单绑定保留，前端按领域逐步改 `/api/op` | **已裁决（2026-11-27）**：按推荐，加限定——旧 URL 只作过渡绑定，R5 会话结束前前端调用全部改走清单入口并删除旧绑定 |
 | 5 | 工具暴露：施工基线按裁决 7（核心 + `crew_search`，CC 用 `list_changed`，Codex 用 `crew_call`），“权限即工具集”作为 R5 内 A/B 复测的候选 | 采纳评审意见：先按裁决施工，A/B 结果出来后由主会话记入决策日志并删除落选模式 |
 | 6 | 威胁模型只承诺“防意外继承与误用”，同用户恶意进程不在本设计范围；守卫拦截 shell 直连 Crew API / 数据库作为纵深措施 | 是；真正隔离需独立 OS 用户或容器，列为后续议题 |
+
+---
+
+## 14. R5 实施记录（2026-11-27）
+
+**落地形态**（与前文不同处以本节为准）：
+
+| 项 | 实施 |
+| --- | --- |
+| 清单 | `plugin/crew/ops/`：`registry`（登记与自检）、`schema`（零依赖校验）、`executor`（鉴权 → 校验 → 风险 → 回执 → 准入 → 加锁 → 执行门禁）、`scopes`、`tokens`、`mcp`、`search`、`launch`、`guide`、`cli`、`confirmations`、`domains/*`。共 232 个操作。 |
+| HTTP | 只剩 `POST /api/op`（信封 `{op,args,request_id,project}`）、`POST /api/op/<操作名>`（正文即参数，请求号放 `X-Crew-Request-Id`，页面用这种）、`GET /api/op/<读操作>`（原样返回 JSON / HTML / 文件，给 `<img>`、下载链接用），加 8.14 的传输入口。旧业务 URL 全部删除；操作的处理函数仍是原 `web_api` 函数（`legacy` 适配器把它当初写给的路径和判别值传进去）。 |
+| 设备 | `remote_routes` 只决定“能到哪些地址”（`/api/op*`、静态、传输入口），能做什么看操作的 `device_browser` / `device_desktop` 范围（冻结在测试的独立预期里）；“远程不得冒用 AI 身份”的正文规则移进执行器。 |
+| MCP | 基线模式按裁决 7：核心工具 + `crew_search`；CC 搜索后服务端发 `list_changed` 加载，Codex 用 `crew_call`。候选模式（权限即工具集）未实现，A/B 复测未做（见下）。 |
+| 令牌注入 | CC：`--mcp-config <每会话文件>` + `--allowedTools mcp__crew` + `--append-system-prompt <工具指南>`；Codex：`thread/start` 的 `config.mcp_servers.crew`（不用 `-c`，实测可用）+ 指南并入 developerInstructions。令牌在签发时登记为“启动中”，进程创建后绑定，进程退出即失效，启动失败立即吊销，后台重启全部吊销。 |
+| 人用操作的参数 | 每个操作有 `params`；对其他 AI 角色另有 `ai_params` 与 `ai_description`（同一操作人和 AI 的参数形状不同时，如 `channel.post`）。 |
+| 全局助手 | 143 个操作。凡用户能做、又不属于主机管理（`admin/ops_chat/ops_config/connections/remote_access/storage/data/sounds`、在主机上开程序、`approval.resolve`、`interaction.*`、助手页自身）的操作都对助手开放，以用户身份运行同一处理函数，参数由用户参数收紧生成（`assistant_params`，必须带 `project`）；写操作一律 `confirm`（附用户原话 `message_id`），`high` 走确认请求。 |
+| 高风险确认 | `interaction_requests` 表 + `interaction.list/resolve`；AI 调 `risk=high` 返回 `awaiting_user` 与确认编号，用户在**助手页**确认后按发起者当前权限执行，结果回告发起会话。 |
+| 守则 | `plugin/skills/` 删除、插件不再注册技能；四个守则精简后移到 `plugin/prompts/roles/`，工具说明改由 `ops/guide.py` 按角色与载体生成后在启动时注入；“守则已读 / 重读提醒”机制随技能一起删除。 |
+| 身份 | 不再注入或读取 `CREW_SESSION_ID / CREW_EXECUTION_ID / CREW_GOAL_ID / CREW_NAME / CREW_ROLE / CREW_GROUP / CREW_SPAWN_ID`；剥离代码保留。hooks 以“会话有未吊销令牌”判托管、以 `goal_execution_bindings` 认目标执行；守卫拦托管会话在 Shell 里调 `crew`、Crew 后台端口、HOME 下的 `crew.py`/`crew.db`/`runtime/mcp`。派工脚本改为显式 `-CrewSession/-CrewExecution`。 |
+| CLI | `crew` 只剩主机命令；业务命令由清单生成（`crew <领域> <动作>`），调用者固定 `human`，经后台 `/api/op`。`crew join` 等 AI 子命令删除。 |
+
+**真实模型实测**（隔离 HOME、随机端口、只复制登录凭据；`claude-haiku-5-5`、`gpt-6-luna` low；任务：whoami → 交流区发言 → 登记人工待办 → `crew_search` 找“留交接” → 调用找到的操作）：
+
+1. CC 首跑失败：默认权限模式下 CC 把 `mcp__crew__*` 当未授权直接拒绝（stream-json 无人批准）。修：启动加 `--allowedTools mcp__crew`（Crew 自己在后台鉴权与确认）。复跑全部成功；`crew_search` 后服务端发 `list_changed`，CC 立即用 ToolSearch 加载 `handoff_add` 并调用。
+2. Codex 首跑：`crew_call` 因标了 `destructiveHint` 被 Codex 发 `mcpServer/elicitation/request` 原生审批而失败（§12 未验证项之一的答案：会发）。修：`crew_call` 标非破坏性；真正的高风险由 Crew 确认请求把关。
+3. Codex 二跑：Codex 在 `thread/start` 期间就连 MCP，此时进程尚未登记，存活检查误判 401，整轮没有 Crew 工具。修：令牌“启动中”状态（见上）。三跑全部成功（`crew_call(op="handoff.add")`）。
+
+4. 全局助手（同一隔离方式，用户消息“帮我在想法墙记下一条想法……”）：首跑 Haiku 猜错字段名（想法操作的参数当时只写了“任意对象”）被拒，又沿用同一请求号改参数重试被判“请求号复用”，第三次成功（只记一条，没有重复）。修：想法 / 标签操作的参数改由处理函数自己的字段表 `personal._NOTE_FIELDS` 生成精确结构；`request_id` 说明写明“参数被拒后改参数重试要换新编号”。复跑 Haiku 与 luna low 都一次成功，`message_id` 取自 Crew 注入的用户原话编号。
+
+**后端测试迁移发现并修复的回归**（约 110 个测试文件改走 `/api/op` / `ai_call`）：GET 读操作的处理函数拿不到查询串；`message.send` 查收件人时没有连接；leader 在自己的任务执行里被当成执行而不能派工、交接；目标页经 agent 路由的操作未固定为用户身份；人和设备的正文不得冒用 AI 身份（执行器统一检查，原先只拦远程）；令牌在会话换载体或换工作区后仍有效；助手读标签用了只读连接；`session.compact`、`group.close`、`trust.get`、资源 / 借用的强制归还对 leader 或用户缺失；`resource.add` 的正则错误未转成参数错误；任务卡不能清空字段、`whoami` 缺任务卡；交流区原文读取缺 `raw`；几处内部调用（音效播放地址、后台复用探测、自动启动探测）仍走旧地址。复核删除清单时另发现：旧 `crew status` 文本会隐藏已收起的组、已归档和离线超过一天的未分组会话，`workspace.state` 原样全返回，长期使用会撑大 AI 上下文；已把同样的过滤搬进操作（返回 `hidden_ended_sessions` 计数）并加测试。按设计删除、只改测试的三项：未收编的外部会话发合并申请、`crew init` 在普通子目录复用工作区、摘要会话拦截动态工具调用。
+
+**A/B 小样本复测**（`crew web --mcp-exposure core|all` 显式切换；232 个真实操作，leader 可用 72 个；每条意图新开 leader，意图不点名工具且都需要非核心操作：给所有人留交接、声明 docs/ 归属、登记共享资源；脚本 `Temp/r5/trial/run_ab.py`）：
+
+| 载体 · 模式 | 完成 | 平均耗时 | 调用路径 | 本轮输入 token（含缓存读） |
+| --- | --- | --- | --- | --- |
+| CC Haiku 5.5 · core | 3/3 | 11.8 s | 每次先 `crew_search`，再调加载的工具 | 13.5 万 / 14.8 万 / 39.1 万 |
+| CC Haiku 5.5 · all | 3/3 | 10.2 s | 直接调用目标工具（ToolSearch 原生延迟加载） | 16.1 万 / 14.0 万 / 25.4 万 |
+| Codex luna low · core | 3/3 | 13.5 s | `crew_search` → `crew_call` | 11.2 万 / 11.1 万 / 13.8 万 |
+| Codex luna low · all | 3/3 | 15.4 s | 一次直接调用、一次先搜索、一次先查看板 | 23.0 万 / 14.0 万 / 7.5 万 |
+
+结论：两种模式在这组意图上都 100% 完成、没有误选；all 模式让 CC 少一步搜索，Codex 在 all 模式下路径和 token 波动更大。样本只有 12 次、单轮、无相似名称干扰与长会话 / 恢复 / 权限收紧场景，不足以推翻裁决 7。**建议**保持基线（core）为默认并删除 all 模式；all 模式代码目前仍在（启动参数），等主会话记入决策日志后删除。
+
+**与集成分支合并时的处理**（191d4e2 增量事件流与新手引导、ef6f6fd 跨 Leader 作战室）：
+- 新操作 `workspace.snapshot`、`onboarding.get/set`、`runtimes.readiness`、`war_room.*` 补参数格式并登记设备范围；`/api/events` 归传输入口（§8.14）。前端请求统一经 `CrewAppData`（`app-data.js`），`app.js` 的 `api` / `queryPath` 委托给它。
+- `war_room.*` 去掉 HTTP 绑定，leader 经 MCP 在自己的工作区调用、全局助手以用户身份带 project。作战室实测反馈写进工具参数：状态板 `id` 写明“已有项的编号，新增时不要带”；标题、事项、说明、契约、结论的长度限制写进 `maxLength` 与参数说明。守则的作战室一节移到 `prompts/roles/leader.md`，房内通知改为工具名。
+- 工具指南与 `crew_search` 结果里“需附用户原话 message_id”只给全局助手（之前 leader 也看到）；`channel.post` 摘要由“以用户身份……”改为“在 Leader 交流区发言”。
+- 助手作战底层（架构图版本、回滚、重整、leader 合并 / 退役，`ops/domains/structure.py`）并入本清单：七个操作直接登记处理函数（不经 `legacy` 适配，原 `web_api/structure.py` 删除），范围 H B D + 全局助手（`assistant_cover`），leader / 执行 / Git 助手不开放；回滚、执行重整、合并、退役为 `high`，执行重整与合并 / 退役按 `model_work` 准入。逐条理由见 `docs/ASSISTANT_CAMPAIGN_DESIGN.md` §5。
+
+**写入争用修复**（合并后真 AI 实测暴露）：事件流第 2 轮把用量扫描移到后台、启动即全量扫描，扫描在服务写锁下用一个写事务扫完全部会话记录（本机 572 个会话、约 31 万行写入、17 秒）。期间所有写入都要等它：
+1. 经清单的写操作在回执（`op_requests`）处等 SQLite 忙等 5 秒后报 500。曾试过让回执排队等服务写锁，但这违反 `lock='none'` 操作不取写锁的约定（更新准备 / 取消等恢复路径在写入者卡住时也必须能走通），已撤回；以下面第 2 条的根因修复为准。
+2. 聊天线程的投递回执、事件流记录不走服务写锁，同样超时；实测中 crew-chat 读取线程崩溃，会话离线——`usage.scan` 改为按整份会话记录分批提交（每批约 0.5 秒，与读取偏移同一事务），批间停 0.12 秒让忙等的写入者进来；后台扫描不再整段持锁，`usage_scan_lock` 保证同时只有一次扫描。中途出错只回滚当前批，下次扫描补齐且不重复计数。首次全量扫描 17.1 秒 → 20.9 秒，增量扫描不变（`test_a_long_first_scan_never_keeps_other_writers_past_the_busy_timeout`，修复前失败、修复后通过）。
+
+**未做 / 未验证**：
+- 完整 A/B（相似名称干扰、长会话、恢复、权限收紧后调用、高风险操作）未做。
+- 确认请求只在助手页显示，工作区页与全局导航还没有入口。
+- Codex 三个工具过滤配置项、长会话里的延迟加载仍未测；CC 长会话里 `list_changed` 加载在真实会话中只测了一轮。
+- `rule_reads` 表随功能删除后不再写入，表结构保留未做迁移删除。
+- 单份特别大的会话记录仍在一个事务里扫完（分批只在文件之间切分）。

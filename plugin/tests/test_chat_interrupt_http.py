@@ -1,5 +1,6 @@
 """The composer stop endpoint with a real isolated HTTP server and fake CLI."""
 import tests  # Production-service connection guard.
+import uuid
 import json
 import threading
 import unittest
@@ -32,7 +33,7 @@ class ComposerInterruptHttpTests(ShellFixture, unittest.TestCase):
 
     def request(self, path, data=None):
         body = None if data is None else json.dumps(data).encode("utf-8")
-        request = Request(self.url + path, body, {"X-Crew": "1"})
+        request = Request(self.url + path, body, {"X-Crew": "1", "X-Crew-Request-Id": uuid.uuid4().hex})
         try:
             response = urlopen(request, timeout=5)
         except HTTPError as error:
@@ -41,13 +42,13 @@ class ComposerInterruptHttpTests(ShellFixture, unittest.TestCase):
             return response.status, json.loads(response.read())
 
     def test_interrupt_acknowledges_only_then_actual_result_confirms_idle_without_closing_session(self):
-        code, started = self.request("/api/leader?project=demo", {"name": "interrupt-qa", "task": "fake turn"})
+        code, started = self.request("/api/op/leader.create?project=demo", {"name": "interrupt-qa", "task": "fake turn"})
         self.assertEqual(code, 200, started)
         sid, process = started["session_id"], self.processes[-1]
         manager = self.server.service.chat
         self.assertTrue(manager.busy(sid))
         before = manager.history(sid)["events"]
-        code, result = self.request("/api/chat/interrupt?project=demo", {"session_id": sid})
+        code, result = self.request("/api/op/chat.interrupt?project=demo", {"session_id": sid})
         self.assertEqual((code, result), (200, {"ok": True}))
         records = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
         controls = [row for row in records if row.get("type") == "control_request"
@@ -64,21 +65,21 @@ class ComposerInterruptHttpTests(ShellFixture, unittest.TestCase):
         journal = manager.journal(sid)
         with journal.condition:
             self.assertTrue(journal.condition.wait_for(lambda: journal.status == "idle", timeout=3))
-        code, state = self.request("/api/state?project=demo")
+        code, state = self.request("/api/op/workspace.state?project=demo")
         self.assertEqual(code, 200)
         leader = next(item for item in state["leaders"] if item["session_id"] == sid)
         self.assertFalse(leader["busy"])
         self.assertEqual(leader["name"], "interrupt-qa")
         self.assertIsNone(process.poll(), "Stopping one turn must preserve the owned native session")
         sent = process.stdin.getvalue()
-        code, result = self.request("/api/chat/interrupt?project=demo", {"session_id": sid})
+        code, result = self.request("/api/op/chat.interrupt?project=demo", {"session_id": sid})
         self.assertEqual(code, 409, result)
         self.assertIn("空闲", result["error"])
         self.assertEqual(process.stdin.getvalue(), sent)
 
     def test_unowned_session_interrupt_fails_without_launching_or_terminating_any_process(self):
         before = len(self.processes)
-        code, result = self.request("/api/chat/interrupt?project=demo", {"session_id": "s3"})
+        code, result = self.request("/api/op/chat.interrupt?project=demo", {"session_id": "s3"})
         self.assertEqual(code, 400, result)
         self.assertIn("没有管理", result["error"])
         self.assertEqual(len(self.processes), before)

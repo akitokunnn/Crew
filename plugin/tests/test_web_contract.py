@@ -1,5 +1,8 @@
 """New web contracts exercised with temporary storage and fake model processes."""
 import tests  # Install the production-service connection guard.
+from tests.ops_helpers import ai_call
+from crew.ops.errors import OpError
+import uuid
 import datetime as dt
 import json
 import os
@@ -43,7 +46,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         executable.start()
         self.addCleanup(executable.stop)
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project,
-            agents_provider=self.provider, claude_root=self.claude, codex_root=self.codex,
+            agents_provider=self.provider, claude_root=self.claude, codex_root=self.codex, vscode_state_db=self.vscode_state_db,
             runs_file=self.runs, now=lambda: self.clock, process_factory=self.process_factory,
             notification_client=mock.Mock(), lock_status=lambda: False)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": .01})
@@ -64,7 +67,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         if query:
             path += "?" + urlencode(query)
         payload = None if data is None else json.dumps(data).encode("utf-8")
-        request = Request(self.url + path, payload, {"X-Crew": "1"})
+        request = Request(self.url + path, payload, {"X-Crew": "1", "X-Crew-Request-Id": uuid.uuid4().hex})
         try:
             response = self.opener.open(request, timeout=5)
         except HTTPError as exc:
@@ -75,7 +78,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def state(self, project="demo"):
         query = {} if project is None else {"project": project}
-        code, state, _ = self.request("/api/state", **query)
+        code, state, _ = self.request("/api/op/workspace.state", **query)
         self.assertEqual(code, 200, state)
         return state
 
@@ -85,7 +88,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         return self.state(project)
 
     def start_leader(self, name="background-leader"):
-        code, created, _ = self.request("/api/leader", {"name": name, "task": "Coordinate work"})
+        code, created, _ = self.request("/api/op/leader.create", {"name": name, "task": "Coordinate work"})
         self.assertEqual(code, 200, created)
         return created["session_id"], self.processes[-1]
 
@@ -141,14 +144,14 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             self.assertEqual(landing[key], [])
 
     def test_claude_api_budget_replaces_subscription_quota_until_cleared(self):
-        code, error, _ = self.request("/api/claude-budget", {"budget": {"amount_usd": -1, "cycle": "monthly", "start": None}})
+        code, error, _ = self.request("/api/op/claude_budget.set", {"budget": {"amount_usd": -1, "cycle": "monthly", "start": None}})
         self.assertEqual(code, 400, error)
-        code, saved, _ = self.request("/api/claude-budget", {"budget": {"amount_usd": 200, "cycle": "monthly", "start": None}})
+        code, saved, _ = self.request("/api/op/claude_budget.set", {"budget": {"amount_usd": 200, "cycle": "monthly", "start": None}})
         self.assertEqual(code, 200, saved)
         budget = self.state()["limits"]["claude"]["budget"]
         self.assertEqual(budget, saved["budget"])
         self.assertEqual((budget["amount_usd"], budget["spent_usd"], budget["remaining_usd"]), (200.0, 0.0, 200.0))
-        code, cleared, _ = self.request("/api/claude-budget", {"budget": None})
+        code, cleared, _ = self.request("/api/op/claude_budget.set", {"budget": None})
         self.assertEqual((code, cleared), (200, {"budget": None}))
         self.assertIsNone(self.state()["limits"]["claude"]["budget"])
 
@@ -156,32 +159,28 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])
         board.join(self.conn, 'foreign-lead', 'demo', 'foreign', self.project, self.project, 'main', role='leader')
         for caller in ('s1', 's3', 'foreign-lead'):
-            code, result, _ = self.request('/api/session/delete', {'session_id': 's1', 'caller_session_id': caller}, project='demo')
-            self.assertEqual(code, 400, result)
+            with self.assertRaises(OpError) as denied:
+                ai_call(self.service, self.conn, caller, 'session.delete', {'session_id': 's1'})
+            self.assertEqual(denied.exception.code, 'forbidden')
             self.assertFalse(board.is_archived(self.conn, 's1'))
-        for path in ('/api/session/archive',):
-            for caller in ('s1', 'foreign-lead'):
-                with self.subTest(path=path, caller=caller):
-                    code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': caller}, project='demo')
-                    self.assertEqual(code, 400, result)
-                    self.assertFalse(board.is_archived(self.conn, 's1'))
-            goal = goals.create(self.conn, 'demo', 's3', 'Work', 'Request', ['Works'])
-            goals.assign(self.conn, goal['id'], 's1', 'Work')
-            execution = goals.create_execution(self.conn, goal['id'], 's1', runtime='claude')
-            goals.set_execution_status(self.conn, execution['id'], 'running')
-            code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
-            self.assertEqual(code, 409, result)
-            self.assertIn('先等执行结束', result['error'])
-            goals.set_execution_status(self.conn, execution['id'], 'idle')
-            with mock.patch.object(self.service.chat, 'busy', return_value=True):
-                code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
-                self.assertEqual(code, 409, result)
-            code, result, _ = self.request(path, {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
-            self.assertEqual(code, 200, result)
-            self.assertTrue(board.is_archived(self.conn, 's1'))
-            session_ops.restore(self.conn, 's1')
+        for caller in ('s1', 'foreign-lead'):
+            with self.subTest(caller=caller), self.assertRaises((OpError, board.BoardError)):
+                ai_call(self.service, self.conn, caller, 'session.archive', {'target': 's1'})
+            self.assertFalse(board.is_archived(self.conn, 's1'))
+        goal = goals.create(self.conn, 'demo', 's3', 'Work', 'Request', ['Works'])
+        goals.assign(self.conn, goal['id'], 's1', 'Work')
+        execution = goals.create_execution(self.conn, goal['id'], 's1', runtime='claude')
+        goals.set_execution_status(self.conn, execution['id'], 'running')
+        with self.assertRaisesRegex(board.Conflict, '先等执行结束'):
+            ai_call(self.service, self.conn, 's3', 'session.archive', {'target': 's1'})
+        goals.set_execution_status(self.conn, execution['id'], 'idle')
+        with mock.patch.object(self.service.chat, 'busy', return_value=True), self.assertRaises(board.Conflict):
+            ai_call(self.service, self.conn, 's3', 'session.archive', {'target': 's1'})
+        ai_call(self.service, self.conn, 's3', 'session.archive', {'target': 's1'})
+        self.assertTrue(board.is_archived(self.conn, 's1'))
+        session_ops.restore(self.conn, 's1')
         # Owner UI retains its existing authority over an ungrouped member.
-        code, result, _ = self.request('/api/session/archive', {'session_id': 's2'}, project='demo')
+        code, result, _ = self.request('/api/op/session.archive', {'session_id': 's2'}, project='demo')
         self.assertEqual(code, 200, result)
 
     def test_delete_removes_crew_and_native_conversations_and_takes_the_whole_group(self):
@@ -212,7 +211,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.provider.return_value = [*self.provider.return_value,
                                       {'sessionId': member, 'name': 'cc-worker', 'status': 'idle', 'cwd': str(self.project)}]
         self.service.refresh_agents()
-        code, result, _ = self.request('/api/session/delete', {'session_id': lead}, project='demo')
+        code, result, _ = self.request('/api/op/session.delete', {'session_id': lead}, project='demo')
         self.assertEqual(code, 409, result)
         self.assertIn('「worker」还开在 VS Code', result['error'])
         self.assertFalse(board.is_archived(self.conn, lead))
@@ -221,11 +220,11 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.provider.return_value = self.provider.return_value[:-1]
         self.service.refresh_agents()
         with mock.patch('crew.session_delete.delete_codex') as delete_codex:
-            code, result, _ = self.request('/api/session/delete', {'session_id': codex}, project='demo')
+            code, result, _ = self.request('/api/op/session.delete', {'session_id': codex}, project='demo')
             self.assertEqual(code, 200, result)
             self.assertEqual((result['deleted'], result['errors']), ([codex], []))
             self.assertEqual(delete_codex.call_args.args[0], ['thread-coder-0001'])
-            code, result, _ = self.request('/api/session/delete', {'session_id': lead}, project='demo')
+            code, result, _ = self.request('/api/op/session.delete', {'session_id': lead}, project='demo')
             self.assertEqual(code, 200, result)
             self.assertEqual((sorted(result['deleted']), result['errors']), (sorted([lead, member]), []))
             self.assertEqual(delete_codex.call_count, 1)
@@ -243,11 +242,10 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         board.roster(self.conn, 'demo', 'add', 'lead', session_ids=['s1'])
         board.join(self.conn, 'foreign-lead', 'demo', 'foreign', self.project, self.project, 'main', role='leader')
         for caller in ('s1', 'foreign-lead'):
-            code, result, _ = self.request('/api/group/close', {'group': 'lead', 'caller_session_id': caller}, project='demo')
-            self.assertEqual(code, 400, result)
+            with self.assertRaises((OpError, board.BoardError)):
+                ai_call(self.service, self.conn, caller, 'group.close', {'group': 'lead'})
             self.assertIsNone(self.conn.execute("SELECT closed_at FROM groups WHERE name='lead'").fetchone()[0])
-        code, result, _ = self.request('/api/group/close', {'group': 'lead', 'caller_session_id': 's3'}, project='demo')
-        self.assertEqual(code, 200, result)
+        ai_call(self.service, self.conn, 's3', 'group.close', {'group': 'lead'})
         self.assertEqual(self.conn.execute("SELECT session_id FROM events WHERE kind='leader:close'").fetchone()[0], 's3')
 
     def test_leader_archive_checks_external_native_goal_ownership_for_both_carriers(self):
@@ -261,16 +259,16 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                 goals.set_execution_status(self.conn, execution['id'], 'idle')
                 if runtime == 'claude':
                     with mock.patch.object(self.service.chat, '_external_agents', return_value=[{'sessionId': 'external-claude', 'status': 'busy'}]):
-                        code, result, _ = self.request('/api/session/archive', {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
-                        self.assertEqual(code, 409, result)
+                        with self.assertRaises(board.Conflict):
+                            ai_call(self.service, self.conn, 's3', 'session.archive', {'target': 's1'})
                 else:
                     from crew.codex_runtime import RuntimeLease
                     journal = self.service.chat.journal(execution['id'])
                     journal.set_status('working')
                     lease = RuntimeLease(self.home, execution['id']).acquire()
                     try:
-                        code, result, _ = self.request('/api/session/archive', {'session_id': 's1', 'caller_session_id': 's3'}, project='demo')
-                        self.assertEqual(code, 409, result)
+                        with self.assertRaises(board.Conflict):
+                            ai_call(self.service, self.conn, 's3', 'session.archive', {'target': 's1'})
                     finally:
                         lease.release()
                     journal.set_status('idle')
@@ -278,7 +276,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def test_goal_card_exact_shape_matches_create_list_state_and_detail_without_starting_work(self):
         before = len(self.processes)
-        code, response, _ = self.request('/api/goals/create', {'leader_session_id':'s3', 'title':'验证交付',
+        code, response, _ = self.request('/api/op/goal.create', {'leader_session_id':'s3', 'title':'验证交付',
             'request':'完成原始输入要求', 'acceptance':['具体 example 达标']})
         self.assertEqual(code,200,response)
         self.assertEqual(set(response),{'goal'})
@@ -305,8 +303,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual((goal['assignments'][0]['session_id'],goal['assignments'][0]['status']),('s3','assigned'))
         self.assertEqual(set(goal['rounds'][0]),{'goal_id','number','requirement_version','status','outcome','reason','opened_at','ended_at'})
         self.assertEqual(self.state()['goals'],[goal])
-        self.assertEqual(self.request('/api/goals',project='demo')[:2],(200,{'goals':[goal]}))
-        code, detail, _ = self.request('/api/goal',project='demo',id=goal['id'])
+        self.assertEqual(self.request('/api/op/goal.list',project='demo')[:2],(200,{'goals':[goal]}))
+        code, detail, _ = self.request('/api/op/goal.get',project='demo',id=goal['id'])
         self.assertEqual(code,200,detail);self.assertEqual(set(detail),{'goal','executions','context','reports','documents','acceptance_review','previous_acceptance_review','work_items'})
         self.assertEqual(detail['goal'],goal);self.assertEqual(detail['executions'],[]);self.assertEqual(detail['reports'],[])
         self.assertEqual(detail['documents'],[]); self.assertIsNone(detail['acceptance_review'])
@@ -314,16 +312,16 @@ class WebContractTests(ShellFixture, unittest.TestCase):
 
     def test_project_theme_api_persists_choice_and_rejects_invalid_theme(self):
         before = self.state()["project"]
-        self.assertEqual(self.request("/api/project/theme", {"project": "demo", "theme": "wisteria"})[:2],
+        self.assertEqual(self.request("/api/op/workspace.theme.set", {"project": "demo", "theme": "wisteria"})[:2],
                          (200, {"ok": True, "theme": "wisteria"}))
         selected = self.state()
         self.assertEqual(selected["project"], {**before, "theme": "wisteria"})
         self.assertEqual(selected["projects"], [{"name": "demo", "display_name": None, "theme": "wisteria"}])
         self.assertEqual(self.state(None)["projects"], [{"name": "demo", "display_name": None, "theme": "wisteria"}])
         self.assertEqual(board.project(self.conn, "demo")["theme"], "wisteria")
-        code, response, _ = self.request("/api/project/theme", {"project": "demo", "theme": "neon"})
+        code, response, _ = self.request("/api/op/workspace.theme.set", {"project": "demo", "theme": "neon"})
         self.assertEqual(code, 400)
-        self.assertIn("主题", response["error"])
+        self.assertIn("arguments.theme", response["error"])
         self.assertEqual(self.state()["project"]["theme"], "wisteria")
 
     def test_members_project_cards_recent_progress_codex_and_three_locations(self):
@@ -336,7 +334,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         for index in range(7):
             at = (self.clock + dt.timedelta(seconds=index)).isoformat()
             board.report(self.conn, "s1", "progress-" + str(index), now=at)
-        code, created, _ = self.request("/api/spawn", {"name": "background", "task": "Implement", "group": "lead"})
+        code, created, _ = self.request("/api/op/execution.spawn", {"name": "background", "task": "Implement", "group": "lead"})
         self.assertEqual(code, 200, created)
         records = []
         for identity, start, end in (("recent", -7200, -3600), ("older", -100000, -90000), ("running", -60, None)):
@@ -428,7 +426,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         for path in ("/api/decision/hold", "/api/decision/unhold"):
             with self.subTest(path=path):
                 self.assertNotIn(path, routes.post_paths())
-                self.assertNotIn(path, remote_routes.POST_PATHS)
+                self.assertFalse(remote_routes.permitted("POST", path, (), "browser"))
                 self.assertEqual(self.request(path, {"id": legacy})[0], 404)
         state = self.state()
         self.assertEqual({row["id"] for row in state["decisions"]}, {active, legacy})
@@ -442,7 +440,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             with self.subTest(session_id=sid):
                 decision = board.ask(self.conn, sid, "Question for " + sid, now=NOW)
                 before = {row["id"] for row in board.pending_notices(self.conn, "s3")}
-                self.assertEqual(self.request("/api/answer", {"id": decision, "text": "Stop here"})[:2],
+                self.assertEqual(self.request("/api/op/decision.answer", {"id": decision, "text": "Stop here"})[:2],
                                  (200, {"ok": True, "routed_to": "lead"}))
                 notices = [row for row in board.pending_notices(self.conn, "s3") if row["id"] not in before]
                 self.assertEqual(len(notices), 1)
@@ -537,7 +535,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         with mock.patch.object(Path, "read_text", autospec=True, side_effect=track):
             self.state()
             self.state()
-            self.assertEqual(self.request("/api/chat/history", project="demo", session_id="s3")[0], 200)
+            self.assertEqual(self.request("/api/op/chat.history", project="demo", session_id="s3")[0], 200)
             self.assertEqual(reads, [], "Unchanged journal must not be read by either projection")
             with journal.path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps({"seq": 3, "type": "assistant", "id": "new-answer", "content": [
@@ -547,7 +545,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
             self.assertEqual(changed["leaders"][0]["unread"], 2)
             self.assertIn("updated failure", [row["detail"] for row in changed["attention"]])
             self.state()
-            self.assertEqual(self.request("/api/chat/history", project="demo", session_id="s3")[0], 200)
+            self.assertEqual(self.request("/api/op/chat.history", project="demo", session_id="s3")[0], 200)
             self.assertEqual(reads, [journal.path])
 
     def test_codex_limit_uses_latest_machine_snapshot_and_expired_is_null(self):
@@ -585,7 +583,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertAlmostEqual(crew["high"], 0.01275 / 16)
         self.assertEqual((crew["usd_per_point"], crew["usd_per_point_range"], crew["since"]),
                          (20, [16, 27], "2026-10-15T08:00:00.000Z"))
-        code, report, _ = self.request("/api/usage", project="demo")
+        code, report, _ = self.request("/api/op/usage.report", project="demo")
         self.assertEqual(code, 200, report)
         self.assertEqual(report["summary"]["claude_limits"]["seven_day"]["crew"], crew)
         [week] = report["claude_weeks"]
@@ -677,8 +675,8 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(self.processes, [])
 
     def test_workers_start_and_close_stops_all_background_threads(self):
-        lifecycle = web.Service(self.root / "lifecycle-home", PLUGIN, cwd=self.project,
-            agents_provider=self.provider, claude_root=self.claude, codex_root=self.codex,
+        lifecycle = web.Service(self.root / "lifecycle-home", PLUGIN, cwd=self.project, isolated_sources=True,
+            agents_provider=self.provider, claude_root=self.claude, codex_root=self.codex, vscode_state_db=self.vscode_state_db,
             runs_file=self.runs, now=lambda: self.clock, process_factory=self.process_factory,
             notification_client=mock.Mock(), lock_status=lambda: False)
         self.addCleanup(lifecycle.close)
@@ -759,7 +757,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                 question = "Question for " + sid
                 decision = board.ask(self.conn, sid, question, now=NOW)
                 before = {row["id"] for row in board.pending_notices(self.conn, "s3")}
-                code, response, _ = self.request("/api/answer", {"id": decision, "text": "Use option A"})
+                code, response, _ = self.request("/api/op/decision.answer", {"id": decision, "text": "Use option A"})
                 self.assertEqual((code, response), (200, {"ok": True, "routed_to": routed}))
                 notices = [row for row in board.pending_notices(self.conn, "s3") if row["id"] not in before]
                 if routed is None:
@@ -783,13 +781,13 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual(member["cc_name"], "cc-one-resumed")
         self.assertEqual(board.session(self.conn, "s1")["cc_name"], "cc-one")
         decision = board.ask(self.conn, "s1", "Continue with the new process", now=NOW)
-        code, response, _ = self.request("/api/answer", {"id": decision, "text": "Continue"})
+        code, response, _ = self.request("/api/op/decision.answer", {"id": decision, "text": "Continue"})
         self.assertEqual((code, response), (200, {"ok": True, "routed_to": "lead"}))
         notice = board.pending_notices(self.conn, "s3")[0]
         self.assertIn("SendMessage 地址：cc-one-resumed", notice["text"])
 
     def test_usage_export_requires_an_explicit_type(self):
-        code, response, _ = self.request("/api/usage/export", project="demo", period="all")
+        code, response, _ = self.request("/api/op/usage.export", project="demo", period="all")
         self.assertEqual(code, 400)
         self.assertEqual(response, {"error": "导出类型必须是 sessions / daily / codex / requests"})
 
@@ -801,9 +799,9 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         board.join(self.conn, "foreign", "other", "foreign", other, other, "main", now=NOW)
         for rejected in ("s1", "missing", "foreign"):
             with self.subTest(session_id=rejected):
-                self.assertEqual(self.request("/api/chat/interrupt", {"session_id": rejected})[0], 400)
+                self.assertEqual(self.request("/api/op/chat.interrupt", {"session_id": rejected})[0], 400)
         before = len(process.stdin.getvalue().splitlines())
-        self.assertEqual(self.request("/api/chat/interrupt", {"session_id": sid})[:2], (200, {"ok": True}))
+        self.assertEqual(self.request("/api/op/chat.interrupt", {"session_id": sid})[:2], (200, {"ok": True}))
         lines = process.stdin.getvalue().splitlines()
         self.assertEqual(len(lines), before + 1)
         control = json.loads(lines[-1])
@@ -811,10 +809,10 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.assertEqual((control["type"], control["request"]), ("control_request", {"subtype": "interrupt"}))
         self.assertEqual(uuid.UUID(control["request_id"]).version, 4)
         self.service.chat.journal(sid).set_status("idle")
-        self.assertEqual(self.request("/api/chat/interrupt", {"session_id": sid})[0], 409)
+        self.assertEqual(self.request("/api/op/chat.interrupt", {"session_id": sid})[0], 409)
         process.finish()
         self.assertTrue(self.service.chat.processes[sid].reader_done.wait(3))
-        self.assertEqual(self.request("/api/chat/interrupt", {"session_id": sid})[0], 400)
+        self.assertEqual(self.request("/api/op/chat.interrupt", {"session_id": sid})[0], 400)
         self.assertEqual(len(process.stdin.getvalue().splitlines()), before + 1)
 
     def test_every_entry_page_asset_is_served_by_the_real_http_handler(self):
@@ -851,7 +849,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
                 self.assertTrue(content)
                 self.assertEqual(headers["Content-Type"], media)
                 self.assertEqual(headers["Cache-Control"], "public, max-age=604800")
-        for path in ("/", "/app.js", "/chat.js", "/channel.js", "/themes.js", "/style.css", "/vendor/markdown-it.min.js", "/api/state"):
+        for path in ("/", "/app.js", "/chat.js", "/channel.js", "/themes.js", "/style.css", "/vendor/markdown-it.min.js", "/api/op/workspace.state"):
             with self.subTest(path=path):
                 code, _, headers = self.request(path, raw=True)
                 self.assertEqual(code, 200)
@@ -920,7 +918,7 @@ class FrontendThemeContractTests(unittest.TestCase):
         self.assertLess(index.index('src="/themes.js"'), index.index('src="/app.js"'))
         for contract in ('data-act="project-theme"', 'class="theme-swatches"',
                          'aria-pressed="${state.project.theme === item.id}"',
-                         'api("/api/project/theme", {project:state.project.name, theme:button.dataset.themeId})',
+                         'api("/api/op/workspace.theme.set", {project:state.project.name, theme:button.dataset.themeId})',
                          'addEventListener("change", applyTheme)'):
             self.assertIn(contract, app)
         # The "/" project list lives in its own module; each workspace card keeps its saved theme colour.
@@ -1133,7 +1131,7 @@ const refresh=async()=>{const button={dataset:{gitAct:'refresh'}};listeners.get(
   assert.deepEqual(sections(partly).map(group=>group[1]),['已进 dev_live，待实测 <span>1</span>']);
   assert(partly.includes('没有待进 dev_live、待推送的分支</p>'));assert(!partly.includes('git-lite-clear-title'));
   assert(partly.includes('<p class="git-lite-hidden">另有 4 个分支已合入并推送，不再显示</p>'));
-  assert(calls.every(route=>route==='/api/git'));sandbox.CrewGit.unmount();
+  assert(calls.every(route=>route==='/api/op/git.overview'));sandbox.CrewGit.unmount();
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
         result = subprocess.run(["node", "-e", script, str(frontend_root.resolve(PLUGIN) / "git.js"),
@@ -1181,7 +1179,7 @@ function fixture() {
   const original = Object.getOwnPropertyDescriptor(inner, "innerHTML");
   Object.defineProperty(inner, "innerHTML", {get:original.get, set(value) { original.set.call(inner, value); scroll.scrollHeight = 40 + [...value.matchAll(/data-channel-id=/g)].length * 100; }});
   const nodes = {".cx-pin":element(), ".cx-scroll":scroll, ".cx-inner":inner, ".cx-older":older, ".cx-targets":targets, textarea:input, ".cx-send":send, form};
-  for (const selector of [".cx-digest-btn", ".cx-pendingbar", ".cx-composer-wrap", ".cx-replybar", ".cx-aside", ".cx-members", ".cx-pending", ".cx-count", ".cx-backdrop", ".cx-pop"]) nodes[selector] = element();
+  for (const selector of [".cx-digest-btn", ".cx-pendingbar", ".cx-composer-wrap", ".cx-replybar", ".cx-aside", ".cx-members", ".cx-pending", ".cx-count", ".cx-backdrop", ".cx-pop", ".cx-room"]) nodes[selector] = element();
   Object.assign(scroll, {addEventListener() {}});
   inner.querySelector = () => null;
   nodes[".cx-pin"].addEventListener = () => {};
@@ -1193,8 +1191,9 @@ function fixture() {
   let interloper = false;
   const api = async (route, data) => {
     calls.push({route, data});
-    if (route === "/api/channel/read") return {read_id:data.id, unread:0, latest_id:messages[messages.length - 1].id};
-    if (route === "/api/channel") {
+    if (route === "/api/op/channel.mark_read") return {read_id:data.id, unread:0, latest_id:messages[messages.length - 1].id};
+    if (route === "/api/op/war_room.list") return {rooms:[]};
+    if (route === "/api/op/channel.post") {
       if (interloper) messages.push(message(messages.length + 1, "发送期间到达的发言"));
       const posted = message(messages.length + 1, data.body, "user");
       posted.mentions = data.to.map(name => ({session_id:state.leaders.find(item => item.name === name).session_id, name, delivery:"queued", queued_at:new Date().toISOString()}));
@@ -1223,7 +1222,8 @@ function fixture() {
         index = (assets / "index.html").read_text(encoding="utf-8")
         app = (assets / "app.js").read_text(encoding="utf-8")
         self.assertLess(index.index('src="/chat.js"'), index.index('src="/channel.js"'))
-        self.assertLess(index.index('src="/channel.js"'), index.index('src="/app.js"'))
+        self.assertLess(index.index('src="/channel.js"'), index.index('src="/war-room.js"'))
+        self.assertLess(index.index('src="/war-room.js"'), index.index('src="/app.js"'))
         self.assertLess(app.index('data-view="all"'), app.index('data-view="channel"'))
         self.assertIn('state.channel.unread', app)
         self.assertIn('"channel", "adopt"', app)
@@ -1258,10 +1258,10 @@ f.input.oncompositionstart(); f.input.onkeydown(enter({}));
 f.input.oncompositionend(); f.input.onkeydown(enter({isComposing:true}));
 f.input.onkeydown(enter({keyCode:229})); f.input.onkeydown(enter({shiftKey:true}));
 await flush();
-assert.equal(f.calls.filter(item => item.route === "/api/channel").length, 0);
+assert.equal(f.calls.filter(item => item.route === "/api/op/channel.post").length, 0);
 assert.equal(prevented, 0);
 f.input.onkeydown(enter({})); await flush();
-const posted = f.calls.find(item => item.route === "/api/channel");
+const posted = f.calls.find(item => item.route === "/api/op/channel.post");
 assert.deepEqual(JSON.parse(JSON.stringify(posted.data)), {project:"demo", body:"**确认**发布", to:["Git", "Design"]});
 assert.equal(prevented, 1);
 assert.equal(f.input.value, "");
@@ -1278,7 +1278,7 @@ sandbox.CrewChannel.unmount();
 const f = fixture(); f.mount(); await flush();
 assert(!f.inner.innerHTML.includes('data-channel-id="1"'));
 f.scroll.scrollTop = 0; f.click(".cx-older", f.older); await flush();
-assert(f.calls.some(item => item.route === "/api/channel?limit=20&before=6"));
+assert(f.calls.some(item => item.route === "/api/op/channel.list?limit=20&before=6"));
 assert(f.inner.innerHTML.includes('data-channel-id="1"'));
 assert(f.older.hidden);
 assert.equal(f.scroll.scrollTop, 500);

@@ -92,18 +92,6 @@ def post_todo(service, path, data, project_name, conn, now, project):
                         note=data.get('note'), expected_version=data.get('expected_version'), now=now)
 
 
-def post_messages(service, path, data, project_name, conn, now, project):
-    caller = board.session(conn, _text(data, 'caller_session_id'))
-    if caller['project'] != project:
-        raise board.BoardError('发件人不属于当前工作区')
-    name = _text(data, 'name')
-    row = conn.execute('SELECT session_id FROM sessions WHERE session_id=? AND project=?', (name, project)).fetchone()
-    target = row['session_id'] if row else board.named_session(conn, project, name)['session_id']
-    return service.chat.send_message(caller['session_id'], target, _text(data, 'text'), data.get('message_id'),
-                                  execution_id=data.get('execution_id'), kind=data.get('kind', 'information'),
-                                  reply_to=data.get('reply_to'))
-
-
 def post_leaders_order(service, path, data, project_name, conn, now, project):
     _text(data, 'project')
     return board.set_leader_order(conn, project, data.get('order'), data.get('pinned'))

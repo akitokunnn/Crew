@@ -7,9 +7,10 @@ from unittest import mock
 
 import test_codex_runtime as fixtures
 from test_chat import FakeProcess
+from test_core import operation_service
+from tests.ops_helpers import ai_call
 from crew import behavior_prompts as prompts
-from crew import board, channel_digest, chat, personal, personal_actions, rules, runtimes, store
-from crew.web_api import behavior_prompts as api
+from crew import board, channel_digest, chat, personal, runtimes, store
 
 
 class BehaviorPromptRuntimeTests(unittest.TestCase):
@@ -82,12 +83,13 @@ class BehaviorPromptRuntimeTests(unittest.TestCase):
             self.assertEqual(prompts.inspect_applied(conn, 'worker')['applications'][-1]['status'], 'confirmed')
 
     def test_http_adapter_scopes_history_and_projectless_assistant_never_launch_ai(self):
+        service = operation_service(self, self.home)
         with mock.patch('subprocess.Popen', side_effect=AssertionError('No model')):
             with closing(store.connect(self.home)) as conn:
                 assistant = personal.ensure_assistant(conn, self.home)
-            values = api.get(self.home, {'scope': 'session', 'identity': assistant['session_id']})
+            values = service.op('prompt.list', {'scope': 'session', 'identity': assistant['session_id']})
             self.assertEqual(values['scope'], 'session')
-            result = api.post(self.home, {'action': 'save', 'key': 'assistant', 'content': 'Use my chosen tone',
+            result = service.op('prompt.save', {'key': 'assistant', 'content': 'Use my chosen tone',
                 'scope': 'session', 'identity': assistant['session_id'], 'expected_version': 0})
             self.assertFalse(result['started'])
             with closing(store.connect(self.home)) as conn:
@@ -95,35 +97,35 @@ class BehaviorPromptRuntimeTests(unittest.TestCase):
                 self.assertIsNone(manifest['project'])
                 self.assertIn('Use my chosen tone', prompts.render(manifest))
                 prompts.record_applied(conn, assistant['session_id'], manifest, status='sent')
-            self.assertEqual(api.get(self.home, {'action': 'applied', 'scope_id': assistant['session_id']})['loaded'], 'not_confirmed')
-            history = api.get(self.home, {'action': 'history', 'key': 'assistant', 'scope': 'session', 'identity': assistant['session_id']})
+            self.assertEqual(service.op('prompt.applied', {'scope_id': assistant['session_id']})['loaded'], 'not_confirmed')
+            history = service.op('prompt.history', {'key': 'assistant', 'scope': 'session', 'identity': assistant['session_id']})
             self.assertEqual(history['history'][0]['content'], 'Use my chosen tone')
             with self.assertRaises(board.Conflict):
-                api.post(self.home, {'action': 'save', 'key': 'assistant', 'content': 'Stale edit', 'scope': 'session',
+                service.op('prompt.save', {'key': 'assistant', 'content': 'Stale edit', 'scope': 'session',
                     'identity': assistant['session_id'], 'expected_version': 0})
 
     def test_assistant_prompt_changes_need_original_human_instruction_and_do_not_repeat(self):
+        service = operation_service(self, self.home)
         with closing(store.connect(self.home)) as conn:
-            assistant = personal.ensure_assistant(conn, self.home)
-        request = {'data': {'key': 'common', 'content': 'User chosen rule', 'expected_version': 0},
-                   'message_id': 'user-rule', 'request_id': 'rule-operation'}
-        read = lambda _: [{'type': 'message', 'id': 'user-rule', 'role': 'user', 'source': 'human',
-                           'text': '以后按这条规则工作'}]
-        first = personal_actions.dispatch(self.home, assistant['session_id'], 'prompt.save', request, read_events=read)
-        repeated = personal_actions.dispatch(self.home, assistant['session_id'], 'prompt.save', request, read_events=read)
-        self.assertFalse(first['result']['started_by_operation'])
-        self.assertTrue(repeated['duplicate'])
-        value = personal_actions.dispatch(self.home, assistant['session_id'], 'prompt.history', {'data': {'key': 'common'}})
-        self.assertEqual(len(value['history']), 1)
-        self.assertEqual(value['history'][0]['actor'], 'assistant:user-rule')
-        with self.assertRaises(board.BoardError):
-            personal_actions.dispatch(self.home, assistant['session_id'], 'prompt.reset',
-                {**request, 'request_id': 'forged'}, read_events=lambda _: [])
+            sid = personal.ensure_assistant(conn, self.home)['session_id']
+            service.chat.journal(sid).message('user-rule', '以后按这条规则工作', source='human')
+            args = {'key': 'common', 'content': 'User chosen rule', 'expected_version': 0}
+            proof = {'request_id': 'rule-operation', 'message_id': 'user-rule'}
+            first = ai_call(service, conn, sid, 'prompt.save', args, **proof)
+            repeated = ai_call(service, conn, sid, 'prompt.save', args, **proof)
+            self.assertFalse(first['result']['started_by_operation'])
+            self.assertTrue(repeated['replayed'])
+            value = ai_call(service, conn, sid, 'prompt.history', {'key': 'common'})
+            self.assertEqual(len(value['history']), 1)
+            self.assertEqual(value['history'][0]['actor'], 'assistant:user-rule')
+            with self.assertRaises(board.BoardError):
+                ai_call(service, conn, sid, 'prompt.reset', {'key': 'common', 'expected_version': 1},
+                        message_id='missing')
 
-    def test_override_replaces_old_role_reminder_and_summary_behavior(self):
+    def test_override_replaces_member_and_summary_behavior(self):
         with closing(store.connect(self.home)) as conn:
             prompts.save(conn, 'member', 'Custom member behavior', expected_version=0)
-            self.assertIsNone(rules.reminder(conn, 'worker', self.plugin))
+            self.assertIn('Custom member behavior', prompts.render(prompts.for_session(conn, 'worker')))
             prompts.save(conn, 'summary', 'Only summarize milestones', expected_version=0)
             manifest = prompts.resolve(conn, project=self.session['project'], keys=('summary',))
         text = channel_digest.prompt('', [], prompts.render(manifest))

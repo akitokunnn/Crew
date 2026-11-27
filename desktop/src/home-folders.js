@@ -1,6 +1,6 @@
 'use strict';
 // Folder picker for a connected LAN host: lists only the host's folders through
-// /api/host/folders. This computer's own folders use the system dialog instead.
+// /api/op/workspace.host_folders. This computer's own folders use the system dialog instead.
 (() => {
   const bridge = window.crewDesktop;
   function svg(paths) {

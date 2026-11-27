@@ -120,7 +120,7 @@ class LaunchSettings {
     const currentService=await checkHealth(this.backend.url);
     if (!samePath(currentService.home,this.config.home)) throw Error('当前后台的数据目录与桌面不一致，切换已停止。');
     let plan;
-    try{plan=await this.request(this.backend.url,'/api/admin/connection/plan');}
+    try{plan=await this.request(this.backend.url,'/api/op/admin.connection.plan');}
     catch(error){if([404,405].includes(error.status))throw Error('当前后台版本不支持连接切换预览，请先升级后台。');throw error;}
     if (!Array.isArray(plan.sessions) || !Number.isInteger(plan.goals_count) || !Number.isInteger(plan.running_count)) throw Error('当前后台不支持连接切换预览；请先升级后台。');
     Object.assign(impact,plan);
@@ -251,7 +251,7 @@ class LaunchSettings {
           const health=await this._health(this.backend.url);
           if (!preview.current_service || health.instance_id !== preview.current_service.instance_id || health.pid !== preview.current_service.pid) throw Error('当前后台已变化，请重新检查后再切换。');
           let prepared;
-          try{prepared=await this.request(this.backend.url,'/api/admin/connection/prepare',{instance_id:health.instance_id},180000);}
+          try{prepared=await this.request(this.backend.url,'/api/op/admin.connection.prepare',{instance_id:health.instance_id},180000);}
           catch(error){if([404,405].includes(error.status))throw Error('当前后台版本不支持安全停止会话并切换连接，请先升级后台。');throw error;}
           if (!prepared.ok || prepared.instance_id !== health.instance_id || prepared.pid !== health.pid || !Array.isArray(prepared.managed_pids)) throw Error('后台没有确认会话已停止；启动设置未修改。');
           lock.assert();port=health.port || port;pids.push(health.pid,...prepared.managed_pids);
