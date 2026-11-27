@@ -3,6 +3,18 @@ const assert=require("node:assert/strict"),fs=require("node:fs"),path=require("n
 const {test}=require("node:test");
 const tick=async()=>{for(let i=0;i<16;i++)await Promise.resolve();};
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
+test("Markdown reports render formatting and tables while displaying authored HTML as text", () => {
+  const source = "# Report\n\n**Evidence**\n\n| Input | Result |\n| --- | --- |\n| A | B |\n\n<script>throw 'authored script'</script>\n\n[Unsafe](javascript:example)";
+  const article = {querySelector:() => ({content:{textContent:source}})};
+  const markdownit = require("../../frontend/vendor/markdown-it.min.js");
+  const script = fs.readFileSync(path.join(__dirname,"../../frontend/report-markdown.js"),"utf8");
+  vm.runInNewContext(script, {window:{markdownit}, document:{querySelector:() => article}});
+  assert.match(article.innerHTML, /<h1>Report<\/h1>/);
+  assert.match(article.innerHTML, /<strong>Evidence<\/strong>/);
+  assert.match(article.innerHTML, /<div class="table-wrap"><table>/);
+  assert.match(article.innerHTML, /&lt;script&gt;/);
+  assert.doesNotMatch(article.innerHTML, /<script>|href="javascript:/);
+});
 // The reader keeps its header, status and report frame in separate parts; only the header follows later goal state.
 const readerText=reader=>[".goal-reader-head",".goal-reader-body",".goal-reader-frame"].map(part=>reader.querySelector(part).innerHTML).join("");
 const frameOf=reader=>reader.querySelector(".goal-reader-frame").querySelector("iframe");

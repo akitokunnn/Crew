@@ -211,7 +211,7 @@ class GoalTests(GoalFixture):
                 with self.subTest(outcome=outcome, page=blank):
                     page = self.report(outcome)
                     page['document_html'] = blank
-                    with self.assertRaisesRegex(board.BoardError, 'HTML 正文 document_html'):
+                    with self.assertRaisesRegex(board.BoardError, 'document_html 报告正文'):
                         goals.save_report(self.conn, goal['id'], page)
             missing_page = self.report(outcome)
             missing_page.pop('document_html')

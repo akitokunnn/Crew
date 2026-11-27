@@ -76,6 +76,9 @@
 .task-review-text strong{font-size:14px;color:var(--warn)}.task-review-banner.is-pending strong{color:var(--accent-text)}
 .task-review-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .goal-report-reader .head{column-gap:10px}
+.goal-report-reader[data-document-format="markdown"]>.goal-reader-head,
+.goal-report-reader[data-document-format="markdown"] .goal-reader-frame>iframe{background:var(--surface-2)}
+.goal-report-reader[data-document-format="markdown"]>.goal-reader-head{border-bottom:1px solid var(--line);backdrop-filter:none}
 .review-buttons .review-observe{color:var(--text-2)}
 /* On the tinted banner the secondary choices sit on the card surface so they still read as buttons beside the solid primary. */
 .task-review-banner .btn:not(.primary){background:var(--surface);border-color:var(--line-strong)}
