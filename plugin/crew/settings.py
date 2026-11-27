@@ -8,11 +8,12 @@ import sqlite3
 from . import board, change_feed, guard, store
 
 
-PURPOSES = ('default', 'leader', 'member', 'assistant', 'digest', 'git', 'operations')
-TASK_OVERRIDES = ('leader', 'member', 'assistant')
+PURPOSES = ('default', 'leader', 'member', 'assistant', 'digest', 'git', 'operations', 'creative', 'routine', 'difficult')
+TASK_OVERRIDES = ('leader', 'member', 'assistant', 'creative', 'routine', 'difficult')
 FIELDS = ('runtime', 'model', 'effort', 'speed')
 DEFAULT = {'default': {'runtime': None, 'model': None, 'effort': None, 'speed': None},
-           'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': None, 'operations': None}
+           'leader': None, 'member': None, 'assistant': None, 'digest': None, 'git': None, 'operations': None,
+           'creative': None, 'routine': None, 'difficult': None}
 EXECUTION_DEFAULT = {'codex': 'workspace-write', 'claude': 'default'}
 EXECUTION_CHOICES = {'codex': ('read-only', 'workspace-write', 'danger-full-access'),
                      'claude': ('default', 'acceptEdits', 'bypassPermissions')}

@@ -11,7 +11,7 @@ from .. import behavior_prompts, goal_artifacts, goal_mode, goal_reports, person
 from .database import StorageConflict
 
 NOTE_TABLES = ('note_tag_settings', 'mindmaps', 'mindmap_nodes', 'mindmap_domains',
-               'mindmap_conversions', 'workspace_assistant_agents', 'note_discussions')
+               'mindmap_conversions', 'workspace_assistant_agents', 'note_discussions', 'canvas_positions')
 
 FIELDS = {
     'behavior_prompts': ('scope', 'prompt_key', 'content', 'version', 'updated_at'),
@@ -197,6 +197,16 @@ def project_workspace_notes(p):
               note_id=notes[row['note_id']] if row['note_id'] is not None else None,
               modified_at=row['updated_at'], **fields(row, 'label', 'sort_order', 'collapsed', 'created_at'))
 
+        if row.get('x') is not None and row.get('y') is not None:
+            stage('canvas_positions', 'personal_mindmap_nodes', row, node_id=nodes[row['id']],
+                  x=row['x'], y=row['y'], modified_at=row['updated_at'])
+    for row in p.rows.get('domain_leaders', ()):
+        if row['domain_id'] is None and row['x'] is not None and row['y'] is not None:
+            agent = p.agent(row['session_id'])
+            if agent:
+                stage('canvas_positions', 'domain_leaders', row, agent_id=agent,
+                      x=row['x'], y=row['y'], modified_at=row['updated_at'])
+
     # Only conversion targets and their containing board parts belong to this projection.
     domains = {r['id']: r for r in p.rows.get('domains', ())}
     links = p.rows.get('personal_mindmap_links', ())
@@ -253,15 +263,23 @@ def activate_workspace_notes(m):
     for row in m.data['mindmaps']:
         m.insert('workspace_mindmaps', dict(project=m.project, version=row['version'], updated_at=row['modified_at']),
                  'mindmaps', row['id'])
+    points = {r['node_id']: (r['x'], r['y']) for r in m.data['canvas_positions'] if r['node_id'] is not None}
     for table, source, keys in [('mindmap_domains', 'domains', ('name','x','y','collapsed')),
                                 ('mindmap_nodes', 'personal_mindmap_nodes', ('note_id','label','sort_order','collapsed'))]:
         for row in m.data[table]:
-            m.insert(source, dict(id=row['id'], project=m.project, updated_at=row['modified_at'],
+            position = dict(zip(('x', 'y'), points[row['id']])) if table == 'mindmap_nodes' and row['id'] in points else {}
+            m.insert(source, dict(id=row['id'], project=m.project, updated_at=row['modified_at'], **position,
                      created_at=row['created_at'], **{k: row[k] for k in keys}))
         for row in m.data[table]:
             if row['parent_id'] is not None:
                 m.conn.execute('UPDATE ' + source + ' SET parent_id=? WHERE id=?', (row['parent_id'], row['id']))
             m.stored(source, {'id': row['id']}, table, row['id'])
+    for point in m.data['canvas_positions']:
+        if point['agent_id'] is not None:
+            m.insert('domain_leaders', dict(session_id=point['agent_id'], project=m.project, domain_id=None,
+                     x=point['x'], y=point['y'], updated_at=point['modified_at']), 'canvas_positions', point['id'])
+        else:
+            m.stored('personal_mindmap_nodes', {'id': point['node_id']}, 'canvas_positions', point['id'])
     parts = {row['id'] for row in m.data['mindmap_domains']}
     for row in m.data['mindmap_conversions']:
         if row['domain_id'] not in parts:

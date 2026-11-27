@@ -409,6 +409,7 @@ CREATE TABLE IF NOT EXISTS read_cursors (
 -- Things Crew itself must tell a leader (an answer saved on the web or QQ, a member adopted into its group).
 -- The web service writes them into the leader's input once it is idle; the leader relays to members with SendMessage.
 CREATE TABLE IF NOT EXISTS leader_notices (
+    room_id INTEGER REFERENCES war_rooms(id),
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project    TEXT NOT NULL,
     session_id TEXT NOT NULL,              -- the leader
@@ -452,6 +453,12 @@ CREATE TABLE IF NOT EXISTS war_rooms (
     contract_updated_at TEXT,
     contract_updated_by TEXT,
     status              TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+    phase               TEXT NOT NULL DEFAULT 'active' CHECK(phase IN ('preparing','active')),
+    draft_version       INTEGER NOT NULL DEFAULT 0,
+    approved_version    INTEGER,
+    legacy              INTEGER NOT NULL DEFAULT 1,
+    close_reason        TEXT,
+    open_request_id     TEXT,
     summary             TEXT,
     created_at          TEXT NOT NULL,
     closed_at           TEXT,
@@ -470,12 +477,44 @@ CREATE TABLE IF NOT EXISTS war_room_members (
 CREATE TABLE IF NOT EXISTS war_room_items (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     room_id          INTEGER NOT NULL REFERENCES war_rooms(id),
+    entry_id         TEXT,
+    kind             TEXT,
+    plan_version     INTEGER,
+    answer           TEXT,
+    goal_id          TEXT REFERENCES goals(id),
     title            TEXT NOT NULL,
     owner_session_id TEXT,
     status           TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'blocked', 'done')),
     note             TEXT,
     updated_at       TEXT NOT NULL,
     updated_by       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS war_room_plans (
+    room_id INTEGER NOT NULL REFERENCES war_rooms(id), version INTEGER NOT NULL,
+    body TEXT NOT NULL, summary TEXT NOT NULL, author TEXT NOT NULL, created_at TEXT NOT NULL,
+    budget_tokens INTEGER, entries_json TEXT NOT NULL, approval TEXT, PRIMARY KEY(room_id,version)
+);
+CREATE TABLE IF NOT EXISTS war_room_idle (
+    room_id INTEGER NOT NULL REFERENCES war_rooms(id), item_id INTEGER NOT NULL REFERENCES war_room_items(id),
+    owner TEXT NOT NULL, since TEXT NOT NULL, notice_id INTEGER REFERENCES leader_notices(id),
+    activity_key TEXT, ended_at TEXT, PRIMARY KEY(room_id,item_id,owner,since)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS war_room_current_idle ON war_room_idle(room_id,item_id,owner) WHERE ended_at IS NULL;
+CREATE TABLE IF NOT EXISTS war_room_execution_reads (
+    room_id INTEGER NOT NULL REFERENCES war_rooms(id), reader TEXT NOT NULL,
+    execution_id TEXT NOT NULL REFERENCES goal_executions(id), seq INTEGER NOT NULL,
+    PRIMARY KEY(room_id,reader,execution_id)
+);
+CREATE TABLE IF NOT EXISTS war_room_delivery (
+    notice_id INTEGER PRIMARY KEY REFERENCES leader_notices(id), room_id INTEGER NOT NULL REFERENCES war_rooms(id),
+    goal_id TEXT NOT NULL REFERENCES goals(id), context TEXT NOT NULL, upto INTEGER NOT NULL,
+    execution_id TEXT REFERENCES goal_executions(id)
+);
+CREATE TABLE IF NOT EXISTS war_room_consults (
+    room_id INTEGER NOT NULL REFERENCES war_rooms(id), question_id TEXT NOT NULL, plan_version INTEGER NOT NULL,
+    purpose TEXT NOT NULL, question TEXT NOT NULL, runtime TEXT NOT NULL, model TEXT, effort TEXT,
+    requested_model TEXT, requested_effort TEXT, error TEXT, response TEXT, tokens INTEGER,
+    created_at TEXT NOT NULL, PRIMARY KEY(room_id,question_id)
 );
 -- Board and membership changes, shown as handoff points on the room timeline.
 CREATE TABLE IF NOT EXISTS war_room_events (
@@ -487,6 +526,7 @@ CREATE TABLE IF NOT EXISTS war_room_events (
     detail     TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS war_room_decisions (
+    answer_notice_id INTEGER REFERENCES leader_notices(id),
     decision_id INTEGER PRIMARY KEY REFERENCES decisions(id),
     room_id     INTEGER NOT NULL REFERENCES war_rooms(id)
 );

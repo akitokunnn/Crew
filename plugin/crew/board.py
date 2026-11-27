@@ -864,6 +864,7 @@ def _deliver(conn, session_id, include_answers, now):
     if is_archived(conn, session_id):
         return {"answers": [], "handoffs": []}
     answers = _rows(conn, "SELECT * FROM decisions WHERE session_id=? AND status='answered' AND delivered_at IS NULL "
+                   "AND NOT EXISTS(SELECT 1 FROM war_room_decisions w WHERE w.decision_id=decisions.id) "
                    "AND NOT EXISTS(SELECT 1 FROM goal_links l WHERE l.kind='decision' AND l.item_id=decisions.id) ORDER BY id", (session_id,)) if include_answers else []
     pending = handoffs(conn, session_id)
     for d in answers:
@@ -1116,7 +1117,7 @@ def pending_notices(conn, leader_session_id):
 
 
 def quiet_notices(conn, leader_session_id):
-    return _rows(conn, "SELECT * FROM leader_notices WHERE session_id=? AND sent_at IS NULL AND wake=0 ORDER BY id",
+    return _rows(conn, "SELECT * FROM leader_notices WHERE session_id=? AND room_id IS NULL AND sent_at IS NULL AND wake=0 ORDER BY id",
                  (leader_session_id,))
 
 

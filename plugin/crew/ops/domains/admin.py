@@ -56,12 +56,13 @@ route('settings.save', '保存全局设置', 'POST', '/api/settings', admin.post
                   'effort': _field(['string', 'null'], '模型支持的推理强度，null 跟随默认设置', minLength=1, maxLength=100),
                   'speed': _field(['string', 'null'], 'Codex 速度档位，null 跟随默认设置', minLength=1, maxLength=100),
               }, ['runtime', 'model', 'effort'], description='系统管理员的载体和模型配置，空值表示继承全局默认', kind=['object', 'null'], open_fields=False),
-              'digest': _object({
+              **{purpose: _object({
                   'runtime': _field(['string', 'null'], '使用的 AI 载体，null 跟随默认设置', enum=['claude', 'codex', None]),
                   'model': _field(['string', 'null'], '载体提供的模型 ID，null 跟随默认模型', minLength=1, maxLength=300),
                   'effort': _field(['string', 'null'], '模型支持的推理强度，null 跟随默认设置', minLength=1, maxLength=100),
                   'speed': _field(['string', 'null'], 'Codex 速度档位，null 跟随默认设置', minLength=1, maxLength=100),
-              }, ['runtime', 'model', 'effort'], description='交流区摘要的载体和模型配置，空值表示继承全局默认', kind=['object', 'null'], open_fields=False),
+              }, ['runtime', 'model', 'effort'], description=label + '的载体和模型，未配置时沿用默认', kind=['object', 'null'], open_fields=False)
+                 for purpose, label in [('digest', '交流区摘要'), ('creative', '创意顾问'), ('routine', '常规顾问'), ('difficult', '疑难顾问')]},
               'git': _object({
                   'runtime': _field(['string', 'null'], '使用的 AI 载体，null 跟随默认设置', enum=['claude', 'codex', None]),
                   'model': _field(['string', 'null'], '载体提供的模型 ID，null 跟随默认模型', minLength=1, maxLength=300),
