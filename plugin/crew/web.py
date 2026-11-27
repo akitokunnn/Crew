@@ -120,7 +120,6 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
         self.storage_cleanup = storage_cleanup.Manager(self.home, self.plugin_root, clock=self.now,
                                                       active_keys=self.storage_active_keys, activity_lock=self.chat.lock)
         with closing(store.connect(home)) as conn:
-            projects = board.projects(conn)
             project = board.project_for_path(conn, Path.cwd() if cwd is None else cwd)
             self.default_project = project["name"] if project is not None else None
         self.remote_access = remote_access.Controller(self.home, self._remote_listener)
@@ -486,6 +485,8 @@ class Server(ThreadingHTTPServer):
             raise board.BoardError('系统连续分配浏览器禁用端口，未启动 Crew 后端；请显式选择可用端口')
         self.url = "http://127.0.0.1:%d" % self.server_port
         try:
+            # Register and validate operations before the background workers compete with the first request.
+            from .ops import domains as operation_domains  # noqa: F401
             # A new backend trusts no earlier session token; managed sessions resume with new ones.
             with closing(store.connect(service.home)) as conn:
                 tokens.revoke_all(conn, service.now().isoformat())

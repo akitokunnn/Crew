@@ -76,6 +76,11 @@ def visible_leaders(conn, project_name):
         (project_name,))}
 
 
+def visible_goals(conn, project):
+    leaders = visible_leaders(conn, project)
+    return [goal for goal in goals.list_goals(conn, project) if goal['leader_session_id'] in leaders]
+
+
 def goal(conn, project_name, goal_id):
     """A task card; the workspace lists only the tasks of the leaders it shows."""
     row = conn.execute('SELECT leader_session_id FROM goals WHERE id=? AND project=?', (goal_id, project_name)).fetchone()

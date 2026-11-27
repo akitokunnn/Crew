@@ -486,10 +486,12 @@ class Inbox:
                     # and the other channel continue independently.
                     continue
 
-    def delivery_snapshot(self):
-        with closing(store.connect(self.home)) as conn:
-            rows = self.execute(conn, 'SELECT item_id,kind,status,attempts,next_attempt,message_id,error FROM notification_messages '
-                                'ORDER BY created_at DESC,item_id DESC LIMIT 20').fetchall()
+    def delivery_snapshot(self, conn=None):
+        if conn is None:
+            with closing(store.connect(self.home)) as connection:
+                return self.delivery_snapshot(connection)
+        rows = self.execute(conn, 'SELECT item_id,kind,status,attempts,next_attempt,message_id,error FROM notification_messages '
+                            'ORDER BY created_at DESC,item_id DESC LIMIT 20').fetchall()
         return {'max_retries': MAX_RETRIES, 'receipts': [dict(row) for row in rows]}
 
     def question_message(self, entry):
