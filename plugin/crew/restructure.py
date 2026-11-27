@@ -283,6 +283,9 @@ class Plan:
         if to == goal['leader_session_id']:
             raise board.BoardError('任务%s已经由%s负责' % (_quote(goal['title']), _quote(self.name(to))))
         goals._transfer_target(self.conn, goal, to)
+        blocker = goals.transfer_blocker(self.conn, goal, to)
+        if blocker is not None:
+            raise board.BoardError('任务%s：%s' % (_quote(goal['title']), blocker))
         self.goal_actions[goal['id']] = {'index': index, 'action': 'transfer', 'to': to, 'implicit': False, 'goal': goal}
         return '任务%s改派给%s' % (_quote(goal['title']), _quote(self.name(to)))
 
@@ -325,6 +328,10 @@ class Plan:
                     goals._transfer_target(self.conn, goal, info['successor'])
                 except board.BoardError as exc:
                     self.fail(index, str(exc))
+                    continue
+                blocker = goals.transfer_blocker(self.conn, goal, info['successor'])
+                if blocker is not None:
+                    self.fail(index, '%s的任务%s：%s' % (who, _quote(goal['title']), blocker))
                     continue
                 self.goal_actions[goal['id']] = {'index': index, 'action': 'transfer', 'to': info['successor'],
                                                  'implicit': True, 'goal': goal}

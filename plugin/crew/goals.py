@@ -1111,6 +1111,22 @@ def _transfer_target(conn, goal, session_id):
     return target
 
 
+def transfer_blocker(conn, goal, to_session_id):
+    """Why the task cannot be handed to this leader now, or None; the restructure preview asks the same."""
+    if goal['status'] in TERMINAL:
+        return '已结束的任务不能交接；需要继续请先重开'
+    old = pending_transfer(conn, goal['id'])
+    if old is not None:
+        return None if old['to_session_id'] == to_session_id else '任务正在交给另一位 leader，等那次交接完成后再改'
+    if conn.execute("SELECT 1 FROM goal_round_finishes WHERE goal_id=? AND round=? AND status='pending'",
+                    (goal['id'], goal['current_round'])).fetchone():
+        return '本轮已提交交付、等待收尾；收尾后再交接' + (
+            '（任务暂停中，继续推进后会自动收尾）' if goal['manual_pause'] or goal['status'] in ('pausing', 'paused') else '')
+    if conn.execute('SELECT 1 FROM goal_cancellations WHERE goal_id=? AND round=?', (goal['id'], goal['current_round'])).fetchone():
+        return '任务已请求取消，不能再交接'
+    return None
+
+
 @atomic
 def request_transfer(conn, goal_id, to_session_id, note='', *, actor=board.HUMAN, now=None):
     """Record that the task moves to another leader; the host finalizes once no execution is running."""
@@ -1119,21 +1135,17 @@ def request_transfer(conn, goal_id, to_session_id, note='', *, actor=board.HUMAN
     if not isinstance(to_session_id, str) or not to_session_id:
         raise board.BoardError('请指定接手的 leader')
     if goal['status'] in TERMINAL:
-        raise board.Conflict('已结束的任务不能交接；需要继续请先重开')
+        raise board.Conflict(transfer_blocker(conn, goal, to_session_id))
     if to_session_id == goal['leader_session_id']:
         raise board.BoardError('任务已经由这个 leader 负责')
     _transfer_target(conn, goal, to_session_id)
     note = _text(note or '', '交接说明', required=False, limit=20000).strip()
+    blocker = transfer_blocker(conn, goal, to_session_id)
+    if blocker is not None:
+        raise board.Conflict(blocker)
     old = pending_transfer(conn, goal_id)
     if old is not None:
-        if old['to_session_id'] == to_session_id:
-            return old
-        raise board.Conflict('任务正在交给另一位 leader，等那次交接完成后再改')
-    if conn.execute("SELECT 1 FROM goal_round_finishes WHERE goal_id=? AND round=? AND status='pending'",
-                    (goal_id, goal['current_round'])).fetchone():
-        raise board.Conflict('本轮已提交交付、等待收尾；收尾后再交接')
-    if conn.execute('SELECT 1 FROM goal_cancellations WHERE goal_id=? AND round=?', (goal_id, goal['current_round'])).fetchone():
-        raise board.Conflict('任务已请求取消，不能再交接')
+        return old
     identity, at = uuid.uuid4().hex, board._time(now)
     conn.execute("INSERT INTO goal_transfers VALUES(?,?,?,?,?,?,?,'pending',NULL,?,NULL)",
                  (identity, goal_id, goal['current_round'], goal['leader_session_id'], to_session_id, note, actor, at))
