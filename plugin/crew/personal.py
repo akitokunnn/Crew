@@ -295,6 +295,10 @@ def _note(row, conn, now):
     value['discussions'] = {'count': len(rows), 'last_at': latest['created_at'] if latest else None,
                             'session_id': latest['session_id'] if latest else None,
                             'last_seq': latest['seq'] if latest else None}
+    history = conn.execute('SELECT source_kind,created_at FROM imported_note_discussion_history '
+                           'WHERE note_id=? ORDER BY created_at,id', (value['id'],)).fetchall()
+    if history:
+        value['discussions']['unavailable'] = [dict(row, available=False) for row in history]
     value['stale'] = _stale(value, now)
     value['leader'] = None
     link = conn.execute('SELECT project,session_id,status,error,source_json FROM personal_note_leaders '
@@ -311,12 +315,19 @@ def _note(row, conn, now):
 
 
 def _visible_text(conn, text, project):
+    def outside(identity):
+        source = conn.execute('SELECT original_text FROM personal_notes WHERE id=? AND project IS NOT ?',
+                              (identity, project)).fetchone()
+        return source[0] if source is not None else None
+    return _redact_merged_text(text, outside)
+
+
+def _redact_merged_text(text, outside):
     if '（原 id：' in text:
         for identity in re.findall(r'（原 id：([^）]+)）', text):
-            source = conn.execute('SELECT original_text FROM personal_notes WHERE id=? AND project IS NOT ?',
-                                  (identity, project)).fetchone()
-            if source:
-                text = text.replace('- %s（原 id：%s）' % (source[0], identity), '- 来源在其他工作区')
+            source = outside(identity)
+            if source is not None:
+                text = text.replace('- %s（原 id：%s）' % (source, identity), '- 来源在其他工作区')
     return text
 
 
@@ -338,22 +349,9 @@ def _register_tags(conn, project, names, now):
                          'VALUES(?,?,?,0,?,1,?,?)', (project, name, _tag_color(name), order, now, now))
 
 
-def _unregistered_tags(conn, project):
-    used = {}
-    for row in conn.execute('SELECT tags_json FROM personal_notes WHERE project=? ORDER BY created_at,id', (project,)):
-        used.update(dict.fromkeys(json.loads(row['tags_json'])))
-    known = {row['name'] for row in conn.execute('SELECT name FROM workspace_note_tags WHERE project=?', (project,))}
-    return [name for name in used if name not in known]
-
-
 def list_tags(conn, project, *, now=None):
-    """Tags with colors and open-note counts. Tags that predate the registry, or
-    arrived by import, are registered on this first read (color from the name)."""
-    now = store.now_iso() if now is None else now
+    """Read the saved tag configuration and its open-note counts."""
     workspace_assistant.available(conn, project)
-    if _unregistered_tags(conn, project):
-        with (nullcontext() if conn.in_transaction else board.transaction(conn)):
-            _register_tags(conn, project, _unregistered_tags(conn, project), now)
     counts = {}
     for row in conn.execute("SELECT tags_json FROM personal_notes WHERE state='open' AND project=?", (project,)):
         for name in json.loads(row['tags_json']):

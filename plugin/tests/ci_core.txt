@@ -69,6 +69,7 @@ test_storage_v2_objects
 test_storage_v2_database
 test_storage_v2_context
 test_storage_v2_features
+test_storage_v2_workspace_notes
 test_storage_v2_packages
 test_storage_v2_activation
 test_storage_legacy

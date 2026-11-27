@@ -19,7 +19,7 @@ import uuid
 from .. import board, change_feed, settings, store
 from .database import StorageConflict, StorageError, now_iso
 from .objects import ObjectStore, canonical_uuid
-from . import legacy
+from . import features, legacy
 
 
 LOCAL_SCHEMA = """
@@ -43,7 +43,9 @@ TABLES = ('agents', 'groups', 'group_memberships', 'conversations', 'messages', 
           'message_positions', 'tool_calls', 'tool_results', 'goals', 'goal_dependencies', 'goal_requirements', 'goal_rounds',
           'goal_assignments', 'executions', 'reports', 'goal_report_versions', 'goal_acceptances', 'artifacts',
           'artifact_versions', 'artifact_links', 'blob_objects', 'context_items', 'context_versions',
-          'decisions', 'decision_versions', 'decision_options', 'decision_answers', 'todos', 'workspace_feature_records')
+          'decisions', 'decision_versions', 'decision_options', 'decision_answers', 'todos', 'workspace_feature_records') + features.NOTE_TABLES
+OCCUPIED_TABLES = ('sessions','groups','goals','reports','documents','decisions','todos',
+                   'personal_notes','workspace_note_tags','workspace_mindmaps','personal_mindmap_nodes','domains')
 TERMINAL = ('completed', 'failed', 'cancelled')
 VOLATILE_TABLES = {'events','document_scans','read_cursors','channel_reads','goal_execution_reads','rule_reads','trust_leader_migrations',
     'usage_files','claude_sessions','claude_requests','claude_prompts','claude_tool_calls','claude_compactions',
@@ -93,20 +95,57 @@ def _legacy_owned(conn, project):
             'foreign':[dict(f) for f in conn.execute('PRAGMA main.foreign_key_list('+name+')')],
             'rows':[dict(r) for r in conn.execute('SELECT * FROM main."'+name.replace('"','""')+'"')]}
     if not any(r['name']==project for r in schema['projects']['rows']):return None
-    return legacy._select(schema,project)
+    owned = legacy._select(schema,project)
+    sessions = {r['session_id'] for r in owned['sessions']}
+    # Local recovery still detects changes to execution authority that cannot travel.
+    for table in ('mcp_tokens','mcp_loaded_tools','interaction_requests'):
+        owned[table] = [r for r in schema[table]['rows'] if r.get('project') == project or r['session_id'] in sessions]
+    return owned
 
 
 def _core_hash(conn,project):
-    rows=_legacy_owned(conn,project)
+    return _owned_hash(_legacy_owned(conn,project))
+
+
+def _owned_hash(rows):
     if rows is None:return None
     selected={table:sorted((legacy._pack(r) for r in values),key=legacy._json)
               for table,values in rows.items() if table not in VOLATILE_TABLES and values}
     return hashlib.sha256(legacy._json(selected).encode()).hexdigest()
 
 
+def _matches_recovery_core(conn, intent):
+    project = intent['project']
+    rows = _legacy_owned(conn, project)
+    migrated_at = conn.execute("SELECT applied_at FROM schema_migrations WHERE name='workspace_notes_v1'").fetchone()[0]
+    if rows and rows['personal_notes'] and migrated_at >= intent['receipt']['created_at']:
+        # A prepared activation from before workspace ownership has no tag
+        # rows in its signed digest. Reconstruct the exact migration output
+        # from the pre-cutover global registry; edits or removals must conflict.
+        backup = Path(intent['backup']) / 'crew.db'
+        with closing(sqlite3.connect(backup.as_uri() + '?mode=ro', uri=True)) as old:
+            tables = {r[0] for r in old.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            already_scoped = 'schema_migrations' in tables and old.execute(
+                "SELECT 1 FROM schema_migrations WHERE name='workspace_notes_v1'").fetchone()
+            if not already_scoped:
+                from ..workspace_notes_migration import migrated_tags
+                keys = ('name','color','pinned','sort_order','version','created_at','updated_at')
+                registry = {r[0]: r for r in old.execute('SELECT '+','.join(keys)+' FROM personal_note_tags')
+                            } if 'personal_note_tags' in tables else {}
+                names = dict.fromkeys(name for r in sorted(rows['personal_notes'], key=lambda n:(n['created_at'],n['id']))
+                                      for name in json.loads(r['tags_json']))
+                if set(migrated_tags(names, registry, migrated_at)) != {
+                        tuple(r[k] for k in keys) for r in rows['workspace_note_tags']}:
+                    return False
+                del rows['workspace_note_tags']
+    return _owned_hash(rows) == intent['legacy_core_hash']
+
+
 def _portable_hash(conn,workspace_id):
     workspace=dict(conn.execute('SELECT * FROM portable.workspaces WHERE id=?',(workspace_id,)).fetchone())
-    selected={'workspace':workspace,'records':{table:_rows(conn,table,workspace_id) for table in TABLES}}
+    records = {table: _rows(conn, table, workspace_id) for table in TABLES}
+    # Preserve the exact pre-v5 digest until the workspace has actual v5 rows.
+    selected={'workspace':workspace,'records':{k:v for k,v in records.items() if v or k not in features.NOTE_TABLES}}
     return hashlib.sha256(_json(selected).encode()).hexdigest()
 
 
@@ -199,8 +238,7 @@ def repair_activations(repo,legacy_home,workspace_id=None):
             try:
                 if _portable_hash(conn,intent['workspace_id'])!=intent['portable_hash']:
                     raise StorageConflict('可移植工作记录在中断后已变化，未套用旧激活映射。')
-                core=_core_hash(conn,intent['project'])
-                if core==intent['legacy_core_hash']:
+                if _matches_recovery_core(conn,intent):
                     _stopped(conn,intent['project']);_marker(Path(intent['root']),intent['workspace_id'])
                     _restore_metadata(conn,intent)
                     if conn.execute("SELECT 1 FROM events WHERE kind='storage-v2:activated' AND json_extract(detail,'$.activation_id')=?",(intent['activation_id'],)).fetchone() is None:
@@ -211,8 +249,10 @@ def repair_activations(repo,legacy_home,workspace_id=None):
                     outcome='repaired_committed_history';phase='complete'
                 else:
                     nonempty=any(conn.execute('SELECT 1 FROM '+table+' WHERE project=? LIMIT 1',(intent['project'],)).fetchone()
-                        for table in ('sessions','groups','goals','reports','documents','decisions','todos'))
-                    if nonempty:raise StorageConflict('旧引擎记录与中断时证据不符，已保留所有改动并阻止继续。激活记录：'+str(path))
+                        for table in OCCUPIED_TABLES)
+                    committed = conn.execute("SELECT 1 FROM events WHERE kind='storage-v2:activated' "
+                        "AND json_extract(detail,'$.activation_id')=?", (intent['activation_id'],)).fetchone()
+                    if nonempty or committed:raise StorageConflict('旧引擎记录与中断时证据不符，已保留所有改动并阻止继续。激活记录：'+str(path))
                     _undo_metadata(conn,intent);outcome='rolled_back_metadata_for_retry';phase='abandoned_retryable'
                 if conn.execute('PRAGMA foreign_key_check').fetchone() or conn.execute('PRAGMA portable.foreign_key_check').fetchone():
                     raise StorageConflict('激活恢复关联校验未通过，未提交修复。')
@@ -332,6 +372,7 @@ class _Materializer:
         self.requirements, self.rounds, self.goal_rows, self.executions = {}, {}, {}, {}
         self.documents, self.report_rows = {}, {}
         self.artifact_files = {}
+        self.journal_positions = {}
 
     def map(self, source, key, target, identity, digest=None, *, synthetic=False):
         encoded = legacy.source_key(key) if not synthetic else _json(key)
@@ -345,6 +386,9 @@ class _Materializer:
         if len(columns) == 1 and columns[0]['name'] not in row:
             row[columns[0]['name']] = result.lastrowid
         keys = {c['name']: row[c['name']] for c in columns}
+        return self.stored(table, keys, target, identity)
+
+    def stored(self, table, keys, target, identity):
         stored = dict(self.conn.execute('SELECT * FROM ' + table + ' WHERE ' +
                       ' AND '.join(key + '=?' for key in keys), tuple(keys.values())).fetchone())
         if target:
@@ -352,6 +396,7 @@ class _Materializer:
         return stored
 
     def people(self):
+        assistants = {r['agent_id'] for r in self.data['workspace_assistant_agents']}
         leaders = {}
         for group in self.data['groups']:
             if group['leader_agent_id'] in leaders:
@@ -359,6 +404,9 @@ class _Materializer:
             leaders[group['leader_agent_id']] = group
         used = set()
         for agent in self.data['agents']:
+            if agent['id'] in assistants:
+                self.names[agent['id']] = '助手'
+                continue
             stem = agent['name'].strip() or 'Agent'
             name = stem if stem not in used else stem + ' ' + agent['id'][:8]
             used.add(name); self.names[agent['id']] = name
@@ -377,11 +425,14 @@ class _Materializer:
                 raise StorageConflict('A goal owner needs a leader group before this legacy engine can continue it')
         for agent in self.data['agents']:
             sid = agent['id']; group = self.names[sid] if sid in leaders else self.member_group.get(sid)
+            if sid in assistants and (sid in leaders or group is not None):
+                raise StorageConflict('Workspace assistant cannot be a group leader or group member')
             row = self.insert('sessions', dict(session_id=sid, project=self.project, crew_name=self.names[sid],
                 role='leader' if sid in leaders else 'member', group_name=group,
                 status='closed' if agent['status']=='archived' else 'offline',
                 status_note='已接入导入历史，当前停止；明确继续后创建本机新会话。',
-                task=agent['purpose'], cwd=str(self.root), started_at=agent['created_at']), 'agents', sid)
+                task=agent['purpose'], cwd=str(self.root), started_at=agent['created_at'],
+                entrypoint='crew-workspace-assistant' if sid in assistants else None), 'agents', sid)
             self.insert('session_runtimes', dict(session_id=sid,runtime=self.runtime,native_id=None,updated_at=self.stamp))
             self.insert('session_runtime_bindings',dict(session_id=sid,runtime=self.runtime,native_id=None,model=None,effort=None,updated_at=self.stamp))
             self.insert('session_stop_gates',dict(session_id=sid,stopped_at=self.stamp,stopped_by='storage-v2-activation'))
@@ -617,6 +668,8 @@ class _Materializer:
                     if role=='user':event.update(role='user',text=text,source='web')
                     else:event['content']=[{'type':'text','text':text}]
                     events.append(event)
+                    if message['author_kind'] == 'user':
+                        self.journal_positions[(owner, message['id'])] = event['seq']
                     logical_hash=hashlib.sha256(_json([file_key,_json([role,message['id']])]).encode()).hexdigest()
                     content_hash=hashlib.sha256(_json([text,{},False]).encode()).hexdigest()
                     key=['journal-message',file_key,logical_hash,content_hash]
@@ -736,7 +789,7 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
             data={table:_rows(conn,table,workspace_id) for table in TABLES}
             existing=next((dict(r) for r in conn.execute('SELECT * FROM projects') if store.norm_path(r['root'])==store.norm_path(root)),None)
             if existing:
-                for table in ('sessions','groups','goals','reports','documents','decisions','todos'):
+                for table in OCCUPIED_TABLES:
                     if conn.execute('SELECT 1 FROM '+table+' WHERE project=? LIMIT 1',(existing['name'],)).fetchone():
                         raise StorageConflict('This directory already has nonempty legacy history; it was not overwritten')
             project=existing['name'] if existing else 'v2-'+workspace_id
@@ -749,8 +802,8 @@ def activate_workspace(repo, workspace_id, legacy_home, root, *, replace_source_
                          (project,workspace['name']))
             materializer=_Materializer(repo,conn,workspace,project,root,legacy_home,data,created)
             materializer.people();materializer.tasks();materializer.reports_and_files();materializer.context();materializer.journals();materializer.decisions_and_todos()
-            from . import features
             features.activate(materializer)
+            features.activate_workspace_notes(materializer)
             importer=str(uuid.uuid5(uuid.UUID(repo.device_id),'local-user'))
             membership=conn.execute('SELECT id FROM portable.workspace_memberships WHERE workspace_id=? AND user_id=? AND deleted_at IS NULL',
                 (workspace_id,importer)).fetchone()

@@ -27,7 +27,7 @@ def main(argv=None):
         repo=Repository(args.home)
         if args.command=='list':result={'workspaces':repo.list_workspaces()}
         elif args.command=='export':
-            with closing(repo.connect()) as conn:result=packages.export_workspace(conn,repo.objects,args.workspace_id,args.destination)
+            result=repo.export_workspace(args.workspace_id,args.destination)
         elif args.command=='import':
             account,user=repo.ensure_local_identity()
             with closing(repo.connect()) as conn:result=packages.import_package(conn,repo.objects,args.package,mode=args.mode,target_account_id=account,actor_user_id=user,device_id=repo.device_id,operation_id=args.operation_id)

@@ -1292,3 +1292,11 @@ CREATE TRIGGER IF NOT EXISTS mindmap_note_scope BEFORE UPDATE OF project ON pers
 WHEN EXISTS (SELECT 1 FROM personal_mindmap_nodes WHERE note_id=NEW.id AND project IS NOT NEW.project)
 BEGIN SELECT RAISE(ABORT, 'mindmap note project mismatch'); END;
 -- END workspace_notes_v1
+
+-- Imported discussions whose original chat/message did not travel. No local jump or grant.
+CREATE TABLE IF NOT EXISTS imported_note_discussion_history (
+    id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL REFERENCES personal_notes(id),
+    source_kind TEXT NOT NULL CHECK(source_kind IN ('workspace','administrator','external')),
+    created_at TEXT NOT NULL
+);

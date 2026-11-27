@@ -193,7 +193,12 @@ class StorageV2DatabaseTests(unittest.TestCase):
             create_domain(c)
             tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn('goal_report_versions', tables)
-            self.assertEqual(len(tables), 57)
+            with closing(sqlite3.connect(':memory:', isolation_level=None)) as previous:
+                create_domain(previous, 4)
+                old_tables = {r[0] for r in previous.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertEqual(len(old_tables), 57)
+            self.assertEqual(tables, old_tables | {'note_tag_settings','mindmaps','mindmap_nodes','mindmap_domains',
+                                                   'mindmap_conversions','workspace_assistant_agents','note_discussions'})
             self.assertFalse(any(name.startswith('local_') for name in tables))
             c.execute('BEGIN')
             with self.assertRaises(StorageError):

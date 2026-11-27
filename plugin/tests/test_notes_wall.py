@@ -63,7 +63,7 @@ class NotesFixture(unittest.TestCase):
 
 
 class NoteSchemaTests(NotesFixture):
-    def test_imported_note_defaults_and_missing_tags_register_on_first_read(self):
+    def test_imported_note_defaults_and_missing_tag_settings_stay_empty(self):
         # Imported notes may arrive after startup without a tag registry row.
         self.conn.execute('INSERT INTO personal_notes(id,project,original_text,text,tags_json,created_at,updated_at) '
                           'VALUES(?,?,?,?,?,?,?)', ('legacy', 'demo', '旧想法', '旧想法', json.dumps(['生活', '健身']), T0, T0))
@@ -74,9 +74,9 @@ class NoteSchemaTests(NotesFixture):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM workspace_note_tags').fetchone()[0], 0)
         listing = personal.list_tags(self.conn, 'demo', now=T0)
         self.assertEqual(listing['palette'], ['c%d' % i for i in range(10)])
-        self.assertEqual([(tag['name'], tag['color'], tag['count'], tag['version']) for tag in listing['tags']],
-                         [(name, personal._tag_color(name), 1, 1) for name in ('生活', '健身')])
-        self.assertTrue(all(tag['color'] in personal.PALETTE for tag in listing['tags']))
+        self.assertEqual(listing['tags'], [])
+        self.assertEqual(note['tags'], ['生活', '健身'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM workspace_note_tags').fetchone()[0], 0)
         with self.assertRaises(sqlite3.IntegrityError):
             self.conn.execute("UPDATE personal_notes SET stage='done' WHERE id='legacy'")
 
@@ -374,7 +374,7 @@ class AssistantNotesTests(NotesFixture):
             return ai_call(self.service, self.conn, self.sid, action, args,
                            request_id=request_id, message_id=message_id)
 
-    def test_reads_filter_notes_get_one_and_register_tags(self):
+    def test_reads_filter_notes_get_one_and_list_configured_tags(self):
         self.workspace('fitness')
         a = self.capture('甲', tags=['x', 'y'])
         other = self.capture('外区', project='fitness')
@@ -400,7 +400,7 @@ class AssistantNotesTests(NotesFixture):
         got = self.dispatch('note.get', {'note_id': a['id']})['note']
         self.assertEqual((got['id'], got['tags'], got['discussions']['count']), (a['id'], ['x', 'y'], 0))
         tags = self.dispatch('tags.list', {})
-        self.assertEqual({tag['name'] for tag in tags['tags']}, {'x', 'y', 'legacy'})
+        self.assertEqual({tag['name'] for tag in tags['tags']}, {'x', 'y'})
         self.assertEqual(tags['palette'], list(personal.PALETTE))
 
     def test_writes_need_the_user_message_and_summaries_carry_session_and_seq(self):
@@ -632,7 +632,8 @@ class NotesPortabilityTests(RuntimeFixture):
             self.assertEqual(restored['merged_from'], [notes['重复']['id']])
             self.assertEqual((notes['并入全局']['merged_into'], notes['并入全局']['state']), (None, 'archived'))
             self.assertEqual(restored['discussions']['count'], 0)
-            self.assertEqual(conn.execute('SELECT COUNT(*) FROM workspace_note_tags').fetchone()[0], 0)
+            self.assertEqual([row['source_kind'] for row in restored['discussions']['unavailable']], ['administrator'])
+            self.assertEqual(conn.execute('SELECT color FROM workspace_note_tags WHERE name=?', ('app',)).fetchone()[0], 'c9')
             self.assertEqual({tag['name'] for tag in personal.list_tags(conn, restored['project'])['tags']}, {'app', 'dup'})
 
 

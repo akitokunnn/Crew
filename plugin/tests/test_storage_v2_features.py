@@ -11,7 +11,7 @@ import zipfile
 from crew import behavior_prompts as prompts
 from crew import board, goal_api, goal_artifacts, goal_reports, goal_work, goals, personal, store, todo
 from crew.storage_v2 import Repository
-from crew.storage_v2 import activation, database, legacy, packages
+from crew.storage_v2 import activation, database, features, legacy, packages
 from tests.test_runtimes import RuntimeFixture
 
 
@@ -192,6 +192,8 @@ class PortableFeatureTests(RuntimeFixture):
         raw = database.files(database.__package__).joinpath('domain.sql').read_text(encoding='utf-8')
         digest = hashlib.sha256((raw + '\n-- device schema --\n' + database.local_sql()).encode()).hexdigest()
         with closing(sqlite3.connect(repo.path)) as conn:
+            for table in reversed(features.NOTE_TABLES):
+                conn.execute('DROP TABLE ' + table)
             conn.execute('DROP TABLE goal_report_versions')
             conn.execute('DROP TABLE workspace_feature_records')
             conn.execute('PRAGMA user_version=2')
@@ -207,6 +209,7 @@ class PortableFeatureTests(RuntimeFixture):
         Repository(repo.home)
         self.assertEqual(len(list((repo.directory / 'backups').glob('before-schema-3-*'))), 1)
         self.assertEqual(len(list((repo.directory / 'backups').glob('before-schema-4-*'))), 1)
+        self.assertEqual(len(list((repo.directory / 'backups').glob('before-schema-5-*'))), 1)
 
     def test_older_packages_activate_goal_reports_in_legacy_order(self):
         from tests.test_goals import GoalFixture
@@ -214,6 +217,8 @@ class PortableFeatureTests(RuntimeFixture):
         goals.save_report(self.conn, goal_id, GoalFixture.report(self, 'progress'))
         goals.amend(self.conn, goal_id, 'Review progress.')
         goals.save_report(self.conn, goal_id, GoalFixture.report(self, 'awaiting_acceptance'))
+        personal.note_action(self.conn, 'capture', {'text': 'Early note', 'tags': ['unconfigured']},
+                             project='demo', request_id='old-note')
         repo = Repository(self.root / 'old-package')
         workspace = legacy.migrate_workspace(repo, self.home, 'demo')['workspace_id']
         package = self.root / 'new.crewpack'
@@ -225,16 +230,18 @@ class PortableFeatureTests(RuntimeFixture):
         old_data.write_bytes(entries['data.sqlite'])
         account, user = repo.ensure_local_identity()
         manifest = json.loads(entries['manifest.json'])
-        for schema, removed in ((3, 'goal_report_versions'), (2, 'workspace_feature_records')):
+        for schema, removed in ((4, features.NOTE_TABLES), (3, ('goal_report_versions',)), (2, ('workspace_feature_records',))):
             with self.subTest(schema=schema):
                 with closing(sqlite3.connect(old_data)) as conn:
-                    conn.execute('DROP TABLE ' + removed)
+                    for table in reversed(removed):
+                        conn.execute('DROP TABLE ' + table)
                     conn.execute(f'PRAGMA user_version={schema}')
                     conn.commit()
                 entries['data.sqlite'] = old_data.read_bytes()
                 manifest.update(schema_version=schema, min_reader_version=schema, min_writer_version=schema)
                 manifest['database'].update(sha256=hashlib.sha256(entries['data.sqlite']).hexdigest(), bytes=len(entries['data.sqlite']))
-                del manifest['database']['tables'][removed]
+                for table in removed:
+                    del manifest['database']['tables'][table]
                 entries['manifest.json'] = json.dumps(manifest).encode()
                 old = self.root / f'old-{schema}.crewpack'
                 with zipfile.ZipFile(old, 'w') as archive:
@@ -243,16 +250,25 @@ class PortableFeatureTests(RuntimeFixture):
                 self.assertEqual(packages.preview_package(old)['integrity'], 'ok')
                 with closing(repo.connect()) as conn:
                     result = packages.import_package(conn, repo.objects, old, target_account_id=account, actor_user_id=user)
-                    expected = list(conn.execute("SELECT id,created_at FROM reports WHERE workspace_id=? "
-                                                 "AND kind='goal_delivery' ORDER BY created_at,id", (result['workspace_id'],)))
+                    order = 'v.version' if schema == 4 else 'r.created_at,r.id'
+                    expected = list(conn.execute("SELECT r.id,v.created_at,v.requirement_version FROM reports r "
+                        "JOIN goal_report_versions v ON v.report_id=r.id WHERE r.workspace_id=? "
+                        "AND r.kind='goal_delivery' ORDER BY " + order, (result['workspace_id'],)))
                 local, root = self.root / f'home-{schema}', self.root / f'root-{schema}'
                 root.mkdir()
                 activation.activate_workspace(repo, result['workspace_id'], local, root)
                 with closing(store.connect(local)) as conn:
                     actual = conn.execute('SELECT id,created_at,version,requirement_version FROM goal_reports ORDER BY version')
-                    self.assertEqual([tuple(row) for row in actual], [(*row, i, 2) for i, row in enumerate(expected, 1)])
+                    self.assertEqual([tuple(row) for row in actual],
+                                     [(row[0], row[1], i, row[2] if schema == 4 else 2) for i, row in enumerate(expected, 1)])
                     restored = conn.execute('SELECT id FROM goals').fetchone()[0]
                     self.assertTrue(goal_api.card(conn, goals.get(conn, restored))['report_available'])
+                    from crew import mindmap
+                    project = conn.execute('SELECT name FROM projects').fetchone()[0]
+                    self.assertEqual(mindmap.snapshot(conn, project), dict(project=project, version=0, links=[], nodes=[]))
+                    self.assertEqual(personal.list_tags(conn, project)['tags'], [])
+                    self.assertEqual([r[0] for r in conn.execute('SELECT text FROM personal_notes')],
+                                     ['Early note'] if schema >= 3 else [])
 
 
 if __name__ == '__main__':

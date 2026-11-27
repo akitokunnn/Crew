@@ -110,8 +110,18 @@ def _migrate_map(conn, notes, now, has_table):
         raise ValueError('导图迁移节点数不符')
 
 
-def _migrate_tags(conn, old_table, now):
+def migrated_tags(names, old, now):
     from .personal import _tag_color
+    order = max((old[name][3] for name in names if name in old), default=-1) + 1
+    for name in names:
+        if name in old:
+            yield old[name]
+        else:
+            yield name, _tag_color(name), 0, order, 1, now, now
+            order += 1
+
+
+def _migrate_tags(conn, old_table, now):
     usage = defaultdict(dict)
     for row in conn.execute('SELECT project,tags_json FROM personal_notes ORDER BY created_at,id'):
         usage[row['project']].update(dict.fromkeys(json.loads(row['tags_json'])))
@@ -120,13 +130,7 @@ def _migrate_tags(conn, old_table, now):
     referenced = {name for names in usage.values() for name in names}
     usage[None].update(dict.fromkeys(name for name in old if name not in referenced))
     for project, names in usage.items():
-        order = max((old[name][3] for name in names if name in old), default=-1) + 1
-        for name in names:
-            if name in old:
-                values = old[name]
-            else:
-                values = name, _tag_color(name), 0, order, 1, now, now
-                order += 1
+        for values in migrated_tags(names, old, now):
             if project is None:
                 conn.execute('INSERT INTO unassigned_note_tags VALUES(?,?,?,?,?,?,?)', values)
             else:
@@ -138,6 +142,10 @@ def _migrate_tags(conn, old_table, now):
 
 
 def migrate(conn, schema):
+    migrate_at(conn, schema, store.now_iso())
+
+
+def migrate_at(conn, schema, now):
     def applied():
         return has_table('schema_migrations') and conn.execute("SELECT 1 FROM schema_migrations WHERE name='workspace_notes_v1'").fetchone()
 
@@ -163,7 +171,6 @@ def migrate(conn, schema):
                     stmt = ''
             if stmt.strip():
                 raise ValueError('未完成的迁移 SQL')
-            now = store.now_iso()
             notes = dict(conn.execute('SELECT id,project FROM personal_notes'))
             _migrate_tags(conn, has_table('personal_note_tags'), now)
             _migrate_map(conn, notes, now, has_table)
