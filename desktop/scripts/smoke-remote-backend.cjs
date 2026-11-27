@@ -279,13 +279,13 @@ finally:
           await click('[data-settings-category="backend"]');
           await wait('Boolean(document.querySelector("[data-operations-tab=status]"))', 'host status tab');
           check('Operations chat and repair policy stay on the host', await js('!document.querySelector("[data-operations-tab=chat]")&&!document.querySelector("[data-operations-tab=config]")'));
-          await wait('/运行正常/.test(document.querySelector("#admin-state")?.textContent||"")', 'host health inside settings');
+          check('Settings point to 系统管理员 · 运维 instead of embedding host health', await js('Boolean(document.querySelector("[data-operations-action=operations-page]"))&&!document.querySelector("#settings-page #admin-state")'));
           await shots('settings-backend');
           await click('[data-operations-tab="launch"]'); await wait('document.querySelector("[data-launch-remote]")?.checked===true', 'current device selected');
           await shots('settings-launch');
-          await click('#nav-workspaces'); await click('#nav-admin');
+          await click('[data-settings-category="backend"]'); await click('[data-operations-tab="status"]'); await click('[data-operations-action="operations-page"]');
           await wait('/运行正常/.test(document.querySelector("#admin-state").textContent)', 'read-only host health');
-          check('The administrator only reads host health', await js('document.querySelector(".admin-actions").hidden&&document.querySelector("#admin-conversation").hidden&&/9\\.9\\.9-host/.test(document.querySelector("#admin-recoveries").textContent)'));
+          check('系统管理员 · 运维 only reads host health', await js('document.querySelector(".admin-actions").hidden&&document.querySelector("#admin-tabs").hidden&&/9\\.9\\.9-host/.test(document.querySelector("#admin-recoveries").textContent)'));
           await shots('admin');
           // Export downloads the host package to this computer.
           await click('#nav-workspaces'); await wait('!document.querySelector("#refresh").disabled', 'home idle before export');

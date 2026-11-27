@@ -1,10 +1,11 @@
 "use strict";
-// Pure projections for the idea wall: filters, grouping, local duplicate hints
-// and the URL hash. The server owns note state; nothing here writes.
+// Pure projections for a workspace's ideas page: filters, grouping, local duplicate hints
+// and the URL hash. The server owns note state and only returns this workspace's ideas; nothing here writes.
 (() => {
   const DAY = 86400000;
   const SORTS = ["updated", "created", "discussed"], GROUPS = ["time", "stage"], VIEWS = ["open", "stale", "promoted", "archived"], LAYOUTS = ["wall", "map"];
-  const DEFAULTS = Object.freeze({tags: [], mode: "all", untagged: false, ws: null, global: false, sort: "updated", group: "time", view: "open", layout: "wall"});
+  // The mind map is the main view; "#layout=wall" still opens the card wall directly.
+  const DEFAULTS = Object.freeze({tags: [], mode: "all", untagged: false, sort: "updated", group: "time", view: "open", layout: "map"});
   const STAGES = [["new", "新想法"], ["discussed", "讨论过"], ["promoted", "已转任务"]];
 
   const firstLine = text => text.split("\n").map(line => line.trim()).find(Boolean) || "";
@@ -22,8 +23,6 @@
     if (tags) state.tags = [...new Set(tags.split(",").filter(Boolean))];
     if (params.get("mode") === "any") state.mode = "any";
     if (params.get("untagged") === "1") { state.untagged = true; state.tags = []; }
-    if (params.get("ws")) state.ws = params.get("ws");
-    else if (params.get("global") === "1") state.global = true;
     if (SORTS.includes(params.get("sort"))) state.sort = params.get("sort");
     if (GROUPS.includes(params.get("group"))) state.group = params.get("group");
     if (VIEWS.includes(params.get("view"))) state.view = params.get("view");
@@ -35,8 +34,6 @@
     if (state.tags.length) params.set("tags", state.tags.join(","));
     if (state.mode !== DEFAULTS.mode) params.set("mode", state.mode);
     if (state.untagged) params.set("untagged", "1");
-    if (state.ws !== null) params.set("ws", state.ws);
-    else if (state.global) params.set("global", "1");
     for (const key of ["sort", "group", "view", "layout"]) if (state[key] !== DEFAULTS[key]) params.set(key, state[key]);
     const text = params.toString();
     return text ? "#" + text : "";
@@ -52,8 +49,6 @@
   }
   function matches(note, filter) {
     if (!inView(note, filter.view)) return false;
-    if (filter.ws !== null && note.project !== filter.ws) return false;
-    if (filter.global && note.project !== null) return false;
     if (filter.untagged) return note.tags.length === 0;
     if (!filter.tags.length) return true;
     return filter.mode === "any" ? filter.tags.some(tag => note.tags.includes(tag)) : filter.tags.every(tag => note.tags.includes(tag));
@@ -147,9 +142,9 @@
       .replace(/[ \t]+\n/g, "\n").replace(/[ \t]{2,}/g, " ").trim();
     return {text, tags};
   }
-  // The token being typed right before the caret, for # and @ completion.
+  // The tag token being typed right before the caret, for # completion.
   function token(value, caret) {
-    const match = /(^|\s)([#@])([^\s#@]*)$/.exec(value.slice(0, caret));
+    const match = /(^|\s)(#)([^\s#@]*)$/.exec(value.slice(0, caret));
     return match ? {kind: match[2], query: match[3], start: caret - match[3].length - 1, end: caret} : null;
   }
   // Loose subsequence match for the tag panel.

@@ -1,16 +1,19 @@
 "use strict";
-// Idea wall and tag management.
-// Every write goes to the server and the wall re-reads; nothing is guessed locally.
+// A workspace's ideas page (/notes.html?project=X): the mind map (default) and the card wall, plus tag management.
+// Every read and write names this workspace; the server only returns its ideas. Nothing is guessed locally.
 (() => {
   const M = window.CrewNotesModel;
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const SNOOZE_DAYS = [3, 7, 30];
-  const DRAFT_KEY = "crew.notes.capture";
+  const scope = window.CrewBrowser.pageProject(), PROJECT = scope.mode === "workspace" ? scope.project : null;
+  const projectQuery = PROJECT === null ? "" : `project=${encodeURIComponent(PROJECT)}`;
+  // One draft per workspace, shared by the card wall's box, the map tray's box and 随手记.
+  const DRAFT_KEY = PROJECT === null ? null : `crew.notes.draft:${PROJECT}`;
 
-  let notes = [], tags = [], projects = [], allProjects = [], staleDays = 14, dupes = new Map();
+  let notes = [], tags = [], allProjects = [], staleDays = 14, dupes = new Map(), unassigned = null;
   let loaded = false, view = M.parseHash(location.hash), selectMode = false, review = null, menu = null, toastTimer = null;
-  let captureProject = view.ws, capturePending = null, suggest = null;
+  let capturePending = null, suggest = null;
   const selected = new Set(), expanded = new Set(), starting = new Map();
   let mindmap = null;
 
@@ -21,19 +24,23 @@
   async function api(path, body) {
     const response = await fetch(path, body === undefined ? {method:"GET", headers:{"X-Crew":"1"}} : window.CrewBrowser.postOptions(body));
     const value = await response.json();
-    if (!response.ok) { const error = Error(value.error || `请求失败 (${response.status})`); error.status = response.status; error.body = value; throw error; }
+    // A 202 with error_code "outcome_unknown" (e.g. a leader start whose result is unconfirmed) is not a success.
+    if (!response.ok || value?.error_code) { const error = Error(value.error || `请求失败 (${response.status})`); error.status = response.status; error.body = value; throw error; }
     return value;
   }
   // crew-op: note.annotate note.archive note.bulk note.keep note.merge note.pin note.restore note.snooze note.unmerge note.update
-  const write = (action, data) => api("/api/op/note." + action, {data});
+  const write = (action, data) => api("/api/op/note." + action, {project: PROJECT, data});
   // crew-op: tag.create tag.merge tag.pin tag.recolor tag.remove tag.rename tag.reorder
-  const tagWrite = (action, data) => api("/api/op/tag." + action, {data});
+  const tagWrite = (action, data) => api("/api/op/tag." + action, {project: PROJECT, data});
 
   const byId = id => notes.find(note => note.id === id);
   const tagInfo = name => tags.find(tag => tag.name === name);
   const projectName = name => { const found = allProjects.find(item => item.name === name); return found ? found.display_name || found.name : name; };
   const leaderUrl = leader => `/?project=${encodeURIComponent(leader.project)}#leader=${encodeURIComponent(leader.session_id)}`;
-  const chatUrl = note => `/assistant.html#note=${encodeURIComponent(note.id)}`;
+  // A new discussion happens with this workspace's assistant; a past one reopens the conversation it was held in.
+  const chatUrl = note => `/assistant.html?${projectQuery}#note=${encodeURIComponent(note.id)}`;
+  const discussionUrl = note => note.discussions.session_id ? `/assistant.html?${projectQuery}#discussion=${encodeURIComponent(note.discussions.session_id)}` : `/assistant.html?${projectQuery}`;
+  const workspaceName = () => projectName(PROJECT);
   const versions = ids => Object.fromEntries(ids.map(id => [id, byId(id).version]));
   const day = iso => { const date = new Date(iso); return `${date.getMonth() + 1}月${date.getDate()}日`; };
   const stamp = iso => { const date = new Date(iso); return `${day(iso)} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`; };
@@ -47,7 +54,7 @@
 
   // ---- data ---------------------------------------------------------------
   async function refresh() {
-    const [list, registry] = await Promise.all([api("/api/op/notes.list?include_archived=1"), api("/api/op/tags.list")]);
+    const [list, registry] = await Promise.all([api(`/api/op/notes.list?${projectQuery}&include_archived=1`), api(`/api/op/tags.list?${projectQuery}`)]);
     notes = list.notes; staleDays = list.stale_days; tags = M.orderTags(registry.tags); dupes = M.duplicates(notes);
     for (const id of [...selected]) if (byId(id)?.state !== "open") selected.delete(id);
     loaded = true; $("nw-error").hidden = true;
@@ -60,11 +67,39 @@
     $("nw-error").hidden = true;
     try {
       const listing = await api("/api/op/workspace.list");
-      allProjects = listing.projects; projects = listing.projects.filter(item => !item.read_only);
+      allProjects = listing.projects;
       window.CrewGlobalRail?.update({projects: allProjects});
+      title();
       await refresh();
-    } catch (error) { showError(error.message); }
+    } catch (error) {
+      // An unknown or removed workspace is a dead link: say so, never show another workspace's ideas.
+      if (error.body?.error_code === "project_unavailable" || error.status === 404) { fatal(`工作区「${PROJECT}」不存在或已移除，看不到它的想法。`); return; }
+      showError(error.message);
+    }
     render();
+    void refreshUnassigned();
+  }
+  function title() {
+    const name = workspaceName();
+    $("nw-scope").textContent = name; $("nw-scope").hidden = false;
+    document.title = `想法 · ${name} · Crew`;
+  }
+  function fatal(message) {
+    const node = $("nw-error"); node.replaceChildren(); node.hidden = false;
+    const text = document.createElement("span"); text.textContent = message; node.append(text);
+    const home = document.createElement("a"); home.className = "btn"; home.href = "/"; home.textContent = "回到工作区总览"; node.append(home);
+    document.body.classList.add("nw-dead");
+  }
+  // A bare /notes.html (an old link) opens the most recent workspace's ideas, keeping only view choices from its hash.
+  async function rewriteBare() {
+    let recent = null;
+    try { recent = localStorage.getItem("crew.mobile.project"); } catch {}
+    let projects = [];
+    try { projects = (await api("/api/op/workspace.list")).projects.filter(item => !item.read_only); } catch {}
+    const target = projects.find(item => item.name === recent) || (projects.length === 1 ? projects[0] : null);
+    const params = new URLSearchParams(location.hash.slice(1)); params.delete("ws"); params.delete("global");
+    if (target) { location.replace(`/notes.html?project=${encodeURIComponent(target.name)}${params.toString() ? "#" + params : ""}`); return; }
+    fatal(projects.length ? "想法属于工作区：先进入一个工作区，再打开它的想法。" : "还没有工作区。先建一个工作区，再记想法。");
   }
   function showError(message) {
     const node = $("nw-error"); node.replaceChildren(); node.hidden = false;
@@ -90,10 +125,10 @@
 
   // ---- view state -----------------------------------------------------------
   function setView(patch) {
-    const wasWs = view.ws;
+    const wasLayout = view.layout;
     view = {...view, ...patch};
-    if (view.ws !== wasWs) captureProject = view.ws;
     if (view.layout === "map") { selected.clear(); selectMode = false; }
+    if (view.layout !== wasLayout) loadDraft();
     history.replaceState(null, "", location.pathname + location.search + M.toHash(view));
     render();
   }
@@ -101,12 +136,13 @@
     const tagsNow = view.tags.includes(name) ? view.tags.filter(tag => tag !== name) : [...view.tags, name];
     setView({tags: tagsNow, untagged: false});
   }
-  window.addEventListener("hashchange", () => { view = M.parseHash(location.hash); captureProject = view.ws; render(); });
+  window.addEventListener("hashchange", () => { view = M.parseHash(location.hash); render(); });
 
   // ---- rendering ------------------------------------------------------------
   function tagChip(name, act = "filter-tag") {
+    // A tag this workspace's registry does not list yet (an idea just claimed from before workspaces) shows uncoloured.
     const info = tagInfo(name), on = view.tags.includes(name);
-    return `<button type="button" class="nw-tag tag-${esc(info.color)}" data-act="${act}" data-tag="${esc(name)}" aria-pressed="${on}" title="按「${esc(name)}」筛选">${esc(name)}</button>`;
+    return `<button type="button" class="nw-tag ${info ? `tag-${esc(info.color)}` : "nw-tag-missing"}" data-act="${act}" data-tag="${esc(name)}" aria-pressed="${on}" title="按「${esc(name)}」筛选">${esc(name)}</button>`;
   }
   function source(note) {
     if (note.merged_from.length) return "合并而来";
@@ -114,7 +150,7 @@
   }
   function statusParts(note, now) {
     const parts = [];
-    if (note.discussions.count) parts.push(`<a class="text-link" href="/assistant.html">讨论过 ${note.discussions.count} 次</a>`);
+    if (note.discussions.count) parts.push(`<a class="text-link" href="${esc(discussionUrl(note))}" title="打开讨论过这条想法的对话">讨论过 ${note.discussions.count} 次</a>`);
     if (note.summaries.length) parts.push(`<button type="button" class="text-link" data-act="summaries">结论 ${note.summaries.length} 条</button>`);
     if (note.leader?.status === "completed") parts.push(`已转任务 · <a class="text-link" href="${esc(leaderUrl(note.leader))}">${esc(projectName(note.leader.project))}</a>`);
     else if (note.leader) parts.push(`<span class="nw-warn">转任务结果待核实</span>`);
@@ -146,13 +182,13 @@
       + `<div class="nw-card-top"><h3 class="nw-title">${note.pinned_at ? '<span class="nw-pin" aria-label="已置顶">▲</span>' : ""}${esc(title)}</h3>${note.state === "open" && dupes.has(note.id) ? `<button type="button" class="nw-dup" data-act="merge-dup" title="和 ${dupes.get(note.id).length} 条想法很像，点此合并">可能重复</button>` : ""}</div>`
       + (text ? `<p class="nw-body${open ? " open" : ""}">${esc(text)}</p><button type="button" class="text-link nw-expand" data-act="expand" hidden>${open ? "收起" : "展开全文"}</button>` : "")
       + (note.tags.length ? `<div class="nw-tags">${note.tags.map(name => tagChip(name)).join("")}</div>` : "")
-      + `<p class="nw-meta">${esc(note.project === null ? "全局" : projectName(note.project))}<span class="nw-dot" aria-hidden="true">·</span>${source(note)}<span class="nw-dot" aria-hidden="true">·</span><time datetime="${esc(note.updated_at)}" title="${esc(stamp(note.updated_at))}">${M.relative(note.updated_at, now)}</time></p>`
+      + `<p class="nw-meta">${source(note)}<span class="nw-dot" aria-hidden="true">·</span><time datetime="${esc(note.updated_at)}" title="${esc(stamp(note.updated_at))}">${M.relative(note.updated_at, now)}</time></p>`
       + (status ? `<p class="nw-state">${status}</p>` : "")
       + `<div class="nw-acts">${actions(note)}</div></article>`;
   }
   function emptyWall(total) {
-    if (!notes.length) return `<div class="nw-empty"><h2>还没有想法</h2><p>在上面写下第一条，Enter 记下。输入 # 可以顺手打标签。</p></div>`;
-    const filtered = view.tags.length || view.untagged || view.ws !== null || view.global;
+    if (!notes.length) return `<div class="nw-empty"><h2>这个工作区还没有想法</h2><p>在上面写下第一条，Enter 记下。输入 # 可以顺手打标签。</p></div>`;
+    const filtered = view.tags.length || view.untagged;
     const words = {open: "没有正在进行的想法。", stale: "没有需要回顾的想法，墙上的都还新鲜。", promoted: "还没有转成任务的想法。", archived: "还没有归档的想法。"};
     return `<div class="nw-empty"><h2>${filtered && total ? "没有符合筛选的想法" : words[view.view]}</h2>${filtered ? `<p><button type="button" class="btn" data-act="clear-filters">清除筛选</button></p>` : ""}</div>`;
   }
@@ -174,13 +210,11 @@
     }
   }
   function renderFilters() {
-    const scope = view.ws !== null ? `ws:${view.ws}` : view.global ? "global" : "";
     const viewNames = {open: "全部想法", stale: "需要回顾", promoted: "已转任务", archived: "已归档"};
-    const filtered = view.tags.length || view.untagged || view.ws !== null || view.global;
+    const filtered = view.tags.length || view.untagged;
     $("nw-filters").innerHTML = `<div class="nw-filter-tags">${view.tags.map(name => tagInfo(name) ? `<span class="nw-tag tag-${esc(tagInfo(name).color)} nw-tag-on">${esc(name)}<button type="button" data-act="filter-tag" data-tag="${esc(name)}" aria-label="移除标签筛选「${esc(name)}」">×</button></span>` : `<span class="nw-tag nw-tag-missing">${esc(name)}<button type="button" data-act="filter-tag" data-tag="${esc(name)}" aria-label="移除标签筛选「${esc(name)}」">×</button></span>`).join("")}<button type="button" class="btn sm ghost-line" data-act="tag-panel" aria-keyshortcuts="T">＋ 标签</button></div>`
       + `<div class="nw-seg" role="radiogroup" aria-label="多个标签时"><button type="button" role="radio" aria-checked="${view.mode === "all"}" data-act="mode" data-value="all">全部满足</button><button type="button" role="radio" aria-checked="${view.mode === "any"}" data-act="mode" data-value="any">任一</button></div>`
       + `<button type="button" class="btn sm ghost-line" data-act="untagged" aria-pressed="${view.untagged}">无标签</button>`
-      + `<select data-act="scope" aria-label="工作区"><option value="" ${scope === "" ? "selected" : ""}>全部工作区</option><option value="global" ${scope === "global" ? "selected" : ""}>全局</option>${allProjects.map(item => `<option value="ws:${esc(item.name)}" ${scope === `ws:${item.name}` ? "selected" : ""}>${esc(item.display_name || item.name)}</option>`).join("")}${view.ws !== null && !allProjects.some(item => item.name === view.ws) ? `<option value="ws:${esc(view.ws)}" selected>${esc(view.ws)}</option>` : ""}</select>`
       + `<select data-act="sort" aria-label="排序"><option value="updated" ${view.sort === "updated" ? "selected" : ""}>最近更新</option><option value="created" ${view.sort === "created" ? "selected" : ""}>创建时间</option><option value="discussed" ${view.sort === "discussed" ? "selected" : ""}>最近讨论</option></select>`
       + `<div class="nw-seg nw-wall-only" role="radiogroup" aria-label="分组"><button type="button" role="radio" aria-checked="${view.group === "time"}" data-act="group" data-value="time">按时间</button><button type="button" role="radio" aria-checked="${view.group === "stage"}" data-act="group" data-value="stage">按阶段</button></div>`
       + `<select class="nw-narrow-only" data-act="view" aria-label="查看">${Object.entries(viewNames).map(([key, label]) => `<option value="${key}" ${view.view === key ? "selected" : ""}>${label}</option>`).join("")}</select>`
@@ -207,9 +241,6 @@
   }
   function renderCaptureExtra() {
     const parts = [];
-    if (captureProject !== null) parts.push(`<span class="nw-chip">工作区：${esc(projectName(captureProject))}<button type="button" data-act="capture-global" aria-label="改为全局想法">×</button></span>`);
-    const hang = view.layout === "map" ? mindmap.captureTarget() : null;
-    if (hang) parts.push(`<span class="nw-chip">记下后挂到「${esc(hang.title)}」下<button type="button" data-act="capture-detach" aria-label="只记下，不挂到导图">×</button></span>`);
     const auto = view.untagged ? [] : view.tags;
     if (auto.length) parts.push(`<span class="nw-auto">会自动带上 ${auto.map(name => `#${esc(name)}`).join(" ")}</span>`);
     $("nw-capture-extra").innerHTML = parts.join("");
@@ -220,7 +251,7 @@
     document.body.classList.toggle("nw-selecting", selectMode || selected.size > 0);
     $("nw-select-mode").setAttribute("aria-pressed", String(selectMode));
     if (!selected.size) { bar.innerHTML = ""; return; }
-    bar.innerHTML = `<span>已选 <b>${selected.size}</b> 条</span><button type="button" class="btn sm" data-act="bulk-tags">打标签</button><button type="button" class="btn sm" data-act="bulk-project">改工作区</button><button type="button" class="btn sm" data-act="bulk-merge" ${selected.size < 2 ? "disabled" : ""}>合并</button><button type="button" class="btn sm" data-act="bulk-archive">归档</button><button type="button" class="btn sm ghost" data-act="bulk-clear">取消选择</button>`;
+    bar.innerHTML = `<span>已选 <b>${selected.size}</b> 条</span><button type="button" class="btn sm" data-act="bulk-tags">打标签</button><button type="button" class="btn sm" data-act="bulk-merge" ${selected.size < 2 ? "disabled" : ""}>合并</button><button type="button" class="btn sm" data-act="bulk-archive">归档</button><button type="button" class="btn sm ghost" data-act="bulk-clear">取消选择</button>`;
   }
   function render() {
     const count = M.counts(notes);
@@ -232,7 +263,7 @@
     $("nw-map").hidden = !onMap;
     if (onMap && !mindmap.active()) mindmap.mount($("nw-map"));
     if (!onMap && mindmap.active()) mindmap.unmount();
-    renderFilters(); renderSide(); renderCaptureExtra(); renderBulk();
+    renderFilters(); renderSide(); renderCaptureExtra(); renderBulk(); renderUnassigned();
     if (onMap) mindmap.render(); else renderWall();
   }
 
@@ -257,13 +288,11 @@
       node.querySelector("[data-ok]").focus();
     });
   }
-  const projectOptions = (current, withGlobal) => (withGlobal ? `<option value="" ${current === null ? "selected" : ""}>全局（不属于工作区）</option>` : `<option value="" disabled ${projects.some(item => item.name === current) ? "" : "selected"}>选择工作区</option>`)
-    + projects.map(item => `<option value="${esc(item.name)}" ${item.name === current ? "selected" : ""}>${esc(item.display_name || item.name)}</option>`).join("");
   const formStatus = (node, text) => { node.querySelector("[role=status]").textContent = text; };
   function lockForm(node, value) { for (const control of node.querySelectorAll("button,input,textarea,select")) if (!control.hasAttribute("data-close")) control.disabled = value; }
 
   function editDialog(note) {
-    const node = dialog("nw-edit", `${head("编辑想法", "最初记录始终保留，可以在 ⋯ 里查看。")}<form><label>标题<input name="title" maxlength="80" placeholder="可不填，不填就取正文第一行" value="${esc(note.title || "")}"></label><label>内容<textarea name="text" rows="8" required>${esc(note.text)}</textarea></label><label>标签<input name="tags" value="${esc(note.tags.join(" "))}" placeholder="用空格或逗号分隔"></label><label>工作区<select name="project">${projectOptions(note.project, true)}</select></label><p role="status" class="nw-form-status"></p><div class="nw-dialog-acts"><button type="button" class="btn ghost" data-close>取消</button><button type="submit" class="btn primary">保存</button></div></form>`, "编辑想法");
+    const node = dialog("nw-edit", `${head("编辑想法", "最初记录始终保留，可以在 ⋯ 里查看。")}<form><label>标题<input name="title" maxlength="80" placeholder="可不填，不填就取正文第一行" value="${esc(note.title || "")}"></label><label>内容<textarea name="text" rows="8" required>${esc(note.text)}</textarea></label><label>标签<input name="tags" value="${esc(note.tags.join(" "))}" placeholder="用空格或逗号分隔"></label><p role="status" class="nw-form-status"></p><div class="nw-dialog-acts"><button type="button" class="btn ghost" data-close>取消</button><button type="submit" class="btn primary">保存</button></div></form>`, "编辑想法");
     const form = node.querySelector("form");
     form.onsubmit = async event => {
       event.preventDefault();
@@ -272,7 +301,7 @@
       lockForm(node, true); formStatus(node, "正在保存…");
       try {
         await commit(() => write("update", {note_id: note.id, expected_version: note.version, text, title: form.title.value.trim() || null,
-          tags: [...new Set(form.tags.value.split(/[\s,，]+/).filter(Boolean))], project: form.project.value || null}));
+          tags: [...new Set(form.tags.value.split(/[\s,，]+/).filter(Boolean))]}));
         node.close(); toast("已保存。");
       } catch (error) { formStatus(node, error.message); lockForm(node, false); }
     };
@@ -280,13 +309,11 @@
   }
 
   function promoteDialog(note, after) {
-    const node = dialog("nw-promote", `${head("转任务", "在所选工作区新建一个 leader 讨论，带上这条想法。转任务后想法从墙上移到“已转任务”。")}<form><p class="nw-quote">${esc(M.title(note))}</p><label>工作区<select name="project" required>${projectOptions(note.project, false)}</select></label><p role="status" class="nw-form-status"></p><div class="nw-dialog-acts"><button type="button" class="btn ghost" data-close>取消</button><button type="submit" class="btn primary">转任务</button></div></form>`, "转任务");
+    const node = dialog("nw-promote", `${head("转任务", `在「${esc(workspaceName())}」新建一个 leader 讨论，带上这条想法。转任务后想法移到“已转任务”。`)}<form><p class="nw-quote">${esc(M.title(note))}</p><p role="status" class="nw-form-status"></p><div class="nw-dialog-acts"><button type="button" class="btn ghost" data-close>取消</button><button type="submit" class="btn primary">转任务</button></div></form>`, "转任务");
     const form = node.querySelector("form");
-    if (!projects.length) formStatus(node, "还没有可用的工作区。先在工作区页打开一个项目文件夹。");
     form.onsubmit = async event => {
       event.preventDefault();
-      const project = form.project.value;
-      if (!project) { formStatus(node, "先选择工作区。"); return; }
+      const project = PROJECT;
       if (!starting.has(note.id)) starting.set(note.id, window.CrewBrowser.requestId());
       lockForm(node, true); formStatus(node, "正在新建 leader 讨论…");
       try {
@@ -296,14 +323,14 @@
         after?.();
       } catch (error) { formStatus(node, error.message); lockForm(node, false); }
     };
-    form.project.focus();
+    form.querySelector("[type=submit]").focus();
   }
 
   async function recoverDialog(note) {
     const node = dialog("nw-recover", `${head("核实转任务", "上次转任务没有确认结果。这里只建立关联，不发送想法，也不新建会话。")}<div data-body><p class="nw-loading" role="status">正在查找已有对话…</p></div>`, "核实转任务");
     const bodyNode = node.querySelector("[data-body]");
     let result;
-    try { result = await api(`/api/op/note.recovery.get?note_id=${encodeURIComponent(note.id)}`); }
+    try { result = await api(`/api/op/note.recovery.get?${projectQuery}&note_id=${encodeURIComponent(note.id)}`); }
     catch (error) { bodyNode.innerHTML = `<p class="nw-form-error" role="alert">${esc(error.message)}</p>`; return; }
     if (!result.leaders.length) { bodyNode.innerHTML = `<p>未找到可关联的对话。该次创建结果仍需核实，暂不重复创建。</p>`; return; }
     bodyNode.innerHTML = `<form><label>选择你核实过的原讨论<select name="session">${result.leaders.map(person => `<option value="${esc(person.session_id)}">${esc(person.crew_name)} · ${esc(person.task || person.session_id.slice(0, 8))}</option>`).join("")}</select></label><p role="status" class="nw-form-status"></p><div class="nw-dialog-acts"><button type="button" class="btn ghost" data-close>取消</button><button type="submit" class="btn primary">确认这是原讨论</button></div></form>`;
@@ -313,7 +340,7 @@
       const session_id = form.session.value;
       lockForm(node, true);
       try {
-        await commit(() => api("/api/op/note.recover", {note_id: note.id, session_id, request_id: `note-recovery:${note.id}:${session_id}`, reason: "用户在想法墙中核实并选择了原讨论"}));
+        await commit(() => api("/api/op/note.recover", {project: PROJECT, note_id: note.id, session_id, request_id: `note-recovery:${note.id}:${session_id}`, reason: "用户在想法页中核实并选择了原讨论"}));
         node.close(); toast("已关联原讨论，没有重新发送内容。");
       } catch (error) { formStatus(node, error.message); lockForm(node, false); }
     };
@@ -324,7 +351,7 @@
   }
 
   function summariesDialog(note) {
-    const node = dialog("nw-summaries", `${head("讨论结论", `结论只追加，不改你的原文。${note.discussions.count ? `已讨论 ${note.discussions.count} 次。` : ""}`)}<div class="nw-summary-list">${note.summaries.length ? note.summaries.map(item => `<article class="nw-summary"><p>${esc(item.text)}</p><small>${item.source.type === "assistant" ? "助手" : "你"} · ${esc(stamp(item.at))}</small></article>`).join("") : '<p class="nw-quiet">还没有讨论结论。去聊聊后，助手会把结论追加到这里；你也可以自己写一条。</p>'}</div><form><label>追加一条结论<textarea name="text" rows="3" required placeholder="比如：先做 A，B 等下个版本"></textarea></label><p role="status" class="nw-form-status"></p><div class="nw-dialog-acts">${note.discussions.count ? `<a class="btn ghost" href="/assistant.html">打开助手对话</a>` : ""}<button type="button" class="btn ghost" data-close>关闭</button><button type="submit" class="btn primary">追加</button></div></form>`, "讨论结论");
+    const node = dialog("nw-summaries", `${head("讨论结论", `结论只追加，不改你的原文。${note.discussions.count ? `已讨论 ${note.discussions.count} 次。` : ""}`)}<div class="nw-summary-list">${note.summaries.length ? note.summaries.map(item => `<article class="nw-summary"><p>${esc(item.text)}</p><small>${item.source.type === "assistant" ? "助手" : "你"} · ${esc(stamp(item.at))}</small></article>`).join("") : '<p class="nw-quiet">还没有讨论结论。去聊聊后，助手会把结论追加到这里；你也可以自己写一条。</p>'}</div><form><label>追加一条结论<textarea name="text" rows="3" required placeholder="比如：先做 A，B 等下个版本"></textarea></label><p role="status" class="nw-form-status"></p><div class="nw-dialog-acts">${note.discussions.count ? `<a class="btn ghost" href="${esc(discussionUrl(note))}">打开讨论的对话</a>` : ""}<button type="button" class="btn ghost" data-close>关闭</button><button type="submit" class="btn primary">追加</button></div></form>`, "讨论结论");
     const form = node.querySelector("form");
     form.onsubmit = async event => {
       event.preventDefault();
@@ -475,15 +502,65 @@
     paint(); node.querySelector("[name=name]").focus();
   }
 
-  function bulkProjectDialog() {
-    const ids = [...selected];
-    const node = dialog("nw-bulk-project", `${head(`改 ${ids.length} 条想法的工作区`)}<form><label>工作区<select name="project">${projectOptions(null, true)}</select></label><p role="status" class="nw-form-status"></p><div class="nw-dialog-acts"><button type="button" class="btn ghost" data-close>取消</button><button type="submit" class="btn primary">确定</button></div></form>`, "改工作区");
-    const form = node.querySelector("form");
+  // ---- ideas from before workspaces (遗留池) ------------------------------------------------------------------
+  // Old ideas and map trees that belong to no workspace yet; the user picks which ones to claim into this one.
+  // Assistants never see them, and a device without permission simply gets no line.
+  async function refreshUnassigned() {
+    try { unassigned = await api("/api/op/unassigned.list"); }
+    catch { unassigned = null; }
+    renderUnassigned();
+  }
+  function renderUnassigned() {
+    const node = $("nw-unassigned"), counts = unassigned?.counts;
+    const total = (counts?.notes || 0) + (counts?.trees || 0);
+    node.hidden = !loaded || !total;
+    if (node.hidden) { node.innerHTML = ""; return; }
+    const parts = [counts.notes ? `${counts.notes} 条旧想法${counts.archived_notes ? `（${counts.archived_notes} 条已归档）` : ""}` : "", counts.trees ? `${counts.trees} 棵导图` : ""].filter(Boolean).join(" / ");
+    node.innerHTML = `<span class="nw-unassigned-text">有 ${parts}还没归属工作区</span><button type="button" class="text-link" data-act="unassigned">查看</button>`;
+  }
+  function unassignedDialog() {
+    const node = dialog("nw-claim", `${head("认领旧想法", `勾选要放进「${esc(workspaceName())}」的旧想法和导图；没勾的留在原处，之后也可以在别的工作区认领。`)}<form><div class="nw-claim-body"><p class="nw-loading" role="status">正在读取…</p></div><p role="status" class="nw-form-status"></p><div class="nw-dialog-acts"><button type="button" class="btn ghost" data-close>取消</button><button type="submit" class="btn primary" disabled>认领</button></div></form>`, "认领旧想法");
+    const form = node.querySelector("form"), body = node.querySelector(".nw-claim-body"), picked = {notes: new Set(), trees: new Set()};
+    let list = null;
+    function paint() {
+      if (!list) return;
+      const rows = (items, kind, line) => items.map(item => { const id = kind === "notes" ? item.id : item.root_id; return `<label class="nw-claim-row"><input type="checkbox" data-claim="${kind}" value="${esc(id)}" ${picked[kind].has(id) ? "checked" : ""}><span>${line(item)}</span></label>`; }).join("");
+      const noteLine = item => `<b>${esc(M.title(item))}</b>${item.state === "archived" ? '<em class="nw-claim-tag">已归档</em>' : ""}${item.tags?.length ? `<small>${item.tags.map(name => `#${esc(name)}`).join(" ")}</small>` : ""}`;
+      const treeLine = item => `<b>${esc(item.label || "未命名主题")}</b><small>${item.node_count} 个节点${item.note_ids?.length ? ` · 含 ${item.note_ids.length} 条想法` : ""}</small>`;
+      body.innerHTML = (list.notes.length ? `<section><h3>散落的旧想法 <span class="nw-count">${list.notes.length}</span><button type="button" class="text-link" data-claim-all="notes">全选</button></h3><div class="nw-claim-list">${rows(list.notes, "notes", noteLine)}</div></section>` : "")
+        + (list.trees.length ? `<section><h3>导图 <span class="nw-count">${list.trees.length}</span><button type="button" class="text-link" data-claim-all="trees">全选</button></h3><p class="nw-quiet">导图里的旧想法只能随整棵导图认领，认领后一起归到这里。</p><div class="nw-claim-list">${rows(list.trees, "trees", treeLine)}</div></section>` : "")
+        || '<p class="nw-quiet">旧想法都已经有归属了。</p>';
+      const count = picked.notes.size + picked.trees.size, submit = form.querySelector("[type=submit]");
+      submit.disabled = count === 0; submit.textContent = count ? `认领 ${count} 项到「${workspaceName()}」` : "认领";
+    }
+    async function load(message = "") {
+      try { list = await api("/api/op/unassigned.list"); }
+      catch (error) { body.innerHTML = `<p class="nw-form-error" role="alert">${esc(error.message)}</p>`; return; }
+      for (const kind of ["notes", "trees"]) for (const id of [...picked[kind]]) if (!list[kind].some(item => (kind === "notes" ? item.id : item.root_id) === id)) picked[kind].delete(id);
+      unassigned = list; renderUnassigned(); formStatus(node, message); paint();
+    }
+    body.addEventListener("change", event => { const box = event.target.closest("[data-claim]"); if (!box) return; if (box.checked) picked[box.dataset.claim].add(box.value); else picked[box.dataset.claim].delete(box.value); paint(); });
+    body.addEventListener("click", event => {
+      const all = event.target.closest("[data-claim-all]"); if (!all) return;
+      const kind = all.dataset.claimAll, ids = list[kind].map(item => kind === "notes" ? item.id : item.root_id);
+      if (ids.every(id => picked[kind].has(id))) picked[kind].clear(); else for (const id of ids) picked[kind].add(id);
+      paint();
+    });
     form.onsubmit = async event => {
-      event.preventDefault(); lockForm(node, true);
-      try { await commit(() => write("bulk", {note_ids: ids, expected_versions: versions(ids), op: "project", value: form.project.value || null})); node.close(); toast(`已改 ${ids.length} 条想法的工作区。`); }
-      catch (error) { formStatus(node, error.message); lockForm(node, false); }
+      event.preventDefault();
+      lockForm(node, true); formStatus(node, "正在认领…");
+      let result;
+      try { result = await api("/api/op/unassigned.claim", {project: PROJECT, note_ids: [...picked.notes], root_ids: [...picked.trees], expected_version: list.version}); }
+      catch (error) {
+        lockForm(node, false);
+        if (error.status === 409) { await load("旧想法刚被认领或改动过，已刷新列表，请再核对一次。"); return; }
+        formStatus(node, error.message); paint(); return;
+      }
+      node.close();
+      toast(`已认领 ${result.claimed?.notes?.length ?? picked.notes.size} 条想法、${result.claimed?.trees?.length ?? picked.trees.size} 棵导图到「${workspaceName()}」。`);
+      await reload(); void refreshUnassigned(); if (mindmap.active()) void mindmap.refresh();
     };
+    void load();
   }
 
   // ---- ⋯ menu -----------------------------------------------------------------
@@ -608,9 +685,24 @@
 
   // ---- quick capture --------------------------------------------------------------
   const input = $("nw-input");
-  try { input.value = localStorage.getItem(DRAFT_KEY) || ""; } catch {}
-  function resizeInput() { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 240)}px`; }
-  function saveDraft() { try { localStorage.setItem(DRAFT_KEY, input.value); } catch {} }
+  const readDraft = () => { try { return DRAFT_KEY ? localStorage.getItem(DRAFT_KEY) || "" : ""; } catch { return ""; } };
+  const writeDraft = value => { try { if (DRAFT_KEY) localStorage.setItem(DRAFT_KEY, value); } catch {} };
+  function loadDraft() { input.value = readDraft(); resizeInput(); }
+  input.value = readDraft();
+  function resizeInput() { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 240)}px`; input.style.overflowY = input.scrollHeight > 240 ? "auto" : "hidden"; }
+  function saveDraft() { writeDraft(input.value); }
+  // Records one idea in this workspace. An unconfirmed capture retries with the same request id, so it lands once;
+  // failures throw with the text untouched by the caller.
+  async function captureNote(text, extraTags = []) {
+    const parsed = M.parseCapture(text);
+    if (!parsed.text) throw Object.assign(Error(text.trim() ? "只有标签还不够，写一句想法再记下。" : "先写点什么。"), {empty: true});
+    const data = {text: parsed.text, tags: [...new Set([...extraTags, ...parsed.tags])]};
+    const fingerprint = JSON.stringify(data);
+    if (capturePending?.fingerprint !== fingerprint) capturePending = {fingerprint, id: window.CrewBrowser.requestId()};
+    const captured = await api("/api/op/note.capture", {project: PROJECT, data, request_id: capturePending.id});
+    capturePending = null;
+    return captured.note;
+  }
   function closeSuggest() { suggest = null; $("nw-suggest").hidden = true; $("nw-suggest").innerHTML = ""; input.setAttribute("aria-expanded", "false"); input.removeAttribute("aria-activedescendant"); }
   function paintSuggest() {
     const list = $("nw-suggest");
@@ -623,22 +715,16 @@
     const found = M.token(input.value, input.selectionStart);
     if (!found) { closeSuggest(); return; }
     let items;
-    if (found.kind === "#") {
-      items = tags.filter(tag => M.fuzzy(tag.name, found.query)).slice(0, 8).map(tag => ({kind: "#", value: tag.name, html: `<i class="nw-swatch tag-${esc(tag.color)}" aria-hidden="true"></i>${esc(tag.name)}`}));
-      if (found.query && !tags.some(tag => tag.name === found.query)) items.push({kind: "#", value: found.query, html: `新标签 #${esc(found.query)}`});
-    } else {
-      items = [{kind: "@", value: null, html: "全局（不属于工作区）"}, ...projects.map(item => ({kind: "@", value: item.name, html: esc(item.display_name || item.name)}))]
-        .filter(item => M.fuzzy(item.value === null ? "全局" : projectName(item.value), found.query)).slice(0, 8);
-    }
+    items = tags.filter(tag => M.fuzzy(tag.name, found.query)).slice(0, 8).map(tag => ({kind: "#", value: tag.name, html: `<i class="nw-swatch tag-${esc(tag.color)}" aria-hidden="true"></i>${esc(tag.name)}`}));
+    if (found.query && !tags.some(tag => tag.name === found.query)) items.push({kind: "#", value: found.query, html: `新标签 #${esc(found.query)}`});
     suggest = {token: found, items, active: 0};
     paintSuggest();
   }
   function choose(index) {
     const item = suggest.items[index], {start, end} = suggest.token;
-    const insert = item.kind === "#" ? `#${item.value} ` : "";
+    const insert = `#${item.value} `;
     input.value = input.value.slice(0, start) + insert + input.value.slice(end);
     input.selectionStart = input.selectionEnd = start + insert.length;
-    if (item.kind === "@") { captureProject = item.value; renderCaptureExtra(); }
     closeSuggest(); saveDraft(); resizeInput(); input.focus();
   }
   input.addEventListener("input", () => { saveDraft(); resizeInput(); updateSuggest(); $("nw-capture-status").textContent = ""; });
@@ -656,23 +742,14 @@
   $("nw-suggest").addEventListener("mousedown", event => { const option = event.target.closest("[data-index]"); if (option) { event.preventDefault(); choose(Number(option.dataset.index)); } });
   $("nw-capture").addEventListener("submit", async event => {
     event.preventDefault();
-    const parsed = M.parseCapture(input.value), status = $("nw-capture-status");
-    if (!parsed.text) { status.textContent = input.value.trim() ? "只有标签还不够，写一句想法再记下。" : "先写点什么。"; return; }
-    const data = {text: parsed.text, tags: [...new Set([...(view.untagged ? [] : view.tags), ...parsed.tags])], project: captureProject};
-    const fingerprint = JSON.stringify(data);
-    // An unconfirmed capture retries with the same request id, so it lands once.
-    if (capturePending?.fingerprint !== fingerprint) capturePending = {fingerprint, id: window.CrewBrowser.requestId()};
-    const button = $("nw-capture").querySelector("[type=submit]");
+    const status = $("nw-capture-status"), button = $("nw-capture").querySelector("[type=submit]");
     button.disabled = true; status.textContent = "正在记下…";
-    const hang = view.layout === "map" ? mindmap.captureTarget() : null;
-    let captured;
-    try { captured = await api("/api/op/note.capture", {data, request_id: capturePending.id}); }
-    catch (error) { status.textContent = `没记下：${error.message}（内容还在输入框里）`; button.disabled = false; input.focus(); return; }
-    capturePending = null; input.value = ""; saveDraft(); resizeInput(); captureProject = view.ws;
+    try { await captureNote(input.value, view.untagged ? [] : view.tags); }
+    catch (error) { status.textContent = error.empty ? error.message : `没记下：${error.message}（内容还在输入框里）`; button.disabled = false; input.focus(); return; }
+    input.value = ""; saveDraft(); resizeInput();
     button.disabled = false; input.focus();
     await reload();
-    if (hang) await mindmap.attach(captured.note.id);
-    status.textContent = hang ? `已记下，挂到「${hang.title}」下。不会因此启动 AI。` : "已记下。不会因此启动 AI。";
+    status.textContent = "已记下。不会因此启动 AI。";
   });
 
   // ---- events -----------------------------------------------------------------------
@@ -716,13 +793,12 @@
     else if (act === "mode" || act === "group") setView({[act]: control.dataset.value});
     else if (act === "view") setView({view: control.dataset.value});
     else if (act === "view-open") setView({view: "open"});
-    else if (act === "clear-filters") setView({tags: [], mode: "all", untagged: false, ws: null, global: false});
+    else if (act === "clear-filters") setView({tags: [], mode: "all", untagged: false});
     else if (act === "tag-panel") tagPanel({kind: "filter"});
     else if (act === "manage-tags") manageTags();
     else if (act === "review") startReview();
     else if (act === "select-mode") { selectMode = !selectMode; if (!selectMode) selected.clear(); render(); }
-    else if (act === "capture-global") { captureProject = null; renderCaptureExtra(); input.focus(); }
-    else if (act === "capture-detach") { mindmap.detachCapture(); renderCaptureExtra(); input.focus(); }
+    else if (act === "unassigned") unassignedDialog();
     else if (act === "layout") setView({layout: control.dataset.value});
     else if (act === "expand") { if (expanded.has(note.id)) expanded.delete(note.id); else expanded.add(note.id); renderWall(); }
     else if (act === "promote") promoteDialog(note);
@@ -734,7 +810,6 @@
     else if (act === "summaries") summariesDialog(note);
     else if (act === "merge-dup") mergeDialog([note.id, ...dupes.get(note.id)]);
     else if (act === "bulk-tags") tagPanel({kind: "notes", ids: [...selected]});
-    else if (act === "bulk-project") bulkProjectDialog();
     else if (act === "bulk-merge") mergeDialog([...selected]);
     else if (act === "bulk-archive") {
       const ids = [...selected];
@@ -746,25 +821,30 @@
   document.addEventListener("change", event => {
     const control = event.target.closest("#nw-filters [data-act]");
     if (!control) return;
-    if (control.dataset.act === "scope") setView(control.value === "global" ? {ws: null, global: true} : control.value ? {ws: control.value.slice(3), global: false} : {ws: null, global: false});
-    else if (control.dataset.act === "sort") setView({sort: control.value});
+    if (control.dataset.act === "sort") setView({sort: control.value});
     else if (control.dataset.act === "view") setView({view: control.value});
   });
   // Coming back to the page re-reads: the assistant may have changed notes meanwhile.
   const visible = () => document.visibilityState === "visible" && window.crewTabVisible !== false;
   function onVisibility(event) {
     if (event.type === "crew-tab-visibility") window.crewTabVisible = event.detail.visible;
-    if (visible() && loaded) void refresh().then(render, error => showError(error.message)).then(() => view.layout === "map" ? mindmap.refresh() : null);
+    if (visible() && loaded) { void refresh().then(render, error => showError(error.message)).then(() => view.layout === "map" ? mindmap.refresh() : null); void refreshUnassigned(); }
   }
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("crew-tab-visibility", onVisibility);
 
   mindmap = window.CrewMindmap.create({
     api, esc, M, toast, dialog, head, formStatus, lockForm, editDialog, promoteDialog, recoverDialog, chatUrl, projectName, byId, tagInfo,
-    notes: () => notes, loaded: () => loaded, view: () => view, projects: () => projects, closeMenu: () => closeMenu(false),
+    project: PROJECT, workspaceName, notes: () => notes, loaded: () => loaded, view: () => view, closeMenu: () => closeMenu(false),
     openNoteMenu: (button, note) => { if (menu?.button === button) closeMenu(); else openMenu(button, note); },
-    onSelection: () => renderCaptureExtra()
+    onSelection: () => {}, capture: text => captureNote(text, []), reload,
+    draft: {get: readDraft, set: writeDraft}
   });
   resizeInput();
-  (async () => { if (window.CrewAccess && !await CrewAccess.ready) return; render(); await boot(); })();
+  (async () => {
+    if (scope.mode === "invalid") { fatal(`${scope.reason}，打不开想法页。`); return; }
+    if (window.CrewAccess && !await CrewAccess.ready) return;
+    if (scope.mode === "home") { await rewriteBare(); return; }
+    render(); await boot();
+  })();
 })();

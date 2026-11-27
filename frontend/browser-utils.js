@@ -85,5 +85,13 @@
     const link = document.createElement("a"); link.href = url; link.download = ""; link.hidden = true;
     document.body.append(link); link.click(); link.remove();
   }
-  window.CrewBrowser = {requestId, postOptions, copyText, keyboardShortcut, chatSendKey, enableChatLists, download};
+  // Which workspace a page belongs to: no query at all is the HOME-wide page (系统管理员, or a bare idea link);
+  // exactly one non-empty ?project= is that workspace; anything else is an invalid link, never the administrator.
+  function pageProject(search = location.search) {
+    const params = new URLSearchParams(search), names = params.getAll("project");
+    if ([...params.keys()].length === 0) return {mode: "home", project: null};
+    if (names.length === 1 && names[0].trim() && [...params.keys()].length === 1) return {mode: "workspace", project: names[0]};
+    return {mode: "invalid", project: null, reason: names.length > 1 ? "链接里有多个工作区" : names.length === 1 ? (names[0].trim() ? "链接带了无法识别的参数" : "链接里的工作区是空的") : "链接带了无法识别的参数"};
+  }
+  window.CrewBrowser = {requestId, postOptions, copyText, keyboardShortcut, chatSendKey, enableChatLists, download, pageProject};
 })();

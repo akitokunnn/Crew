@@ -48,12 +48,12 @@
   }
 
   // A workspace with no leader and no task yet offers two equal ways in; neither starts anything by itself.
-  // The assistant path only opens the global assistant with the opening intent written into its composer.
+  // The assistant path only opens this workspace's assistant with the opening intent written into its composer.
   function startPaths(data) {
-    const opening = `/assistant.html#opening=${encodeURIComponent(data.project)}`;
+    const opening = `/assistant.html?project=${encodeURIComponent(data.project)}#opening=${encodeURIComponent(data.project)}`;
     return `<section class="wh-start" aria-labelledby="wh-start-title"><div class="wh-start-head"><h2 id="wh-start-title">空白工作区，从哪里开始？</h2><p>两种方式都可以，之后也能随时换着用。</p></div><div class="wh-start-paths">
       <article class="wh-path" data-path="self"><span class="wh-path-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></svg></span><div class="wh-path-text"><h3>自己搭</h3><p>直接进工作台：先和一个 leader 聊需求，什么时候建更多 leader、要不要画架构图，由你决定。</p></div><div class="wh-path-actions"><button class="btn primary" data-act="modal-leader">开始新对话</button><button class="btn ghost" data-act="view" data-view="architecture">画架构图</button></div></article>
-      <article class="wh-path" data-path="assistant"><span class="wh-path-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v11H9l-5 4V4Z"/><path d="M8 9h8M8 12h5"/></svg></span><div class="wh-path-text"><h3>助手开局</h3><p>交给全局助手起盘：先和你对齐目标和范围，再给出领域划分、leader 编制和首批任务的方案，你确认后才动手。</p></div><div class="wh-path-actions"><a class="btn primary" href="${escape(opening)}">让助手开局</a></div></article>
+      <article class="wh-path" data-path="assistant"><span class="wh-path-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v11H9l-5 4V4Z"/><path d="M8 9h8M8 12h5"/></svg></span><div class="wh-path-text"><h3>助手开局</h3><p>交给这个工作区的助手起盘：先和你对齐目标和范围，再给出领域划分、leader 编制和首批任务的方案，你确认后才动手。</p></div><div class="wh-path-actions"><a class="btn primary" href="${escape(opening)}">让助手开局</a></div></article>
     </div></section>`;
   }
 

@@ -52,7 +52,7 @@ function harness(options = {}) {
     alive() { if (this.isDestroyed()) throw new TypeError('Object has been destroyed'); }
     isDestroyed() { return this.owner.destroyed; }
     getURL() { this.alive(); return this.url; }
-    send() { this.alive(); }
+    send(channel, message) { this.alive(); (calls.sent ||= []).push([channel, message]); }
     setWindowOpenHandler() { this.alive(); }
     async insertCSS() { this.alive(); calls.uiCalls++; }
     async executeJavaScript() { this.alive(); calls.uiCalls++; }
@@ -113,6 +113,7 @@ function harness(options = {}) {
     setBounds() {} select() { this.window.alive(); }
     dispose() { calls.tabsDispose++; this.disposed = true; }
     async open() { if (this.disposed) throw new TypeError('Object has been destroyed'); calls.tabsOpen++; }
+    async openAssistant() { calls.assistantOpen = (calls.assistantOpen || 0) + 1; }
     updateProject() { this.window.alive(); } closeProject() { this.window.alive(); }
   }
   class Preview {
@@ -256,6 +257,22 @@ test('Mac shell failure blocks the backend and displays the real startup error',
   assert.equal(h.calls.dialogs,1);
   assert.equal(h.calls.nativeQuit,1);
   assert.match(h.logs[0][0].message,/fixture shell error/);
+});
+
+test('系统管理员 opens the administrator AI tab, and every entry lands on the operations page while the backend cannot start', async () => {
+  const h = harness(); await h.boot();
+  await h.invoke('desktop:chrome-action','admin'); h.menuItem('system-administrator').click(); await tick(); await h.invoke('desktop:open-administrator');
+  assert.equal(h.calls.assistantOpen,3);
+  assert.equal(h.menuItem('system-operations').label,'系统管理员 · 运维…');
+  h.menuItem('system-operations').click(); await tick(); assert.equal(h.calls.assistantOpen,3,'运维 shows the native page, not the AI tab');
+  h.app.quit(); await tick();
+  const down = harness({backendError:new Error('端口被占用')}); await down.boot();
+  await down.invoke('desktop:home-ready');
+  assert.equal(JSON.stringify(down.calls.sent.filter(([channel]) => channel === 'desktop:home-action').at(-1)[1]), '{"action":"admin","reason":"offline"}');
+  await down.invoke('desktop:chrome-action','admin'); down.menuItem('system-administrator').click(); await tick();
+  assert.equal(down.calls.assistantOpen ?? 0,0);
+  assert.equal(JSON.stringify(down.calls.sent.filter(([channel]) => channel === 'desktop:home-action').at(-1)[1]), '{"action":"admin","reason":"offline"}');
+  down.app.quit(); await tick();
 });
 
 test('a stale local service record cannot replace the Python version failure on the home page', async () => {
@@ -445,7 +462,7 @@ test('a LAN connection hides host-only menu items and refuses this computer\'s b
   const h = harness({ remote:true }); await h.boot();
   const ids = h.menu().template[0].submenu.map(item => item.id);
   for (const id of ['workspace-import', 'workspace-handoff', 'tools-updates']) assert(!ids.includes(id), id);
-  for (const id of ['workspace-new', 'workspace-open', 'workspace-export', 'system-administrator', 'app-settings']) assert(ids.includes(id), id);
+  for (const id of ['workspace-new', 'workspace-open', 'workspace-export', 'system-administrator', 'system-operations', 'app-settings']) assert(ids.includes(id), id);
   for (const channel of ['desktop:admin-check', 'desktop:admin-restart', 'desktop:admin-chat-snapshot', 'desktop:admin-config-get', 'desktop:storage-import', 'desktop:existing',
     'desktop:parent', 'desktop:workspace-directory', 'desktop:tools-snapshot', 'desktop:crew-update-snapshot', 'desktop:remote-access-read'])
     await assert.rejects(h.invoke(channel), /只能在主机上的 Crew 中进行/, channel);

@@ -22,7 +22,7 @@ test("settings validates the actual known model capabilities while retaining fut
   ai.git.effort="high";assert.equal(ui.validate(ai,catalog).git.effort,"high");
 });
 test("each explicit task names its missing runtime when two installed carriers make automatic selection ambiguous",()=>{
-  for(const [purpose,label] of [["digest","频道摘要"],["git","Git 管理员"],["operations","运维 AI"]]){
+  for(const [purpose,label] of [["digest","频道摘要"],["git","Git 管理员"],["operations","系统管理员 · 运维"]]){
     const ai=config();ai.default.runtime="codex";ai[purpose]={runtime:null,model:null,effort:null};
     assert.throws(()=>ui.validate(ai,catalog),error=>error.message.includes(label)&&error.message.includes("请选择执行载体"));
     ai[purpose]=null;assert.doesNotThrow(()=>ui.validate(ai,catalog));

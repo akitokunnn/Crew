@@ -178,7 +178,7 @@ class CrewUpdates {
       await this.backend.start(); lock.assert();
       const after = await this._health();
       if (!this.backend.owned || after.version !== target.version || !samePath(after.plugin_root, target.root) ||
-          after.port !== health.port || after.instance_id === health.instance_id) throw new Error('新后台的版本、来源或端口验证未通过；请查看系统管理员。');
+          after.port !== health.port || after.instance_id === health.instance_id) throw new Error('新后台的版本、来源或端口验证未通过；请查看系统管理员 · 运维。');
       await this.onRestart(after); this.state.backend = after;
       const applied = await this._helper('inspect', ['--target', this.config.backendDir]);
       if (applied.target.digest !== target.digest || !samePath(applied.cli.plugin_root, target.root)) throw new Error('更新后命令入口来源验证未通过。');
@@ -186,7 +186,7 @@ class CrewUpdates {
       this._phase('done', '后台与命令入口已统一到桌面自带版本。');
     } catch (error) {
       this.queued = false; clearInterval(this.timer); this.timer = null;
-      Object.assign(this.state, { phase: 'error', error: error.message, message: stopped ? '后台切换未完成，请查看系统管理员；备份已保留。' : '更新未完成，备份（若已创建）已保留。' }); this._emit();
+      Object.assign(this.state, { phase: 'error', error: error.message, message: stopped ? '后台切换未完成，请查看系统管理员 · 运维；备份已保留。' : '更新未完成，备份（若已创建）已保留。' }); this._emit();
     } finally {
       if (prepared?.gate_id && !stopped) {
         try { await this.request(this.backend.url, '/api/op/admin.update.cancel', { instance_id: health.instance_id, gate_id: prepared.gate_id }); }

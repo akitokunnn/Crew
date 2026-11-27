@@ -1,6 +1,7 @@
 "use strict";
-// Idea mind map: the 导图 layout of /notes.html. Ideas wait in the tray until dragged (or placed) onto the canvas,
-// topics group them, and picked branches turn into a workspace's architecture board after a before / after preview.
+// Idea mind map: the main (导图) layout of a workspace's ideas page. Ideas wait in the tray until dragged, placed or
+// tapped onto the canvas, topics group them, and picked branches turn into this workspace's architecture board
+// after a before / after preview. The tray keeps a small box to jot an idea and hang it under the selected node.
 // The page (notes.js) owns notes, dialogs and the ⋯ menu; this view owns the map and asks the page for the rest.
 window.CrewMindmap = (() => {
   const MM = window.CrewMindmapModel;
@@ -16,10 +17,13 @@ window.CrewMindmap = (() => {
   };
 
   function create(ctx) {
-    const client = MM.client(ctx.api);
+    const client = MM.client(ctx.api, ctx.project);
     const {esc} = ctx;
     let host = null, map = null, t = null, error = "", selected = null, draft = null, renaming = null, drag = null;
-    let picking = null, pickProject = "", trayOpen = false, attachCapture = true, layoutInfo = null, focusAfter = false;
+    let picking = null, trayOpen = false, attachCapture = true, layoutInfo = null, focusAfter = false;
+    // armed: an idea picked from the tray by a tap, waiting for the node (or empty canvas) it goes to.
+    // pendingAttach: an idea already recorded whose hanging failed; a retry only hangs it.
+    let armed = null, pendingAttach = null, capturing = false, captureNote = "";
     let zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number(localStorage.getItem(ZOOM_KEY) ?? 1))), suppressClick = false;
     const $ = selector => host.querySelector(selector);
     const note = id => ctx.byId(t.nodes.get(id).note_id);
@@ -58,7 +62,10 @@ window.CrewMindmap = (() => {
     // ---- rendering --------------------------------------------------------------------------------------------------
     function scaffold() {
       host.innerHTML = `<div class="mm-shell">
-        <aside class="mm-tray" aria-label="未上图的想法"><button type="button" class="mm-tray-head" data-mm="tray" aria-expanded="false"></button><div class="mm-tray-list" role="list"></div></aside>
+        <aside class="mm-tray" aria-label="未上图的想法">
+          <form class="mm-capture" autocomplete="off"><textarea class="mm-capture-input" rows="1" maxlength="4000" placeholder="记一条想法…" aria-label="记下一条想法，可挂到选中的节点下"></textarea><button type="submit" class="btn sm primary">记下</button></form>
+          <p class="mm-capture-hint" role="status" aria-live="polite"></p>
+          <button type="button" class="mm-tray-head" data-mm="tray" aria-expanded="false"></button><div class="mm-tray-list" role="list"></div></aside>
         <section class="mm-stage" aria-label="想法导图">
           <div class="mm-bar"></div>
           <div class="mm-scroll" tabindex="0" role="tree" aria-label="想法导图，方向键移动，Tab 新建子主题，Enter 新建同级，空格折叠" aria-describedby="mm-hint">
@@ -68,6 +75,7 @@ window.CrewMindmap = (() => {
           <div class="mm-actions" role="toolbar" aria-label="节点操作" hidden></div>
           <div class="mm-zoom" role="group" aria-label="缩放"><button type="button" data-mm="zoom-out" aria-label="缩小">${icon(ICON.minus)}</button><button type="button" class="mm-zoom-value" data-mm="zoom-reset" title="恢复 100%"></button><button type="button" data-mm="zoom-in" aria-label="放大">${icon(ICON.plus)}</button></div>
           <div class="mm-drop-label" hidden></div>
+          <div class="mm-arm" role="status" hidden></div>
         </section>
       </div>`;
       const scroll = $(".mm-scroll");
@@ -81,10 +89,22 @@ window.CrewMindmap = (() => {
       host.addEventListener("dblclick", onDoubleClick);
       host.addEventListener("change", onChange);
       host.addEventListener("keydown", onTrayKey);
+      const box = $(".mm-capture-input");
+      box.value = ctx.draft.get();
+      box.addEventListener("input", () => { ctx.draft.set(box.value); resizeBox(); captureNote = ""; renderCapture(); });
+      box.addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); $(".mm-capture").requestSubmit(); } });
+      $(".mm-capture").addEventListener("submit", event => { event.preventDefault(); void capture(); });
+      resizeBox();
+    }
+    // Grows with its text up to five lines; a hidden map (no layout yet) keeps the one-line height from CSS.
+    function resizeBox() {
+      const box = $(".mm-capture-input"); box.style.height = "";
+      if (!box.value || !box.offsetParent) return;
+      box.style.height = `${Math.min(box.scrollHeight, 120)}px`; box.style.overflowY = box.scrollHeight > 120 ? "auto" : "hidden";
     }
     function render() {
       if (host === null) return;
-      renderBar(); renderTray();
+      renderBar(); renderTray(); renderCapture(); renderArm();
       const empty = $(".mm-empty"), scroll = $(".mm-scroll");
       if (!map || !ctx.loaded()) {
         empty.hidden = false; scroll.hidden = true;
@@ -93,22 +113,20 @@ window.CrewMindmap = (() => {
       }
       scroll.hidden = false;
       empty.hidden = t.roots.length > 0;
-      empty.innerHTML = t.roots.length ? "" : `<b>导图还是空的</b><span>把左边的想法拖进来，或点“＋ 主题”起一个头。手机上点想法右边的“上图”。</span>`;
+      empty.innerHTML = t.roots.length ? "" : `<b>导图还是空的</b><span>在左上角记一条想法，或把左边的想法拖进来、点一下再点画布放上来；也可以点“＋ 主题”起一个头。</span>`;
       renderCanvas(); renderActions();
     }
     function renderBar() {
       const bar = $(".mm-bar");
       if (picking) {
         const {tops, covered} = map ? MM.branches(t, picking) : {tops: [], covered: new Set()};
-        const projects = ctx.projects();
         bar.className = "mm-bar picking";
-        bar.innerHTML = `<span class="mm-pick-text"><b>转成架构图</b><span>点节点勾选分支（含全部下级）· 已选 ${tops.length} 个分支 / ${covered.size} 个节点</span></span>`
-          + `<select data-mm="pick-project" aria-label="目标工作区"><option value="" ${pickProject ? "" : "selected"} disabled>选择工作区</option>${projects.map(item => `<option value="${esc(item.name)}" ${item.name === pickProject ? "selected" : ""}>${esc(item.display_name || item.name)}</option>`).join("")}</select>`
-          + `<button type="button" class="btn sm ghost" data-mm="pick-cancel">取消</button><button type="button" class="btn sm primary" data-mm="pick-preview" ${tops.length && pickProject ? "" : "disabled"}>预览改动</button>`;
+        bar.innerHTML = `<span class="mm-pick-text"><b>转成「${esc(ctx.workspaceName())}」的架构图</b><span>点节点勾选分支（含全部下级）· 已选 ${tops.length} 个分支 / ${covered.size} 个节点</span></span>`
+          + `<button type="button" class="btn sm ghost" data-mm="pick-cancel">取消</button><button type="button" class="btn sm primary" data-mm="pick-preview" ${tops.length ? "" : "disabled"}>预览改动</button>`;
         return;
       }
       bar.className = "mm-bar";
-      bar.innerHTML = `<button type="button" class="btn sm" data-mm="new-root">${icon(ICON.plus)}主题</button><span class="mm-hint" id="mm-hint">拖想法进来挂接 · Tab 子主题 · Enter 同级 · 空格折叠 · Alt+方向键调整层级</span><span class="mm-gap"></span><button type="button" class="btn sm" data-mm="convert" ${map && t.roots.length ? "" : "disabled"}>${icon(ICON.board)}转成架构图</button>`;
+      bar.innerHTML = `<button type="button" class="btn sm" data-mm="new-root">${icon(ICON.plus)}主题</button><span class="mm-hint" id="mm-hint">拖想法进来或点选后放下 · Tab 子主题 · Enter 同级 · 空格折叠 · Alt+方向键调整层级</span><span class="mm-gap"></span><button type="button" class="btn sm" data-mm="convert" ${map && t.roots.length ? "" : "disabled"}>${icon(ICON.board)}转成架构图</button>`;
     }
     function trayNotes() {
       const placed = map ? onMap() : new Set(), view = ctx.view();
@@ -120,11 +138,49 @@ window.CrewMindmap = (() => {
       head.setAttribute("aria-expanded", String(trayOpen));
       host.querySelector(".mm-shell").classList.toggle("tray-open", trayOpen);
       const now = Date.now();
-      $(".mm-tray-list").innerHTML = list.length ? list.map(item => `<div class="mm-tray-item${item.stale ? " stale" : ""}" role="listitem" data-note="${esc(item.id)}" tabindex="0" aria-label="想法：${esc(ctx.M.title(item))}，回车放进导图">`
-        + `<span class="mm-tray-text"><span class="mm-tray-title">${esc(ctx.M.title(item))}</span><small>${esc(item.project === null ? "全局" : ctx.projectName(item.project))} · ${ctx.M.relative(item.updated_at, now)}${item.tags.length ? ` · ${item.tags.map(name => `#${esc(name)}`).join(" ")}` : ""}</small></span>`
+      $(".mm-tray-list").innerHTML = list.length ? list.map(item => `<div class="mm-tray-item${item.stale ? " stale" : ""}${armed === item.id ? " armed" : ""}" role="listitem" data-note="${esc(item.id)}" tabindex="0" aria-pressed="${armed === item.id}" aria-label="想法：${esc(ctx.M.title(item))}，回车放进导图，点一下再点画布放到那里">`
+        + `<span class="mm-tray-text"><span class="mm-tray-title">${esc(ctx.M.title(item))}</span><small>${ctx.M.relative(item.updated_at, now)}${item.tags.length ? ` · ${item.tags.map(name => `#${esc(name)}`).join(" ")}` : ""}</small></span>`
         + `<button type="button" class="btn sm mm-place" data-mm="place" ${map ? "" : "disabled"} aria-label="把「${esc(ctx.M.title(item))}」放进导图${selected ? "，挂到选中节点下" : ""}">上图</button></div>`).join("")
-        : `<p class="mm-tray-empty">${ctx.notes().length ? "当前筛选下的想法都在导图上了。" : "还没有想法。在上面记下第一条。"}</p>`;
+        : `<p class="mm-tray-empty">${ctx.notes().length ? "当前筛选下的想法都在导图上了。" : "还没有想法。在上面的小框里记下第一条。"}</p>`;
     }
+    // The tray's box says where the next idea goes, and offers the retry when only the hanging failed.
+    function renderCapture() {
+      const hint = $(".mm-capture-hint"), target = attachTarget();
+      $(".mm-capture [type=submit]").disabled = capturing;
+      if (pendingAttach) {
+        hint.innerHTML = `<span class="mm-capture-warn">已记下，但没挂到「${esc(pendingAttach.title)}」下</span><button type="button" class="text-link" data-mm="retry-attach">重试挂上</button><button type="button" class="text-link" data-mm="drop-attach">先不挂</button>`;
+        return;
+      }
+      if (captureNote) { hint.textContent = captureNote; return; }
+      hint.innerHTML = target ? `记下后挂到「${esc(target.title)}」下<button type="button" class="text-link" data-mm="capture-detach" aria-label="只记下，不挂到导图">不挂</button>` : "记下后先放在下面，拖进导图或点一下再放。";
+    }
+    function attachTarget() { return map && attachCapture && selected !== null && t.nodes.has(selected) ? {id: selected, title: nodeTitle(selected)} : null; }
+    async function capture() {
+      const box = $(".mm-capture-input");
+      if (capturing) return;
+      const target = attachTarget();
+      capturing = true; captureNote = "正在记下…"; pendingAttach = null; renderCapture();
+      let note;
+      try { note = await ctx.capture(box.value); }
+      catch (failure) { capturing = false; captureNote = failure.empty ? failure.message : `没记下：${reason(failure)}（内容还在框里）`; renderCapture(); box.focus(); return; }
+      box.value = ""; ctx.draft.set(""); resizeBox();
+      await ctx.reload();
+      if (target && t.nodes.has(target.id)) {
+        const result = await place(note.id, target.id);
+        if (!result) pendingAttach = {noteId: note.id, parent: target.id, title: target.title};
+      }
+      capturing = false; captureNote = pendingAttach ? "" : target ? `已记下，挂到「${target.title}」下。不会因此启动 AI。` : "已记下。不会因此启动 AI。";
+      renderCapture(); box.focus();
+    }
+    // A tapped idea waits for its spot: a node takes it as a child, empty canvas as a new root.
+    function renderArm() {
+      const bar = $(".mm-arm");
+      const item = armed === null ? null : ctx.byId(armed);
+      if (!item || !map) { bar.hidden = true; bar.innerHTML = ""; return; }
+      bar.hidden = false;
+      bar.innerHTML = `<span>点一个节点，把「${esc(ctx.M.title(item))}」挂到它下面；点空白处放成新的根</span><button type="button" class="btn sm ghost" data-mm="disarm">取消</button>`;
+    }
+    function arm(noteId) { armed = armed === noteId ? null : noteId; render(); }
     function nodeHtml(id) {
       const node = t.nodes.get(id), level = MM.depth(t, id);
       if (node.draft || renaming === id) {
@@ -145,7 +201,7 @@ window.CrewMindmap = (() => {
       }
       const links = t.links.get(id) || [];
       if (links.length) badges.push(`<span class="mm-badge linked" title="已转成架构图：${esc(links.map(link => `${ctx.projectName(link.project)} › ${link.domain_name}`).join("；"))}">${icon(ICON.board)}${links.length > 1 ? links.length : "已转"}</span>`);
-      const dots = item?.tags.length ? `<span class="mm-dots" aria-hidden="true">${item.tags.slice(0, 4).map(name => `<i class="tag-${esc(ctx.tagInfo(name).color)}"></i>`).join("")}</span>` : "";
+      const dots = item?.tags.length ? `<span class="mm-dots" aria-hidden="true">${item.tags.filter(name => ctx.tagInfo(name)).slice(0, 4).map(name => `<i class="tag-${esc(ctx.tagInfo(name).color)}"></i>`).join("")}</span>` : "";
       const label = `${node.note_id === null ? "主题" : "想法"}：${nodeTitle(id)}${item?.tags.length ? `，标签 ${item.tags.join("、")}` : ""}${links.length ? "，已转成架构图" : ""}`;
       const fold = kids ? `<button type="button" class="mm-fold${node.collapsed ? " closed" : ""}" data-mm="fold" tabindex="-1" aria-label="${node.collapsed ? `展开 ${hiddenKids} 个下级` : "折叠下级"}" title="${node.collapsed ? `展开（${hiddenKids} 个下级）` : "折叠"}">${node.collapsed ? `+${hiddenKids}` : icon(ICON.minus)}</button>` : "";
       const check = picking ? `<span class="mm-check" aria-hidden="true">${picking.has(id) ? "✓" : ""}</span>` : "";
@@ -268,6 +324,7 @@ window.CrewMindmap = (() => {
     }
     // Puts an idea under the selected node (or as a new root) — the tray's 上图 and quick capture both use it.
     async function place(noteId, parent = selected) {
+      armed = null;
       const parent_id = parent !== null && t.nodes.has(parent) ? parent : null;
       if (parent_id !== null && t.nodes.get(parent_id).collapsed) await edit([{op: "collapse", id: parent_id, collapsed: false}], "展开");
       const index = parent_id === null ? t.roots.length : t.nodes.get(parent_id).children.length;
@@ -320,6 +377,7 @@ window.CrewMindmap = (() => {
       applyZoom();
     }
     function onTrayKey(event) {
+      if (event.key === "Escape" && armed !== null) { event.preventDefault(); armed = null; render(); return; }
       const item = event.target.closest(".mm-tray-item");
       if (!item || event.target !== item || event.key !== "Enter" || event.isComposing) return;
       event.preventDefault(); void place(item.dataset.note);
@@ -415,6 +473,13 @@ window.CrewMindmap = (() => {
       if (act === "chat") return;
       if (act === "fold" && nodeEl) { event.preventDefault(); void toggleFold(nodeEl.dataset.node); return; }
       if (act) { event.preventDefault(); void action(act, control, event); return; }
+      // Tap-to-place works with touch, pen and mouse alike: pick in the tray, then tap where it goes.
+      const trayEl = event.target.closest(".mm-tray-item");
+      if (trayEl && !picking && map) { arm(trayEl.dataset.note); return; }
+      if (armed !== null && !picking) {
+        if (nodeEl && !nodeEl.classList.contains("editing")) { void place(armed, nodeEl.dataset.node); return; }
+        if (event.target.closest(".mm-scroll")) { void place(armed, null); return; }
+      }
       if (nodeEl && !nodeEl.classList.contains("editing")) {
         if (picking) togglePick(nodeEl.dataset.node);
         else if (selected !== nodeEl.dataset.node) select(nodeEl.dataset.node);
@@ -427,15 +492,23 @@ window.CrewMindmap = (() => {
       if (!nodeEl || picking || event.target.closest("[data-mm]") || nodeEl.classList.contains("editing")) return;
       rename(nodeEl.dataset.node);
     }
-    function onChange(event) {
-      if (event.target.dataset.mm === "pick-project") { pickProject = event.target.value; renderBar(); }
-    }
+    function onChange() {}
     async function action(act, control) {
       if (act === "reload") { await load(); return; }
       if (act === "tray") { trayOpen = !trayOpen; renderTray(); return; }
       if (act === "zoom-in" || act === "zoom-out") { setZoom(zoom + (act === "zoom-in" ? .1 : -.1)); return; }
       if (act === "zoom-reset") { setZoom(1); return; }
       if (act === "place") { await place(control.closest(".mm-tray-item").dataset.note); return; }
+      if (act === "disarm") { armed = null; render(); return; }
+      if (act === "capture-detach") { attachCapture = false; renderCapture(); $(".mm-capture-input").focus(); return; }
+      if (act === "retry-attach" && pendingAttach) {
+        const {noteId, parent, title} = pendingAttach;
+        if (!t.nodes.has(parent)) { pendingAttach = null; captureNote = `「${title}」已不在导图上，想法留在下面。`; renderCapture(); return; }
+        const result = await place(noteId, parent);
+        if (result) { pendingAttach = null; captureNote = `已挂到「${title}」下。`; }
+        renderCapture(); return;
+      }
+      if (act === "drop-attach") { pendingAttach = null; captureNote = "想法已记下，留在下面没挂。"; renderCapture(); return; }
       if (act === "new-root") { startDraft(null, t.roots.length); return; }
       if (act === "convert") { startPicking(); return; }
       if (act === "pick-cancel") { stopPicking(); return; }
@@ -458,10 +531,7 @@ window.CrewMindmap = (() => {
 
     // ---- conversion -------------------------------------------------------------------------------------------------
     function startPicking() {
-      picking = new Set(selected !== null ? [selected] : []);
-      const writable = ctx.projects().map(item => item.name), view = ctx.view();
-      const owners = [...new Set([...MM.branches(t, picking).covered].map(id => note(id)?.project).filter(Boolean))];
-      pickProject = view.ws !== null && writable.includes(view.ws) ? view.ws : owners.length === 1 && writable.includes(owners[0]) ? owners[0] : pickProject;
+      picking = new Set(selected !== null ? [selected] : []); armed = null;
       render();
       $(".mm-scroll").focus({preventScroll: true});
     }
@@ -473,8 +543,8 @@ window.CrewMindmap = (() => {
     const STATUS = {new: "新建", merge: "并入", linked: "已转", same: ""};
     function openPreview() {
       const {tops} = MM.branches(t, picking);
-      const request = {project: pickProject, roots: tops, parent_id: null, decisions: {}, names: {}, leaders: {}};
-      const node = ctx.dialog("mm-convert", `${ctx.head(`转成架构图 · ${esc(ctx.projectName(pickProject))}`, "预览只读，不改任何东西；确认后一次写入，之后可在架构图里继续调整。")}<div class="mm-cv-body" aria-live="polite"><p class="nw-loading" role="status">正在计算改动…</p></div><p role="status" class="nw-form-status"></p><div class="nw-dialog-acts"><button type="button" class="btn ghost" data-close>取消</button><button type="button" class="btn primary" data-convert disabled>确认转换</button></div>`, "转成架构图");
+      const request = {project: ctx.project, roots: tops, parent_id: null, decisions: {}, names: {}, leaders: {}};
+      const node = ctx.dialog("mm-convert", `${ctx.head(`转成架构图 · ${esc(ctx.workspaceName())}`, "预览只读，不改任何东西；确认后一次写入，之后可在架构图里继续调整。")}<div class="mm-cv-body" aria-live="polite"><p class="nw-loading" role="status">正在计算改动…</p></div><p role="status" class="nw-form-status"></p><div class="nw-dialog-acts"><button type="button" class="btn ghost" data-close>取消</button><button type="button" class="btn primary" data-convert disabled>确认转换</button></div>`, "转成架构图");
       const body = node.querySelector(".mm-cv-body");
       let plan = null, side = "after", busy = false, first = true;
       async function refreshPlan(message = "") {
@@ -566,13 +636,11 @@ window.CrewMindmap = (() => {
     return {
       active: () => host !== null,
       mount(element) { host = element; scaffold(); render(); void load(); },
-      unmount() { cancelDrag(); if (host) host.innerHTML = ""; host = null; picking = null; draft = null; renaming = null; },
-      render() { if (host) { sync(); render(); } },
+      unmount() { cancelDrag(); if (host) host.innerHTML = ""; host = null; picking = null; draft = null; renaming = null; armed = null; },
+      render() { if (host) { sync(); render(); const box = $(".mm-capture-input"); if (document.activeElement !== box && box.value !== ctx.draft.get()) { box.value = ctx.draft.get(); resizeBox(); } } },
       refresh: () => host ? load() : Promise.resolve(),
-      // The node quick capture would hang a new idea under, or null.
-      captureTarget: () => host && map && attachCapture && selected !== null && t.nodes.has(selected) ? {id: selected, title: nodeTitle(selected)} : null,
-      detachCapture() { attachCapture = false; },
-      attach: noteId => place(noteId),
+      // The node the tray box would hang a new idea under, or null.
+      captureTarget: () => host ? attachTarget() : null,
       // The idea behind the selected node, for the page's T / 1–9 shortcuts.
       selectedNote: () => host && map && selected !== null ? note(selected) || null : null
     };

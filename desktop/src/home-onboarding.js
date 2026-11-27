@@ -8,7 +8,7 @@
   const STEPS = [['runtime', '执行载体'], ['appearance', '外观'], ['features', 'Crew 的特色'], ['workspace', '第一个工作区']];
   const HEADS = {
     runtime: ['本机的 AI 执行载体', 'Crew 让 Claude Code 和 Codex 一起干活。下面是在这台电脑上检测到的情况，选一个作为默认大脑。'],
-    appearance: ['外观', '显示模式对首页、所有工作区和窗口边框一起生效；字号作用于工作区、助手和想法墙页面，这个首页保持标准大小。之后在“设置 → 外观”也能改。'],
+    appearance: ['外观', '显示模式对首页、所有工作区和窗口边框一起生效；字号作用于工作区、助手和想法页面，这个首页保持标准大小。之后在“设置 → 外观”也能改。'],
     features: ['Crew 和普通单聊有什么不同', '四个最常用到的能力，用到时就会看到它们。'],
     workspace: ['选第一个工作区', '工作区就是一个文件夹。普通目录即可，不需要 Git，Crew 也不会自动初始化仓库。']
   };
@@ -101,7 +101,7 @@
     return `<div class="ob-features">${FEATURES.map(([title, text, glyph]) => `<article class="ob-feature"><span class="ob-feature-mark">${icon(glyph)}</span><div><h3>${esc(title)}</h3><p>${esc(text)}</p></div></article>`).join('')}</div>`;
   }
   function workspaceMarkup() {
-    return `<div class="ob-choices"><button type="button" class="ob-choice" data-ob-act="open-existing"><span class="ob-choice-mark">${icon('<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2M3 7h15a2 2 0 0 1 1.9 2.6l-2.3 7A2 2 0 0 1 15.7 18H4a2 2 0 0 1-2-2V9a2 2 0 0 1 1-2Z"/>')}</span><strong>打开已有文件夹</strong><span>已有代码或资料的文件夹，直接作为工作区打开。</span></button><button type="button" class="ob-choice" data-ob-act="new-folder"><span class="ob-choice-mark">${icon('<path d="M12 5v14M5 12h14"/>')}</span><strong>新建空白文件夹</strong><span>起个名字、选好位置，Crew 新建一个空文件夹作为工作区。</span></button></div><div class="ob-after"><strong>进了空白工作区之后</strong><span>有两个入口：「自己搭」直接进工作台，「助手开局」交给全局助手先出方案。</span></div><p class="ob-muted">点选后引导就结束，文件夹在首页原有的打开 / 新建流程里选。</p>`;
+    return `<div class="ob-choices"><button type="button" class="ob-choice" data-ob-act="open-existing"><span class="ob-choice-mark">${icon('<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2M3 7h15a2 2 0 0 1 1.9 2.6l-2.3 7A2 2 0 0 1 15.7 18H4a2 2 0 0 1-2-2V9a2 2 0 0 1 1-2Z"/>')}</span><strong>打开已有文件夹</strong><span>已有代码或资料的文件夹，直接作为工作区打开。</span></button><button type="button" class="ob-choice" data-ob-act="new-folder"><span class="ob-choice-mark">${icon('<path d="M12 5v14M5 12h14"/>')}</span><strong>新建空白文件夹</strong><span>起个名字、选好位置，Crew 新建一个空文件夹作为工作区。</span></button></div><div class="ob-after"><strong>进了空白工作区之后</strong><span>有两个入口：「自己搭」直接进工作台，「助手开局」交给这个工作区的助手先出方案。</span></div><p class="ob-muted">点选后引导就结束，文件夹在首页原有的打开 / 新建流程里选。</p>`;
   }
   function bodyMarkup(state) {
     const id = STEPS[state.step][0];

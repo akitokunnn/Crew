@@ -7,11 +7,16 @@
   const page = body.classList.contains("assistant-page") ? "assistant" : body.classList.contains("notes-page") ? "notes" : "app";
   const STORE = "crew.mobile.project", OPEN_LEADERS = "crew.mobile.openLeaders";
   const query = new URLSearchParams(location.search).get("project");
-  let project = page === "app" ? query : null;
+  // 助手、想法页带 ?project= 时属于该工作区；不带的助手页是系统管理员，底栏仍指向最近的工作区。
+  const scope = window.CrewBrowser?.pageProject ? window.CrewBrowser.pageProject() : {mode: query ? "workspace" : "home", project: query};
+  const pageProject = page !== "app" && scope.mode === "workspace" ? scope.project : null;
+  let project = page === "app" ? query : pageProject;
   try {
     if (project) localStorage.setItem(STORE, project);
     else if (page !== "app") project = localStorage.getItem(STORE);
   } catch { /* 无痕模式下不记最近工作区，链接回到工作区入口 */ }
+  const adminPage = page === "assistant" && pageProject === null;
+  const pageUrl = kind => project ? `/${kind}.html?project=${encodeURIComponent(project)}` : "/";
   const inProject = page === "app" && query !== null;
   const projectUrl = hash => project ? `/?project=${encodeURIComponent(project)}${hash ? "#" + hash : ""}` : "/";
 
@@ -30,6 +35,7 @@
     switch: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
     theme: '<path d="M12 3.5a8.5 8.5 0 1 0 8.5 8.5A6.5 6.5 0 0 1 12 3.5z"/>',
     presence: '<circle cx="12" cy="7" r="3"/><path d="M6 20c.7-4 3-6 6-6s5.3 2 6 6"/>',
+    admin: '<path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6l-8-3Z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/>',
   };
 
@@ -45,8 +51,9 @@
     bar.innerHTML = [
       tab("home", "工作台", navAttrs("all"), tag()),
       tab("leaders", "Leader", leadersAttrs, inProject ? "button" : "a"),
-      tab("notes", "想法", 'href="/notes.html"'),
-      tab("assistant", "助手", 'href="/assistant.html"'),
+      // 想法和助手都属于工作区；还没有工作区时先回到工作区入口。
+      tab("notes", "想法", `href="${pageUrl("notes")}"`),
+      tab("assistant", "助手", `href="${pageUrl("assistant")}"`),
       tab("more", "更多", 'type="button" data-m-act="more" aria-haspopup="dialog" aria-controls="m-sheet"', "button"),
     ].join("");
     return bar;
@@ -65,14 +72,16 @@
       sheetItem("architecture", "架构图", navAttrs("architecture"), tag()),
       sheetItem("git", "Git 助手", navAttrs("git"), tag(), '<em class="m-count" data-m-count="git" hidden></em>'),
       sheetItem("usage", "用量与额度", navAttrs("usage"), tag()),
-      sheetItem("switch", "切换工作区", 'href="/"', "a"),
+      sheetItem("switch", "切换工作区", 'href="/" data-m-always', "a"),
+      ...(window.crewDesktopShell || window.crewDesktopTheme ? [] : [sheetItem("admin", "系统管理员", 'href="/assistant.html" data-m-always', "a")]),
     ];
     const prefs = inProject ? [
       sheetItem("theme", "日间 / 夜间", 'type="button" data-act="theme"', "button", '<small data-m-theme></small>'),
       sheetItem("presence", "在场与消息提醒", 'type="button" data-act="presence-toggle"', "button"),
       sheetItem("settings", "设置", 'type="button" data-act="settings" data-local-control', "button"),
     ] : [];
-    sheet.innerHTML = `<p class="m-sheet-title">${project ? "当前工作区" : "工作区"}</p><div class="m-sheet-group">${project ? go.join("") : go.slice(-1).join("")}</div>${prefs.length ? `<p class="m-sheet-title">偏好</p><div class="m-sheet-group">${prefs.join("")}</div>` : ""}`;
+    const always = go.filter(item => /data-m-always/.test(item));
+    sheet.innerHTML = `<p class="m-sheet-title">${project ? "当前工作区" : "工作区"}</p><div class="m-sheet-group">${project ? go.join("") : always.join("")}</div>${prefs.length ? `<p class="m-sheet-title">偏好</p><div class="m-sheet-group">${prefs.join("")}</div>` : ""}`;
     const backdrop = document.createElement("div");
     backdrop.id = "m-sheet-backdrop"; backdrop.dataset.open = "false";
     return [backdrop, sheet];
@@ -98,7 +107,7 @@
     const view = currentView();
     body.classList.toggle("m-chat", view === "chat");
     body.classList.toggle("m-leaders", leadersOpen);
-    const active = leadersOpen ? "leaders" : page === "app" ? (["all", "todos"].includes(view) || !inProject ? "home" : view === "chat" ? "leaders" : "more") : page;
+    const active = leadersOpen ? "leaders" : page === "app" ? (["all", "todos"].includes(view) || !inProject ? "home" : view === "chat" ? "leaders" : "more") : adminPage ? "more" : page;
     for (const item of tabbar.querySelectorAll(".m-tab")) {
       if (item.dataset.mTab === active) item.setAttribute("aria-current", "page"); else item.removeAttribute("aria-current");
     }

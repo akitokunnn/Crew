@@ -136,13 +136,14 @@
     return {tops, covered};
   }
 
-  // Request shapes; api(path, body) is the page's JSON helper (GET without a body).
-  function client(api) {
+  // Request shapes; api(path, body) is the page's JSON helper (GET without a body). Each workspace has its own map
+  // and version; edit's parent_id is a map node, convert's parent_id is a part of this workspace's board.
+  function client(api, project) {
     return {
-      load: () => api("/api/op/mindmap.get"),
-      edit: (ops, base_version) => api("/api/op/mindmap.edit", {ops, base_version}),
-      preview: request => api("/api/op/mindmap.preview", request),
-      convert: (request, versions) => api("/api/op/mindmap.convert", {...request, map_version: versions.map_version, board_version: versions.board_version})
+      load: () => api(`/api/op/mindmap.get?project=${encodeURIComponent(project)}`),
+      edit: (ops, base_version) => api("/api/op/mindmap.edit", {project, ops, base_version}),
+      preview: request => api("/api/op/mindmap.preview", {...request, project}),
+      convert: (request, versions) => api("/api/op/mindmap.convert", {...request, project, map_version: versions.map_version, board_version: versions.board_version})
     };
   }
 

@@ -39,8 +39,8 @@
     const tier = speedsFor(runtime, modelId).find(item => item.id === value);
     return tier ? tier.description || (FAST_SPEEDS.has(value) ? "生成更快，消耗更多用量" : "") : "所选模型未列出这个速度";
   }
-  const tasks = [["assistant", "全局助手", "所有工作区共用一个助手；首次发送时使用此选择"], ["leader", "新建 leader", "新建 leader 时的载体、模型与思考强度；创建时仍可临时调整"], ["member", "leader 开执行", "任务里新开的执行默认使用的大脑；每个 leader 也能单独覆盖，开执行时也可单独指定。已在跑的不受影响"], ["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "运维 AI", "后台聊天与事故处理共用此选择；自动修复另按已保存策略执行"]];
-  const categories = [["library", "会话库", "查找、接入与管理已有会话"], ["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["prompts", "行为配置", "提示内容、覆盖范围与使用记录"], ["appearance", "外观", "让工作区更顺手"], ["sounds", "音效", "回复完成与任务交付的提示音"], ["remote", "局域网访问", "连接同一网络中的手机和电脑"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["storage", "存储与清理", "空间占用、回收与保留"], ["backend", "后台与运维", "运维对话、状态与配置"]];
+  const tasks = [["assistant", "系统管理员与工作区助手", "系统管理员和各工作区的助手首次发送时使用此选择"], ["leader", "新建 leader", "新建 leader 时的载体、模型与思考强度；创建时仍可临时调整"], ["member", "leader 开执行", "任务里新开的执行默认使用的大脑；每个 leader 也能单独覆盖，开执行时也可单独指定。已在跑的不受影响"], ["digest", "频道摘要", "将交流整理成摘要"], ["git", "Git 管理员", "检查改动、整理提交与合并"], ["operations", "系统管理员 · 运维", "运维对话与事故处理共用此选择；自动修复另按已保存策略执行"]];
+  const CATEGORIES = [["library", "会话库", "查找、接入与管理已有会话"], ["ai", "AI 大脑", "载体、模型与任务分配"], ["execution", "执行权限", "文件与网络的访问范围"], ["prompts", "行为配置", "提示内容、覆盖范围与使用记录"], ["appearance", "外观", "让工作区更顺手"], ["sounds", "音效", "回复完成与任务交付的提示音"], ["remote", "局域网访问", "连接同一网络中的手机和电脑"], ["tools", "工具与更新", "本机执行工具"], ["connections", "消息渠道", "QQ、Lark / 飞书与远程通知"], ["storage", "存储与清理", "空间占用、回收与保留"], ["backend", "系统管理员 · 运维", "后台状态、运维对话与自动修复"]];
   const icons = {
     library:'<path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/>',
     ai:'<rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
@@ -111,12 +111,16 @@
   function create(options) {
     const root = options.host;
     const customFields = new Set();
+    // On the desktop the operations conversation lives on its native 系统管理员 · 运维 page; settings keep status and connection.
+    // A page without host operations (a LAN device's browser) only shows where the backend runs.
+    const backendInfo = options.operationsPage ? ["backend", "后台与连接", "连接与目录；运维在系统管理员"] : options.operations ? null : ["backend", "后台", "数据目录与后台位置"];
+    const categories = backendInfo ? CATEGORIES.map(item => item[0] === "backend" ? backendInfo : item) : CATEGORIES;
     let snapshot = null, draft = null, executionDraft = null, category = "ai", loading = false, saving = false, error = "", note = "", cleanup = null, generation = 0;
     root.classList.add("crew-settings");
     root.innerHTML = `<div class="cs-sidebar"><div class="cs-brand"><span class="cs-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14.26 8.54a4.9 4.9 0 1 0 0 6.92" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="17.4" cy="16.4" r="1.75" fill="currentColor"/></svg></span><div><strong>设置</strong><small>${options.remote ? "Crew · 所连主机" : "Crew · 本机偏好"}</small></div></div><nav aria-label="设置分类">${categories.filter(([id]) => !["library", "appearance", "sounds", "connections", "storage", "prompts", "remote"].includes(id) || options.panels?.[id]).map(([id, label, description]) => `<button type="button" data-settings-category="${id}"><span class="cs-nav-icon">${icon(id)}</span><span>${label}<small>${description}</small></span></button>`).join("")}</nav>${options.onClose ? `<button type="button" class="cs-back" data-settings-action="close">${icon("back")}返回工作区</button>` : ""}<p class="cs-local">${options.remote ? "所连主机的设置" : "本机偏好"} · 所有工作区共用<span class="cs-font-credit">HarmonyOS Sans · 华为</span></p></div><div class="cs-body"><header class="cs-header"><div><span class="cs-eyebrow">偏好设置</span><h1 id="crew-settings-title"></h1><p class="cs-subtitle"></p></div>${options.onClose ? `<button type="button" class="cs-close" data-settings-action="close" aria-label="关闭设置">${icon("close")}</button>` : ""}</header><div class="cs-content"></div><footer class="cs-footer"><p class="cs-status" role="status"></p><button type="button" class="cs-button" data-settings-action="reset">撤销更改</button><button type="button" class="cs-button cs-primary" data-settings-action="save">保存设置</button></footer></div>`;
     const content = root.querySelector(".cs-content"), footer = root.querySelector(".cs-footer"), status = root.querySelector(".cs-status");
     const operations = options.operations ? window.CrewOperations.create({api:options.operations, service:options.service, remote:options.remote === true,
-      mountHealth:options.panels?.backend, onBrain() { category = "ai"; render(); const card = content.querySelector('[data-ai-task="operations"]'); card?.scrollIntoView({block:"center"}); card?.focus({preventScroll:true}); }}) : null;
+      ...(options.operationsPage ? {sections:["status", "launch"], operationsPage:options.operationsPage} : {mountHealth:options.panels?.backend}), onBrain() { category = "ai"; render(); const card = content.querySelector('[data-ai-task="operations"]'); card?.scrollIntoView({block:"center"}); card?.focus({preventScroll:true}); }}) : null;
     function release() { if (cleanup) { cleanup(); cleanup = null; } }
     function changed() { return snapshot && (JSON.stringify(draft) !== JSON.stringify(snapshot.ai) || JSON.stringify(executionDraft) !== JSON.stringify(initialExecution(snapshot))); }
     function controls() {

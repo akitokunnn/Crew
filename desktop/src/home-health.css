@@ -39,3 +39,19 @@
 @media(max-width:1023px){.admin-content{padding:18px 22px 26px}.admin-summary{gap:10px}.admin-stat{padding:13px 14px}.admin-stat strong{font-size:17px}#admin-state{font-size:15px}}
 @media(max-width:850px){.admin-summary{grid-template-columns:1fr 1fr}.admin-stat:last-child{grid-column:1/-1}}
 @media(max-width:620px){.admin-header{flex-wrap:wrap;gap:12px}.admin-content{padding:14px 14px 20px}.admin-summary{grid-template-columns:1fr}.admin-details dl{grid-template-columns:1fr;gap:2px}.admin-details dd{margin-bottom:6px}}
+/* 系统管理员 · 运维: the offline explanation, the page tabs and the operations chat / repair panel. */
+.admin-offline{margin:16px 28px 0;max-width:984px;padding:11px 14px;border:1px solid var(--warn-line);border-radius:11px;background:var(--warn-soft);color:var(--text);font-size:12.5px;line-height:1.7}
+.admin-tabs{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;max-width:1040px;padding:16px 28px 0}
+.admin-tabs[hidden]{display:none}
+.admin-tablist{display:inline-flex;gap:2px;padding:3px;border:1px solid var(--studio-border);border-radius:11px;background:var(--studio-card);box-shadow:var(--studio-shadow-sm)}
+.admin-tablist button{min-height:30px;padding:4px 14px;border:0;border-radius:8px;background:none;color:var(--text-2);font:inherit;font-size:12.5px;cursor:pointer}
+.admin-tablist button:hover{color:var(--text);background:var(--hover)}
+.admin-tablist button[aria-selected=true]{background:var(--accent-soft);color:var(--accent-text);font-weight:500}
+.admin-tablist button:focus-visible,.admin-brain:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.admin-brain{flex:none;padding:4px 2px;border:0;background:none;color:var(--accent-text);font:inherit;font-size:12px;cursor:pointer}
+.admin-brain:hover{text-decoration:underline}
+.admin-ops.crew-settings{display:block;width:100%;max-width:1040px;min-height:0;height:auto;padding:16px 28px 28px;background:none}
+.admin-ops[hidden]{display:none}
+.admin-content[hidden]{display:none}
+@media(max-width:1023px){.admin-offline{margin:14px 22px 0}.admin-tabs{padding:14px 22px 0}.admin-ops.crew-settings{padding:14px 22px 26px}}
+@media(max-width:620px){.admin-offline{margin:12px 14px 0}.admin-tabs{padding:12px 14px 0;flex-wrap:wrap}.admin-tablist{flex:1}.admin-tablist button{flex:1;padding:4px 8px}.admin-ops.crew-settings{padding:12px 14px 20px}.admin-header .button{width:100%}}
