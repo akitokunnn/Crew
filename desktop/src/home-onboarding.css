@@ -53,7 +53,8 @@
 .ob-folder-name input{min-width:0;max-width:100%;padding:7px 9px;border:1px solid var(--line-strong);border-radius:6px;background:var(--bg);color:var(--text)}
 .ob-choices{display:grid;gap:8px}
 .ob-choice{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 13px}
-.ob-choice:has(.start-recommended){border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.ob-choice:has(.start-recommended):has(button:enabled){border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.ob-choice:has(button:disabled){opacity:.68}
 .ob-choice>div{min-width:0}
 .ob-choice button{flex:none}
 .start-recommended{display:inline-block;margin-inline-start:8px;font-size:11px;color:var(--accent-text);vertical-align:1px}
@@ -86,5 +87,6 @@
   .ob-head h2{font-size:19px}
   .ob-foot .button,.ob-skip,.ob-appearance>.ob-link,.ob-choice button{min-height:40px}
   .ob-appearance{flex:1 0 100%}
+  .ob-foot:has(>[data-ob-act="start"])>.ob-appearance{padding-bottom:8px;margin-bottom:4px;border-bottom:1px solid var(--line)}
   .ob-foot-space{display:none}
 }

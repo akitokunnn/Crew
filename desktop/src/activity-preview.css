@@ -31,6 +31,10 @@ header p{margin:1px 0 0;font-size:11px;color:var(--text-3)}
 #items{min-height:0;margin:0;padding:0 16px;overflow:auto}
 .activity-row{display:grid;grid-template-columns:105px minmax(0,1fr);gap:8px;padding:9px 0;border-top:1px solid var(--line);font-size:12px}
 .activity-row dt{font-weight:500}
+.activity-row[data-empty="true"]{opacity:.65}
+.activity-row[data-tone="attention"] dt{color:color-mix(in srgb,var(--cd-warn) 78%,var(--text))}
+.activity-row[data-tone="error"] dt{color:var(--cd-danger)}
+.activity-row[data-tone="working"] dt{color:color-mix(in srgb,var(--cd-working) 70%,var(--accent))}
 .activity-row dd{margin:0;color:var(--text-2);overflow-wrap:anywhere}
 .activity-row dd span{display:-webkit-box;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .activity-row dd span+span{margin-top:3px}

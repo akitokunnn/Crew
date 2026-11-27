@@ -1387,7 +1387,7 @@
   function openWarRoomStart() {
     dialogReturn = focusDescriptor(document.activeElement);
     const backdrop = $("backdrop");
-    backdrop.innerHTML = `<form class="modal wh-war-start" role="dialog" aria-modal="true" aria-labelledby="war-start-title"><div class="field"><h3 id="war-start-title"><label for="war-start-goal">这次想一起搞定什么？</label></h3><textarea id="war-start-goal" name="goal" rows="4" required aria-describedby="war-start-help"></textarea></div><p class="d" id="war-start-help">工作区助手会先和你把计划书谈清楚，你敲定后才开工。</p><p class="error-line" role="alert"></p><div class="acts"><button type="button" class="btn ghost" data-act="modal-close">取消</button><button type="submit" class="btn primary" disabled>开始筹备</button></div></form>`;
+    backdrop.innerHTML = `<form class="modal wh-war-start" role="dialog" aria-modal="true" aria-labelledby="war-start-title"><div class="field"><h3 id="war-start-title"><label for="war-start-goal">这次想一起搞定什么？</label></h3><textarea id="war-start-goal" name="goal" rows="4" required aria-describedby="war-start-help"></textarea></div><p class="d" id="war-start-help">工作区助手会先和你聊清计划书，敲定后再开工。</p><p class="error-line" role="alert"></p><div class="acts"><button type="button" class="btn ghost" data-act="modal-close">取消</button><button type="submit" class="btn primary" disabled>开始筹备</button></div></form>`;
     backdrop.classList.add("show");
     const form = backdrop.querySelector("form"), input = form.elements.goal;
     const submit = form.querySelector('[type="submit"]'), errorLine = form.querySelector(".error-line");

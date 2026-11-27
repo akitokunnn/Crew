@@ -62,7 +62,8 @@
     }
     function renderSessions(results, admins) {
       if (filters.category === "system_admin" && admins.length) return "";
-      const count = loading && !items.length ? "正在读取本机会话…" : `${results.length} 个符合条件`;
+      const resultCount = admins.length ? `工作区会话（${results.length}）` : `${results.length} 个符合条件`;
+      const count = loading && !items.length ? "正在读取本机会话…" : resultCount;
       return `<div class="sl-result-heading"><span>${count}</span><button class="btn ghost" data-sl="clear">重置筛选</button></div>
         ${results.slice(0,limit).map(renderRow).join("")}${results.length > limit ? `<button class="btn sl-more" data-sl="more">再显示 ${Math.min(50,results.length-limit)} 个</button>` : ""}
         ${!results.length && !loading ? '<p class="sl-empty">没有符合筛选的会话。</p>' : ""}`;

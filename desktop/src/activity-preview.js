@@ -1,5 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
+const tones = new Map([['等你处理', 'attention'], ['执行异常', 'error'], ['正在推进', 'working']]);
 window.crewActivity.onState(tab => {
   const {activity} = tab;
   $('name').textContent = tab.name;
@@ -10,6 +11,9 @@ window.crewActivity.onState(tab => {
   for (const {label, count, detail} of activity?.rows ?? []) {
     const row = document.createElement('div');
     row.className = 'activity-row';
+    if (count === 0) row.dataset.empty = 'true';
+    const tone = tones.get(label);
+    if (count > 0 && tone) row.dataset.tone = tone;
     const title = document.createElement('dt');
     title.textContent = count === null ? label : `${label}（${count}）`;
     const description = document.createElement('dd');

@@ -3,6 +3,8 @@
 .wh-eyebrow{font-size:calc(11px * var(--fs));color:var(--text-2);letter-spacing:.08em}
 .wh-head .sub{margin:0;color:var(--text-2)}
 .wh-head>.btn{flex:none;min-height:34px;border-radius:10px}
+.wh-head-empty .btn.primary{background:transparent;border-color:var(--line-strong);color:var(--text-2)}
+.wh-head-empty .btn.primary:hover{background:var(--hover);border-color:var(--line-strong);color:var(--text)}
 .wh-page{padding:14px 24px 28px}
 .wh-content{max-width:1320px;margin:0 auto;width:100%}
 .wh-overview{display:flex;align-items:center;flex-wrap:wrap;gap:7px;border-bottom:1px solid var(--line);padding:0 0 13px;margin-bottom:16px}
@@ -92,6 +94,8 @@ button.wh-overview-item:hover{color:var(--accent-text);border-color:color-mix(in
 .wh-war-start{width:min(420px,100%);min-width:0}
 .wh-war-start h3 label{font:inherit;color:inherit}
 .wh-war-start textarea{font:inherit;line-height:1.5}
+.wh-war-start .d{text-wrap:balance}
+.wh-war-start .btn.primary:disabled{opacity:1;background:transparent;border-color:var(--line);color:var(--text-3)}
 .wh-war-start .error-line:empty{display:none}
 .wh-start-assistant{margin:12px 0 0;color:var(--text-2)}
 .wh-start-assistant a{display:inline-flex;align-items:center;min-height:36px;color:var(--accent-text);text-underline-offset:3px}
