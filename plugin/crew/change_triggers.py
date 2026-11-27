@@ -52,6 +52,11 @@ _WORKSPACE = {
     'goal_execution_bindings': ("SELECT g.project AS p FROM goal_executions e JOIN goals g ON g.id=e.goal_id "
                                 "WHERE e.id={row}.execution_id"),
     'decision_leader_scopes': "SELECT project AS p FROM decisions WHERE id={row}.decision_id",
+    # Dispatch receipts the usage scan reads in (usage._save writes changed rows only); a dispatch belongs to the
+    # Crew session, the native session or the task execution that started it (usage._dispatch_owner).
+    'codex_runs': ("SELECT project AS p FROM sessions WHERE session_id IN ({row}.crew_session_id,{row}.claude_session_id) "
+                   "UNION SELECT g.project AS p FROM goal_executions e JOIN goals g ON g.id=e.goal_id "
+                   "WHERE e.id={row}.crew_execution_id"),
     # A dismissed attention item names no workspace; every workspace re-reads its list.
     'attention_resolutions': "SELECT name AS p FROM projects",
 }

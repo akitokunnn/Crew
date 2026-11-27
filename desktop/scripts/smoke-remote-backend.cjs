@@ -197,7 +197,7 @@ finally:
           await click('#connection-switch');
           await wait('Boolean(document.querySelector(\'[data-pair-field="url"]\'))', 'add-host form opened by the shortcut');
           check('The home shortcut opens the add-host form in LAN mode', await js('document.querySelector(\'input[data-launch-field="mode"][value="remote"]\').checked&&Boolean(document.querySelector(".cl-remote .cl-inline-hint"))&&document.activeElement===document.querySelector(\'[data-pair-field="url"]\')'));
-          const pair = await hostRequest(hostUrl, '/api/remote-access', { action:'pair' }); assert.equal(pair.status, 200);
+          const pair = await hostRequest(hostUrl, '/api/op/remote_access.action', { action:'pair' }); assert.equal(pair.status, 200);
           // The host's copied connection link fills both the address and the one-time code.
           await fill('[data-pair-field="url"]', hostRemote + '/remote/login#code=' + pair.value.code);
           check('A pasted connection link fills the host address and pairing code', await js(`document.querySelector("[data-pair-field=url]").value===${JSON.stringify(hostRemote)}&&document.querySelector("[data-pair-field=code]").value===${JSON.stringify(pair.value.code)}`));
@@ -207,7 +207,7 @@ finally:
           await wait('document.querySelector("[data-launch-remote]")?.checked===true', 'saved device selected');
           const saved = await fs.readFile(path.join(path.dirname(process.env.CREW_CLIENT_SETTINGS), 'remote-backends.json'), 'utf8'), [record] = JSON.parse(saved).backends;
           check('The saved device file holds the host origin and an OS-encrypted token, never the token text', record.url === hostRemote && !/^[A-Za-z0-9_-]{43}$/.test(record.token) && Buffer.from(record.token, 'base64').length > 43);
-          const devices = (await hostRequest(hostUrl, '/api/remote-access')).value.devices;
+          const devices = (await hostRequest(hostUrl, '/api/op/remote_access.get')).value.devices;
           check('The host lists the client as a Crew desktop client', devices.length === 1 && devices[0].kind === 'desktop');
           await wait('Boolean(document.querySelector(".cl-confirm"))', 'apply preview shown right after pairing');
           check('Pairing goes straight to the apply confirmation', true);
@@ -290,19 +290,19 @@ finally:
           const header = (await fs.readFile(exported)).subarray(0, 2).toString('latin1');
           check('The exported .crewpack was downloaded to this computer', header === 'PK');
           // The host forces this device offline.
-          const device = (await hostRequest(hostUrl, '/api/remote-access')).value.devices.find(item => item.kind === 'desktop');
-          assert.equal((await hostRequest(hostUrl, '/api/remote-access', { action:'revoke', device_id:device.id })).status, 200);
+          const device = (await hostRequest(hostUrl, '/api/op/remote_access.get')).value.devices.find(item => item.kind === 'desktop');
+          assert.equal((await hostRequest(hostUrl, '/api/op/remote_access.action', { action:'revoke', device_id:device.id })).status, 200);
           await wait('document.querySelector("#remote-banner")?.dataset.tone==="warning"', 'authorization expired banner', main, 45000);
           check('Revocation shows the expired authorization with re-pair and switch-back actions', await js('/授权已失效，请在主机上重新生成配对码/.test(document.querySelector("#remote-banner").textContent)&&[...document.querySelectorAll("#remote-banner button")].map(b=>b.textContent).join("|")==="重新配对|切回本机"'));
           await shots('auth-expired');
           await click('#remote-banner .primary');
           await wait('Boolean(document.querySelector(".remote-repair input[name=code]"))', 're-pair form');
           await shots('repair-form');
-          const pair = await hostRequest(hostUrl, '/api/remote-access', { action:'pair' });
+          const pair = await hostRequest(hostUrl, '/api/op/remote_access.action', { action:'pair' });
           await fill('.remote-repair input[name=code]', pair.value.code);
           await js('document.querySelector(".remote-repair").requestSubmit()');
           await until(() => evidence.relaunch, 'relaunch after re-pairing', 60000);
-          check('Re-pairing replaced the device on the host', (await hostRequest(hostUrl, '/api/remote-access')).value.devices.filter(item => item.kind === 'desktop').length === 1);
+          check('Re-pairing replaced the device on the host', (await hostRequest(hostUrl, '/api/op/remote_access.get')).value.devices.filter(item => item.kind === 'desktop').length === 1);
         }
         if (phase === 'verify') {
           await wait('document.querySelector("#service")?.textContent.startsWith("已连接 · ")', 'reconnected after re-pairing');
