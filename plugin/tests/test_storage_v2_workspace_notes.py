@@ -171,6 +171,8 @@ class WorkspacePackageTests(unittest.TestCase):
 
     def test_export_by_id_backfills_old_projection_once_from_unopened_source(self):
         # This source still has global tables and the original A/B/NULL tree.
+        with closing(sqlite3.connect(self.home / 'crew.db')) as conn:
+            conn.execute('DROP TABLE schema_migrations')
         before = hashlib.sha256((self.home/'crew.db').read_bytes()).digest()
         with mock.patch.object(legacy, 'TRANSFORM_VERSION', 'crew-v1-to-v2/2'), \
                 mock.patch.object(features, 'project_workspace_notes'):

@@ -183,7 +183,7 @@ def _projection_schema(snapshot, project):
     # Apply the same migration to a disposable copy. Its as-of time comes from
     # the snapshot, so projecting the same source twice has the same fingerprint.
     from .. import store, workspace_notes_migration
-    section = store.SCHEMA_FILE.read_text(encoding='utf-8').split('-- BEGIN workspace_notes_v1\n')[1].split('-- END workspace_notes_v1\n')[0]
+    _, markers, notes = store.schema_sections()
     workspace = next((r for r in schema['projects']['rows'] if r['name'] == project), None)
     if workspace is None:
         raise MigrationError('Legacy project not found: ' + project)
@@ -195,7 +195,7 @@ def _projection_schema(snapshot, project):
             source.backup(staged)
         staged.row_factory = sqlite3.Row
         staged.execute('PRAGMA foreign_keys=ON')
-        workspace_notes_migration.migrate_at(staged, section, stamp)
+        workspace_notes_migration.migrate_at(staged, markers + notes, stamp)
         return _tables(staged)
 
 

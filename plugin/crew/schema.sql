@@ -2,6 +2,10 @@
 -- Times are UTC ISO-8601 strings with millisecond precision and a trailing Z.
 -- Owned by the main controller; tasks extend it only through docs/DESIGN.md.
 
+-- BEGIN schema_migrations
+CREATE TABLE IF NOT EXISTS schema_migrations(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+-- END schema_migrations
+
 -- ---------------------------------------------------------------- board
 
 CREATE TABLE IF NOT EXISTS ai_settings (
@@ -1228,8 +1232,6 @@ CREATE TABLE IF NOT EXISTS interaction_requests (
 );
 
 -- BEGIN workspace_notes_v1
-CREATE TABLE IF NOT EXISTS schema_migrations(name TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
-
 CREATE TABLE IF NOT EXISTS personal_assistant (singleton INTEGER PRIMARY KEY CHECK(singleton=1), session_id TEXT NOT NULL UNIQUE REFERENCES sessions(session_id));
 
 CREATE TABLE IF NOT EXISTS personal_notes (id TEXT PRIMARY KEY, project TEXT REFERENCES projects(name), original_text TEXT NOT NULL, text TEXT NOT NULL, tags_json TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','archived')), version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, source_json TEXT NOT NULL DEFAULT '{}', title TEXT, pinned_at TEXT, snoozed_until TEXT, merged_into TEXT, stage TEXT NOT NULL DEFAULT 'new' CHECK(stage IN ('new','discussed','promoted')), last_discussed_at TEXT, reviewed_at TEXT, summary_json TEXT NOT NULL DEFAULT '[]');

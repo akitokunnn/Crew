@@ -146,7 +146,8 @@ class WorkspaceNotesMigrationTests(unittest.TestCase):
             self.assertEqual(list(observer.iterdump()), before)
         with closing(store.connect(self.home)) as conn:
             self.assertEqual(conn.execute('SELECT count(*) FROM personal_mindmap_nodes').fetchone()[0], 18)
-            self.assertEqual(tuple(conn.execute('SELECT name FROM schema_migrations').fetchone()), ('workspace_notes_v1',))
+            self.assertEqual(conn.execute(
+                "SELECT count(*) FROM schema_migrations WHERE name='workspace_notes_v1'").fetchone()[0], 1)
 
     def test_theme_copy_id_collision_keeps_both_originals_and_preorder_after_promotion(self):
         self.old()

@@ -21,6 +21,15 @@ def db_path(home):
     return Path(home) / "crew.db"
 
 
+def schema_sections():
+    """Return the base schema, shared migration table, and workspace notes DDL."""
+    header, marker_section = SCHEMA_FILE.read_text(encoding="utf-8").split("-- BEGIN schema_migrations\n")
+    markers, rest = marker_section.split("-- END schema_migrations\n")
+    before, notes_section = rest.split("-- BEGIN workspace_notes_v1\n")
+    notes, after = notes_section.split("-- END workspace_notes_v1\n")
+    return header + markers + before + after, markers, notes
+
+
 def connect(home):
     """Open (and create / migrate) the board database under `home`."""
     home = Path(home)
@@ -31,9 +40,8 @@ def connect(home):
         conn.execute("PRAGMA busy_timeout = %d" % BUSY_TIMEOUT_MS)
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA foreign_keys = ON")
-        before, section = SCHEMA_FILE.read_text(encoding="utf-8").split("-- BEGIN workspace_notes_v1\n")
-        notes, after = section.split("-- END workspace_notes_v1\n")
-        conn.executescript(before + after)
+        base, _, notes = schema_sections()
+        conn.executescript(base)
         _migrate_quiet_leader_notices(conn)
         _migrate_git_integration_branch(conn)
         _migrate_channel_replies(conn)
