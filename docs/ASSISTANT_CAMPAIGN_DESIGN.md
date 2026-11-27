@@ -211,3 +211,28 @@ H = 本机界面，B / D = 远程浏览器 / 远程桌面（与 `domains.apply` 
 - 预算下限 1 万 tokens 连一轮都不够：第一局助手按“预算给小一点”选了下限，两位 leader 开工 20 秒用了约 15 万，作战室立即暂停。下限改为 10 万，开局字段说明与助手守则写明按“人数 × 轮数 × 每轮 5–20 万”估；第二局助手估了 40 万。
 - 追加预算后任务不恢复：停下干活中的 leader 时任务先 `pausing`（原因“明确停止此人员”），执行真停后 `confirm_paused` 把原因清空，`war_room.set_budget` 按原因找不到任务。`confirm_paused` 现在保留暂停请求时的原因（leader 离开、取消途中同理）。测试：`test_war_room.test_raising_the_cap_resumes_tasks_that_were_running_when_the_pause_stopped_them`。
 
+- 助手不会被首批任务交付叫醒：交付通知只发给任务自己的 leader，守则里“首批任务都到待验收后收尾”没有触发点（第二局要用户提醒才收尾）。现在 `finalize_finish` 交付或未达标结束时，若负责人在助手牵头的开放作战室里，就给助手投一条唤醒通知，附各成员任务现状；房间收尾后不再通知。测试：`test_war_room.test_a_members_delivered_task_tells_the_assistant_where_every_members_task_stands`。
+
+### 12.5 场景 8 复跑结果（总计划阶段五）
+
+隔离环境：临时 CREW_HOME、空白工作区、独立端口，测试进程去掉 `CREW_SESSION_ID` / `CLAUDE_CODE_SESSION_ID` / `ELECTRON_RUN_AS_NODE`；助手与后端 leader 为 Claude `claude-haiku-5-5`，前端 leader 为 Codex `gpt-6-luna`（low）。用户动作都走真实界面（助手页发言、确认卡“确认执行”、任务详情“通过”）；拍板答复调用的是界面背后同一个 `decision.answer`。
+
+共跑三局：第一局发现 12.4 第一条（开局即暂停），第二局发现 12.4 第二、三条（第二局重启服务载入修复后走完了验收、交棒、合并），第三局在全部修复上从头跑通：
+
+| 步骤 | 第三局实际情况 |
+| --- | --- |
+| 让助手开局 | 从“让助手开局”入口带入开局说明；助手读工作区后先问 3 个关键问题，不建任何东西 |
+| 方案与确认 | 助手 `campaign_preview` 无错误后 `campaign_launch`，预算按新守则估 60 万；用户在确认卡上确认，建好领域、2 位 leader、2 个首批任务、助手牵头的作战室 |
+| 两位 leader 做首批任务 | 后端写契约 v1；前端误改了 `products.json`（整数 id），后端发现后用拍板卡问用户（任务转 waiting_user）；用户选“改回字符串 id”，后端按 v2 重做，前端按 v2 复核 |
+| 进入待验收 | 前端（Codex）交付后 `goal.list` 的 `waiting` 先显示“交付已提交，等执行这一轮实际结束后自动转为待验收”，随后转待验收；后端（Claude）随后转待验收。两种载体都自动收尾，没有卡在 running |
+| 助手收尾交棒 | 前端交付时助手被通知、看到后端还在做而暂不收尾；后端交付时再次被通知，`war_room_close` 并提醒用户验收。预算用约 28.7 万 / 60 万，未暂停 |
+| 用户验收 | 用户实测 `list_products.py`（7 条、P001–P007）与 `index.html`（P006 显示售罄）后在任务详情点“通过”，两个任务 completed |
+| 小重整 | 用户要求合并两位 leader；助手 `domains_restructure_preview` 无错误后 `leader_merge`（交接稿精简为三条、不唤醒）；用户确认后执行成功：架构图版本 3（source=restructure），前端会话归档保留，交接稿投给后端，无任务改派或作废 |
+
+不符合预期（未改）：
+- 助手收尾结论写成“契约 v1 修订版”，实际生效的是用户拍板的 v2；它在随后的回复里自己发现并更正，但作战室结论已不能改。
+- 后端第一次发现数据冲突时，先在自己的任务对话里问用户、结束了这一轮，随后才补发拍板卡；作战室里没有先 @前端核对。
+- `runtimes_list` 的 Claude 模型列表里没有 `claude-haiku-5-5`，助手每次开局都提醒“可能启动失败”（实际可用）。
+- 两位 leader 共用同一个工作区目录，前端改写了后端负责的文件；开局方案没有约定各自的文件边界。
+
+截图（1280 / 758 / 375 × 浅色 / 深色，无头 Chrome 按真实视口截取）：开局确认卡、作战室、重整确认卡取自第二局，助手交棒后页面取自第三局，追加预算确认卡取自第一局。路径见交付说明。
