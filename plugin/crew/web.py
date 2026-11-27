@@ -243,6 +243,11 @@ STATIC.update({'/access-context.js': ('access-context.js', 'text/javascript; cha
                '/remote-access-ui.css': ('remote-access-ui.css', 'text/css; charset=utf-8')})
 
 
+# A request from another origin or host is refused before routing; a body up to this size is read off the socket
+# so the refusal arrives, a larger one is not worth reading for a refused caller.
+REJECTED_BODY_DRAIN = 1024 * 1024
+
+
 class Handler(BaseHTTPRequestHandler):
     def _connection_access(self):
         if getattr(self.server, 'remote_controller', None) is not None:
@@ -419,6 +424,11 @@ class Handler(BaseHTTPRequestHandler):
             if controller is not None and controller.handle_request(self, method):
                 return
             if controller is None and not self._connection_access():
+                # Read a small rejected body first, as _dispatch does before its early errors: Windows resets a
+                # socket closed with unread data, and the client then sees an abort instead of this 403.
+                length = int(self.headers.get('Content-Length', '0'))
+                if 0 < length <= REJECTED_BODY_DRAIN:
+                    self.rfile.read(length)
                 self._send(403, {'error': '本机入口只接受本机 Crew 页面或客户端'})
                 self.close_connection = True
                 return
