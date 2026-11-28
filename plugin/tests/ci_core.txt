@@ -101,3 +101,6 @@ test_workspace_settings
 test_workspace_execution
 test_war_room_plan
 test_batch_contracts
+test_voice_input
+test_remote_discovery
+test_device_notifications

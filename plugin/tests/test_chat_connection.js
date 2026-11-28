@@ -29,6 +29,24 @@ function harness(){
 }
 const history=()=>({events:[],busy:false,read_seq:0,first_seq:0,has_more:false});
 
+test("voice delivery labels only its user bubble in history and live chat", async () => {
+  const h = harness(), target = h.mount("assistant", async () => ({...history(), events:[
+    {seq:1, type:"input_delivery", status:"submitted", message_id:"voice", input_mode:"voice"},
+    {seq:2, type:"message", id:"voice", text:"记下这个想法"},
+    {seq:3, type:"input_delivery", status:"accepted", message_id:"voice"},
+    {seq:4, type:"message", id:"typed", text:"这是打字"}
+  ]}));
+  await tick();
+  const bubbles = () => rendered(target).filter(html => html.includes('class="m-user'));
+  assert.match(bubbles().find(html => html.includes("记下这个想法")), /class="chat-task-label">语音/);
+  assert.doesNotMatch(bubbles().find(html => html.includes("这是打字")), /语音/);
+  h.connections[0].emit({seq:5, type:"input_delivery", status:"submitted", message_id:"live", input_mode:"voice"});
+  h.connections[0].emit({seq:6, type:"message", id:"live", text:"实时消息"});
+  await tick(); h.flushFrames();
+  assert.match(bubbles().find(html => html.includes("实时消息")), /class="chat-task-label">语音/);
+  h.chat.unmount();
+});
+
 test("private history and live updates skip room-tagged bubbles without skipping the next private event",async()=>{
   for (const runtime of ["claude","codex"]) {
     const h=harness(),target=h.mount("private",async()=>({...history(),events:[

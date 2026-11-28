@@ -76,6 +76,22 @@ def managed(home, session_id):
         return False
 
 
+def _voice_edit_reason(home, data):
+    if data.get('tool_name') not in (*guard.WRITES, 'MultiEdit') or not store.db_path(home).exists():
+        return None
+    with contextlib.closing(guard.readonly(home)) as conn:
+        row = conn.execute("SELECT a.session_id FROM workspace_assistants a LEFT JOIN session_runtimes r "
+                           "ON r.session_id=a.session_id WHERE a.session_id=? OR (r.runtime='claude' AND r.native_id=?)",
+                           (data['session_id'], data['session_id'])).fetchone()
+    if row is not None:
+        from .chat_journal import Journal
+        from .ops.executor import turn_input
+        journal = Journal(Path(home) / 'chat' / (row['session_id'] + '.jsonl'), None)
+        if turn_input(journal.events)[1] == 'voice':
+            return '语音回合不能直接改文件；请先用 Crew 操作发起确认，等用户在屏幕上点确认。'
+    return None
+
+
 def _goal_execution(home, native_id):
     """The goal execution a Claude native ID is bound to, read without creating or migrating HOME."""
     if not store.db_path(home).exists():
@@ -127,7 +143,7 @@ def handle(event, data, home, plugin_root, git_provider=git_details, now=None):
         # neither overwrite the new carrier's status nor consume its mailbox.
         return 0, None
     if event == "guard":
-        reason = guard.check(home, data, now=now)
+        reason = guard.check(home, data, now=now) or _voice_edit_reason(home, data)
         if reason is not None:
             print(reason, file=sys.stderr)
             return 2, None
@@ -244,7 +260,7 @@ def main(argv=None):
             if output is not None:
                 print(json.dumps(output, ensure_ascii=False))
             return code
-        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError, re.error) as exc:
+        except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, subprocess.SubprocessError, re.error) as exc:
             print("%s: %s. %s" % (type(exc).__name__, str(exc).replace("\n", " "), guard.TAIL), file=sys.stderr)
             return 2
     try:

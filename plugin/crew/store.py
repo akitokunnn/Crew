@@ -55,11 +55,24 @@ def connect(home):
         _migrate_mindmap_positions(conn)
         native_origins.migrate(conn)
         _migrate_war_room_plans(conn)
+        _migrate_interaction_proof(conn)
         change_triggers.install(conn)
     except BaseException:
         conn.close()
         raise
     return conn
+
+
+def _migrate_interaction_proof(conn):
+    def missing():
+        present = {row['name'] for row in conn.execute('PRAGMA table_info(interaction_requests)')}
+        return [name for name in ('message_id', 'summary') if name not in present]
+
+    if missing():
+        with conn:
+            conn.execute('BEGIN IMMEDIATE')
+            for name in missing():
+                conn.execute('ALTER TABLE interaction_requests ADD COLUMN %s TEXT' % name)
 
 
 def _migrate_war_room_plans(conn):

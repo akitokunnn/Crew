@@ -322,7 +322,7 @@
   }
   const sessions = new Map();
   const transcripts = new Map();
-  const transcriptFields = ["items", "byId", "results", "toolOwners", "toolStops", "events", "cursor", "firstSeq", "hasMore", "executionId", "readSeq", "busySeq", "settledSeq", "turn", "turnStart", "busy"];
+  const transcriptFields = ["items", "byId", "voiceInputs", "results", "toolOwners", "toolStops", "events", "cursor", "firstSeq", "hasMore", "executionId", "readSeq", "busySeq", "settledSeq", "turn", "turnStart", "busy"];
   const compactNotified = new Map();
   let active = null;
   let reading = null;
@@ -420,7 +420,7 @@
     if (transcripts.size > 8) transcripts.delete(transcripts.keys().next().value);
   }
   function replay(context, events) {
-    context.items = []; context.byId = new Map(); context.results = new Map();
+    context.items = []; context.byId = new Map(); context.voiceInputs = new Set(); context.results = new Map();
     context.toolOwners = new Map(); context.toolStops = new Map(); context.events = [];
     context.cursor = 0; context.busySeq = 0; context.settledSeq = null; context.turn = null; context.turnStart = null;
     for (const event of events) apply(context, event, false);
@@ -668,8 +668,9 @@
     }).join("")}</div>` : "";
     const remoteSource = {qq:"QQ", lark:"Lark / 飞书"}[item.source];
     const delivery = item.deliveryError || (item.delivery === "pending" ? "待确认" : "");
+    const voiceLabel = context.voiceInputs.has(item.id) ? '<span class="chat-task-label">语音</span>' : "";
     const metadata = [remoteSource ? `来自 ${remoteSource}` : "", delivery, timeOf(item.at)].filter(Boolean).map(escape).join(" · ");
-    return `<div class="m-user${item.delivery === "pending" ? " pending" : item.delivery === "failed" ? " failed" : ""}"><div class="bubble">${userText(item.text)}${images}</div><div class="m-meta${remoteSource ? " qq-meta" : ""}">${item.taskTitle ? `<span class="chat-task-label">→ ${escape(item.taskTitle)}</span>` : ""}${metadata}</div></div>`;
+    return `<div class="m-user${item.delivery === "pending" ? " pending" : item.delivery === "failed" ? " failed" : ""}"><div class="bubble">${userText(item.text)}${images}</div><div class="m-meta${remoteSource ? " qq-meta" : ""}">${item.taskTitle ? `<span class="chat-task-label">→ ${escape(item.taskTitle)}</span>` : ""}${voiceLabel}${metadata}</div></div>`;
   }
   function* timeline(context) {
     for (const scope of [context]) {
@@ -806,6 +807,11 @@
     context.cursor = event.seq;
     if (event.room_id != null) return;
     context.events.push(event);
+    if (event.type === "input_delivery" && event.status === "submitted" && event.input_mode === "voice") {
+      context.voiceInputs.add(event.message_id);
+      const item = context.byId.get(event.message_id);
+      if (item) item.lastSeq = event.seq;
+    }
     if (event.type === "message") {
       if (context.turn && !context.busy) finishTurn(context, event, "ended");
       let item = context.byId.get(event.id);
@@ -995,7 +1001,7 @@
       const busy = context.busy, busySeq = context.busySeq;
       const scope = {...context, cache:{...context.cache, pendingSendSeq:null}};
       replay(scope, [...history.events, ...context.events]);
-      for (const field of ["items", "byId", "results", "toolOwners", "toolStops", "events", "cursor", "settledSeq", "turn", "turnStart"]) context[field] = scope[field];
+      for (const field of ["items", "byId", "voiceInputs", "results", "toolOwners", "toolStops", "events", "cursor", "settledSeq", "turn", "turnStart"]) context[field] = scope[field];
       for (const item of pending) if (!context.byId.has(item.id)) { context.items.push(item); context.byId.set(item.id, item); }
       context.busy = busy; context.busySeq = busySeq;
       context.firstSeq = history.first_seq; context.hasMore = history.has_more;
@@ -1089,7 +1095,7 @@
         if (saved !== null) { const draft = JSON.parse(saved); cache.text = draft.text; cache.images = draft.images; }
       } catch (error) { options.toast(error.message); }
     }
-    const context = { ...options, cacheKey, activityKey:`chat:${cacheKey}`, session:options.session, selectedTask:null, taskBound:false, note:null, cache, items: [], byId: new Map(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), events:[], firstSeq:0, hasMore:false, cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.session.busy : true, reading: false, initialPosition: null, stream: null };
+    const context = { ...options, cacheKey, activityKey:`chat:${cacheKey}`, session:options.session, selectedTask:null, taskBound:false, note:null, cache, items: [], byId: new Map(), voiceInputs: new Set(), nodes: new Map(), results: new Map(), toolOwners: new Map(), toolStops: new Map(), events:[], firstSeq:0, hasMore:false, cursor: 0, readSeq: 0, busySeq: options.readonly || options.goalId ? 0 : options.session.last_seq, settledSeq:null, executionId:null, connectionGeneration:0, loadGeneration:0, readTimer: null, reconnectTimer: null, historyRetryTimer: null, historyFailed: false, interrupting: false, interruptError: "", interruptConfirmed: false, frame: null, loading: true, busy: cache.pendingSendSeq === null ? options.session.busy : true, reading: false, initialPosition: null, stream: null };
     active = context;
     options.host.classList.add("chat-host");
     options.host.innerHTML = `<div class="chat-error chat-connection-error" role="alert" hidden></div><div class="scroll chat-scroll" tabindex="0" aria-label="${escape(options.session.name)}的对话记录"><div class="col chat-inner"></div></div><button type="button" class="jump" aria-label="回到最新消息">${icon("down")}回到最新</button>${options.readonly ? `<div class="readonly-note">${escape(options.readonlyReason || "此会话尚未由 Crew 托管。请先在原工具退出，再从会话操作中接管；历史记录保留。")}</div>` : `<div class="composer-wrap"><form class="composer"><div class="attach" hidden></div><button type="button" class="chat-note-chip" hidden></button><button type="button" class="chat-reading-chip" aria-pressed="true" hidden></button><textarea rows="1" aria-label="给 ${escape(options.session.name)} 发消息" placeholder="${options.goalId ? `在任务「${escape(options.goalTitle)}」里${escape(talkTo(options.session.name))}…` : `${escape(talkTo(options.session.name))}…（可以直接粘贴截图）`}"></textarea><div class="c-row"><button type="button" class="icon-btn chat-image-button" title="附截图（也可以直接 ${window.CrewBrowser.keyboardShortcut("V")}）" aria-label="添加图片">${icon("image")}</button><button type="button" class="chat-task-binding" aria-pressed="false" hidden></button><input class="chat-image-file" type="file" accept="image/*" multiple hidden><span class="hint"></span><button type="button" class="chat-stop" aria-label="停止当前回复" hidden><svg class="i sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></svg></button><button type="submit" class="send" aria-label="发送" disabled>${icon("up")}</button></div><div class="chat-interrupt-status" role="status" aria-live="polite" hidden></div><div class="chat-delivery-status" role="alert" hidden></div></form></div>`}`;
