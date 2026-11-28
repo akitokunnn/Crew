@@ -250,9 +250,9 @@ def _approve_plan(ctx, conn, actor, args):
 
 
 op('war_room.plan.update', '领头保存一版作战计划书', _update_plan, workspace=True, assistant=None, access='write',
-   description='固定二级小节 ## 分工、## 等你定、## 完成标准。各行依次用“- [ID] 负责人 | 事项”、'
+   description='固定二级小节 ## 分工、## 等你定、## 完成标准。各行依次用“- [ID] 负责人 | 事项 | 文件: 目录/, 文件路径”、'
                '“- [ID] 问题 | 推荐值”（已答可再接“ | 答复”）、“- [ID] 可核验标准”。分工可写“拟任：姓名”。'
-               'ID 全文唯一，修订保留同一条目的 ID。预算仅在用户提出时填写。',
+               'Git 工作区可按成员追加“ | 独立目录”。共用目录的成员之间文件不能重叠。ID 全文唯一，修订保留同一条目的 ID。预算仅在用户提出时填写。',
    scopes={'leader'}, schemas=_schemas(['room', 'expected_version', 'body', 'summary'], room=ROOM,
                                       expected_version={'type': 'integer', 'minimum': 0}, body=_text('计划书 Markdown'),
                                       summary=_text('改动摘要'), budget_tokens=BUDGET))

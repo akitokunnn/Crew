@@ -498,6 +498,11 @@ class DeliveryMixin:
                 if active is not None:
                     raise board.Conflict('成员的目标执行正在工作，不能向总对话重复派工；'
                                          '请明确目标继续原执行或等待当前任务结束：' + active)
+            if '_execution' in session and self.running(session_id):
+                if store.norm_path(self.processes[session_id].execution_cwd) != store.norm_path(session['cwd']):
+                    if self.busy(session_id):
+                        raise board.Conflict('执行目录已改变，等当前回合结束后在新目录继续')
+                    self.stop_managed(session_id, reason='directory_changed')
             steering = self.running(session_id) and self.journal(session_id).status == "working"
             if steering and source not in ("human", "qq", "lark") and not steer:
                 raise board.Conflict("会话正在回复，自动消息等待当前轮次结束")

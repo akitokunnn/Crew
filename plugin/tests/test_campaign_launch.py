@@ -83,7 +83,7 @@ class CampaignTests(ShellFixture, unittest.TestCase):
         with self.assertRaises(OpError):
             self.call('campaign.launch', {**plan(), 'board_version': checked['board_version']})
         from crew import war_room_plan
-        body = "## 分工\n- [BE] 拟任：后端 | 登录接口\n- [UI] 拟任：页面 | 登录页\n## 等你定\n## 完成标准\n- [C] 登录成功"
+        body = "## 分工\n- [BE] 拟任：后端 | 登录接口 | 文件: api/\n- [UI] 拟任：页面 | 登录页 | 文件: pages/\n## 等你定\n## 完成标准\n- [C] 登录成功"
         war_room_plan.update(self.conn, room['id'], room['lead_session_id'], 0, body, '首稿', 200000, NOW)
         active = war_room_plan.approve(self.conn, room['id'], 'user', 1, {}, 200000, NOW)
         self.assertEqual({m['crew_name'] for m in active['members']}, {'后端', '页面'})

@@ -295,6 +295,7 @@ class Controller:
             current = CodexRunning(self.home, self.manager.plugin_root, session, spec, options, journal,
                                    process_factory=self.manager.process_factory, resume=binding is not None,
                                    execution=execution, maintenance=maintenance)
+            current.execution_cwd = session['cwd']
             self.manager.processes[key] = current
             self.manager.changes.session(key)
             return current.process.args
@@ -333,6 +334,7 @@ class Controller:
             raise
         launch.attach(granted, process)
         current = chat.Running(process, journal)
+        current.execution_cwd = session['cwd']
         current.resumed_native = native_id if binding is not None else None
         current.replacing = session.get('_native_replacing')
         current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_manifest)

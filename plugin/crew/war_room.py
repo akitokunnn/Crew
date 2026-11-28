@@ -8,7 +8,7 @@ from contextlib import nullcontext
 from pathlib import Path
 import subprocess
 
-from . import board, change_feed, channel, git_process, personal, war_room_watchdog, war_room_worktree, workspace_assistant
+from . import board, change_feed, channel, git_process, personal, war_room_scope, war_room_watchdog, war_room_worktree, workspace_assistant
 from .ops.errors import OpError
 
 TITLE_LIMIT, GOAL_LIMIT, ITEM_LIMIT, CONTRACT_LIMIT = 30, 200, 60, 8000
@@ -506,7 +506,10 @@ def close(conn, room_id, actor, summary=None, now=None, reason=None):
     conn.execute("UPDATE leader_notices SET wake=0,waiting=? WHERE room_id=? AND sent_at IS NULL "
                  "AND (waiting IS NULL OR waiting NOT GLOB 'failed|*|已取消：*')", ('failed|%s|已取消：房间已结束' % stamp, room_id))
     war_room_watchdog.end_segment(conn, room_id)
-    for sid, in conn.execute('SELECT session_id FROM war_room_worktrees WHERE room_id=?', (room_id,)).fetchall():
+    released = {sid for sid, in conn.execute('SELECT session_id FROM war_room_worktrees WHERE room_id=?', (room_id,))}
+    if room['approved_version']:
+        released.update(war_room_scope.members(conn, room))
+    for sid in released:
         war_room_worktree.release(conn, room_id, sid, stamp)
     pause_work(conn, room_id, '作战室已结束', stamp)
     _event(conn, room_id, actor, 'closed', {'summary': summary, 'reason': reason}, now)
@@ -688,17 +691,31 @@ def get(conn, room_id, reader=board.HUMAN, limit=50, before=None):
         row = conn.execute('SELECT * FROM channel_messages WHERE id=?', (room['origin_message_id'],)).fetchone()
         origin = {'id': row['id'], 'speaker_name': row['speaker_name'], 'excerpt': channel._excerpt(row['body'], 80),
                   'replies': conn.execute('SELECT COUNT(*) FROM channel_messages WHERE reply_to=?', (row['id'],)).fetchone()[0]}
-    events = board._rows(conn, "SELECT * FROM war_room_events WHERE room_id=? AND kind NOT GLOB 'worktree_*' ORDER BY id", (room_id,))
+    can_see_scope = reader in (board.HUMAN, room['lead_session_id']) or is_member(conn, room_id, reader)
+    events = board._rows(conn, "SELECT * FROM war_room_events WHERE room_id=? AND kind NOT GLOB 'worktree_*' "
+                         "AND kind NOT GLOB 'scope_*' AND kind<>'isolation_base' AND (kind<>'out_of_scope' OR ?) ORDER BY id",
+                         (room_id, can_see_scope))
     for event in events:
         event['detail'] = json.loads(event['detail'])
         event['actor_name'] = _name(conn, event['actor'])
     plans = board._rows(conn, 'SELECT * FROM war_room_plans WHERE room_id=? ORDER BY version DESC', (room_id,))
     for plan in plans:
         plan['entries'] = json.loads(plan.pop('entries_json'))
+        if not can_see_scope:
+            lines = plan['body'].splitlines(keepends=True)
+            for entry in plan['entries']:
+                if 'paths' in entry:
+                    del entry['paths']
+                    index = entry['line'] - 1
+                    line = lines[index]
+                    ending = line[len(line.rstrip('\r\n')):]
+                    lines[index] = '|'.join(line.split('|')[:2]).rstrip() + ending
+            plan['body'] = ''.join(lines)
         if plan['approval']:
             plan['approval'] = json.loads(plan['approval'])
     return {**_card(conn, room, reader), 'origin': origin,
             'worktrees': war_room_worktree.details(conn, room, reader),
+            **war_room_scope.details(conn, room, reader),
             'consults': [war_room_plan.consult_view(row) for row in conn.execute(
                 'SELECT * FROM war_room_consults WHERE room_id=? ORDER BY created_at', (room_id,))],
             'plans': plans,

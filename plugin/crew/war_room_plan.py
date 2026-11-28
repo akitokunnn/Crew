@@ -2,15 +2,43 @@
 import json
 import re
 import uuid
+from pathlib import PurePosixPath, PureWindowsPath
 
-from . import board, channel, goals, war_room, war_room_watchdog, war_room_worktree
+from . import board, channel, goals, war_room, war_room_scope, war_room_watchdog, war_room_worktree
 from .ops.errors import OpError
 
 SECTIONS = {'分工': 'assignment', '等你定': 'decision', '完成标准': 'criterion'}
 ENTRY = re.compile(r'^- \[([A-Za-z0-9_-]{1,64})\]\s+(.+)$')
 
 
-def parse(body):
+def _assignment(parts, line):
+    if not any(part.startswith(('文件:', '文件：')) for part in parts):
+        fail('assignment', line, '分工要写「文件:」，列出负责的文件或目录')
+    paths, separate = None, False
+    for part in parts:
+        if part == '独立目录' and not separate:
+            separate = True
+        elif part.startswith(('文件:', '文件：')) and paths is None:
+            paths = []
+            for group in re.split('[,，、]', part[3:]):
+                if not group.strip():
+                    fail('assignment', line, '文件路径不能为空')
+                for path in group.split():
+                    posix = PurePosixPath(path)
+                    if (PureWindowsPath(posix.as_posix()).drive or posix.is_absolute() or '..' in posix.parts
+                            or '\\' in path or '\0' in path):
+                        fail('assignment', line, '文件路径要相对工作区根，用正斜杠，不能含 ..')
+                    normalized = posix.as_posix()
+                    if normalized == '.' or path.endswith('/'):
+                        normalized += '/'
+                    if normalized not in paths:
+                        paths.append(normalized)
+        else:
+            fail('assignment', line, '分工的附加段只能各写一次「文件:」或「独立目录」')
+    return {'paths': paths, 'worktree': separate}
+
+
+def parse(body, *, is_git=True, resolve=None):
     section, seen, ids, entries = None, {}, set(), []
     for line, raw in enumerate(body.splitlines(), 1):
         text = raw.strip()
@@ -29,12 +57,18 @@ def parse(body):
                 fail(section, line, '条目 ID 重复')
             ids.add(key)
             owner, recommendation, answer = None, None, None
+            fields = {}
             if section == 'assignment':
-                owner, sep, value = value.partition('|')
-                if not sep or not owner.strip() or not value.strip():
+                parts = [part.strip() for part in value.split('|')]
+                if len(parts) < 2 or not parts[0] or not parts[1]:
                     fail(section, line, '分工需要负责人和事项')
-                owner = owner.strip()
-                if len(value.strip()) > 300:
+                owner, value = parts[:2]
+                if owner.startswith('拟任：'):
+                    owner = '拟任：' + owner[3:].strip()
+                fields = _assignment(parts[2:], line)
+                if fields['worktree'] and not is_git:
+                    fail(section, line, '这个工作区不是 Git 仓库，开不了独立目录')
+                if len(value) > 300:
                     fail(section, line, '分工标题最多 300 字')
             elif section == 'decision':
                 value, _, recommendation = value.partition('|')
@@ -43,12 +77,30 @@ def parse(body):
             if not value.strip():
                 fail(section, line, '条目内容为空')
             entries.append(dict(entry_id=key, kind=section, title=value.strip(), owner=owner,
-                                recommendation=recommendation, answer=answer, line=line))
+                                recommendation=recommendation, answer=answer, line=line, **fields))
     for name, kind in SECTIONS.items():
         if kind not in seen:
             fail(kind, len(body.splitlines()) + 1, '缺少小节：' + name)
     if not any(item['kind'] == 'criterion' for item in entries):
         fail('criterion', seen['criterion'], '完成标准不能为空')
+    resolved = resolve(entries) if resolve else {}
+    modes, shared = {}, []
+    for item in entries:
+        name = item['owner']
+        if resolve:
+            item['owner_session_id'] = resolved.get(name)
+        if name is None:
+            continue
+        owner = resolved.get(name) or name
+        separate = item['worktree']
+        if modes.setdefault(owner, separate) != separate:
+            fail('assignment', item['line'], name+' 的分工要么都开独立目录，要么都不开')
+        if not separate:
+            for path in item['paths']:
+                for other, display, scope in shared:
+                    if other != owner and (war_room_scope.contains(scope, path) or war_room_scope.contains(path, scope)):
+                        fail('assignment', item['line'], path+' 和 '+display+' 的范围重叠；共用目录时文件不能重叠，重叠就给其中一位开独立目录')
+                shared.append((owner, name, path))
     return entries
 
 
@@ -139,10 +191,12 @@ def update(conn, room_id, actor, expected_version, body, summary, budget_tokens,
             return {'room': room_id, 'version': json.loads(saved['detail'])['version'], 'replayed': True}
     if expected_version != room['draft_version']:
         raise OpError('version_conflict', '计划书版本已经改变')
-    entries = parse(body)
-    resolved = owners(conn, room, entries)
-    for item in entries:
-        item['owner_session_id'] = resolved.get(item['owner'])
+    root, top = war_room_worktree.repository(conn, room['project'])
+    entries = parse(body, is_git=top is not None, resolve=lambda items: owners(conn, room, items))
+    if room['approved_version'] is None:
+        record = war_room_worktree.repository_record(conn, room_id)
+        if record is None or tuple(record) != (root, top):
+            war_room_worktree.remember_repository(conn, room_id, root, top, now)
     advice = conn.execute('SELECT question_id,response FROM war_room_consults WHERE room_id=? AND plan_version=? '
                           'AND response IS NOT NULL ORDER BY created_at,question_id', (room_id, expected_version))
     for question_id, response in advice:
@@ -198,7 +252,6 @@ def publish_items(conn, room_id, version, entries, by_name, recommendations, cam
     room = war_room._room(conn, room_id)
     actor = board.HUMAN
     criteria = [{'id': e['entry_id'], 'title': e['title']} for e in entries if e['kind'] == 'criterion']
-    reassigned = set()
     for entry in entries:
         key, kind, title = entry['entry_id'], entry['kind'], entry['title']
         owner = by_name.get(entry['owner'])
@@ -210,7 +263,6 @@ def publish_items(conn, room_id, version, entries, by_name, recommendations, cam
             if old['goal_id'] and old['owner_session_id'] != owner:
                 if not channel._leader(conn, room['project'], owner):
                     fail(kind, entry['line'], '已绑定任务的分工需要交给本区 leader')
-                reassigned.add(old['owner_session_id'])
                 goals.request_transfer(conn, old['goal_id'], owner, '批准计划 v%d' % version, now=stamp)
             conn.execute('UPDATE war_room_items SET title=?,owner_session_id=?,plan_version=?,updated_by=?,updated_at=?,answer=? '
                          'WHERE id=?', (title, owner, version, actor, stamp, answer, old['id']))
@@ -234,10 +286,6 @@ def publish_items(conn, room_id, version, entries, by_name, recommendations, cam
             step('goal', key)
         if old and old['goal_id'] and old['owner_session_id'] != owner:
             war_room_worktree.request_rebuild(conn, old['goal_id'], stamp)
-    for sid in reassigned:
-        if not conn.execute('SELECT 1 FROM war_room_items WHERE room_id=? AND plan_version=? '
-                            'AND owner_session_id=? AND goal_id IS NOT NULL', (room_id, version, sid)).fetchone():
-            war_room_worktree.release(conn, room_id, sid, stamp)
     for previous in conn.execute("SELECT DISTINCT g.id FROM war_room_items i JOIN goals g ON g.id=i.goal_id "
                                  "WHERE i.room_id=? AND i.plan_version<>? AND g.status IN ('queued','running')",
                                  (room_id, version)).fetchall():
@@ -260,7 +308,7 @@ def _approve(conn, room_id, actor, version, recommendations, budget_tokens, now,
         raise OpError('version_conflict', '确认期间计划书已经改变，请重新查看')
     if budget_tokens != plan['budget_tokens']:
         raise OpError('version_conflict', '预算与所见版本不一致')
-    entries = parse(plan['body'])
+    entries = json.loads(plan['entries_json'])
     expected = {e['entry_id']: e['recommendation'] for e in entries if e['kind'] == 'decision' and not e['answer']}
     if any(not value or not recommendations.get(key) for key, value in expected.items()):
         raise OpError('missing_recommendation', '每个待定项都需要推荐值')
@@ -268,10 +316,12 @@ def _approve(conn, room_id, actor, version, recommendations, budget_tokens, now,
         raise OpError('version_conflict', '推荐值与所见版本不一致')
     if plan['approval'] is not None:
         return {**war_room.get(conn, room_id, actor), 'replayed': True}
-    by_name = owners(conn, room, entries)
-    for displayed in json.loads(plan['entries_json']):
+    parsed = parse(plan['body'], is_git=top is not None, resolve=lambda items: owners(conn, room, items))
+    by_name = {e['owner']: e['owner_session_id'] for e in parsed if e['kind'] == 'assignment'}
+    for displayed in entries:
         if displayed['owner_session_id'] != by_name.get(displayed['owner']):
             raise OpError('version_conflict', '人员身份在确认期间变了，请领头重新核对分工')
+    entries = parsed
     stamp = board._time(now)
     def step(kind, target):
         war_room._event(conn, room_id, actor, 'launch_step',
@@ -280,13 +330,27 @@ def _approve(conn, room_id, actor, version, recommendations, budget_tokens, now,
 
     if board.project(conn, room['project'])['root'] != root:
         raise board.Conflict('工作区目录已改变，请重试')
-    existing = conn.execute('SELECT 1 FROM war_room_worktrees WHERE room_id=? LIMIT 1', (room_id,)).fetchone()
-    if existing:
+    recorded = war_room_worktree.has_isolation_record(conn, room_id)
+    legacy = top is not None and war_room_worktree.pre_upgrade(conn, room)
+    if recorded:
         previous = war_room_worktree.repository_record(conn, room_id)
         if (root, top) != tuple(previous):
             raise board.Conflict('作战室登记的仓库已改变')
     war_room_worktree.remember_repository(conn, room_id, root, top, stamp)
+    if top is not None and not legacy:
+        war_room_scope.remember_base(conn, room_id, root, stamp)
     campaign, proposals = create_planned_leaders(conn, room, by_name, stamp, step)
+    modes = {}
+    for entry in entries:
+        if entry['kind'] == 'assignment':
+            sid = entry['owner_session_id'] = by_name[entry['owner']]
+            modes[sid] = 'worktree' if entry['worktree'] and not legacy else 'shared'
+    previous = war_room_scope.members(conn, room) if room['approved_version'] else {}
+    for sid, member in previous.items():
+        if modes.get(sid) != member['mode']:
+            war_room_worktree.release(conn, room_id, sid, stamp)
+    conn.execute('UPDATE war_room_plans SET entries_json=? WHERE room_id=? AND version=?',
+                 (json.dumps(entries, ensure_ascii=False), room_id, version))
     conn.execute("UPDATE war_rooms SET phase='active',approved_version=?,budget_tokens=? WHERE id=?",
                  (version, budget_tokens, room_id))
     for sid in dict.fromkeys(by_name.values()):
@@ -296,8 +360,14 @@ def _approve(conn, room_id, actor, version, recommendations, budget_tokens, now,
                          (room_id, sid, stamp))
             step('invite', sid)
     publish_items(conn, room_id, version, entries, by_name, recommendations, campaign, proposals, stamp, step)
-    if top is not None and (room['approved_version'] is None or existing):
-        war_room_worktree.register(conn, room, root, version, stamp)
+    selected = [sid for sid, mode in modes.items() if mode == 'worktree']
+    if selected:
+        war_room_worktree.register(conn, room, root, selected, stamp)
+        for sid in selected:
+            if previous.get(sid, {}).get('mode') != 'worktree' and conn.execute(
+                    "SELECT 1 FROM war_room_worktrees WHERE room_id=? AND session_id=? AND state IN "
+                    "('releasing','awaiting_merge','removed')", (room_id, sid)).fetchone():
+                war_room._event(conn, room_id, sid, 'worktree_rebuild', {}, stamp)
     if room['opened_message_id'] is None:
         post = channel.post.__wrapped__(conn, room['project'], actor, '作战室 #%d《%s》已批准开打。' % (room_id, room['title']),
                                         source='web', now=stamp, generated=True)
@@ -306,10 +376,18 @@ def _approve(conn, room_id, actor, version, recommendations, budget_tokens, now,
     conn.execute('UPDATE war_room_plans SET approval=? WHERE room_id=? AND version=?',
                  (json.dumps({'recommendations': recommendations, 'budget_tokens': budget_tokens, 'at': stamp}), room_id, version))
     changed(conn, room, 'approved', {'version': version, 'request_id': 'room:%d:v%d:approve' % (room_id, version)}, stamp, actor)
-    hint = (war_room_worktree.NOT_GIT if top is None else
-            war_room_worktree.NO_ADMIN if board.git_config(conn, room['project']) is None else None)
-    if hint:
-        _notify(conn, room, room['lead_session_id'], '作战室 #%d 已批准 v%d。%s' % (room_id, version, hint), stamp)
+    if top is None:
+        hint = war_room_worktree.NOT_GIT
+    else:
+        shared = [sid for sid in modes if sid not in selected]
+        def names(ids):
+            return '、'.join(war_room._name(conn, sid) for sid in ids) or '无'
+        hint = '独立目录：%s。共用目录：%s。' % (names(selected), names(shared))
+        if shared:
+            hint += '共用目录的成员只提交自己负责的文件，收工时会检查越界。'
+        if selected and board.git_config(conn, room['project']) is None:
+            hint += war_room_worktree.NO_ADMIN
+    _notify(conn, room, room['lead_session_id'], '作战室 #%d 已批准 v%d。%s' % (room_id, version, hint), stamp)
     war_room_watchdog.note_turn(room_id)
     return war_room.get(conn, room_id, actor)
 

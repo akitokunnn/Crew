@@ -1,11 +1,14 @@
 """Room checkout lifecycle in real temporary Git repositories."""
 import tests
 from pathlib import Path
+import json
 import subprocess
 from unittest import mock
 
 from crew import board, branch_claims, chat, codex_runtime, goals, runtimes, store, war_room, war_room_plan
 from crew import war_room_worktree as wt
+from crew import codex_events, war_room_scope
+from crew.ops.errors import OpError
 from test_chat import FakeProcess
 from test_codex_runtime import FakeClient
 from test_message_delivery import DeliveryFixture, NOW, PLUGIN
@@ -32,10 +35,10 @@ class RoomCheckoutTests(DeliveryFixture):
         self.git('config', 'user.email', 'fixture@example.invalid')
         self.git('commit', '--allow-empty', '-m', 'base')
 
-    def open(self, names=('beta',), **kwargs):
+    def open(self, names=('beta',), separate=None, **kwargs):
         room = war_room.start(self.conn, 'demo', 'a', '测试', '校验目录', **kwargs)
         self.room = room['id']
-        return approve_assignments(self.conn, room, names)
+        return approve_assignments(self.conn, room, names, names if separate is None else separate)
 
     def row(self, sid='b'):
         return dict(self.conn.execute('SELECT * FROM war_room_worktrees WHERE room_id=? AND session_id=?',
@@ -43,6 +46,204 @@ class RoomCheckoutTests(DeliveryFixture):
 
     def tick(self):
         wt.sweep(self.manager, self.conn, NOW)
+
+    def test_assignment_scope_grammar(self):
+        def parse(lines, **options):
+            return war_room_plan.parse('## 分工\n'+lines+'\n## 等你定\n- [Q] 选项 | 好\n## 完成标准\n- [C] 通过', **options)
+        for lines, message in (
+            ('- [A] beta | 测试', '第 2 行：分工要写「文件:」，列出负责的文件或目录'),
+            ('- [A] beta | 一 | 文件: x\n- [B] beta | 二 | 文件: y | 独立目录',
+             '第 3 行：beta 的分工要么都开独立目录，要么都不开'),
+            ('- [A] beta | 一 | 文件: src/x\n- [B] gamma | 二 | 文件: src/',
+             '第 3 行：src/ 和 beta 的范围重叠；共用目录时文件不能重叠，重叠就给其中一位开独立目录'),
+            ('- [A] beta | 一 | 文件: src/x\n- [B] gamma | 二 | 文件: ./src/x',
+             '第 3 行：src/x 和 beta 的范围重叠；共用目录时文件不能重叠，重叠就给其中一位开独立目录'),
+        ):
+            with self.subTest(lines=lines), self.assertRaises(OpError) as err:
+                parse(lines)
+            self.assertEqual((err.exception.code, str(err.exception)), ('invalid_plan', message))
+        for bad in ('', 'a,,b', 'a，', 'a/../b', '/a', 'C:/a', '//host/share', 'a\\b'):
+            with self.subTest(bad=bad), self.assertRaises(OpError) as err:
+                parse('- [A] beta | 一 | 文件: '+bad)
+            self.assertEqual(err.exception.code, 'invalid_plan')
+        first, second, third, decision, criterion = parse(
+            '- [A] beta | 一 | 文件：./src//,a，b、c d\n- [B] gamma | 二 | 独立目录 | 文件: src/x\n'
+            '- [D] delta | 三 | 文件: src/x | 独立目录')
+        self.assertEqual((first['paths'], first['worktree']), (['src/', 'a', 'b', 'c', 'd'], False))
+        self.assertTrue(second['worktree'] and third['worktree'])
+        self.assertNotIn('paths', decision)
+        self.assertNotIn('worktree', criterion)
+        room = war_room.start(self.conn, 'demo', 'a', '筹备', '核对')
+        with self.assertRaises(OpError) as err:
+            approve_assignments(self.conn, room, ['beta'], ['beta'])
+        self.assertEqual(str(err.exception), '第 2 行：这个工作区不是 Git 仓库，开不了独立目录')
+        self.assertEqual(war_room.get(self.conn, room['id'])['draft_version'], 0)
+
+    def test_mixed_draft_approval_and_mode_change(self):
+        self.init()
+        room = war_room.start(self.conn, 'demo', 'a', '筹备', '核对')
+        self.room = room['id']
+        body = '## 分工\n- [A] beta | 一 | 文件: src/ | 独立目录\n- [B] gamma | 二 | 文件: src/x\n## 等你定\n## 完成标准\n- [C] 通过'
+        war_room_plan.update(self.conn, self.room, 'a', 0, body, '首稿', None)
+        self.assertEqual(war_room.get(self.conn, self.room)['isolation'], 'mixed')
+        self.assertFalse(self.conn.execute('SELECT 1 FROM war_room_worktrees').fetchone())
+        room = war_room_plan.approve(self.conn, self.room, 'user', 1, {}, None)
+        self.assertEqual((room['isolation'], room['isolation_reason']), ('mixed', 'lead_choice'))
+        self.assertIn('独立目录：beta。共用目录：gamma。共用目录的成员只提交自己负责的文件，收工时会检查越界。', self.notices('a')[-1]['text'])
+        self.assertEqual([r['member'] for r in room['worktrees']], ['b'])
+        expected = [{'member': 'beta', 'session_id': 'b', 'mode': 'worktree', 'paths': ['src/'], 'out_of_scope': []},
+                    {'member': 'gamma', 'session_id': 'c', 'mode': 'shared', 'paths': ['src/x'], 'out_of_scope': []}]
+        self.assertEqual(war_room.get(self.conn, self.room, 'c')['isolation_members'], expected)
+        outsider = war_room.get(self.conn, self.room, 'm')
+        self.assertFalse(outsider['isolation_members'])
+        self.assertNotIn('src/', json.dumps(outsider['plans']))
+        self.assertNotIn('isolation_members', war_room.change_value(self.conn, 'demo', self.room))
+        shared_goal = room['board'][1]['goal_id']
+        execution = self.manager.goal_controller.ensure(self.conn, shared_goal, 'c')
+        self.assertIsNone(wt.path_for(self.conn, execution))
+        self.assertEqual(Path(self.manager.goal_controller.target(self.conn, execution)['cwd']), self.root)
+        self.assertIsNone(branch_claims.task_branch_reason(self.home, str(self.root), 'git commit -m shared', execution['id']))
+        branch_claims.record(self.home, 'c', str(self.root), 'git commit -m shared', execution['id'])
+        self.assertEqual(self.conn.execute("SELECT goal_id FROM branch_claims WHERE session_id='c' AND branch='main'").fetchone()[0],
+                         shared_goal)
+        self.tick()
+        revised = body.replace('src/ | 独立目录', 'other/')
+        war_room_plan.update(self.conn, self.room, 'a', 1, revised, '改用共用目录', None)
+        self.assertEqual(war_room.get(self.conn, self.room)['isolation'], 'mixed')
+        room = war_room_plan.approve(self.conn, self.room, 'user', 2, {}, None)
+        self.assertEqual((room['isolation'], room['isolation_reason']), ('none', 'lead_choice'))
+        self.assertEqual(room['worktrees'], [])
+        self.assertNotIn(wt.NO_ADMIN, self.notices('a')[-1]['text'])
+        self.assertEqual(self.row()['state'], 'releasing')
+        self.assertIsNone(wt.effective_path(self.conn, {'goal_id': room['board'][0]['goal_id'], 'session_id': 'b'}))
+        self.tick()
+        self.assertEqual(self.row()['state'], 'removed')
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM war_room_events WHERE kind='isolation_base'").fetchone()[0], 1)
+
+    def scope_events(self):
+        return [json.loads(row[0]) for row in self.conn.execute(
+            "SELECT detail FROM war_room_events WHERE room_id=? AND kind='out_of_scope' ORDER BY id", (self.room,))]
+
+    def test_running_goal_resumes_in_newly_selected_directory(self):
+        self.init()
+        room = self.open(separate=())
+        goal = room['board'][0]['goal_id']
+        runtimes.set(self.conn, 'b', 'codex')
+        with mock.patch.object(codex_runtime, '_ObservedClient', side_effect=FakeClient):
+            control = self.manager.goal_controller
+            key = control.send(goal, 'b', '第一轮')['execution_id']
+            old = self.manager.processes[key].client
+            body = room['plans'][0]['body'].replace('checks/0/', 'checks/0/ | 独立目录')
+            war_room_plan.update(self.conn, self.room, 'a', 1, body, '改用独立目录', None)
+            war_room_plan.approve(self.conn, self.room, 'user', 2, {}, None)
+            self.tick()
+            with self.assertRaises(board.Conflict):
+                control.send(goal, 'b', '不能把输入送到旧目录', steer=True)
+            old.finish()
+            control.send(goal, 'b', '继续')
+            current = self.manager.processes[key].client
+            self.assertTrue(old.closed)
+            self.assertEqual(Path(dict(current.calls)['thread/resume']['cwd']), Path(self.row()['path']))
+
+    def test_shared_tool_audit_uses_both_native_journals_once(self):
+        room = self.open(('beta', 'gamma'), separate=())
+        first, second = room['board'][:2]
+        cc = goals.create_execution(self.conn, first['goal_id'], 'b', runtime='claude')
+        codex = goals.create_execution(self.conn, second['goal_id'], 'c', runtime='codex')
+        external = (self.base / 'outside.txt').resolve()
+        cc_journal = self.manager.journal(cc['id'])
+        paths = [('Edit', str(self.root/'checks/0/ok')), ('Write', str(external)), ('MultiEdit', 'foreign.py'),
+                 ('NotebookEdit', 'other.ipynb'), ('Write', 'declined'), ('Read', 'not-a-write')]
+        cc_journal.consume({'type': 'assistant', 'message': {'id': 'cc', 'content': [
+            {'type': 'tool_use', 'id': str(i), 'name': name, 'input': {'file_path': path}} for i, (name, path) in enumerate(paths)]}})
+        cc_journal.emit('tool_result', tool_use_id='4', is_error=True, content='拒绝')
+        journal = self.manager.journal(codex['id'])
+        adapter = codex_events.Events('thread')
+        for item in ({'id': 'file', 'type': 'fileChange', 'status': 'completed', 'changes': [
+                {'path': 'checks/1/allowed', 'kind': {'type': 'update', 'move_path': 'moved.py'}, 'diff': ''},
+                {'path': 'wrong.py', 'kind': {'type': 'add'}, 'diff': '+test'}]},
+                {'id': 'patch', 'type': 'dynamicToolCall', 'tool': 'apply_patch', 'status': 'completed',
+                 'arguments': '*** Begin Patch\n*** Delete File: old.txt\n*** End Patch'}):
+            for event in adapter.consume('item/completed', {'threadId': 'thread', 'item': item}):
+                kind = event.pop('type')
+                if kind != 'activity':
+                    journal.emit(kind, **event)
+        war_room.change_members(self.conn, self.room, 'a', remove=['beta'])
+        goals.request_cancel(self.conn, second['goal_id'])
+        goals.finalize_cancel(self.conn, second['goal_id'])
+        self.tick()
+        cc_files = sorted([external.as_posix(), 'foreign.py', 'other.ipynb'])
+        codex_files = ['moved.py', 'old.txt', 'wrong.py']
+        self.assertEqual(self.scope_events(), [{'member': 'b', 'source': 'tools', 'files': cc_files},
+                                               {'member': 'c', 'source': 'tools', 'files': codex_files}])
+        notices = [n for n in self.notices('a') if '改了分工范围外的文件' in n['text']]
+        self.assertEqual([(n['room_id'], n['source'], n['wake'], n['text']) for n in notices],
+                         [(self.room, 'crew', 1, name+' 改了分工范围外的文件：'+'、'.join(files)+'……请核对。')
+                          for name, files in [('beta', cc_files), ('gamma', codex_files)]])
+        self.assertEqual([m['out_of_scope'] for m in war_room.get(self.conn, self.room, 'c')['isolation_members']],
+                         [cc_files, codex_files])
+        self.stop()
+        with mock.patch.object(war_room_scope, '_outside_tools', side_effect=AssertionError('重复检查')):
+            self.tick()
+        self.assertEqual(len(self.scope_events()), 2)
+
+    def test_close_checks_unowned_tracked_and_untracked_in_workspace_only(self):
+        self.init()
+        self.root = self.repo/'sub'
+        self.root.mkdir()
+        self.conn.execute('UPDATE projects SET root=?', (str(self.root),))
+        (self.root/'tracked').touch()
+        self.git('add', '.')
+        self.git('commit', '-m', 'tracked')
+        base = self.git('rev-parse', 'HEAD')
+        self.open(separate=())
+        self.assertEqual(self.conn.execute("SELECT json_extract(detail,'$.commit') FROM war_room_events "
+                                           "WHERE kind='isolation_base'").fetchone()[0], base)
+        (self.root/'tracked').unlink()
+        (self.root/'checks/0').mkdir(parents=True)
+        (self.root/'checks/0/ok').touch()
+        (self.repo/'outside-workspace').touch()
+        (self.root/'无主.txt').touch()
+        self.tick()
+        self.assertEqual(self.scope_events(), [])
+        self.stop()
+        before = len(self.notices('a'))
+        self.tick()
+        self.tick()
+        self.assertEqual(self.scope_events(), [{'member': None, 'files': ['tracked', '无主.txt'], 'source': 'git'}])
+        self.assertEqual(war_room.get(self.conn, self.room, 'b')['unowned_changes'], ['tracked', '无主.txt'])
+        self.assertFalse(war_room.get(self.conn, self.room, 'm')['unowned_changes'])
+        self.assertEqual(len(self.notices('a')), before)
+
+    def test_clean_audit_never_rechecks_or_notifies(self):
+        self.init()
+        room = self.open(separate=())
+        exe = goals.create_execution(self.conn, room['board'][0]['goal_id'], 'b', runtime='claude')
+        self.manager.journal(exe['id']).emit('assistant', id='ok', content=[
+            {'type': 'tool_use', 'id': 'write', 'name': 'Write', 'input': {'file_path': 'checks/0/ok'}}])
+        war_room.change_members(self.conn, self.room, 'a', remove=['beta'])
+        before = len(self.notices('a'))
+        self.tick()
+        with mock.patch.object(war_room_scope, '_outside_tools', side_effect=AssertionError('重复检查')):
+            self.tick()
+        self.assertEqual(self.scope_events(), [])
+        self.assertEqual(len(self.notices('a')), before)
+
+    def test_reassigned_shared_owner_keeps_original_scope_and_audit_is_bounded(self):
+        self.init()
+        room = self.open(separate=())
+        exe = goals.create_execution(self.conn, room['board'][0]['goal_id'], 'b', runtime='claude')
+        outside = ['outside/%02d' % n for n in range(53)]
+        self.manager.journal(exe['id']).emit('assistant', id='before', content=[
+            {'type': 'tool_use', 'id': str(n), 'name': 'Edit', 'input': {'file_path': path}}
+            for n, path in enumerate(['checks/0/before', *outside])])
+        revised = room['plans'][0]['body'].replace('beta', 'gamma').replace('checks/0/', 'other/ | 独立目录')
+        war_room_plan.update(self.conn, self.room, 'a', 1, revised, '改派', None)
+        active = war_room_plan.approve(self.conn, self.room, 'user', 2, {}, None)
+        self.assertEqual([row['member'] for row in active['worktrees']], ['c'])
+        self.tick()
+        self.assertEqual(self.scope_events(), [{'member': 'b', 'source': 'tools', 'files': outside[:50]}])
+        self.assertEqual(self.notices('a')[-1]['text'], 'beta 改了分工范围外的文件：'+'、'.join(outside[:5])+'……请核对。')
 
     def test_root_check_ignore_and_host_restart(self):
         self.init()
@@ -58,6 +259,15 @@ class RoomCheckoutTests(DeliveryFixture):
         self.conn.execute("UPDATE war_room_worktrees SET state='pending'")
         self.tick()
         self.check_exclude('/.crew/worktrees/')
+
+    def test_plain_workspace_becomes_git_on_next_approval(self):
+        room = self.open(separate=())
+        self.init()
+        body = room['plans'][0]['body'].replace('checks/0/', 'checks/0/ | 独立目录')
+        war_room_plan.update(self.conn, self.room, 'a', 1, body, '工作区已有 Git', None)
+        self.assertEqual(war_room.get(self.conn, self.room)['isolation_reason'], 'not_git')
+        room = war_room_plan.approve(self.conn, self.room, 'user', 2, {}, None)
+        self.assertEqual((room['isolation'], self.row()['state']), ('worktree', 'pending'))
 
     def check_exclude(self, rule):
         target = Path(self.row()['path'])/'proof.txt'
@@ -120,7 +330,7 @@ class RoomCheckoutTests(DeliveryFixture):
         self.assertIsNone(self.conn.execute('SELECT goal_id FROM branch_claims').fetchone()[0])
 
     def test_non_git_and_pre_upgrade(self):
-        room = self.open()
+        room = self.open(separate=())
         self.assertEqual((room['worktrees'], room['isolation_reason']), ([], 'not_git'))
         self.assertIn(wt.NOT_GIT, self.notices('a')[-1]['text'])
         war_room.close(self.conn, self.room, 'user', reason='user_stop')
@@ -130,7 +340,8 @@ class RoomCheckoutTests(DeliveryFixture):
         self.init()
         room = self.open()
         self.conn.execute('DELETE FROM war_room_worktrees')
-        self.conn.execute("DELETE FROM war_room_events WHERE kind='worktree_repository'")
+        self.conn.execute("DELETE FROM war_room_events WHERE room_id=? AND kind IN ('worktree_repository','isolation_base')",
+                          (self.room,))
         self.tick()
         self.assertEqual(war_room.get(self.conn, self.room)['isolation_reason'], 'pre_upgrade')
         self.assertFalse(war_room.get(self.conn, self.room)['worktrees'])
@@ -144,8 +355,16 @@ class RoomCheckoutTests(DeliveryFixture):
         runtimes.set(self.conn, 'b', 'claude')
         with mock.patch('crew.chat.claude_executable', return_value='fixture-claude'):
             control.send(goal, 'b', 'do work')
-        execution = control.current(self.conn, goal, 'b')
-        self.assertEqual(Path(self.manager.processes[execution['id']].process.options['cwd']), Path(self.row()['path']))
+            execution = control.current(self.conn, goal, 'b')
+            current = self.manager.processes[execution['id']]
+            self.assertEqual(Path(current.process.options['cwd']), Path(self.row()['path']))
+            current.journal.consume({'type': 'result', 'is_error': False})
+            revised = room['plans'][0]['body'].replace(' | 独立目录', '')
+            war_room_plan.update(self.conn, self.room, 'a', 1, revised, '改用共用目录', None)
+            war_room_plan.approve(self.conn, self.room, 'user', 2, {}, None)
+            control.send(goal, 'b', 'continue in shared directory')
+            self.assertIsNotNone(current.process.poll())
+            self.assertEqual(Path(self.manager.processes[execution['id']].process.options['cwd']), self.root)
         self.assertEqual(Path(board.session(self.conn, 'b')['cwd']), self.root)
 
     def test_codex_native_approval_in_checkout(self):
@@ -444,9 +663,10 @@ class RoomCheckoutTests(DeliveryFixture):
 
         real_run, calls = git_process.run, []
         def observe(args, *options, **kwargs):
-            calls.append(args)
-            self.assertFalse(service.write_lock.locked(), args)
-            self.assertFalse(service.chat.lock._is_owned(), args)
+            if 'worktree' in args and ('add' in args or 'remove' in args):
+                calls.append(args)
+                self.assertFalse(service.write_lock.locked(), args)
+                self.assertFalse(service.chat.lock._is_owned(), args)
             return real_run(args, *options, **kwargs)
 
         with (mock.patch.object(git_process, 'run', new=observe),
@@ -454,7 +674,7 @@ class RoomCheckoutTests(DeliveryFixture):
               mock.patch('crew.war_room_work.deliver')):
             room = call('open', title='隔离', goal='校验', lead='alpha')
             self.room = room['id']
-            body = '## 分工\n- [A] beta | 测试\n## 等你定\n## 完成标准\n- [C] 验证通过'
+            body = '## 分工\n- [A] beta | 测试 | 文件: tests/ | 独立目录\n## 等你定\n## 完成标准\n- [C] 验证通过'
             war_room_plan.update(self.conn, self.room, 'a', 0, body, '首稿', None)
             call('plan.approve', room=self.room, version=1, recommendations={}, budget_tokens=None)
             service.deliver_notices()

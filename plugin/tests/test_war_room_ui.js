@@ -232,8 +232,8 @@ test("作战中收到 v3 修订版，对话显示锚点，全文标出新改，�
 });
 
 test("v2 的历史锚点在作战中打开 v3，跳到改过的小节中同 ID 的条目", async () => {
-  const moved = {...plan3, body:plan3.body.replace("- [A1] 支付 | 逐步切换网关\n- [A2] 支付 | 观察错误率",
-    "- [A2] 支付 | 观察错误率\n- [A1] 支付 | 逐步切换网关"),
+  const moved = {...plan3, body:plan3.body.replace("- [A1] 支付 | 逐步切换网关 | 文件: gateway/\n- [A2] 支付 | 观察错误率 | 文件: metrics/",
+    "- [A2] 支付 | 观察错误率 | 文件: metrics/\n- [A1] 支付 | 逐步切换网关 | 文件: gateway/"),
     entries:plan3.entries.map(item => item.entry_id === "A1" ? {...item, line:7} : item.entry_id === "A2" ? {...item, line:6} : item)};
   const f = harness(room({phase:"active", approved_version:2, draft_version:3, plans:[plan2, moved, plan1]}));
   await tick();
@@ -271,7 +271,7 @@ test("旧正文锚点能跟随段落移动，同序号的另一段不会冒充�
 });
 
 test("历史锚点已删除时打开最新版并提示首次消失的版本，不滚动计划书", async () => {
-  const deleted = {...plan3, body:plan3.body.replace("- [A1] 支付 | 逐步切换网关\n", ""),
+  const deleted = {...plan3, body:plan3.body.replace("- [A1] 支付 | 逐步切换网关 | 文件: gateway/\n", ""),
     entries:shiftLines(plan3, 7, -1).filter(item => item.entry_id !== "A1")};
   const v4 = {...deleted, version:4, created_at:"2026-11-28T02:05:00Z"};
   for (const plans of [[deleted, plan2, plan1], [v4, deleted, plan2, plan1]]) {

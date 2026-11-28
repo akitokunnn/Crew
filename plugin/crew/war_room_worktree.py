@@ -8,7 +8,7 @@ import sqlite3
 import subprocess
 import tempfile
 
-from . import board, git_process, hooks, store, war_room
+from . import board, git_process, hooks, store, war_room, war_room_scope
 
 NOT_GIT = '这个工作区不是 Git 仓库，成员共用同一个目录，没有隔离；分工按文件不重叠来切。'
 NO_ADMIN = '本工作区没开 Git 管理：成员收工后没合并的改动会存成备份引用，开启 Git 管理后可以照恢复命令取回再合并。'
@@ -34,20 +34,30 @@ def repository_record(conn, room_id):
                         (room_id,)).fetchone()
 
 
-def isolation(conn, room):
-    row = conn.execute('SELECT 1 FROM war_room_worktrees WHERE room_id=? LIMIT 1', (room['id'],)).fetchone()
+def has_isolation_record(conn, room_id):
+    return conn.execute(
+        "SELECT 1 FROM war_room_events WHERE room_id=? AND kind='isolation_base' UNION ALL "
+        "SELECT 1 FROM war_room_worktrees WHERE room_id=? LIMIT 1", (room_id, room_id)).fetchone() is not None
+
+
+def pre_upgrade(conn, room):
+    if (room['approved_version'] is None and not room['legacy']) or has_isolation_record(conn, room['id']):
+        return False
     record = repository_record(conn, room['id'])
-    if row:
-        reason = None
-    elif record is not None and record['top'] is None:
-        reason = 'not_git'
-    elif record is None and git_process.repository_root(board.project(conn, room['project'])['root']) is None:
-        reason = 'not_git'
-    elif room['approved_version'] is not None:
-        reason = 'pre_upgrade'
-    else:
-        reason = None
-    return {'isolation': 'none' if reason else 'worktree', 'isolation_reason': reason}
+    return (record['top'] if record else git_process.repository_root(board.project(conn, room['project'])['root'])) is not None
+
+
+def isolation(conn, room):
+    record = repository_record(conn, room['id'])
+    top = record['top'] if record else git_process.repository_root(board.project(conn, room['project'])['root'])
+    if top is None:
+        return {'isolation': 'none', 'isolation_reason': 'not_git'}
+    if pre_upgrade(conn, room):
+        return {'isolation': 'none', 'isolation_reason': 'pre_upgrade'}
+    modes = {m['mode'] for m in war_room_scope.members(conn, room).values()}
+    if modes == {'worktree'}:
+        return {'isolation': 'worktree', 'isolation_reason': None}
+    return {'isolation': 'mixed' if 'worktree' in modes else 'none', 'isolation_reason': 'lead_choice'}
 
 
 def details(conn, room, reader):
@@ -59,15 +69,14 @@ def details(conn, room, reader):
             return []
         sql += ' AND session_id=?'
         args.append(reader)
-    return board._rows(conn, sql+' ORDER BY member', args)
+    shared = {sid for sid, m in war_room_scope.members(conn, room).items() if m['mode'] == 'shared'}
+    return [r for r in board._rows(conn, sql+' ORDER BY member', args) if r['member'] not in shared]
 
 
-def register(conn, room, root, version, stamp):
-    owners = conn.execute('SELECT DISTINCT owner_session_id FROM war_room_items WHERE room_id=? AND plan_version=? '
-                          'AND goal_id IS NOT NULL AND owner_session_id<>?', (room['id'], version, room['lead_session_id']))
+def register(conn, room, root, owners, stamp):
     config = board.git_config(conn, room['project'])
     base = (config['integration'] or config['base']) if config else 'HEAD'
-    for sid, in owners:
+    for sid in owners:
         slug = re.sub('[^A-Za-z0-9_-]+', '-', war_room._name(conn, sid)).strip('-') or 'm'
         name = 'room-%d-%s-%s' % (room['id'], slug, sid[:8])
         if not re.fullmatch('[A-Za-z0-9_-]+', name):
@@ -85,7 +94,9 @@ def binding(conn, execution):
     return conn.execute(
         'SELECT w.*,i.owner_session_id FROM war_room_items i JOIN war_rooms r ON r.id=i.room_id '
         'JOIN war_room_worktrees w ON w.room_id=i.room_id AND w.session_id=i.owner_session_id '
-        'WHERE i.goal_id=? AND i.plan_version=r.approved_version', (execution['goal_id'],)).fetchone()
+        'JOIN war_room_plans p ON p.room_id=r.id AND p.version=r.approved_version JOIN json_each(p.entries_json) j '
+        "ON j.value->>'entry_id'=i.entry_id WHERE i.goal_id=? AND i.plan_version=r.approved_version "
+        "AND COALESCE(j.value->>'worktree',1)=1", (execution['goal_id'],)).fetchone()
 
 
 def path_for(conn, execution):
@@ -101,14 +112,17 @@ def path_for(conn, execution):
 
 def effective_path(conn, execution):
     result = path_for(conn, execution)
-    if result and result.get('path'):
+    if result:
+        if result.get('pending'):
+            raise board.Conflict(WAIT)
         return result['path']
     # A finished checkout, a withdrawn assignment or a goal in transfer must
     # never turn into a launch in the member's permanent directory.
     assigned = conn.execute(
-        'SELECT 1 FROM war_room_items i JOIN war_room_worktrees w ON w.room_id=i.room_id '
+        'SELECT i.owner_session_id=w.session_id AND i.plan_version=r.approved_version AS current_owner '
+        'FROM war_room_items i JOIN war_rooms r ON r.id=i.room_id JOIN war_room_worktrees w ON w.room_id=i.room_id '
         'WHERE i.goal_id=? AND w.session_id=? LIMIT 1', (execution['goal_id'], execution['session_id'])).fetchone()
-    if assigned:
+    if assigned and (not assigned['current_owner'] or binding(conn, execution) is not None):
         raise board.Conflict(WAIT)
     return None
 
@@ -247,6 +261,10 @@ def ensure(conn, home, room_id):
 
 
 def release(conn, room_id, session_id, now):
+    room = war_room._room(conn, room_id)
+    member = war_room_scope.members(conn, room).get(session_id)
+    if room['approved_version'] and member and member['mode'] == 'shared' and member['paths'] and not pre_upgrade(conn, room):
+        war_room_scope.queue(conn, room_id, session_id, now)
     previous = conn.execute('SELECT state,released_at FROM war_room_worktrees WHERE room_id=? AND session_id=?',
                             (room_id, session_id)).fetchone()
     changed = conn.execute("UPDATE war_room_worktrees SET state='releasing', released_at=COALESCE(released_at,?) WHERE room_id=? AND session_id=? "
@@ -287,6 +305,8 @@ def _rebuild_requested(conn, row):
         'SELECT 1 FROM war_room_events e JOIN war_rooms r ON r.id=e.room_id '
         'JOIN war_room_items i ON i.room_id=r.id AND i.plan_version=r.approved_version '
         'JOIN war_room_members m ON m.room_id=r.id AND m.session_id=i.owner_session_id '
+        'JOIN war_room_plans p ON p.room_id=r.id AND p.version=r.approved_version JOIN json_each(p.entries_json) j '
+        "ON j.value->>'entry_id'=i.entry_id AND COALESCE(j.value->>'worktree',1)=1 "
         "WHERE r.id=? AND r.status='open' AND i.owner_session_id=? AND m.left_at IS NULL AND i.goal_id IS NOT NULL "
         "AND e.id>(SELECT MAX(id) FROM war_room_events WHERE room_id=r.id AND actor=m.session_id AND kind='worktree_release') "
         "AND ((e.kind='worktree_rebuild' AND e.actor=m.session_id) OR (e.kind='item' "
@@ -475,3 +495,4 @@ def sweep(manager, conn, now):
         except (board.BoardError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as exc:
             if str(exc) != row['error']:
                 _update(conn, row, error=str(exc))
+    war_room_scope.sweep(manager, conn, now)
