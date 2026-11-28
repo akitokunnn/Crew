@@ -433,9 +433,10 @@ class DeliveryMixin:
         identity = str(uuid.uuid4()) if identity is None else identity
         if not isinstance(identity, str) or not identity.strip() or len(identity) > 160:
             raise board.BoardError("消息标识必须是非空文本，最多 160 个字符")
-        digest = hashlib.sha256(json.dumps({'text': text if display_text is None else display_text,
-                                          'images': images, 'source': source},
-                                          ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
+        payload = {'text': text if display_text is None else display_text, 'images': images, 'source': source}
+        if input_mode != 'text':
+            payload['input_mode'] = input_mode
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
         with self.lock:
             if self.maintenance_held(session['session_id']):
                 raise board.Conflict(MAINTENANCE_HELD)
@@ -496,7 +497,7 @@ class DeliveryMixin:
                 with closing(store.connect(self.home)) as frame_conn:
                     frames = [line for line in (
                         war_room.main_input_note(frame_conn, session['session_id'], source, room_id),
-                        persona.input_frame(frame_conn, session['session_id'], source, room_id)) if line]
+                        persona.input_frame(frame_conn, session['session_id'], source, room_id, identity)) if line]
                 if frames:
                     display_text = text if display_text is None else display_text
                     text = '\n'.join(frames) + '\n\n' + text

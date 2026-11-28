@@ -4,7 +4,7 @@ Stage-0 contract stub: the persona block fills these in; signatures are frozen.
 """
 
 
-def input_frame(conn, session_id, source, room_id):
+def input_frame(conn, session_id, source, room_id, identity):
     """A one-line marker for non-user input to a main session carrying a personality, or None."""
     return None
 

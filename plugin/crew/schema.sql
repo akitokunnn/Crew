@@ -1410,6 +1410,8 @@ CREATE TABLE IF NOT EXISTS persona_settings (
 CREATE TABLE IF NOT EXISTS personas (
     session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
     seed TEXT,
+    seed_text TEXT,
+    frozen INTEGER NOT NULL DEFAULT 0 CHECK (frozen IN (0,1)),
     content TEXT NOT NULL DEFAULT '',
     version INTEGER NOT NULL DEFAULT 0,
     tokens_estimate INTEGER NOT NULL DEFAULT 0,
