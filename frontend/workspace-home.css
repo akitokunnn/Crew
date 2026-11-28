@@ -3,6 +3,8 @@
 .wh-eyebrow{font-size:calc(11px * var(--fs));color:var(--text-2);letter-spacing:.08em}
 .wh-head .sub{margin:0;color:var(--text-2)}
 .wh-head>.btn{flex:none;min-height:34px;border-radius:10px}
+.wh-head-empty [data-act="workspace-settings"]{color:var(--text-2)}
+.wh-head-empty [data-act="workspace-settings"] .i{width:16px;height:16px}
 .wh-head-empty .btn.primary{background:transparent;border-color:var(--line-strong);color:var(--text-2)}
 .wh-head-empty .btn.primary:hover{background:var(--hover);border-color:var(--line-strong);color:var(--text)}
 .wh-page{padding:14px 24px 28px}

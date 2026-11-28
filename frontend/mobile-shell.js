@@ -202,7 +202,7 @@
     const gitCount = rail?.querySelector(".rail-git .rail-badge")?.textContent.trim() || "";
     const unread = Boolean(rail?.querySelector(".leader-entry .rail-dot"));
     const room = rail?.querySelector(".rail-war-room");
-    const waitingForRoom = room?.dataset.warRoomState === "waiting";
+    const waitingForRoom = ["waiting", "attention"].includes(room?.dataset.warRoomState);
     const channelUnread = leaders?.querySelector(".leader-panel-channel .b-unread")?.textContent.trim() || "";
     badge(tabbar.querySelector('[data-m-tab="home"]'), homeCount);
     dot(tabbar.querySelector('[data-m-tab="leaders"]'), unread);

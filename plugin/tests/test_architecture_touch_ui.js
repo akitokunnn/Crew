@@ -145,7 +145,7 @@ test("leader selects before chat, uses existing ownership and restructure comman
   const s=await screen();
   await s.gesture(s.target("root001",true));
   assert.deepEqual(s.opened,[]); assert(s.row.classList.contains("selected"));
-  assert.match(s.element(".arch-actions").innerHTML,/进对话.*设负责人.*移出.*更多/);
+  assert.match(s.element(".arch-actions").innerHTML,/进对话.*设负责人.*移出.*⋯.*其他/);
   await s.action("open"); assert.deepEqual(s.opened,["leader1"]);
   for (const cmd of ["merge","retire"]) {
     await s.action("more"); assert.match(s.element(".arch-menu").innerHTML,/合并….*退役…/);

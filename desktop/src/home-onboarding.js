@@ -45,7 +45,7 @@
         </article>`;
       }).join('')}</div>
       <fieldset class="ob-persona"><legend>是否想要 AI 慢慢有自己的性格？</legend>
-        <p>只影响平时聊天的语气，不影响干活；随时可以在设置里改。</p>
+        <p>只影响聊天语气，不影响干活，设置里随时能改。</p>
         <div class="ob-runtimes">${[[true,'慢慢有自己的性格'],[false,'只管老实干活']].map(([value,label]) =>
           `<label class="ob-runtime ob-persona-option" data-chosen="${state.personaEnabled === value}"><input type="radio" name="ob-persona" data-ob-field="persona" value="${value}" ${state.personaEnabled === value ? 'checked' : ''}><strong>${label}</strong>${value ? '<span class="ob-pill">推荐</span>' : ''}</label>`).join('')}</div>
       </fieldset>`;

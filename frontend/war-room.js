@@ -11,7 +11,8 @@
     liveness_unknown:"还没确认状态", failed:"上次没送成"};
   const folderStatus = {pending:"准备目录中", active:"独立目录运行中", awaiting_merge:"等合并", releasing:"收尾中", failed:"没建好"};
   const folderOutcome = {merged:"已清理", backed_up:"已备份"};
-  const sharedFolder = "这是普通文件夹，大家共用同一目录直接改文件";
+  const sharedFolder = "全员未隔离：这是普通文件夹，大家直接改同一份文件";
+  const sharedTag = '<small class="wr-folder-tag wr-shared">未隔离</small>';
   const launchStep = {leader:"建好领队", invite:"邀请成员", goal:"建好任务", announce:"发布开打公告"};
   const roomPath = "/api/op/war_room.";
   let active = null;
@@ -66,13 +67,21 @@
       rows(live, "进行中", "当前没有作战室") + rows(history, "历史", "还没有结束的作战室");
   }
 
-  function receiptHTML(room, message, mention) {
-    const status = mention.state === "queued" && !isOpen(room) ? "undelivered" : mention.state;
-    if (!deliveryStatus[status]) return "";
-    const label = `${esc(mention.name)} · ${deliveryStatus[status]}`;
-    if (status === "cancelled") return `<details class="wr-delivery" data-delivery="cancelled" data-wr-card="receipt-${message.id}-${esc(mention.session_id)}"><summary title="${esc(mention.reason)}">${label}</summary><span>${esc(mention.reason)}</span></details>`;
-    const wait = status === "queued" && deliveryWait[mention.waiting?.split("|")[0]];
-    return `<small class="wr-delivery" data-delivery="${status}">${label}${wait ? ` · ${wait}` : ""}</small>`;
+  function receiptsHTML(room, message) {
+    const groups = new Map();
+    for (const mention of message.mentions) {
+      const status = mention.state === "queued" && !isOpen(room) ? "undelivered" : mention.state;
+      if (!deliveryStatus[status]) continue;
+      const detail = status === "cancelled" ? mention.reason : status === "queued" && deliveryWait[mention.waiting?.split("|")[0]];
+      const key = JSON.stringify([status, detail]);
+      if (!groups.has(key)) groups.set(key, {status, detail, names:[]});
+      groups.get(key).names.push(esc(mention.name));
+    }
+    return [...groups.values()].map(({status, detail, names}) => {
+      const label = `${deliveryStatus[status]}：${names.join("、")}`;
+      if (status === "cancelled") return `<details class="wr-delivery" data-delivery="cancelled" data-wr-card="receipt-${message.id}-${esc(detail)}"><summary>${label}</summary><span>${esc(detail)}</span></details>`;
+      return `<small class="wr-delivery" data-delivery="${status}">${label}${detail ? " · " + detail : ""}</small>`;
+    }).join("");
   }
 
   function messageBody(message) {
@@ -80,7 +89,7 @@
     const command = lines.at(-1);
     if (!/^git branch \S+ refs\/crew-backup\/\S+$/.test(command)) return CrewChat.renderMarkdown(message.body, message.speaker_session_id);
     return CrewChat.renderMarkdown(lines.slice(0, -1).join("\n"), message.speaker_session_id) +
-      `<div class="wr-restore"><code>${esc(command)}</code>${action("copy-command", "复制恢复命令", `data-command="${esc(command)}"`)}</div>`;
+      `<div class="wr-restore"><details data-wr-card="backup-${message.id}"><summary>查看命令</summary><code>${esc(command)}</code></details>${action("copy-command", "复制恢复命令", `data-command="${esc(command)}"`)}</div>`;
   }
 
   function messageHTML(ctx, message, internal = false) {
@@ -89,7 +98,7 @@
     const avatar = user ? `<span class="av round cx-av-user" style="--s:28px" aria-hidden="true">${name.slice(0, 1)}</span>` : ctx.avatar(message.speaker_name, 28, true);
     const reply = !user && !internal && isOpen(ctx.room) ? action("reply", "回复", `data-message="${message.id}"`) : "";
     const quote = message.reply ? `<blockquote class="wr-message-quote"><strong>${esc(message.reply.speaker_name)}</strong> ${esc(K.plain(message.reply.excerpt))}</blockquote>` : "";
-    const delivery = message.mentions.map(mention => receiptHTML(ctx.room, message, mention)).join("");
+    const delivery = receiptsHTML(ctx.room, message);
     return `<article class="cx-msg${user ? " cx-user" : ""}">${avatar}<div class="cx-body-col"><div class="cx-meta"><strong>${name}</strong><time datetime="${esc(message.created_at)}">${esc(K.clock(message.created_at))}</time>${reply}</div>${quote}<div class="${user ? "cx-bubble" : "cx-content"}"><div class="markdown cx-md">${messageBody(message)}</div></div>${delivery}</div></article>`;
   }
 
@@ -156,7 +165,7 @@
     const unread = main.find(message => message.id > ctx.readFrom && message.speaker_session_id !== "user");
     if (unread && isOpen(room)) rows.push({at:unread.created_at, first:true, render:() => '<div class="cx-divider cx-unread"><span>新发言</span></div>'});
     rows.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || Number(Boolean(b.first)) - Number(Boolean(a.first)));
-    return `${room.origin ? `<p class="wr-note"><button type="button" class="text-link" data-wr="origin">查看交流区原帖 #${room.origin.id}</button></p>` : ""}${room.has_more ? '<p class="wr-muted">只显示最近 200 条房内发言</p>' : ""}${rows.map(row => row.render()).join("") || '<p class="wr-column-empty">还没有发言</p>'}`;
+    return `${room.origin ? `<p class="wr-note"><button type="button" class="text-link" data-wr="origin">查看交流区原帖 #${room.origin.id}</button></p>` : ""}${room.has_more ? '<p class="wr-muted">只显示最近 200 条房内发言</p>' : ""}${rows.map(row => row.render()).join("") || '<p class="wr-column-empty">还没有发言。</p>'}`;
   }
 
   function planBudget(plan, previous) {
@@ -167,7 +176,7 @@
   function planHTML(ctx, inDialog = false) {
     const room = ctx.room;
     const plan = selectedPlan(ctx);
-    if (!plan) return `${inDialog ? "" : '<header class="wr-panel-head"><h2>作战计划书</h2></header>'}<p class="wr-column-empty">等领头写第一版计划。</p>${planWarning(room)}`;
+    if (!plan) return `${inDialog ? "" : '<header class="wr-panel-head"><h2>作战计划书</h2></header>'}${planWarning(room)}<p class="wr-column-empty">等领头写第一版计划。</p>`;
     const currentPlan = plan.version === room.draft_version, changes = planChanges(ctx, plan);
     const draft = canApprove(room) && currentPlan;
     const questions = draft ? P.pending(plan) : [];
@@ -192,11 +201,6 @@
     return tree.state === "removed" ? folderOutcome[tree.outcome] : folderStatus[tree.state];
   }
 
-  function memberName(room, id) {
-    return memberRoster(room).find(person => person.session_id === id)?.crew_name ??
-      room.board.find(item => item.owner_session_id === id)?.owner_name ?? id;
-  }
-
   function isolationNote(room) {
     if (room.isolation === "mixed") return '<p class="wr-mode-note">部分成员开了独立目录，其余共用目录。</p>';
     if (room.isolation !== "none") return "";
@@ -213,12 +217,13 @@
   function memberIsolation(room, item) {
     const tree = item.mode === "worktree" && room.worktrees?.find(row => row.member === item.session_id);
     const mode = tree ? `<small data-folder="${esc(tree.state)}">${esc(folderLabel(tree))}</small>` :
-      item.mode === "shared" ? '<small class="wr-folder-tag">共用目录</small>' : '<small>独立目录</small>';
-    const scope = item.paths.length ? fileDetails("scope-" + item.session_id,
+      item.mode === "shared" ? sharedTag : '<small class="wr-folder-tag">独立目录</small>';
+    const scope = item.paths.length === 1 ? `<p class="wr-mode-note">负责文件 <code>${esc(item.paths[0])}</code></p>` : item.paths.length ? fileDetails("scope-" + item.session_id,
       `<span>负责文件</span><code class="wr-path-preview">${esc(item.paths.join("、"))}</code>`, item.paths) : '<p class="wr-mode-note">未列文件范围</p>';
     const outside = item.out_of_scope.length ? fileDetails("outside-" + item.session_id,
       `改了范围外的文件 ${item.out_of_scope.length} 个`, item.out_of_scope) : "";
-    return {mode, files:scope + outside};
+    const error = tree?.state === "failed" && tree.error ? `<p class="wr-error">${esc(tree.error)}</p>` : "";
+    return {mode, files:error + scope + outside};
   }
 
   function attentionHTML(room) {
@@ -235,10 +240,15 @@
 
   function openAttention(room) {
     const rows = [], watch = room.watchdog;
-    if (watch?.state === "attention") rows.push(action("ask-lead", "房里停下了，叫醒领头仍没动静 · 问问领头 ›"));
+    if (watch?.state === "attention") rows.push(action("ask-lead", "领头没反应了 · <span>去问问 ›</span>"));
     if (watch?.state === "waiting_user") rows.push(waitingOnUser(room));
     for (const tree of room.worktrees ?? []) {
-      if (tree.state === "failed") rows.push(`${esc(memberName(room, tree.member))} 的独立目录没建好：${esc(tree.error || "原因见详情")}`);
+      if (tree.state === "failed") {
+        const member = memberRoster(room).find(person => person.session_id === tree.member);
+        const name = member?.crew_name ?? room.board.find(item => item.owner_session_id === tree.member)?.owner_name;
+        const label = `${name ? esc(name) + "的" : ""}独立目录没建好：${esc(tree.error || "原因见详情")} ›`;
+        rows.push(member ? action("folder-error", label, `data-member="${esc(tree.member)}"`) : action("ask-lead", label));
+      }
     }
     for (const item of room.board.filter(item => item.status === "blocked")) {
       const text = `卡住了 · ${esc(item.title)}${item.note ? ` · ${esc(item.note)}` : ""}`;
@@ -338,10 +348,11 @@
       const lead = item.session_id === room.lead_session_id;
       const working = lead ? room.lead_working_room_id : item.working_room_id;
       const isolation = item.assignment && memberIsolation(room, item.assignment);
+      const status = live && K.presence(live);
       const presence = isOpen(room) && working === room.id ? '<small class="room-working-tag">作战室中</small>' :
-        isOpen(room) && live ? `<small>${esc(K.presence(live).text)}</small>` : "";
-      return `<li><div class="wr-member-head">${compact ? "" : ctx.avatar(item.crew_name, 28, true)}<strong>${esc(item.crew_name)}</strong>
-        ${isolation ? isolation.mode : ""}${lead ? "<span>领头</span>" : ""}${compact ? "" : presence}</div>${isolation ? isolation.files : ""}</li>`;
+        isOpen(room) && live ? `<small>${esc(status.key === "working" ? "推进中" : status.text)}</small>` : "";
+      return `<li data-member-id="${esc(item.session_id)}"><div class="wr-member-head">${compact ? "" : ctx.avatar(item.crew_name, 28, true)}<strong>${esc(item.crew_name)}</strong>
+        ${isolation ? isolation.mode : room.isolation_reason === "not_git" ? sharedTag : ""}${lead ? "<span>领头</span>" : ""}${compact ? "" : presence}</div>${isolation ? isolation.files : ""}</li>`;
     }).join("")}</ul>` : "");
   }
 
@@ -395,7 +406,11 @@
     for (const element of ctx.host.querySelectorAll(".wr-plan-document [data-wr-block]")) {
       const mark = marks.get(element.dataset.wrBlock);
       element.classList.toggle("wr-mark-faded", !mark && element.hasAttribute("data-mark"));
-      if (mark) element.dataset.mark = mark;
+      if (mark) {
+        element.dataset.mark = mark;
+        const tail = element.querySelector(".wr-plan-tail");
+        if (tail) tail.dataset.mark = mark;
+      }
     }
     if (ctx.invalidLine) {
       const item = planData(ctx, plan).blocks.find(block => block.line <= ctx.invalidLine && block.end >= ctx.invalidLine);
@@ -466,15 +481,14 @@
 
   function launchFolders(room) {
     if (!showsPlan(room)) return "";
-    if (room.isolation_reason === "not_git") return planWarning(room);
-    if (!room.isolation_members?.length) return "";
+    if (!room.isolation_members?.length) return planWarning(room);
     const groups = ["worktree", "shared"].map(mode => room.isolation_members.filter(item => item.mode === mode));
     // 至少给另一种目录留一个名字，两组共列最多六人。
     const first = Math.min(groups[0].length, groups[1].length ? 5 : 6);
-    return groups.map((members, index) => {
+    return planWarning(room) + groups.map((members, index) => {
       if (!members.length) return "";
       const names = members.slice(0, index ? 6 - first : first).map(item => esc(item.member));
-      return `<p class="wr-launch-group"><strong>${index ? "共用目录" : "独立目录"}</strong> ${names.join("、")}${names.length < members.length ? ` 等 ${members.length} 人` : ""}</p>`;
+      return `<p class="wr-launch-group"><span class="wr-folder-tag${index ? " wr-shared" : ""}">${index ? "未隔离" : "独立目录"}</span>：${names.join("、")}${names.length < members.length ? ` 等 ${members.length} 人` : ""}${index ? "（和工作区共用文件，改动直接生效）" : ""}</p>`;
     }).join("");
   }
 
@@ -683,6 +697,10 @@
     case "collapse": ctx.collapsed = !ctx.collapsed; render(ctx); break;
     case "panel": showPanel(ctx, "panel", true); break;
     case "full": showPanel(ctx, "plan", true); break;
+    case "folder-error":
+      showPanel(ctx, "members");
+      ctx.panelContent.querySelector(`[data-member-id="${CSS.escape(button.dataset.member)}"]`).scrollIntoView({block:"center"});
+      break;
     case "internal": case "members": showPanel(ctx, wr); break;
     case "history": {
       if (historyOpen(ctx, ctx.history) && execution === ctx.history.id) break;
@@ -806,5 +824,5 @@
     active = null;
   }
 
-  window.CrewWarRoom = {mount, update, changed, unmount};
+  window.CrewWarRoom = {itemStatus, mount, update, changed, unmount};
 })();

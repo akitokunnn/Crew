@@ -431,10 +431,10 @@ test("每个被点名的人各有回执，取消原因可展开，内部帖同�
   await tick();
   f.click("internal");
   for (const html of [f.node(".wr-timeline").innerHTML, f.node(".wr-pane-content").innerHTML]) {
-    for (const [i,label] of Object.values(waiting).entries()) assert(html.includes(`成员${i} · 待送达 · ${label}`));
-    assert.match(html, /<details[^>]*data-delivery="cancelled"[^>]*><summary title="已取消：房间已结束">支付 · 已取消<\/summary><span>已取消：房间已结束/);
-    assert.match(html, /运维 · 已送达/);
-    assert.match(html, /测试 · 已回复/);
+    for (const [i,label] of Object.values(waiting).entries()) assert(html.includes(`待送达：成员${i} · ${label}`));
+    assert.match(html, /<details[^>]*data-delivery="cancelled"[^>]*><summary>已取消：支付<\/summary><span>已取消：房间已结束/);
+    assert.match(html, /已送达：运维/);
+    assert.match(html, /已回复：测试/);
   }
 });
 
@@ -463,7 +463,7 @@ test("结束后摘要和战况只提示进度与结局，排队回执和未决�
     assert.equal(f.node("#wr-pane-title").innerHTML, "战况");
     assert.doesNotMatch(f.node(".wr-pane-content").innerHTML, /<h2>战况/);
     const feed = f.node(".wr-timeline").innerHTML;
-    assert.match(feed, /data-delivery="undelivered">lead · 未送达<\/small>/);
+    assert.match(feed, /data-delivery="undelivered">未送达：lead<\/small>/);
     assert.match(feed, /wr-decision" data-state="closed"[^>]*><strong>随房间结束关闭<\/strong><small class="decision-source">作战室 · 签名<\/small><p>作战室《签名》：可以上线吗？<\/p>/);
     assert.doesNotMatch(feed, /待送达|领头还在忙|去拍板/);
   }
@@ -585,7 +585,7 @@ test("停滞同时出现在侧栏、目录、手机摘要和收起战况，点�
   assert.match(f.node(".wr-toggle").innerHTML,/等你关注/);
   assert.match(f.node(".wr-panelbar").innerHTML,/等你关注/);
   f.click("panel");
-  assert.match(f.node(".wr-pane-content").innerHTML,/data-wr="ask-lead"[^>]*>房里停下了，叫醒领头仍没动静 · 问问领头 ›/);
+  assert.match(f.node(".wr-pane-content").innerHTML,/data-wr="ask-lead"[^>]*>领头没反应了 · <span>去问问 ›/);
   const input = f.node("textarea");
   input.value = "已有草稿";
   f.click("ask-lead");
@@ -616,7 +616,7 @@ test("目录状态按授权行展示，失败单独触发关注，关房后收�
   const detail = room({phase:"active",worktrees,members,isolation_members});
   const f = harness(detail);
   await tick();
-  assert.match(f.node(".wr-plan-panel").innerHTML,/成员6 的独立目录没建好：目录被占用<\/li>/);
+  assert.match(f.node(".wr-plan-panel").innerHTML,/data-wr="folder-error"[^>]*>成员6的独立目录没建好：目录被占用 ›<\/button>/);
   f.click("members");
   for (const [i,[,,label]] of rows.entries()) {
     assert.match(f.node(".wr-pane-content").innerHTML,new RegExp(`成员${i}</strong>\\s*<small[^>]*>${label}`));
@@ -624,7 +624,7 @@ test("目录状态按授权行展示，失败单独触发关注，关房后收�
   }
   f.reload({...detail, worktrees:[{member:"s6",state:"failed"}]});
   await tick();
-  assert.match(f.node(".wr-plan-panel").innerHTML,/成员6 的独立目录没建好：原因见详情/);
+  assert.match(f.node(".wr-plan-panel").innerHTML,/成员6的独立目录没建好：原因见详情/);
   assert.doesNotMatch(f.node(".wr-pane-content").innerHTML,/已备份|目录被占用/);
   f.reload({...detail,status:"closed",close_reason:"user_stop",watchdog:{state:"attention"}});
   await tick();
@@ -633,7 +633,7 @@ test("目录状态按授权行展示，失败单独触发关注，关房后收�
 
 test("普通文件夹筹备提示覆盖空计划、计划和开打确认，升级前的房显示对应原因", async () => {
   const shared = {isolation:"none",isolation_reason:"not_git"};
-  const note = "这是普通文件夹，大家共用同一目录直接改文件。";
+  const note = "全员未隔离：这是普通文件夹，大家直接改同一份文件。";
   const f = harness(room({...shared, plans:[],draft_version:0,messages:[]}),{mobile:true});
   await tick();
   assert(f.node(".wr-plan-panel").innerHTML.includes(note));
@@ -672,7 +672,7 @@ test("混合房按成员显示范围和目录，开放与关房时均可展开�
   f.click("members");
   for (const surface of [status,drawer]) {
     assert.match(surface.innerHTML,/部分成员开了独立目录，其余共用目录。/);
-    assert.match(surface.innerHTML,/支付<\/strong>\s*<small class="wr-folder-tag">共用目录/);
+    assert.match(surface.innerHTML,/支付<\/strong>\s*<small class="wr-folder-tag wr-shared">未隔离/);
     assert.match(surface.innerHTML,/验收<\/strong>\s*<small[^>]*>独立目录运行中/);
     assert.match(surface.innerHTML,/<summary><span>负责文件<\/span><code[^>]*>src\/pay\/、tools\/&lt;fixture&gt;.py、docs\/验收说明.md<\/code><\/summary>\s*<ul><li><code>src\/pay\/<\/code>[\s\S]*?<li><code>docs\/验收说明.md<\/code>/);
     assert.match(surface.innerHTML,/<summary>改了范围外的文件 2 个<\/summary>\s*<ul><li><code>src\/&lt;other&gt;.py<\/code>[\s\S]*?<code>tools\/check.py<\/code>/);
@@ -689,7 +689,7 @@ test("混合房按成员显示范围和目录，开放与关房时均可展开�
   f.reload({...detail,worktrees:[],unowned_changes:[],isolation_members:isolation_members.map(item => ({...item,out_of_scope:[]}))});
   await tick();
   assert.doesNotMatch(status.innerHTML,/需要你关注|独立目录运行中/);
-  assert.match(status.innerHTML,/验收<\/strong>\s*<small>独立目录/);
+  assert.match(status.innerHTML,/验收<\/strong>\s*<small class="wr-folder-tag">独立目录/);
   f.reload({...detail,isolation:"none",worktrees:[],isolation_members:[isolation_members[0]]});
   await tick();
   assert.match(status.innerHTML,/领头选择全员共用目录，按文件范围分工。/);
@@ -710,7 +710,7 @@ test("计划书用原分工锚点渲染文件和可选标签，历史计划仍�
     const row = html.match(new RegExp(`<li data-wr-block="entry:${item.entry_id}">[\\s\\S]*?</li>`))[0];
     assert(row.includes(item.owner + " · " + item.title));
     assert.match(row,/文件：<code>src\/&lt;main&gt;.js、docs\/<\/code>/);
-    assert.equal(row.includes('class="wr-folder-tag">独立目录'),item === assignments[0]);
+    assert(row.includes(item === assignments[0] ? 'wr-folder-tag">独立目录' : 'wr-folder-tag wr-shared">未隔离'));
   }
   // A plan saved before file scopes existed has no paths and renders as before.
   const historical = {...plan2, entries:plan2.entries.map(({paths, worktree, ...item}) => item)};
@@ -721,9 +721,9 @@ test("Git 开打前显示两组成员，合计最多六个名字，无待定项�
   const people = Array.from({length:9}, (_,i) => ({member:`成员${i}`,session_id:`s${i}`,mode:i < 7 ? "worktree" : "shared",paths:[`src/${i}/`],out_of_scope:[]}));
   const answered = {...plan2, entries:plan2.entries.map(item => ({...item,answer:"已定"}))};
   for (const [members, expected] of [
-    [people, ["独立目录</strong> 成员0、成员1、成员2、成员3、成员4 等 7 人","共用目录</strong> 成员7 等 2 人"]],
-    [people.slice(0,6), ["独立目录</strong> 成员0、成员1、成员2、成员3、成员4、成员5</p>"]],
-    [people.slice(7), ["共用目录</strong> 成员7、成员8</p>"]]
+    [people, ["独立目录</span>：成员0、成员1、成员2、成员3、成员4 等 7 人","未隔离</span>：成员7 等 2 人"]],
+    [people.slice(0,6), ["独立目录</span>：成员0、成员1、成员2、成员3、成员4、成员5</p>"]],
+    [people.slice(7), ["未隔离</span>：成员7、成员8（和工作区共用文件，改动直接生效）</p>"]]
   ]) {
     const mode = members[0].mode === "shared" ? "none" : members.length > 6 ? "mixed" : "worktree";
     const f = harness(room({plans:[answered],isolation:mode,isolation_reason:mode === "worktree" ? null : "lead_choice",isolation_members:members}));

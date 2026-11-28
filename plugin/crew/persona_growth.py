@@ -161,15 +161,13 @@ class Job(threading.Thread):
         state = self.state
         dialogue, cursor = _sample(self.manager, self.sid, state)
         # A switch cycle during journal I/O invalidates this material before it reaches a carrier.
-        if not self.applicable(conn):
+        if not self.applicable(conn) or not dialogue:
             return None
-        if not dialogue:
-            raise ValueError(NO_MATERIAL)
         error = state['growth_error']
         prompt = behavior_prompts.text(conn, 'persona_growth', session_id=self.sid, values={
             'current': state['content'], 'percent': persona._percent(state['tokens_estimate']), 'limit': '20k',
             'dialogue': dialogue,
-            'last_error': '上次整理失败：%s，这次务必遵守篇幅和格式' % error if error else ''})
+            'last_error': '上次整理失败：%s，这次务必遵守篇幅和格式' % error if error and error != NO_MATERIAL else ''})
         choice = settings.resolve(self.manager.home, 'digest')
         self.runtime = choice['runtime']
         if self.runtime == 'claude':
@@ -192,7 +190,9 @@ class Job(threading.Thread):
             pending = max(0, row['pending_turns'] - self.state['pending_turns'])
             if error is not None and row['version'] != self.state['version']:
                 error = SUPERSEDED
-            if error is None:
+            if error is None and result is None:
+                conn.execute('UPDATE personas SET growth_error=NULL WHERE session_id=?', (sid,))
+            elif error is None:
                 summary, content, cursor = result
                 status = persona.write_growth(conn, sid, content, summary, self.state['version'], cursor, now)
                 if status in ('disabled', 'frozen', 'not_applicable'):
@@ -216,8 +216,7 @@ class Job(threading.Thread):
                     return
                 try:
                     result = self.generate(conn)
-                    if result is not None:
-                        self.finish(conn, result, None)
+                    self.finish(conn, result, None)
                 except (ValueError, OSError, RuntimeError, sqlite3.Error) as exc:
                     self.finish(conn, None, str(exc))
         finally:

@@ -172,14 +172,24 @@
     $("assistant-confirmation-heading").textContent=label;
     for(const item of requests){
       const special=SPECIAL[item.op],card=document.createElement("article");card.className=`assistant-confirmation${special?" assistant-confirmation-rich":""}`;
-      const title=document.createElement("strong");title.textContent=special?special[0]:item.summary;
-      const meta=document.createElement("p");meta.textContent=`由${ROLE_LABELS[item.role]||item.role}发起${item.project?` · 工作区 ${item.project}`:""}`;card.append(title,meta);
+      const voice=item.role==="workspace_assistant" && item.message_id!=null;
+      const title=document.createElement("strong");title.textContent=special&&!voice?special[0]:item.summary;
+      card.append(title);
+      if(!voice){const meta=document.createElement("p");meta.textContent=`由${ROLE_LABELS[item.role]||item.role}发起${item.project?` · 工作区 ${item.project}`:""}`;card.append(meta);}
       if((item.op==="campaign.launch"||item.op==="domains.restructure.apply")&&item.args.note){const note=document.createElement("p");note.className="ac-note";note.textContent=`方案说明：${item.args.note}`;card.append(note);}
       const detail=document.createElement(special?"div":"details");detail.className=special?"ac-detail":"assistant-confirmation-args";
       if(special){detail.innerHTML='<p class="ac-quiet">正在读取…</p>';void lookup(item).then(result=>{detail.innerHTML=special[1](item,result);});}
-      else{const toggle=document.createElement("summary");toggle.textContent="查看参数";const line=document.createElement("p");line.textContent=argumentLine(item)||"无参数";detail.append(toggle,line);}
+      else {
+        const toggle=document.createElement("summary"), line=document.createElement("p");
+        toggle.textContent=voice?"看详细内容":"查看参数";
+        if(voice && item.op==="note.capture"){
+          const {title,text,tags}=item.args.data;
+          line.textContent=[title,text,tags?.length && "标签："+tags.join("、")].filter(Boolean).join(" · ");
+        }else line.textContent=argumentLine(item)||"无参数";
+        detail.append(toggle,line);
+      }
       const actions=document.createElement("div");actions.className="assistant-confirmation-actions";
-      for(const [label,approve,kind] of [["确认执行",true,"btn primary"],["拒绝",false,"btn ghost"]]){
+      for(const [label,approve,kind] of [[voice ? (item.op==="note.capture"?"好，记下":"确认") : "确认执行",true,"btn primary"],[voice?"先不要":"拒绝",false,"btn ghost"]]){
         const button=document.createElement("button");button.type="button";button.className=kind;button.textContent=label;button.disabled=resolving.has(item.id);
         button.onclick=async()=>{
           if(button.disabled||resolving.has(item.id))return;

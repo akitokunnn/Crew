@@ -99,6 +99,9 @@ def _require_subject(conn, session_id):
 
 def _current(conn, session_id):
     row = conn.execute('SELECT * FROM personas WHERE session_id=?', (session_id,)).fetchone()
+    if row is not None and row['growth_error'] == '没有找到已接收的新私聊':
+        # Old workers persisted this exact no-material reason as a failure.
+        return {**row, 'growth_error': 'persona_nothing_new'}
     return _EMPTY if row is None else row
 
 
@@ -282,7 +285,7 @@ def list_personas(conn, project=None):
         items.append({'session_id': session_id, 'name': session['crew_name'], 'project': session['project'],
                       'subject': role, 'version': row['version'], 'percent': _percent(row['tokens_estimate']),
                       'frozen': bool(row['frozen']), 'last_growth_at': row['last_growth_at'],
-                      'growth_error': row['growth_error']})
+                      'growth_error': None if row['growth_error'] == 'persona_nothing_new' else row['growth_error']})
     return {'enabled': enabled(conn), 'items': items}
 
 

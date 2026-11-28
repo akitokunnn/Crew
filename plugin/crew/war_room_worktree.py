@@ -466,7 +466,7 @@ def _cleanup(conn, row, now):
         conn.execute("UPDATE war_room_worktrees SET state='removed',outcome=?,backup_ref=?,cleaned_at=?,error=NULL "
                      'WHERE room_id=? AND session_id=?', ('merged' if merged else 'backed_up', backup, now, room, sid))
         if backup:
-            body = ('%s 的改动还没合并，已存成备份引用，worktree 和分支已清理。恢复命令：\n'
+            body = ('%s没合并的改动已经存好。要找回时点“复制恢复命令”，到仓库里运行。\n'
                     'git branch %s %s' % (war_room._name(conn, sid), branch, backup))
             war_room.cleanup_notice(conn, room, body, now)
             if row['state'] == 'awaiting_merge' and status == 'rejected' and conn.execute(

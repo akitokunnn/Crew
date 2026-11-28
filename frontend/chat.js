@@ -63,6 +63,10 @@
   function tokens(value) {
     return value < 1000 ? String(Math.floor(value)) : `${(value / 1000).toFixed(1)}k`;
   }
+  function tokenLabel(turn, now) {
+    const amount = tokenCount(turn, now);
+    return amount >= 1 ? `↓ ${tokens(amount)} tokens` : "";
+  }
   function cancel() {
     if (frame === null) return;
     if (frame.animation) cancelAnimationFrame(frame.id); else clearTimeout(frame.id);
@@ -83,7 +87,7 @@
       const turn = turns.get(node.dataset.activity);
       if (turn === undefined) { node.remove(); continue; }
       const clock = node.querySelector("[data-activity-elapsed]"), count = node.querySelector("[data-activity-tokens]");
-      const clockText = elapsed(turn.startedAt, now), tokenText = `↓ ${tokens(tokenCount(turn, now))} tokens`;
+      const clockText = elapsed(turn.startedAt, now), tokenText = tokenLabel(turn, now);
       if (clock !== null && clock.textContent !== clockText) clock.textContent = clockText;
       if (count !== null && count.textContent !== tokenText) count.textContent = tokenText;
     }
@@ -124,11 +128,11 @@
   function render(key, activity, {compact = false, now} = {}) {
     if (!activity) { release(key); return ""; }
     updateClock(now);
-    const phase = activity.phase === "tool" ? `在跑：${activity.label}` : {requesting:"等模型回应", thinking:"思考中", writing:"在写回复", compacting:"压缩中", sending:"正在发送…", stopping:"正在停止…", confirming:"等待停止确认", discussion:"回复中"}[activity.phase] || "等模型回应";
+    const phase = activity.phase === "tool" ? `在跑：${activity.label}` : {requesting:"正在想…", thinking:"思考中", writing:"在写回复", compacting:"压缩中", sending:"正在发送…", stopping:"正在停止…", confirming:"等待停止确认", discussion:"回复中"}[activity.phase] || "正在想…";
     const turn = track(key, activity), timestamp = Date.now();
     // Queue the first tick after the caller inserts this markup into the DOM.
     if (frame === null) frame = {animation:false, id:setTimeout(paint, 250)};
-    return `<span class="activity${compact ? " compact" : ""}" data-activity="${escape(key)}" role="status"><span class="spin" aria-hidden="true"></span><span class="activity-phase" title="${escape(phase)}">${escape(phase)}</span><span class="activity-elapsed" data-activity-elapsed>${elapsed(turn.startedAt, timestamp)}</span>${activity.phase === "compacting" || activity.output_tokens == null ? "" : `<span class="activity-tokens" data-activity-tokens>↓ ${tokens(tokenCount(turn, timestamp))} tokens</span>`}</span>`;
+    return `<span class="activity${compact ? " compact" : ""}" data-activity="${escape(key)}" role="status"><span class="spin" aria-hidden="true"></span><span class="activity-phase" title="${escape(phase)}">${escape(phase)}</span><span class="activity-elapsed" data-activity-elapsed>${elapsed(turn.startedAt, timestamp)}</span>${activity.phase === "compacting" || !activity.output_tokens ? "" : `<span class="activity-tokens" data-activity-tokens>${tokenLabel(turn, timestamp)}</span>`}</span>`;
   }
   function markup(session, compact = false) {
     return render(session.session_id, session.activity, {compact});

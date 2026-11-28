@@ -111,6 +111,8 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 :is(#chat-host,.assistant-chat) .tool-steps pre{max-width:100%;overflow-x:auto;white-space:pre;font-size:12px}
 :is(#chat-host,.assistant-chat) .chat-activity{margin-top:14px}
 :is(#chat-host,.assistant-chat) .chat-activity .activity{font-size:var(--m-fs-meta);gap:4px 8px}
+.assistant-chat .chat-activity .activity{flex-wrap:nowrap}
+.assistant-chat .chat-activity .activity-phase{flex-basis:auto}
 :is(#chat-host,.assistant-chat) .chat-activity .activity-elapsed{margin-left:0}
 :is(#chat-host,.assistant-chat) .chat-error{font-size:var(--m-fs-meta)}
 /* “回到最新”放进文档流，始终贴在输入框上方，不随输入框高度错位 */
@@ -134,10 +136,8 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 :is(#chat-host,.assistant-chat) .c-row>.chat-stop{grid-column:3;grid-row:3;width:40px;height:40px;min-height:0;margin:2px 0;border-radius:50%}
 :is(#chat-host,.assistant-chat) .c-row>.send{grid-column:4;grid-row:3;width:40px;height:40px;min-height:0;margin:2px 0;border-radius:50%}
 :is(#chat-host,.assistant-chat) .c-row>.send .i{width:20px;height:20px}
-.assistant-chat .composer:has(.assistant-voice){grid-template-columns:auto minmax(0,1fr) auto auto auto}
 .assistant-chat .c-row>.assistant-voice{grid-column:3;grid-row:3;display:grid;place-items:center;width:40px;height:40px;min-height:40px;margin:2px 0;padding:0;border:0;border-radius:50%;background:transparent;color:var(--accent-text)}
-.assistant-chat .composer:has(.assistant-voice) .c-row>.chat-stop{grid-column:4}
-.assistant-chat .composer:has(.assistant-voice) .c-row>.send{grid-column:5}
+.assistant-chat .c-row:has(>.chat-stop:not([hidden]))>.assistant-voice{display:none}
 :is(#chat-host,.assistant-chat) .composer>:is(.chat-interrupt-status,.chat-delivery-status){grid-column:1/-1;padding:4px 10px 6px;font-size:var(--m-fs-min)}
 
 /* ================= 任务清单 / 任务详情：铺满顶栏以下 ================= */

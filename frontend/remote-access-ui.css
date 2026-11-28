@@ -13,6 +13,11 @@
 @media(max-width:760px){.remote-access .cs-button{min-height:44px}}
 .remote-pair{grid-template-columns:minmax(0,1fr)}
 .remote-scan-hint,.remote-discovery{font-size:13px}
+/* A solid header avoids coloured subpixel fringes from the saturated glass layer. */
+.cs-body:has(.remote-access) .cs-header{background:var(--cs-bg);backdrop-filter:none;-webkit-backdrop-filter:none}
+.cs-body:has(.remote-access) .cs-subtitle{color:var(--cs-muted)}
+.remote-access .remote-discovery{margin:-12px 0 16px;color:var(--cs-muted);font-weight:400}
+.remote-access .remote-enabled{color:var(--working-text);background:color-mix(in srgb,var(--working) 12%,var(--cs-card));border-color:color-mix(in srgb,var(--working) 35%,var(--cs-line))}
 .remote-pair .remote-scan-hint{margin:6px 0 2px}
 .remote-pair .remote-qr-error{color:var(--bad-text);overflow-wrap:anywhere}
 .remote-pair-address{display:flex;align-items:center;gap:14px;min-width:0;padding:8px 0}
@@ -25,7 +30,7 @@
 .remote-link{display:grid;grid-template-columns:minmax(0,1fr);justify-items:start;flex:1;gap:10px;min-width:0}
 .remote-link code{min-width:0;max-width:100%;box-sizing:border-box;padding:7px 10px;border-radius:9px;background:var(--cs-sheet,var(--surface));border:1px solid var(--cs-border,var(--line));font-family:var(--font-mono);font-size:12px;overflow-wrap:anywhere;user-select:all}
 @media(max-width:760px){.remote-pair-fold summary{min-height:44px;box-sizing:border-box}}
-@media(max-width:620px){.remote-apply .cs-button{width:100%}.remote-pair-address{flex-direction:column;align-items:stretch}.remote-qr{align-self:start}.remote-link{justify-items:stretch}.remote-link code{display:none}}
+@media(max-width:620px){.remote-apply .cs-button{width:100%}.remote-pair-address{flex-direction:column;align-items:stretch}.remote-qr{align-self:center}.remote-link{justify-items:stretch}.remote-link code{display:none}}
 
 
 @media(max-width:760px){.remote-address-choice select{min-height:44px}}

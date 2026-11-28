@@ -125,6 +125,7 @@ const CrewArchitecture = (() => {
   }
   function render() {
     if (host === null) return;
+    for (const control of host.querySelectorAll(".arch-zoom button")) control.disabled = board === null;
     if (board === null) {
       const head = $(".arch-head"); if (head) head.innerHTML = `<div><div class="title">架构图</div><div class="sub">${errorText ? "" : "正在读取…"}</div></div><div class="right">${backToChat()}</div>`;
       const empty = $(".arch-empty");
@@ -137,21 +138,21 @@ const CrewArchitecture = (() => {
   function renderHead() {
     const head = $(".arch-head"); if (!head || board === null) return;
     const m = model(), dir = direction();
-    const picked = selection.size > 1 ? ` · 已选 ${selection.size} 个 part` : "";
+    const picked = selection.size > 1 ? ` · 已选 ${selection.size} 个分项` : "";
     const toggle = `<div class="arch-dir" role="radiogroup" aria-label="架构图方向">${["TB", "LR"].map(value => `<button type="button" role="radio" aria-checked="${dir === value}" data-arch-act="direction" data-direction="${value}" title="${value === "TB" ? "架构树：从上到下" : "蓝图：从左到右"}">${icon(ICON[value.toLowerCase()])}<span>${DIRECTION[value]}</span></button>`).join("")}</div>`;
-    const tools = !phone.matches ? `${toggle}<span class="arch-tool-gap" aria-hidden="true"></span><button type="button" class="btn primary arch-new" data-arch-act="new">${icon(ICON.plus)}新 part</button><button type="button" class="icon-btn" data-arch-act="undo" title="撤销${undoStack.length ? `：${esc(undoStack.at(-1).label)}` : ""} (${window.CrewBrowser.keyboardShortcut("Z")})" aria-label="撤销" ${undoStack.length ? "" : "disabled"}>${icon(ICON.undo)}</button><button type="button" class="icon-btn" data-arch-act="redo" title="重做${redoStack.length ? `：${esc(redoStack.at(-1).label)}` : ""} (${window.CrewBrowser.keyboardShortcut("Z", {shift:true})})" aria-label="重做" ${redoStack.length ? "" : "disabled"}>${icon(ICON.redo)}</button><button type="button" class="btn ghost" data-arch-act="tidy" title="按当前方向自动排列（可撤销）">${icon(ICON.tidy)}<span class="arch-tidy-label">自动排列</span></button>` : '<button type="button" class="btn ghost" data-arch-act="new">新建</button><button type="button" class="btn ghost" data-arch-act="board-more" aria-haspopup="menu">更多</button>';
+    const tools = !phone.matches ? `${toggle}<span class="arch-tool-gap" aria-hidden="true"></span><button type="button" class="btn primary arch-new" data-arch-act="new">${icon(ICON.plus)}新分项</button><button type="button" class="icon-btn" data-arch-act="undo" title="撤销${undoStack.length ? `：${esc(undoStack.at(-1).label)}` : ""} (${window.CrewBrowser.keyboardShortcut("Z")})" aria-label="撤销" ${undoStack.length ? "" : "disabled"}>${icon(ICON.undo)}</button><button type="button" class="icon-btn" data-arch-act="redo" title="重做${redoStack.length ? `：${esc(redoStack.at(-1).label)}` : ""} (${window.CrewBrowser.keyboardShortcut("Z", {shift:true})})" aria-label="重做" ${redoStack.length ? "" : "disabled"}>${icon(ICON.redo)}</button><button type="button" class="btn ghost" data-arch-act="tidy" title="按当前方向自动排列（可撤销）">${icon(ICON.tidy)}<span class="arch-tidy-label">自动排列</span></button>` : '<button type="button" class="btn ghost" data-arch-act="new">新建</button><button type="button" class="btn ghost" data-arch-act="board-more" aria-haspopup="menu">更多</button>';
     const versions = `<button type="button" class="btn ghost arch-history-open" data-arch-act="history" aria-expanded="${history !== null}" aria-label="版本历史" title="版本历史：每次结构改动的版本、差异与回滚">${icon(ICON.history)}<span class="arch-history-label">版本历史</span></button>`;
-    const markup = `<div class="arch-heading"><div class="title">${icon(ICON.tb)}架构图${busy ? '<span class="arch-saving">保存中…</span>' : ""}</div><div class="sub">${board.parts.length} 个 part · ${m.leaders.size} 位 leader${picked}</div></div><div class="right">${backToChat()}${versions}${tools}</div>`;
+    const markup = `<div class="arch-heading"><div class="title">${icon(ICON.tb)}架构图${busy ? '<span class="arch-saving">保存中…</span>' : ""}</div><div class="sub">${board.parts.length} 个分项 · ${m.leaders.size} 位 Leader${picked}</div></div><div class="right">${backToChat()}${versions}${tools}</div>`;
     if (head.dataset.render !== markup) { head.innerHTML = markup; head.dataset.render = markup; }
     const hint = $(".arch-hint");
     const wheel = options.state.domains.canvas_wheel_zoom ? "鼠标滚轮缩放" : "按 Ctrl 或 ⌘ 滚动缩放";
-    const text = !phone.matches ? `拖动 leader 调整归属 · 拖圆点连线 · 右键查看操作 · ${wheel}` : "滑动画布 · 双指缩放 · 点选后可拖动节点";
+    const text = !phone.matches ? `拖动 Leader 调整归属 · 拖圆点连线 · 右键查看操作 · ${wheel}` : "滑动画布 · 双指缩放 · 点选后可拖动节点";
     if (hint.textContent !== text) hint.textContent = text;
   }
   function memberRow(m, item, lead, partName) {
     const status = STATUS[item.status] ? item.status : "idle";
     return `<div class="arch-member${item.session_id === selectedLeader ? " selected" : ""}${lead ? " lead" : ""}${gesture?.type === "leader" && gesture.moved && gesture.leader === item.session_id ? " dragging" : ""}" data-leader="${esc(item.session_id)}" style="--tint:${esc(options.tint(item.name))}" role="${phone.matches ? "button" : "link"}" aria-label="${esc(item.name)}${lead ? `，「${esc(partName)}」负责人` : ""}，${STATUS[status]}，${phone.matches ? "选择" : "进入对话"}">`
-      + `${options.avatar(item.name, 24)}<span class="arch-member-text"><span class="arch-member-line"><b class="arch-member-name" title="${esc(item.name)}">${esc(item.name)}</b>${lead ? '<span class="arch-lead" title="本层负责人：负责这一层各子 part 共用的部分">负责</span>' : ""}</span>`
+      + `${options.avatar(item.name, 24)}<span class="arch-member-text"><span class="arch-member-line"><b class="arch-member-name" title="${esc(item.name)}">${esc(item.name)}</b>${lead ? '<span class="arch-lead" title="本层负责人：负责这一层各子分项共用的部分">负责</span>' : ""}</span>`
       + `<span class="arch-member-brief" title="${esc(item.goal || "")}">${item.goal ? esc(item.goal) : "还没有简介"}</span></span>`
       + `<span class="st ${status}" title="${STATUS[status]}"><i class="dot ${status}"></i><span>${STATUS[status]}</span></span></div>`;
   }
@@ -160,21 +161,21 @@ const CrewArchitecture = (() => {
     const below = part.collapsed ? descendants(m, part.id) : [];
     const folded = part.collapsed ? [people.length + below.reduce((n, id) => n + membersOf(m, id).length, 0), below.length] : null;
     const body = part.collapsed
-      ? `<p class="arch-part-note">已折叠${folded[0] ? ` · ${folded[0]} 位 leader` : ""}${folded[1] ? ` · ${folded[1]} 个子 part` : ""}</p>`
+      ? `<p class="arch-part-note">已折叠${folded[0] ? ` · ${folded[0]} 位 Leader` : ""}${folded[1] ? ` · ${folded[1]} 个子分项` : ""}</p>`
       : people.length ? people.map(place => memberRow(m, m.leaders.get(place.session_id), place.lead, part.name)).join("")
-      : `<p class="arch-part-note">${phone.matches ? "尚未分配成员" : "把 leader 拖到这里"}</p>`;
-    const name = renaming === part.id ? `<input class="arch-rename" value="${esc(part.name)}" maxlength="${NAME_MAX}" aria-label="part 名称" spellcheck="false">`
+      : `<p class="arch-part-note">${phone.matches ? "尚未分配成员" : "把 Leader 拖到这里"}</p>`;
+    const name = renaming === part.id ? `<input class="arch-rename" value="${esc(part.name)}" maxlength="${NAME_MAX}" aria-label="分项名称" spellcheck="false">`
       : `<span class="arch-part-name" title="${esc(part.name)}${phone.matches ? "" : "（双击改名）"}">${esc(part.name)}</span>`;
     const cls = `${selection.has(part.id) ? " selected" : ""}${part.collapsed ? " collapsed" : ""}${gesture?.ids?.includes(part.id) ? " dragging" : ""}`;
-    return `<div class="arch-node arch-part${cls}" data-part="${esc(part.id)}" style="transform:translate(${p.x}px,${p.y}px)" role="group" aria-label="part ${esc(part.name)}">`
-      + `<span class="arch-pin in${part.parent_id ? " linked" : ""}" data-pin="in" title="上级 part：拉到别的 part 改挂，拉到空白处移出"></span>`
-      + `<div class="arch-part-head"><button type="button" class="arch-fold" data-arch-act="fold" data-id="${esc(part.id)}" aria-expanded="${!part.collapsed}" aria-label="${part.collapsed ? "展开" : "折叠"} ${esc(part.name)}" ${kids || people.length || part.collapsed ? "" : "disabled"}>${icon(part.collapsed ? ICON.right : ICON.down)}</button>${icon(ICON.folder)}${name}${!part.collapsed && people.length ? `<span class="arch-count" title="${people.length} 位 leader">${icon(ICON.people)}${people.length}</span>` : ""}</div>`
+    return `<div class="arch-node arch-part${cls}" data-part="${esc(part.id)}" style="transform:translate(${p.x}px,${p.y}px)" role="group" aria-label="分项 ${esc(part.name)}">`
+      + `<span class="arch-pin in${part.parent_id ? " linked" : ""}" data-pin="in" title="上级分项：拉到别的分项改挂，拉到空白处移出"></span>`
+      + `<div class="arch-part-head"><button type="button" class="arch-fold" data-arch-act="fold" data-id="${esc(part.id)}" aria-expanded="${!part.collapsed}" aria-label="${part.collapsed ? "展开" : "折叠"} ${esc(part.name)}" ${kids || people.length || part.collapsed ? "" : "disabled"}>${icon(part.collapsed ? ICON.right : ICON.down)}</button>${icon(ICON.folder)}${name}${!part.collapsed && people.length ? `<span class="arch-count" title="${people.length} 位 Leader">${icon(ICON.people)}${people.length}</span>` : ""}</div>`
       + `<div class="arch-members">${body}</div>`
-      + `<span class="arch-pin out${kids ? " linked" : ""}" data-pin="out" title="下级 part：拉线连到别的 part，或拉到空白处新建"></span></div>`;
+      + `<span class="arch-pin out${kids ? " linked" : ""}" data-pin="out" title="下级分项：拉线连到别的分项，或拉到空白处新建"></span></div>`;
   }
   function independentNode(m, id, pos) {
     const item = m.leaders.get(id);
-    return `<div class="arch-node arch-independent" data-independent="${esc(id)}" style="transform:translate(${pos.x}px,${pos.y}px)" role="group" aria-label="独立 leader ${esc(item.name)}">${memberRow(m, item, false, "")}</div>`;
+    return `<div class="arch-node arch-independent" data-independent="${esc(id)}" style="transform:translate(${pos.x}px,${pos.y}px)" role="group" aria-label="独立 Leader ${esc(item.name)}">${memberRow(m, item, false, "")}</div>`;
   }
   function renderWorld() {
     const nodes = $(".arch-nodes"); if (!nodes) return;
@@ -193,7 +194,7 @@ const CrewArchitecture = (() => {
     renderWires();
     const empty = $(".arch-empty");
     empty.hidden = board.parts.length > 0 || m.independent.size > 0;
-    if (!empty.hidden) empty.innerHTML = `<div class="arch-empty-text"><h2>把领域拆成一棵树</h2><p>part 可以层层嵌套，比如 感知 › 视觉 › 相机；一个 part 里可以放多位 leader，其中一位可以负责这一层。</p></div><button type="button" class="btn primary" data-arch-act="new">${icon(ICON.plus)}新建第一个${phone.matches ? "分项" : " part"}</button>`;
+    if (!empty.hidden) empty.innerHTML = `<div class="arch-empty-text"><h2>把领域拆成一棵树</h2><p>分项可以层层嵌套，比如 感知 › 视觉 › 相机；一个分项里可以放多位 Leader，其中一位可以负责这一层。</p></div><button type="button" class="btn primary" data-arch-act="new">${icon(ICON.plus)}新建第一个分项</button>`;
     if (renaming !== null) {
       const input = $(".arch-rename");
       if (input && document.activeElement !== input) { reveal(partEl(renaming)); input.focus({preventScroll:true}); input.select(); }
@@ -257,7 +258,7 @@ const CrewArchitecture = (() => {
     const actions = selectedLeader
       ? button("open", "进对话") + button(place?.lead ? "unlead" : place ? "lead" : "assign", place?.lead ? "取消负责" : "设负责人") + button("leave", "移出", !place)
       : button("child", "加子项") + button("rename", "改名") + button("move", "移到…") + button("delete", "删除");
-    const markup = actions + button("more", "更多");
+    const markup = actions + button("more", selectedLeader ? '<span aria-hidden="true">⋯</span> 其他' : "更多");
     if (bar.dataset.render !== markup) { bar.innerHTML = markup; bar.dataset.render = markup; }
   }
   function phoneMenu(button, boardMenu) {
@@ -334,7 +335,7 @@ const CrewArchitecture = (() => {
     const banner = $(".arch-empty");
     const top = banner && !banner.hidden ? banner.offsetTop + banner.offsetHeight + 16 : pad, bottom = pad + 24;
     const fitted = CrewCanvas.fit(r, box, {left:pad, top, right:pad, bottom},
-      reading ? z => Math.max(.6, clampZoom(z)) : clampZoom, maxZoom);
+      reading ? z => Math.max(1, clampZoom(z)) : clampZoom, maxZoom);
     if (reading) {
       fitted.x = Math.max(fitted.x, pad - box.x0 * fitted.z);
       fitted.y = Math.max(fitted.y, top - box.y0 * fitted.z);
@@ -469,7 +470,7 @@ const CrewArchitecture = (() => {
 
   // ---- edits ----------------------------------------------------------------------------------------------------
   function newId() { const bytes = new Uint8Array(6); crypto.getRandomValues(bytes); return "p" + [...bytes].map(b => b.toString(16).padStart(2, "0")).join(""); }
-  function freeName(base = "新 part") { const names = new Set(board.parts.map(part => part.name)); if (!names.has(base)) return base; for (let n = 2; ; n++) if (!names.has(`${base} ${n}`)) return `${base} ${n}`; }
+  function freeName(base = "新分项") { const names = new Set(board.parts.map(part => part.name)); if (!names.has(base)) return base; for (let n = 2; ; n++) if (!names.has(`${base} ${n}`)) return `${base} ${n}`; }
   // Where a new child of a part goes: one level further, after the children already shown there.
   function slotFor(m, parentId, skip = new Set()) {
     const p = posOf(m, parentId), s = sizeOf(m, parentId), tb = direction() === "TB";
@@ -482,12 +483,12 @@ const CrewArchitecture = (() => {
     return {x, y:kids.length ? Math.max(...kids.map(child => posOf(m, child.id).y + sizeOf(m, child.id).h)) + GAP_CROSS : p.y};
   }
   function createPart(parentId = null, at = null) {
-    const m = model(), id = newId(), name = freeName(phone.matches ? "新分项" : "新 part");
+    const m = model(), id = newId(), name = freeName();
     let pos = at ?? (parentId !== null ? slotFor(m, parentId) : null);
     if (pos === null) { const r = canvasRect(); pos = toWorld(r.left + r.width / 2 - PART_W / 2 * camera.z, r.top + r.height / 2 - 40 * camera.z); }
     const ops = [{op:"create", id, name, parent_id:parentId, x:Math.round(pos.x), y:Math.round(pos.y)}];
     if (parentId !== null && m.parts.get(parentId).collapsed) ops.push({op:"collapse", id:parentId, collapsed:false});
-    commit("新建 part", ops, {after:() => {
+    commit("新建分项", ops, {after:() => {
       selection = new Set([id]); selectedLeader = null; targetMode = null;
       if (!phone.matches) renaming = id;
       else if (host) { render(); reveal(partEl(id)); startRename(id); }
@@ -541,7 +542,7 @@ const CrewArchitecture = (() => {
     const m = model(), from = m.parts.get(id)?.parent_id;
     if (!from) return;
     commit(`从「${m.parts.get(from)?.name}」移出`, [{op:"parent", id, parent_id:null}],
-      {after:(result, before, step) => options.toast(`「${m.parts.get(id).name}」已从「${m.parts.get(from)?.name}」移出，成为顶层 part`, undoStep(step))});
+      {after:(result, before, step) => options.toast(`「${m.parts.get(id).name}」已从「${m.parts.get(from)?.name}」移出，成为顶层分项`, undoStep(step))});
   }
   function connect(id, partId) {
     const m = model(), ids = attachable(m, [id], partId);
@@ -585,7 +586,7 @@ const CrewArchitecture = (() => {
     const m = model(), names = ids.map(id => `「${m.parts.get(id)?.name}」`).join("、");
     selection = new Set([...selection].filter(id => !ids.includes(id)));
     commit(`删除 ${names}`, ids.map(id => ({op:"delete", id})),
-      {after:(result, before, step) => options.toast(`已删除 ${names}，里面的 leader 和子 part 已上移一层`, undoStep(step))});
+      {after:(result, before, step) => options.toast(`已删除 ${names}，里面的 Leader 和子分项已上移一层`, undoStep(step))});
   }
   function selectBranch(id) { const m = model(); selection = new Set([id, ...descendants(m, id).filter(item => visible(m, item))]); renderSelection(); }
   // Lay the tree out in a direction: depth along the main axis (rows top-down, columns left-to-right), siblings
@@ -846,17 +847,17 @@ const CrewArchitecture = (() => {
         items.push(["leave", "移出成独立节点"]);
       }
       if (m.leaders.get(target.leader)?.status !== "closed") {
-        if (activeLeaders().some(item => item.session_id !== target.leader)) items.push(["merge", "合并到另一位 leader…"]);
+        if (activeLeaders().some(item => item.session_id !== target.leader)) items.push(["merge", "合并到另一位 Leader…"]);
         items.push(["retire", "退役…", null, "danger"]);
       }
     } else if (target.part) {
       const id = target.part, part = m.parts.get(id);
       if (!selection.has(id)) { selection = new Set([id]); renderSelection(); }
-      items.push(["rename", "改名", "F2"], ["child", "新建子 part"]);
+      items.push(["rename", "改名", "F2"], ["child", "新建子分项"]);
       if (part.collapsed || descendants(m, id).length || membersOf(m, id).length) items.push(["fold", part.collapsed ? "展开" : "折叠"]);
-      items.push(["branch", "选中这一支"]); if (part.parent_id) items.push(["detach", `从「${m.parts.get(part.parent_id).name}」移出`]); items.push(["delete", "删除 part", "Del", "danger"]);
+      items.push(["branch", "选中这一支"]); if (part.parent_id) items.push(["detach", `从「${m.parts.get(part.parent_id).name}」移出`]); items.push(["delete", "删除分项", "Del", "danger"]);
     } else {
-      items.push(["here", "在这里新建 part"], ["tidy", "自动排列"]);
+      items.push(["here", "在这里新建分项"], ["tidy", "自动排列"]);
       items.push(["fit", "显示全部", "Home"]);
     }
     showMenu(items, {...target, at:toWorld(clientX, clientY)}, clientX, clientY);
@@ -942,7 +943,7 @@ const CrewArchitecture = (() => {
     const mod = event.ctrlKey || event.metaKey, k = event.key.toLowerCase();
     if (event.key === " ") { if (!spaceDown) { spaceDown = true; $(".arch-canvas")?.classList.add("panning"); } if (event.target.closest(".arch-canvas")) event.preventDefault(); return; }
     if (event.target.closest(".arch-menu") && event.key === "Escape") { event.preventDefault(); closeMenu(); $(".arch-canvas").focus({preventScroll:true}); return; }
-    if (!event.target.closest(".arch-canvas")) return;
+    if (!event.target.closest(".arch-canvas") || board === null) return;
     if (mod && k === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
     else if (mod && k === "y") { event.preventDefault(); redo(); }
     else if (mod && k === "a") { event.preventDefault(); selectedLeader = null; targetMode = null; selection = new Set(shownIds()); renderSelection(); }
@@ -1031,7 +1032,7 @@ const CrewArchitecture = (() => {
     if (detail.archived?.length) rows.push(`<li>归档（原会话保留）：${detail.archived.map(esc).join("、")}</li>`);
     if (detail.goals?.length) rows.push(`<li>任务：${detail.goals.map(item => `${esc(item.title)} ${item.action === "cancel" ? "作废" : `改派给 ${esc(item.to)}`}`).join("；")}</li>`);
     if (detail.handoffs?.length) rows.push(`<li>交接稿：${detail.handoffs.map(item => `${esc(item.from)} → ${esc(item.to)}（${item.chars} 字）`).join("；")}</li>`);
-    if (detail.to_start?.length) rows.push(`<li>待启动的新 leader：${detail.to_start.map(esc).join("、")}</li>`);
+    if (detail.to_start?.length) rows.push(`<li>待启动的新 Leader：${detail.to_start.map(esc).join("、")}</li>`);
     if (detail.unplaced?.length) rows.push(`<li>当时失去归属：${detail.unplaced.map(esc).join("、")}</li>`);
     if (detail.gone?.length) rows.push(`<li>已删除未恢复：${detail.gone.map(esc).join("、")}</li>`);
     return rows.length ? `<ul class="arch-version-notes">${rows.join("")}</ul>` : "";
@@ -1046,13 +1047,13 @@ const CrewArchitecture = (() => {
     const changeSummary = impact.positioned?.length && detail.diff.count === 0
       ? "恢复独立节点的位置" : CrewRestructure.diffSummary(detail.diff);
     const lists = [];
-    if (impact.unplaced.length) lists.push(`<div class="arch-history-warn"><b>回滚后这些 leader 不在任何 part</b>：${impact.unplaced.map(item => `${esc(item.name)}${item.from.length ? `（现在在「${esc(item.from.join(" › "))}」）` : ""}`).join("、")}</div>`);
+    if (impact.unplaced.length) lists.push(`<div class="arch-history-warn"><b>回滚后这些 Leader 不在任何分项</b>：${impact.unplaced.map(item => `${esc(item.name)}${item.from.length ? `（现在在「${esc(item.from.join(" › "))}」）` : ""}`).join("、")}</div>`);
     if (impact.positioned?.length) lists.push(`<p class="arch-history-note">恢复独立节点的位置：${impact.positioned.map(item => esc(item.name)).join("、")}</p>`);
     if (impact.gone.length) lists.push(`<p class="arch-history-note">已永久删除，位置无法恢复：${impact.gone.map(item => esc(item.name)).join("、")}</p>`);
     if (impact.archived.length) lists.push(`<p class="arch-history-note">恢复位置，但仍是归档状态：${impact.archived.map(item => esc(item.name)).join("、")}</p>`);
     let actions = "";
     if (!impact.nothing) actions = history.confirming
-      ? `<div class="arch-history-confirm" role="group" aria-label="确认回滚"><p>把架构图回滚到版本 ${meta.number}？只恢复 part 与 leader 的位置，不删除、归档或恢复任何会话；回滚本身也存成一个新版本，可以再回滚回来。</p><div class="arch-history-acts"><button type="button" class="btn ghost" data-arch-act="history-cancel" ${history.busy ? "disabled" : ""}>取消</button><button type="button" class="btn primary danger" data-arch-act="history-confirm" ${history.busy ? "disabled" : ""}>${history.busy ? "正在回滚…" : "确认回滚"}</button></div></div>`
+      ? `<div class="arch-history-confirm" role="group" aria-label="确认回滚"><p>把架构图回滚到版本 ${meta.number}？只恢复分项与 Leader 的位置，不删除、归档或恢复任何会话；回滚本身也存成一个新版本，可以再回滚回来。</p><div class="arch-history-acts"><button type="button" class="btn ghost" data-arch-act="history-cancel" ${history.busy ? "disabled" : ""}>取消</button><button type="button" class="btn primary danger" data-arch-act="history-confirm" ${history.busy ? "disabled" : ""}>${history.busy ? "正在回滚…" : "确认回滚"}</button></div></div>`
       : `<div class="arch-history-acts"><button type="button" class="btn" data-arch-act="history-rollback">${icon(ICON.undo)}回滚到这个版本…</button></div>`;
     return `<button type="button" class="btn ghost arch-history-back" data-arch-act="history-back">${icon(ICON.back)}版本列表</button>`
       + `<div class="arch-version-title"><b>版本 ${meta.number}</b><span class="arch-source ${SOURCE_TONE[meta.source]}">${esc(meta.source_label)}</span><span class="arch-version-time">${esc(when(meta.created_at))}</span></div>`
@@ -1069,11 +1070,11 @@ const CrewArchitecture = (() => {
     const focused = document.activeElement && box.contains(document.activeElement) ? document.activeElement.dataset.archAct + ":" + (document.activeElement.dataset.number || "") : null;
     box.dataset.pane = history.pane;
     const rows = history.list === null ? (history.error ? "" : '<p class="arch-history-empty" role="status">正在读取…</p>')
-      : history.list.length ? history.list.map(item => `<button type="button" class="arch-version${item.number === history.selected ? " selected" : ""}" data-arch-act="history-pick" data-number="${item.number}" aria-pressed="${item.number === history.selected}"><span class="arch-version-line"><b>#${item.number}</b><span class="arch-source ${SOURCE_TONE[item.source]}">${esc(item.source_label)}</span>${item.restored_from ? `<span class="arch-version-from">← #${item.restored_from}</span>` : ""}<span class="arch-version-time">${esc(when(item.created_at))}</span></span><span class="arch-version-text">${esc(item.note)}</span><span class="arch-version-count">${item.parts} 个 part · ${item.leaders} 位 leader</span></button>`).join("")
+      : history.list.length ? history.list.map(item => `<button type="button" class="arch-version${item.number === history.selected ? " selected" : ""}" data-arch-act="history-pick" data-number="${item.number}" aria-pressed="${item.number === history.selected}"><span class="arch-version-line"><b>#${item.number}</b><span class="arch-source ${SOURCE_TONE[item.source]}">${esc(item.source_label)}</span>${item.restored_from ? `<span class="arch-version-from">← #${item.restored_from}</span>` : ""}<span class="arch-version-time">${esc(when(item.created_at))}</span></span><span class="arch-version-text">${esc(item.note)}</span><span class="arch-version-count">${item.parts} 个分项 · ${item.leaders} 位 Leader</span></button>`).join("")
         + (history.more ? '<button type="button" class="btn ghost arch-history-more" data-arch-act="history-more">加载更早的版本</button>' : "")
-      : '<p class="arch-history-empty">还没有版本。改动架构图的结构（新建、改名、改挂、删除 part，或调整 leader）后，每批改动都会存一个版本。</p>';
+      : '<p class="arch-history-empty">还没有版本。改动架构图的结构（新建、改名、改挂、删除分项，或调整 Leader）后，每批改动都会存一个版本。</p>';
     box.innerHTML = `<div class="arch-history-head"><h2>${icon(ICON.history)}版本历史</h2><button type="button" class="icon-btn arch-history-close" data-arch-act="history-close" aria-label="关闭版本历史" ${history.busy ? "disabled" : ""}>${icon(ICON.close)}</button></div>`
-      + (history.latest ? "" : '<p class="arch-history-warn top">现在的架构有没记成版本的变化（例如永久删除了 leader），回滚前请看清差异。</p>')
+      + (history.latest ? "" : '<p class="arch-history-warn top">现在的架构有没记成版本的变化（例如永久删除了 Leader），回滚前请看清差异。</p>')
       + (history.error ? `<p class="arch-history-error" role="alert">${esc(history.error)}</p>` : "")
       + `<div class="arch-history-body"><div class="arch-history-list" role="list" aria-label="版本">${rows}</div><div class="arch-history-detail" aria-live="polite">${versionDetail()}</div></div>`;
     box.querySelector(".arch-history-list").scrollTop = listScroll; box.querySelector(".arch-history-detail").scrollTop = detailScroll;
@@ -1089,8 +1090,8 @@ const CrewArchitecture = (() => {
     });
     const name = model().leaders.get(leader)?.name || leader, other = activeLeaders().find(item => item.session_id !== leader);
     planner.open(kind === "merge"
-      ? {project, changes:[{type:"leader.merge", leader, into:other.session_id}], note:`合并 leader「${name}」`}
-      : {project, changes:[{type:"leader.retire", leader, successor:null}], note:`退役 leader「${name}」`});
+      ? {project, changes:[{type:"leader.merge", leader, into:other.session_id}], note:`合并 Leader「${name}」`}
+      : {project, changes:[{type:"leader.retire", leader, successor:null}], note:`退役 Leader「${name}」`});
   }
 
   // ---- lifecycle ------------------------------------------------------------------------------------------------
