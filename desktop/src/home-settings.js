@@ -70,6 +70,10 @@
     const operations={launch};
     creating=(async()=>{await loadUI();ui=window.CrewSettings.create({host:root,remote:bridge.remote,read:()=>bridge.settingsGet(),save:body=>bridge.settingsSave(body),operations,
       operationsPage:()=>window.CrewHomeHealth?.show(),panels:{
+      persona:host=>CrewPersona.mountSettings(host,{save:body=>bridge.settingsSave(body),request:(op,body)=>{
+        const action=op.slice('persona.'.length);
+        return CrewPersona.isRead(op) ? bridge.personaGet({action,...body}) : bridge.personaSave({action,...body});
+      }}),
       sounds:host=>window.CrewSoundSettings.mount(host,{read:()=>bridge.settingsGet(),save:body=>bridge.settingsSave(body)}),
       prompts:host=>window.CrewBehaviorPrompts.mount(host,{read:query=>bridge.promptsGet(query),save:body=>bridge.promptsSave(body)}),appearance,connections,storage,
       ...(bridge.remote?{}:{remote,tools:host=>window.CrewHomeTools?.mount(host)})}});return ui;})();

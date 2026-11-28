@@ -676,6 +676,16 @@ handle('desktop:prompts-save',({action, ...body})=>{
   // crew-op: prompt.save prompt.reset
   return settingsRequest('/api/op/prompt.' + action, body);
 });
+handle('desktop:persona-get',({action, ...query})=>{
+  if (!['get','list','history'].includes(action)) throw Error('不支持的性格读取操作。');
+  // crew-op: persona.get persona.list persona.history
+  return settingsRequest('/api/op/persona.' + action + '?' + new URLSearchParams(query));
+});
+handle('desktop:persona-save',({action, ...body})=>{
+  if (!['save','seed','reset','freeze','restore','grow'].includes(action)) throw Error('不支持的性格写入操作。');
+  // crew-op: persona.save persona.seed persona.reset persona.freeze persona.restore persona.grow
+  return settingsRequest('/api/op/persona.' + action, body);
+});
 // A LAN host's settings live in its HOME and are read and saved through its HTTP settings API.
 handle('desktop:settings-get',async()=>{
   if(!remoteMode)return operations.request('settings-get');
@@ -735,6 +745,8 @@ handle('desktop:settings-ui',async()=>{
     ['executeJavaScript','operations-ui.js'], ['insertCSS','settings-ui.css'],
     ['insertCSS','behavior-prompts-ui.css'], ['executeJavaScript','behavior-prompts-ui.js'],
     ['executeJavaScript','sounds.js'], ['executeJavaScript','sound-settings-ui.js'],
+    ['executeJavaScript','vendor/markdown-it.min.js'], ['executeJavaScript','report-markdown.js'],
+    ['insertCSS','persona-ui.css'], ['executeJavaScript','persona-ui.js'],
     ['executeJavaScript','settings-ui.js'], ['executeJavaScript','connections-ui.js'],
     ['insertCSS','storage-ui.css'], ['executeJavaScript','storage-ui.js'],
     ['insertCSS','remote-access-ui.css'], ['executeJavaScript','remote-access-ui.js']

@@ -148,6 +148,8 @@ def delete(conn, session_id, now=None):
                      (board._time(now), group['project'], group['name']))
     for person in people:
         _archive(conn, person, True, now, event='session:delete')
+        conn.execute('DELETE FROM persona_history WHERE session_id=?', (person['session_id'],))
+        conn.execute('DELETE FROM personas WHERE session_id=?', (person['session_id'],))
         conn.execute('DELETE FROM session_appearance WHERE session_id=?', (person['session_id'],))
         domains.release_leader(conn, person['session_id'])
         if group is not None:

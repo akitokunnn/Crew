@@ -6,7 +6,7 @@ from contextlib import closing
 from pathlib import Path
 
 from .. import board, claude_budget, goals, onboarding, runtime_catalog, settings, store, usage_cli
-from .. import member_defaults, operations_chat, operations_settings
+from .. import member_defaults, operations_chat, operations_settings, persona
 from .. import event_sounds
 from . import behavior_prompts as behavior_prompts_api
 from .common import _text
@@ -87,6 +87,8 @@ def post_settings(service, path, data, project_name):
             event_sounds.save(conn, data['sounds'], service.home)
         if 'canvas_wheel_zoom' in data:
             settings.save_canvas_wheel_zoom(conn, data['canvas_wheel_zoom'])
+        if 'persona_enabled' in data:
+            persona.set_enabled(conn, data['persona_enabled'])
     return service.settings_state()
 
 
@@ -142,10 +144,6 @@ def post_onboarding(service, path, data, project_name):
 
 def get_connections(handler, service, url, query):
     handler._send(200, service.connections.snapshot())
-
-
-def get_settings(handler, service, url, query):
-    handler._send(200, service.settings_state())
 
 
 def get_usage(handler, service, url, query):

@@ -268,7 +268,13 @@ class CodexRunning:
                 header = behavior_prompts.text(conn, 'codex_session', session_id=self.session_id, plugin_root=self.plugin_root,
                     values={'crew_name': session['crew_name'], 'role': role, 'project': session['project'],
                             'session_id': self.session_id})
+            block = None
+            if execution is None and role in ('leader', 'workspace_assistant'):
+                from . import persona
+                self.persona_hash, block = persona.injection(conn, self.session_id)
         instructions = header + '\n\n' + behavior_prompts.render(self._behavior_manifest)
+        if block:
+            instructions += '\n\n' + block
         if directory_notice:
             instructions += '\n\n' + directory_notice
         env = dict(os.environ)

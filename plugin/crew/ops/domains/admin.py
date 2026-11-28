@@ -1,5 +1,6 @@
 """Settings, files, storage, maintenance, usage and host administration (design §8.6, §8.11–8.13)."""
 from ...web_api import admin, files, workspace
+from ..registry import Operation, register
 from ._common import H, HD, route
 
 
@@ -27,8 +28,16 @@ def _object(properties, required=(), *, description=None, kind='object', open_fi
     return schema
 
 
-route('settings.get', '读取全局设置', 'GET', '/api/settings', admin.get_settings, access='read', scopes=HD,
-      params=_object({}, description='无参数'))
+def _get_settings(ctx, args):
+    result = ctx.service.settings_state()
+    if ctx.caller.is_ai:
+        del result['persona_enabled']
+    return result
+
+
+register(Operation(name='settings.get', summary='读取全局设置', access='read', risk='normal', scopes=HD,
+                   target='any', lock='none', project='none', admission='none', handler=_get_settings,
+                   params=_object({}, description='无参数'), query_get=True))
 route('settings.save', '保存全局设置', 'POST', '/api/settings', admin.post_settings, access='write', scopes=HD,
       params=_object({
           'ai': _object({
@@ -89,6 +98,7 @@ route('settings.save', '保存全局设置', 'POST', '/api/settings', admin.post
               'delivery': _field('string', '任务交付事件使用的内置或自定义音效 ID，off 为关闭', minLength=1),
           }, ['muted', 'volume', 'leader', 'assistant', 'delivery'], description='完整的提示音设置', open_fields=False),
           'canvas_wheel_zoom': _field('boolean', '启用后，两张图上的竖向滚轮用于缩放'),
+          'persona_enabled': _field('boolean', '开启 AI 性格'),
       }))
 route('runtimes.list', '列出可用载体与模型', 'GET', '/api/runtimes', admin.get_runtimes, access='read',
       description='列出可用载体与模型。每个载体的 models_source 说明模型清单从哪来：discovered 是载体自己报告的完整清单（Codex model/list），'

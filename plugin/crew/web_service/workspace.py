@@ -10,6 +10,7 @@ class WorkspaceMixin:
     def settings_state(self):
         return {'ai': settings.get(self.home), 'execution': settings.get_execution(self.home), 'runtimes': self.runtime_catalog.snapshot(),
                 'canvas_wheel_zoom': settings.canvas_wheel_zoom(self.home),
+                'persona_enabled': settings.persona_enabled(self.home),
                 **event_sounds.settings_snapshot(self.home),
                 'home': str(Path(self.home).resolve()), 'backend': str(Path(self.plugin_root).resolve())}
 

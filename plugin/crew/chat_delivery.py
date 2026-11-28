@@ -86,9 +86,21 @@ class DeliveryMixin:
             raise board.Conflict(MAINTENANCE_HELD)
         identity = identity or str(uuid.uuid4())
         original_text=text if display_text is None else display_text
+        if original_text.strip() == '/compact':
+            text = original_text
         prompt_application = None
+        pending_persona = None
         if text.strip() != '/compact':
             with closing(store.connect(self.home)) as prompt_conn:
+                if current.execution is None:
+                    fingerprint, block = persona.injection(prompt_conn, logical)
+                    previous = getattr(current, 'persona_hash', None)
+                    if fingerprint != previous:
+                        pending_persona = fingerprint
+                        if not block and previous not in (None, persona.OFF_HASH, persona.EMPTY_HASH):
+                            block = behavior_prompts.text(prompt_conn, 'persona_off', session_id=logical)
+                        if block:
+                            text = block + '\n\n' + text
                 current_manifest = behavior_prompts.for_session(prompt_conn, logical, plugin_root=self.plugin_root)
                 if behavior_prompts.manifest_hash(current_manifest) != getattr(current, 'behavior_prompt_hash', None):
                     prompt_application = behavior_prompts.prepare_input(prompt_conn, logical, session_id, identity,
@@ -161,6 +173,9 @@ class DeliveryMixin:
                 if channel_upto is not None:
                     with closing(store.connect(self.home)) as channel_conn:
                         channel.seen(channel_conn, logical, channel_upto)
+                # A receipt write can still fail after the native accepted input.
+                if pending_persona is not None:
+                    current.persona_hash = pending_persona
                 return result
             except Exception as exc:
                 with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
@@ -184,6 +199,8 @@ class DeliveryMixin:
                         behavior_prompts.delivered(prompt_conn, prompt_application['id'],
                             evidence='Claude 输入已写入并flush；未将传输成功冒充模型读取')
                     current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_application['manifest'])
+                if pending_persona is not None:
+                    current.persona_hash = pending_persona
                 current.git_context_revision = git_revision
                 current.trust_context = trust_context
                 current.domain_context = domain_context

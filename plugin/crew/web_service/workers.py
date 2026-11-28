@@ -223,11 +223,13 @@ class WorkersMixin:
         self.remote_access.start_saved()
 
     def close(self):
+        from .. import persona_growth
         self.stop.set()
         with self.chat.lock:
             self.chat.closed = True
         # Cancel independent digest natives before joining other pollers.
-        actions = [self.report_previews.close, self.channel_digest.stop, self.remote_access.shutdown, self.storage_cleanup.close, self.connections.close]
+        actions = [self.report_previews.close, self.channel_digest.stop, lambda: persona_growth.stop(self.chat),
+                   self.remote_access.shutdown, self.storage_cleanup.close, self.connections.close]
         if self.usage_worker is not None:
             # A scan step holds the database writer; let it commit or roll back before the owner goes on.
             actions.append(self.usage_worker.join)
@@ -243,6 +245,7 @@ class WorkersMixin:
         if self.worker is not None:
             actions.append(lambda: self.worker.join(timeout=1))
         actions.append(self.channel_digest.close)
+        actions.append(lambda: persona_growth.close(self.chat))
         if self.change_worker is not None:
             # Last: the conversations and the digests have stopped, so their final marks are recorded.
             actions.append(self.changes_closed.set)
@@ -267,11 +270,12 @@ class WorkersMixin:
                 if not admitted:
                     continue
                 try:
-                    with self.chat.lock, closing(store.connect(self.home)) as conn:
+                    with closing(store.connect(self.home)) as conn:
                         from .. import persona_growth, war_room
-                        self.chat.goal_controller.sync(conn)
-                        war_room.resume_budget_work(conn)
-                        self.chat.goal_controller.resume_operations(conn)
+                        with self.chat.lock:
+                            self.chat.goal_controller.sync(conn)
+                            war_room.resume_budget_work(conn)
+                            self.chat.goal_controller.resume_operations(conn)
                         persona_growth.tick(self.chat, conn, self.now().isoformat())
                     self.chat.deliver_messages()
                     self.deliver_notices()
