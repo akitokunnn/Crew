@@ -3,7 +3,7 @@ import json
 import re
 import uuid
 
-from . import board, channel, goals, war_room
+from . import board, channel, goals, war_room, war_room_watchdog
 from .ops.errors import OpError
 
 SECTIONS = {'分工': 'assignment', '等你定': 'decision', '完成标准': 'criterion'}
@@ -281,6 +281,7 @@ def approve(conn, room_id, actor, version, recommendations, budget_tokens, now=N
     conn.execute('UPDATE war_room_plans SET approval=? WHERE room_id=? AND version=?',
                  (json.dumps({'recommendations': recommendations, 'budget_tokens': budget_tokens, 'at': stamp}), room_id, version))
     changed(conn, room, 'approved', {'version': version, 'request_id': 'room:%d:v%d:approve' % (room_id, version)}, stamp, actor)
+    war_room_watchdog.note_turn(room_id)
     return war_room.get(conn, room_id, actor)
 
 

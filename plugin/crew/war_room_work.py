@@ -1,5 +1,5 @@
-"""Room-bound task deliveries and deterministic idle checks in the existing service loop."""
-from . import board, codex_client, goals, messaging, runtimes, store, war_room
+"""Room-bound task deliveries in the existing service loop."""
+from . import board, codex_client, goals, messaging, runtimes, war_room
 
 
 def can_work(manager, conn, room, item, live):
@@ -27,53 +27,6 @@ def can_work(manager, conn, room, item, live):
         return live is not None and not natives.intersection(live)
     from .codex_runtime import lease_alive
     return not lease_alive(manager.home, exe['id'])
-
-
-def end_idle(conn, idle, now):
-    if idle['notice_id']:
-        conn.execute('UPDATE leader_notices SET wake=0 WHERE id=? AND sent_at IS NULL', (idle['notice_id'],))
-    conn.execute('UPDATE war_room_idle SET ended_at=? WHERE room_id=? AND item_id=? AND owner=? AND since=?',
-                 (now, idle['room_id'], idle['item_id'], idle['owner'], idle['since']))
-
-
-def watch(manager, conn, live, now):
-    """Only uninterrupted observations of runnable, idle work advance a reminder."""
-    rows = conn.execute("SELECT i.* FROM war_room_items i JOIN war_rooms r ON r.id=i.room_id "
-                        "WHERE r.status='open' AND i.plan_version=r.approved_version "
-                        "AND i.kind='assignment' AND i.status IN ('todo','doing')").fetchall()
-    if not rows and not conn.execute('SELECT 1 FROM war_room_idle WHERE ended_at IS NULL LIMIT 1').fetchone():
-        return
-    observed = set()
-    with board.transaction(conn):
-        for item in rows:
-            room = war_room._room(conn, item['room_id'])
-            key = (room['id'], item['id'], item['owner_session_id'])
-            if not can_work(manager, conn, room, item, live):
-                continue
-            observed.add(key)
-            idle = conn.execute('SELECT * FROM war_room_idle WHERE room_id=? AND item_id=? AND owner=? AND ended_at IS NULL', key).fetchone()
-            execution = manager.goal_controller.current(conn, item['goal_id'], key[2])
-            activity_key = None
-            if execution:
-                # A complete turn can start and finish between two worker ticks.
-                events = manager.journal(execution['id']).events
-                last_turn = next((event['seq'] for event in reversed(events) if event['type']=='turn_result'), 0)
-                activity_key = '%s:%s' % (execution['id'], last_turn)
-            if idle and idle['activity_key'] != activity_key:
-                end_idle(conn, idle, now)
-                idle = None
-            if not idle:
-                conn.execute('INSERT INTO war_room_idle(room_id,item_id,owner,since,activity_key) VALUES(?,?,?,?,?)',
-                             (*key, now, activity_key))
-            elif idle['notice_id'] is None and (store.parse_iso(now)-store.parse_iso(idle['since'])).total_seconds() >= 600:
-                text = '作战室 #%d：%s 负责的「%s」已空闲十分钟，请继续推进。' % (room['id'], war_room._name(conn, key[2]), item['title'])
-                notice = conn.execute("INSERT INTO leader_notices(project,session_id,room_id,text,source,created_at,wake) "
-                                    "VALUES(?,?,?,?,'crew',?,1)", (room['project'], room['lead_session_id'], room['id'], text, now)).lastrowid
-                conn.execute('UPDATE war_room_idle SET notice_id=? WHERE room_id=? AND item_id=? AND owner=? AND since=?', (notice, *key, idle['since']))
-        for idle in conn.execute('SELECT * FROM war_room_idle WHERE ended_at IS NULL').fetchall():
-            key = (idle['room_id'], idle['item_id'], idle['owner'])
-            if key not in observed:
-                end_idle(conn, idle, now)
 
 
 def deliver(manager, conn, live, now):
