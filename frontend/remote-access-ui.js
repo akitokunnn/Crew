@@ -88,16 +88,19 @@
       }
       const content=`<div class="remote-pair-address">${svg}<div class="remote-link">
         <code>${esc(link)}</code><button type="button" class="cs-button" data-remote-action="copy-link" data-link="${esc(link)}">${copied===link?"已复制":"复制连接链接"}</button></div></div>`;
-      return folded?`<details class="remote-virtual-pair" data-pair-address="${esc(url)}"><summary>${esc(item.name)} · ${esc(item.address)}</summary>${content}</details>`:content;
+      return folded?`<details class="remote-pair-fold" data-pair-address="${esc(url)}"><summary>${esc(item.address)} · 虚拟网卡</summary>${content}</details>`:content;
     }
     function pairMarkup(){
       const links=snapshot.urls.map(pairAddress);
-      return `<div class="remote-pair" role="status"><span>配对码</span><strong>${esc(pair.code)}</strong><small>仅可使用一次 · ${esc(when(pair.expires_at))} 失效</small>
+      const otherLinks=links.filter(link=>link.folded);
+      return `<div class="remote-pair" role="status"><span>配对码</span><strong>${esc(pair.code.slice(0,4))}<span class="remote-code-tail">${esc(pair.code.slice(4))}</span></strong><small>仅可使用一次 · ${esc(when(pair.expires_at))} 失效</small>
         ${links.length?`<p class="remote-scan-hint">用 Crew 安卓版直接扫码，或用手机相机扫码在浏览器里打开</p>
           ${qrError?`<small class="remote-qr-error">二维码无法显示：${esc(qrError)}</small>`:""}
           ${links.filter(link=>!link.folded).map(pairAddressMarkup).join("")}
-          ${links.filter(link=>link.folded).map(pairAddressMarkup).join("")}
-          <small>Crew 桌面客户端在“设置 → 后台与运维 → 连接与目录”添加局域网主机时粘贴连接链接。</small>`:""}</div>`;
+          ${otherLinks.length?`<details class="remote-pair-fold" data-pair-address="other"><summary>其他地址（${otherLinks.length}）</summary>${otherLinks.map(pairAddressMarkup).join("")}</details>`:""}
+          <details class="remote-pair-fold" data-pair-address="desktop-help"><summary>其他电脑怎么连</summary>
+            <small>Crew 桌面客户端在“设置 → 后台与运维 → 连接与目录”添加局域网主机时粘贴连接链接。</small>
+          </details>`:""}</div>`;
     }
     function advertisingMarkup(){
       const advertising=snapshot.discovery_advertising;
@@ -129,9 +132,9 @@
         ${error&&!snapshot?'<button class="cs-button" data-remote-action="refresh">重新读取</button>':""}</section>`;
       if(markup!==lastMarkup){
         const keepFocus=host.contains(document.activeElement)&&document.activeElement.name==="remote-bind";
-        const open=new Set(Array.from(host.firstElementChild?.querySelectorAll(".remote-virtual-pair[open]")||[], row=>row.dataset.pairAddress));
+        const open=new Set(Array.from(host.firstElementChild?.querySelectorAll(".remote-pair-fold[open]")||[], row=>row.dataset.pairAddress));
         host.innerHTML=markup;lastMarkup=markup;
-        if(open.size)for(const row of host.querySelectorAll(".remote-virtual-pair"))row.open=open.has(row.dataset.pairAddress);
+        if(open.size)for(const row of host.querySelectorAll(".remote-pair-fold"))row.open=open.has(row.dataset.pairAddress);
         if(keepFocus)host.querySelector('[name="remote-bind"]').focus({preventScroll:true});
       }
       if(pair&&snapshot.urls.length&&!window.qrcode&&!loadingQr&&!qrError){

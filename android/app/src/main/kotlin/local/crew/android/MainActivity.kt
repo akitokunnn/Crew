@@ -21,14 +21,19 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -43,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.view.doOnLayout
@@ -232,11 +238,15 @@ class MainActivity : ComponentActivity() {
     private fun Workbench(work: Page.Work) {
         val colors = LocalCrewColors.current
         Column(Modifier.fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 16.dp, end = 8.dp),
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).background(colors.bg).padding(start = 16.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(6.dp).background(colors.working, CircleShape))
+                Spacer(Modifier.width(8.dp))
                 Text(work.computer.hostName, Modifier.weight(1f), color = colors.text2,
                     style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                TextButton(onClick = { showPair(back = work.computer) }) { Text("换电脑") }
+                TextButton(onClick = { showPair(back = work.computer) }) {
+                    Text("换电脑", color = colors.text2, fontSize = 14.sp)
+                }
             }
             HorizontalDivider(color = colors.line)
             AndroidView(

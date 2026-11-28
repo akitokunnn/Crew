@@ -95,10 +95,28 @@ test('a pairing code comes with a copyable connection link per access address',a
   p.window.CrewBrowser={copyText:async text=>{copies.push(text);}};
   await p.click('pair');
   const link='http://10.8.9.7:47812/remote/login#code=12345678';
-  assert.match(p.host.innerHTML,/<strong>12345678<\/strong>/);
+  assert.match(p.host.innerHTML,/<strong>1234<span class="remote-code-tail">5678<\/span><\/strong>/);
   assert.ok(p.host.innerHTML.includes(`<code>${link}</code>`));
   assert.match(p.host.innerHTML,/复制连接链接/);
   await p.host.onclick({target:{closest:()=>({dataset:{remoteAction:'copy-link',link},disabled:false})}});
   assert.deepEqual(copies,[link]);assert.match(p.host.innerHTML,/已复制/);assert.doesNotMatch(p.host.innerHTML,/复制失败/);
   assert.deepEqual(p.calls,[{action:'pair'}]);p.close();
+});
+
+test('virtual addresses share one disclosure and retain their individual connection links',async()=>{
+  const value=initial();
+  value.enabled=true;
+  value.addresses.push({address:'172.22.100.4',name:'vEthernet (WSL)',kind:'other',available:true});
+  for(const item of value.addresses)item.url=`http://${item.address}:47812`;
+  value.urls=value.addresses.map(item=>item.url);
+  const p=await panel(value);
+  await p.click('pair');
+  const card=p.host.innerHTML.split('<div class="remote-pair"')[1];
+  assert.match(card,/<summary>其他地址（2）<\/summary>/);
+  assert.match(card,/<summary>10\.8\.9\.7 · 虚拟网卡<\/summary>/);
+  assert.match(card,/<summary>172\.22\.100\.4 · 虚拟网卡<\/summary>/);
+  assert.doesNotMatch(card,/ZeroTier|vEthernet/);
+  assert.match(card,/data-link="http:\/\/172\.22\.100\.4:47812\/remote\/login#code=12345678"/);
+  assert.match(card,/<summary>其他电脑怎么连<\/summary>/);
+  p.close();
 });
