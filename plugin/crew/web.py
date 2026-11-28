@@ -65,8 +65,9 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
               WorkspaceMixin, SessionsMixin, ReadsMixin, UsageMixin):
     def __init__(self, home, plugin_root, agents_provider=None,
                  claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None, process_factory=subprocess.Popen,
-                 notification_client=None, lock_status=notifications.desktop_locked, notification_batch_seconds=30,
-                 vscode_state_db=None, isolated_sources=False, mcp_exposure='core'):
+                 notification_client=None, notification_batch_seconds=30,
+                 vscode_state_db=None, isolated_sources=False, mcp_exposure='core',
+                 *, idle_status=notifications.desktop_idle_seconds):
         if mcp_exposure not in ('core', 'all'):
             raise ValueError('mcp_exposure 只能是 core 或 all')
         # core: core tools + crew_search (user ruling 7); all: every permitted tool (A/B candidate, design §5.2).
@@ -116,7 +117,8 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
         # Background branch scans for the leader cards (web_service/git.py): latest request and worker per workspace.
         self.git_scan_lock = threading.Lock()
         self.git_scan_requests, self.git_scan_workers = {}, {}
-        self.connections = connections.Manager(self, notification_client, lock_status, notification_batch_seconds)
+        self.connections = connections.Manager(self, notification_client, notification_batch_seconds,
+                                               idle_status=idle_status)
         self.inbox = self.connections.inboxes['qq']
         # Marks maintenance left unfinished by a previous service as interrupted; nothing is re-sent.
         self.maintenance = maintenance.Manager(self)

@@ -135,7 +135,8 @@ class UsageMixin:
         return self.connections.notification_status()
 
     def set_away(self, away):
-        return self.connections.set_away(away)
+        self.connections.set_away(away)
+        return self.notification_status()
 
     def usage(self, period="week", what=None, project_name=None, scope='workspace'):
         try:

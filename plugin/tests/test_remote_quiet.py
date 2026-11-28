@@ -24,6 +24,7 @@ class RemoteQuietTests(ShellFixture, unittest.TestCase):
         super().setUp()
         self.clock = store.parse_iso(NOW)
         self.clients = {channel: FakeQQ() for channel in ('qq', 'lark')}
+        (self.home / 'notification-routing.json').write_text('{"target": "both"}', encoding='utf-8')
         for channel in self.clients:
             (self.home / (channel + '.json')).write_text(json.dumps({
                 'app_id': 'fake-app', 'app_secret': 'fake-secret'}), encoding='utf-8')
@@ -33,7 +34,7 @@ class RemoteQuietTests(ShellFixture, unittest.TestCase):
         self.service = web.Service(self.home, PLUGIN, cwd=self.project, agents_provider=lambda: [],
             claude_root=self.claude, codex_root=self.codex, runs_file=self.runs,
             now=lambda: self.clock, notification_client=self.clients['qq'],
-            lock_status=lambda: False,
+            idle_status=lambda: 0,
             process_factory=self.process_factory, vscode_state_db=self.vscode_state_db)
         self.addCleanup(self.service.close)
         self.inboxes = self.service.connections.inboxes
@@ -128,7 +129,7 @@ class RemoteQuietTests(ShellFixture, unittest.TestCase):
                     inbox.execute(self.conn, "UPDATE notification_messages SET status='retry',attempts=1,next_attempt=?,delivery_json=? WHERE item_id=?",
                                   (self.clock.timestamp(), payload, identity))
                 replacement = notifications.Inbox(self.service, self.clients[channel],
-                    lock_status=lambda: False, channel_id=channel)
+                    channel_id=channel)
                 self.addCleanup(replacement.close)
                 replacement.set_away(True)
                 replacement.tick()
@@ -214,7 +215,7 @@ class RemoteQuietTests(ShellFixture, unittest.TestCase):
                 self.assertEqual(inbox.execute(self.conn, 'SELECT status FROM notification_replies').fetchone()[0], 'sending')
                 self.assertEqual(inbox.execute(self.conn, 'SELECT COUNT(*) FROM notification_messages').fetchone()[0], 0)
                 sent = len(client.sent)
-                replacement = notifications.Inbox(self.service, client, lock_status=lambda: False, channel_id=channel)
+                replacement = notifications.Inbox(self.service, client, channel_id=channel)
                 self.addCleanup(replacement.close)
                 replacement.process_replies()
                 self.assertEqual(len(client.sent), sent)
@@ -299,7 +300,7 @@ class RemoteQuietTests(ShellFixture, unittest.TestCase):
                                   (status, self.clock.timestamp(), key))
             inbox.close()
             replacement = notifications.Inbox(self.service, self.clients[channel],
-                                               lock_status=lambda: False, channel_id=channel)
+                                               channel_id=channel)
             self.addCleanup(replacement.close)
             replacement.set_away(True)
             replacement.tick()

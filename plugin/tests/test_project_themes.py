@@ -124,7 +124,7 @@ class ProjectThemeHttpTests(ShellFixture, unittest.TestCase):
             self.home, PLUGIN, port=0, cwd=self.project, agents_provider=lambda: [],
             claude_root=self.claude, codex_root=self.codex, runs_file=self.runs,
             now=lambda: store.parse_iso(NOW), process_factory=self.process_factory,
-            vscode_state_db=self.vscode_state_db, lock_status=lambda: False)
+            vscode_state_db=self.vscode_state_db, idle_status=lambda: 0)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .01})
         self.thread.start()
         self.addCleanup(self.close_server)

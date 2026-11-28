@@ -189,7 +189,7 @@ class ExitLifecycleTests(unittest.TestCase):
             inbox.close = MethodType(notifications.Inbox.close, inbox)
             inboxes[channel] = inbox
             inbox.worker.start()
-        connections.Manager.close(SimpleNamespace(inboxes=inboxes))
+        connections.Manager.close(SimpleNamespace(inboxes=inboxes, _presence_stop=threading.Event(), _presence_worker=None))
         self.assertEqual(results, [True, True], 'A second channel did not receive stop until the first channel finished')
 
     def test_desktop_handoff_is_not_archived_by_a_later_manager_shutdown(self):

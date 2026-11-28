@@ -29,6 +29,7 @@
   let allTab = "overview", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0, usageScannedAt = null;
   let cardId = null, cardReturn = null, rightOpen = false, dialogReturn = null;
   let theme = "system", leadersOpen = true, presenceOpen = false, presenceFailure = null, workspaceSwitcherOpen = false;
+  let lastAutoReturn = 0;
   // "#settings" opens settings; "#settings=backend" (the 系统管理员 page's 运维 link in a browser) opens that category.
   let pendingSettingsHash = location.hash === "#settings" ? "ai" : location.hash === "#settings=backend" ? "backend" : false;
   // 手机宽度下 Leader 栏是覆盖在内容上的抽屉：每次打开默认收起，选完即收，不改宽屏的记忆。
@@ -210,9 +211,36 @@
     return result;
   }
   function toast(message, undo = null, root = $("toast-root")) {
-    const node = document.createElement("div"); node.className = "toast show"; node.setAttribute("role", "status"); node.textContent = message;
+    const quiet = root.id === "toast-quiet-root";
+    const node = document.createElement("div"); node.className = quiet ? "toast-quiet" : "toast show"; node.setAttribute("role", "status"); node.textContent = message;
     if (undo !== null) { const button = document.createElement("button"); button.type = "button"; button.textContent = "撤销"; button.onclick = async () => { button.disabled = true; try { await undo(); node.remove(); } catch (error) { button.disabled = false; toast(error.message); } }; node.append(button); }
-    root.replaceChildren(node); setTimeout(() => node.remove(), undo === null ? 5000 : 12000);
+    root.replaceChildren(node);
+    const composer = quiet ? document.querySelector("#chat-host .composer-wrap") : null;
+    let observer = null;
+    if (composer) {
+      const position = () => {
+        const bounds = composer.getBoundingClientRect();
+        if (bounds.height && bounds.top < innerHeight) node.style.setProperty("--quiet-clearance", `${innerHeight - bounds.top + 8}px`);
+        else node.style.removeProperty("--quiet-clearance");
+      };
+      position();
+      observer = new ResizeObserver(position);
+      observer.observe(composer);
+    }
+    setTimeout(() => { observer?.disconnect(); node.remove(); }, quiet ? 4000 : undo === null ? 5000 : 12000);
+  }
+  function showAutoReturn(value) {
+    const at = Date.parse(value);
+    if (!(at > lastAutoReturn)) return;
+    lastAutoReturn = at;
+    if (Date.now() - at > 60_000) return;
+    let root = $("toast-quiet-root");
+    if (!root) {
+      root = document.createElement("div");
+      root.id = "toast-quiet-root";
+      document.body.append(root);
+    }
+    toast("检测到你回到电脑前，已退出离开模式", null, root);
   }
   document.addEventListener("crew:sound-error", event => toast(event.detail));
   function replace(node, html) {
@@ -1528,6 +1556,7 @@
       replace($("main"), CrewWorkspaceEntry.render(state, {esc, ic, display: projectDisplay}, activityChanged));
       document.title = "工作区 · Crew";
       if (pendingSettingsHash) { const category = pendingSettingsHash; pendingSettingsHash = false; history.replaceState(null, "", `${location.pathname}${location.search}`); openSettings(category); }
+      showAutoReturn(state.notification?.auto_returned_at);
       return;
     }
     try { localStorage.setItem("crew.mobile.project", project); } catch {}
@@ -1544,6 +1573,7 @@
     if (mountedRoom !== null && previous !== null) CrewWarRoom.changed(live);
     if (pendingSettingsHash) { const category = pendingSettingsHash; pendingSettingsHash = false; openSettings(category); }
     refreshUsage();
+    showAutoReturn(state.notification?.auto_returned_at);
     if (previous !== null) notifySounds(previous, meta.source === "snapshot" || meta.catchUp, meta.source === "snapshot" ? snapshotGeneration : soundGeneration);
   }
   function showLoadError(error) {

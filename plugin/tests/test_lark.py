@@ -404,7 +404,7 @@ class LarkDecisionFlowTests(unittest.TestCase):
             self.sent.append(json.loads(body['content'])['text'])
             return {'code': 0, 'data': {'message_id': 'om-out-%s' % len(self.sent)}}
         self.client._request = mock.Mock(side_effect=request)
-        self.inbox = notifications.Inbox(self.service, self.client, lock_status=lambda: False, channel_id='lark')
+        self.inbox = notifications.Inbox(self.service, self.client, channel_id='lark')
         self.inbox.on_state('connected', None)
         self.addCleanup(self.inbox.close)
 
