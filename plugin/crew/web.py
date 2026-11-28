@@ -228,9 +228,8 @@ STATIC.update({'/notes.html': ('notes.html', 'text/html; charset=utf-8'),
                '/notes-model.js': ('notes-model.js', 'text/javascript; charset=utf-8'),
                '/notes.css': ('notes.css', 'text/css; charset=utf-8')})
 STATIC['/global-rail.js'] = ('global-rail.js', 'text/javascript; charset=utf-8')
-STATIC.update({'/voice.html': ('voice.html', 'text/html; charset=utf-8'),
-               '/voice.js': ('voice.js', 'text/javascript; charset=utf-8'),
-               '/voice.css': ('voice.css', 'text/css; charset=utf-8')})
+STATIC.update({'/persona-ui.js': ('persona-ui.js', 'text/javascript; charset=utf-8'),
+               '/persona-ui.css': ('persona-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/canvas-core.js': ('canvas-core.js', 'text/javascript; charset=utf-8'),
                '/mindmap.js': ('mindmap.js', 'text/javascript; charset=utf-8'),
                '/mindmap-model.js': ('mindmap-model.js', 'text/javascript; charset=utf-8'),

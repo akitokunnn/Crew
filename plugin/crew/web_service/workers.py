@@ -268,10 +268,11 @@ class WorkersMixin:
                     continue
                 try:
                     with self.chat.lock, closing(store.connect(self.home)) as conn:
-                        from .. import war_room
+                        from .. import persona_growth, war_room
                         self.chat.goal_controller.sync(conn)
                         war_room.resume_budget_work(conn)
                         self.chat.goal_controller.resume_operations(conn)
+                        persona_growth.tick(self.chat, conn, self.now().isoformat())
                     self.chat.deliver_messages()
                     self.deliver_notices()
                 except (board.BoardError, sqlite3.Error, OSError):
@@ -284,7 +285,7 @@ class WorkersMixin:
                 break
 
     def deliver_notices(self):
-        from .. import war_room_work
+        from .. import war_room_watchdog, war_room_work, war_room_worktree
         with closing(store.connect(self.home)) as conn:
             with self.write_lock:
                 self.deliver_git_results(conn)
@@ -296,6 +297,8 @@ class WorkersMixin:
                 with self.chat.lock:
                     war_room_work.stop_room_processes(self.chat, conn)
                     war_room_work.watch(self.chat, conn, live, now)
+                    war_room_worktree.sweep(self.chat, conn, now)
+                    war_room_watchdog.tick(self.chat, conn, live, now)
                 self.chat.deliver_leader_notices(conn, live, now)
             # Do not hold the service write lock while waiting for a carrier receipt.
             war_room_work.deliver(self.chat, conn, live, now)

@@ -6,8 +6,8 @@ import uuid
 
 from . import behavior_prompts, trust_mode
 from . import (
-    board, channel, codex_client, domains, git_admin, guard, messaging, personal, runtime_switch, runtimes, store,
-    war_room, workspace_execution,
+    board, channel, codex_client, domains, git_admin, guard, messaging, personal, persona, runtime_switch, runtimes,
+    store, war_room, workspace_execution,
 )
 from .chat_base import MAINTENANCE_HELD, _admitted, IMAGE_TYPES, validate_images
 
@@ -424,9 +424,11 @@ class DeliveryMixin:
 
     @_admitted
     def send(self, session, text, source='human', identity=None, images=None, display_text=None, sender=None,
-             *, resume_existing=False, steer=False, room_id=None):
+             *, resume_existing=False, steer=False, room_id=None, input_mode='text'):
         """``steer`` lets a non-human input join a turn already in progress, as the user's input does."""
         images = validate_images(images)
+        if input_mode not in ('text', 'voice'):
+            raise board.BoardError('输入方式只能是 text 或 voice')
         session_id = session.get('_storage_id', session["session_id"])
         identity = str(uuid.uuid4()) if identity is None else identity
         if not isinstance(identity, str) or not identity.strip() or len(identity) > 160:
@@ -490,8 +492,17 @@ class DeliveryMixin:
                     text = ('[Crew 留档通知：用户在你上次回复后处理了以下事项，供参考，按需继续安排]\n'
                             + '\n'.join('%s. %s' % (index, notice['text']) for index, notice in enumerate(quiet, 1))
                             + '\n\n[用户消息]\n' + text)
+            if '_execution' not in session:
+                with closing(store.connect(self.home)) as frame_conn:
+                    frames = [line for line in (
+                        war_room.main_input_note(frame_conn, session['session_id'], source, room_id),
+                        persona.input_frame(frame_conn, session['session_id'], source, room_id)) if line]
+                if frames:
+                    display_text = text if display_text is None else display_text
+                    text = '\n'.join(frames) + '\n\n' + text
             journal.emit('input_delivery', message_id=identity, digest=digest, status='submitted', delivery=delivery,
-                         **({'room_id': room_id} if room_id is not None else {}))
+                         **({'room_id': room_id} if room_id is not None else {}),
+                         **({'input_mode': input_mode} if input_mode != 'text' else {}))
             try:
                 identity = self._send(session_id, text, display_text=display_text,
                                       source=source, identity=identity, images=images, sender=sender, steer=steer)
@@ -504,6 +515,9 @@ class DeliveryMixin:
                              delivery=delivery, error=type(exc).__name__, detail=str(exc))
                 raise
             journal.emit('input_delivery', message_id=identity, digest=digest, status='accepted', delivery=delivery)
+            if '_execution' not in session:
+                with closing(store.connect(self.home)) as frame_conn:
+                    persona.note_input(frame_conn, session['session_id'], source, room_id, identity)
             if quiet:
                 with closing(store.connect(self.home)) as notice_conn:
                     for notice in quiet:

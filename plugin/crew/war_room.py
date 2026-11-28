@@ -578,6 +578,11 @@ def get(conn, room_id, reader=board.HUMAN, limit=50, before=None):
             'read_id': _read_id(conn, room_id, reader)}
 
 
+def main_input_note(conn, session_id, source, room_id):
+    """A one-line note for room input borrowed into a member's main session, or None (plan M17; stage-0 stub)."""
+    return None
+
+
 def context(conn, room, sid):
     version = room['approved_version'] or room['draft_version']
     items = board._rows(conn, 'SELECT entry_id,title,status,note FROM war_room_items WHERE room_id=? AND owner_session_id=? '

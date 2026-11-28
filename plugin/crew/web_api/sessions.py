@@ -6,6 +6,7 @@ from .. import board, goals, messaging, models, runtimes, session_library, sessi
 from .. import appearance
 from .. import personal
 from .. import reading_context
+from .. import workspace_assistant
 from . import personal as personal_api
 from .common import UNHANDLED, _text, _optional_text
 
@@ -195,6 +196,12 @@ def post_chat_send(service, path, data, project_name, conn, now, project):
         raise ValueError('请提供文字或图片')
     note_id = data.get('note_id')
     assistant = personal.can_lead_as_assistant(conn, session['session_id'])
+    input_mode = data.get('input_mode', 'text')
+    if data.get('heard') is not None and input_mode != 'voice':
+        raise ValueError('heard 只在 input_mode=voice 时允许')
+    if input_mode == 'voice' and (data.get('goal_id') or project is None
+                                  or workspace_assistant.project_for(conn, session['session_id']) != project):
+        raise board.BoardError('语音只能发给本工作区助手的总对话')
     if note_id is not None and (not assistant or data.get('goal_id')):
         raise board.BoardError('只有发给系统管理员或工作区助手的普通消息可以带想法')
     # The note is read here by ID before anything is configured or
@@ -217,9 +224,9 @@ def post_chat_send(service, path, data, project_name, conn, now, project):
         service.chat.journal(session['session_id']).set_status('idle')
     prefix = '\n\n'.join(value for value in (context, reading_text) if value)
     if not prefix:
-        return service.chat.send(session, text, images=images, identity=data.get('message_id'))
+        return service.chat.send(session, text, images=images, identity=data.get('message_id'), input_mode=input_mode)
     sent = service.chat.send(session, prefix + '\n\n' + text, images=images,
-                          identity=data.get('message_id'), display_text=text)
+                          identity=data.get('message_id'), display_text=text, input_mode=input_mode)
     if note_id is None or not sent['accepted']:
         return sent
     seqs = [event['seq'] for event in service.chat.history(session['session_id'])['events']

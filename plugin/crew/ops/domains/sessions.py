@@ -266,6 +266,11 @@ route('chat.send', '给会话发消息', 'POST', '/api/chat/send', sessions.post
               'session_id': _field(['string', 'null'], 'file 的来源会话 ID，用来解析相对路径'),
           }, ['kind'], description='用户正在读的内容，按 kind 提供对应定位字段', kind=['object', 'null']),
           'message_id': _field(['string', 'null'], '用于消息去重的客户端消息 ID'),
+          'input_mode': _field('string', '输入方式，默认 text；voice 只用于发给工作区助手总对话的语音转写', enum=['text', 'voice']),
+          'heard': _object({
+              'reply_id': _field('string', '被打断朗读的上一条回复 ID', minLength=1),
+              'chars': _field('integer', '用户实际听到的字数', minimum=0),
+          }, ['reply_id', 'chars'], description='上一条回复被打断时用户听到的部分，只在 voice 时允许'),
       }, ['session_id']))
 route('chat.interrupt', '打断会话当前这一轮', 'POST', '/api/chat/interrupt', sessions.post_chat_interrupt,
       access='write', lock='project', project='chat',
