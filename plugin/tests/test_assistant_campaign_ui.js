@@ -199,7 +199,7 @@ test("problems in the plan, a structure-only plan, no price table, and a failed 
   assert(raw.includes("费用预览没读到") && raw.includes("<b>打卡接口 v1</b>"));
 });
 
-test("a budget raise shows the room's title, spend and old cap next to the new cap; other requests keep the argument line", async () => {
+test("a budget raise shows the room's title, spend and old cap next to the new cap; other requests keep the argument line folded under 查看参数", async () => {
   const raise = {id: "b1", op: "war_room.budget", role: "assistant", project: "fitness", summary: "设置或追加作战室预算", args: {project: "fitness", room: 3, budget_tokens: 400000}};
   const other = {...plainRequest("o1"), args: {name: "后端", legacy: "旧值", request_id: "x"}};
   const page = assistantPage([raise, other], {room: {id: 3, title: "签名 v2", status: "open", budget: {tokens: 200000, spent: 203500, paused_at: "2026-11-27T10:00:00"}}});
@@ -209,7 +209,8 @@ test("a budget raise shows the room's title, spend and old cap next to the new c
   const [card, plain] = page.cards(), html = detail(card).innerHTML;
   assert.match(text(card), /^追加作战室预算\n由系统管理员发起 · 工作区 fitness/);
   assert(html.includes("#3 《签名 v2》") && html.includes("20.4 万 / 20 万 tokens") && html.includes("已暂停") && html.includes("<b>40 万 tokens</b>"));
-  assert.equal(plain.children[2].textContent, "会话名称：后端，legacy：旧值");
+  assert.equal(plain.children[2].children[0].textContent, "查看参数");
+  assert.equal(plain.children[2].children[1].textContent, "会话名称：后端，legacy：旧值");
   assert.equal(plain.children[2].className, "assistant-confirmation-args");
   const [confirm] = card.children.find(child => child.className === "assistant-confirmation-actions").children;
   await confirm.onclick(); await settle();

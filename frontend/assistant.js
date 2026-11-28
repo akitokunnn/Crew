@@ -173,9 +173,9 @@
       const title=document.createElement("strong");title.textContent=special?special[0]:item.summary;
       const meta=document.createElement("p");meta.textContent=`由${ROLE_LABELS[item.role]||item.role}发起${item.project?` · 工作区 ${item.project}`:""}`;card.append(title,meta);
       if((item.op==="campaign.launch"||item.op==="domains.restructure.apply")&&item.args.note){const note=document.createElement("p");note.className="ac-note";note.textContent=`方案说明：${item.args.note}`;card.append(note);}
-      const detail=document.createElement(special?"div":"p");detail.className=special?"ac-detail":"assistant-confirmation-args";
+      const detail=document.createElement(special?"div":"details");detail.className=special?"ac-detail":"assistant-confirmation-args";
       if(special){detail.innerHTML='<p class="ac-quiet">正在读取…</p>';void lookup(item).then(result=>{detail.innerHTML=special[1](item,result);});}
-      else detail.textContent=argumentLine(item)||"无参数";
+      else{const toggle=document.createElement("summary");toggle.textContent="查看参数";const line=document.createElement("p");line.textContent=argumentLine(item)||"无参数";detail.append(toggle,line);}
       const actions=document.createElement("div");actions.className="assistant-confirmation-actions";
       for(const [label,approve,kind] of [["确认执行",true,"btn primary"],["拒绝",false,"btn ghost"]]){
         const button=document.createElement("button");button.type="button";button.className=kind;button.textContent=label;button.disabled=resolving.has(item.id);

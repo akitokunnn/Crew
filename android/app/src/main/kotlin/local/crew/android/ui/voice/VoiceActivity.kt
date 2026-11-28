@@ -1,5 +1,8 @@
 package local.crew.android.ui.voice
 
-import androidx.activity.ComponentActivity
+import local.crew.android.core.ServerSessionsProvider
 
-class VoiceActivity : ComponentActivity()
+class VoiceActivity : VoiceCallActivity() {
+    override val sessionLookup: SessionLookup
+        get() = SessionLookup((application as ServerSessionsProvider).serverSessions::byInstance)
+}
