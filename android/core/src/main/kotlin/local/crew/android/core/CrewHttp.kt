@@ -3,6 +3,7 @@ package local.crew.android.core
 import java.io.IOException
 import java.net.Proxy
 import java.util.concurrent.TimeUnit
+import okhttp3.ConnectionPool
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -11,7 +12,9 @@ internal fun HttpUrl.toHttpOrigin(): String = newBuilder()
     .encodedPath("/").query(null).fragment(null).build().toString().removeSuffix("/")
 
 object CrewHttp {
+    // Crew answers HTTP/1.0 and closes each socket; reusing an idle one fails with "unexpected end of stream".
     private val transport = OkHttpClient.Builder()
+        .connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS))
         .proxy(Proxy.NO_PROXY)
         .followRedirects(false)
         .followSslRedirects(false)

@@ -26,6 +26,11 @@ val speechAttributes: AudioAttributes get() = AudioAttributes.Builder()
     .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build()
 
+// sherpa JNI looks up invoke(float[]): Integer on the concrete callback class.
+internal class SynthesisCallback(private val active: () -> Boolean) : (FloatArray) -> Int {
+    override fun invoke(samples: FloatArray): Int = if (active()) 1 else 0
+}
+
 class BuiltInSpeech(assets: AssetManager) : SpeechSynth {
     private val base = "models/tts"
     private val generation = AtomicLong()
@@ -40,9 +45,8 @@ class BuiltInSpeech(assets: AssetManager) : SpeechSynth {
         val ticket = generation.get()
         val job = currentCoroutineContext().job
         val audio = synchronized(engine) {
-            engine.generateWithConfigAndCallback(text, GenerationConfig(sid = AISHELL_SPEAKER, speed = 1f)) {
-                if (job.isActive && generation.get() == ticket) 1 else 0
-            }
+            val callback = SynthesisCallback { job.isActive && generation.get() == ticket }
+            engine.generateWithConfigAndCallback(text, GenerationConfig(sid = AISHELL_SPEAKER, speed = 1f), callback)
         }
         currentCoroutineContext().ensureActive()
         if (generation.get() == ticket) {

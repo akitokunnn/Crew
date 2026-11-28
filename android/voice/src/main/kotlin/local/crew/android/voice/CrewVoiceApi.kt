@@ -2,6 +2,7 @@ package local.crew.android.voice
 
 import java.io.IOException
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.channels.Channel
@@ -26,7 +27,11 @@ sealed interface Feed {
 class CrewVoiceApi(session: ServerSession, val project: String, client: OkHttpClient) {
     private val base = session.baseUrl.toHttpUrl()
     // A broken response is ambiguous. Reconnect the journal, never replay speech or decisions.
-    private val http = client.newBuilder().retryOnConnectionFailure(false).build()
+    // Crew closes its HTTP/1.0 sockets after each response, including the SSE stream at EOF.
+    private val http = client.newBuilder()
+        .connectionPool(ConnectionPool(0, 1, TimeUnit.SECONDS))
+        .retryOnConnectionFailure(false)
+        .build()
     private fun request(path: String, query: Map<String,String> = emptyMap()): Request.Builder {
         val url = base.newBuilder().addPathSegments(path).addQueryParameter("project", project)
         query.forEach { (k,v) -> url.addQueryParameter(k,v) }

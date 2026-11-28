@@ -33,6 +33,18 @@ class ConversationWireTest {
             }
         }
     }
+    @Test fun consecutiveVoiceRequestsUseFreshConnectionsToTheCrewHost() = runBlocking {
+        MockWebServer().use { server ->
+            val reply = MockResponse.Builder().status("HTTP/1.0 200 OK").body("""{"leaders":[]}""").build()
+            server.enqueue(reply)
+            server.enqueue(reply)
+            server.start()
+            val api = CrewVoiceApi(session(server), "甲", OkHttpClient())
+            repeat(2) { assertTrue(api.leaderNames().isEmpty()) }
+            assertNotEquals(server.takeRequest().connectionIndex, server.takeRequest().connectionIndex)
+        }
+    }
+
     private class Stream : MockResponseBody {
         val frames = LinkedBlockingQueue<String>()
         override val contentLength = 8192L
