@@ -11,8 +11,20 @@
 .remote-device .remote-online{display:inline-flex;align-items:center;gap:6px;color:var(--working-text)}
 .remote-online::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--working);flex:none}
 @media(max-width:760px){.remote-access .cs-button{min-height:44px}}
-.remote-link{display:flex;align-items:center;gap:10px;margin-top:6px;min-width:0}.remote-link code{flex:1;min-width:0;padding:7px 10px;border-radius:9px;background:var(--cs-sheet,var(--surface));border:1px solid var(--cs-border,var(--line));font-size:12px;overflow-wrap:anywhere;user-select:all}.remote-link .cs-button{flex:none}
-@media(max-width:620px){.remote-apply .cs-button{width:100%}.remote-link{flex-direction:column;align-items:stretch}.remote-link .cs-button{width:100%}}
+.remote-pair{grid-template-columns:minmax(0,1fr)}
+.remote-scan-hint,.remote-discovery{font-size:13px}
+.remote-pair .remote-scan-hint{margin:6px 0 2px}
+.remote-pair .remote-qr-error{color:var(--bad-text);overflow-wrap:anywhere}
+.remote-pair-address{display:flex;align-items:center;gap:14px;min-width:0;padding:8px 0}
+.remote-qr{box-sizing:border-box;flex:none;width:154px;max-width:100%;border:1px solid var(--cs-border,var(--line));border-radius:8px;overflow:hidden;background:#fff}
+.remote-qr svg{display:block;width:100%;height:auto}
+.remote-virtual-pair{min-width:0;border-top:1px solid var(--cs-line,var(--line))}
+.remote-virtual-pair summary{padding:10px 0;cursor:pointer;overflow-wrap:anywhere;font-size:13px}
+.remote-virtual-pair:not([open])>.remote-pair-address{display:none}
+.remote-link{display:grid;grid-template-columns:minmax(0,1fr);justify-items:start;flex:1;gap:10px;min-width:0}
+.remote-link code{min-width:0;max-width:100%;box-sizing:border-box;padding:7px 10px;border-radius:9px;background:var(--cs-sheet,var(--surface));border:1px solid var(--cs-border,var(--line));font-size:12px;overflow-wrap:anywhere;user-select:all}
+@media(max-width:760px){.remote-virtual-pair summary{min-height:44px;box-sizing:border-box}}
+@media(max-width:620px){.remote-apply .cs-button{width:100%}.remote-pair-address{flex-direction:column;align-items:stretch}.remote-qr{align-self:start}.remote-link{justify-items:stretch}}
 
 
 @media(max-width:760px){.remote-address-choice select{min-height:44px}}

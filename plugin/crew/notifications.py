@@ -69,7 +69,7 @@ def saved_snapshot(shown):
     return decision_snapshot(decision, decision.get('brief')) if isinstance(decision, dict) else None
 
 
-def finalized_goal_reports(conn, project, since, report_id=None):
+def finalized_goal_reports(conn, project, since=None, report_id=None):
     """Only a finalized finish identifies a goal's delivery, not an ordinary turn."""
     sql = ('SELECT r.id report_id,r.goal_id,r.outcome,f.finalized_at,'
            'g.project,g.title,g.leader_session_id FROM goal_round_finishes f '
@@ -82,12 +82,35 @@ def finalized_goal_reports(conn, project, since, report_id=None):
            "WHERE g.project=? AND f.status='finalized' AND LENGTH(r.html)>0 "
            "AND r.outcome IN ('awaiting_acceptance','completed','failed') "
            "AND s.role='leader' AND s.status!='closed' AND COALESCE(c.removed,0)=0 AND c.archived_status IS NULL "
-           "AND g.status NOT IN ('paused','pausing') AND g.manual_pause=0 "
-           'AND julianday(f.finalized_at)>=julianday(?)')
-    args = [project,since]
+           "AND g.status NOT IN ('paused','pausing') AND g.manual_pause=0")
+    args = [project]
+    if since is not None:
+        sql += ' AND julianday(f.finalized_at)>=julianday(?)'
+        args.append(since)
     if report_id is not None:
         sql += ' AND r.id=?';args.append(report_id)
     return board._rows(conn,sql+' ORDER BY f.finalized_at,r.id',args)
+
+
+def collect_reminder_items(service, conn, *, since=None):
+    for project in board.projects(conn):
+        name = project['name']
+        for item in service.state(name)['attention']:
+            if item['kind'] not in ('decision', 'session_error', 'codex_failed') or not item['session_id']:
+                continue
+            if since is not None and item['kind'] != 'decision' and (item['created_at'] or '') < since:
+                continue
+            yield {**item, 'project': name}
+        deliveries = finalized_goal_reports(conn, name, since)
+        for action in todo.list(conn, name):
+            if since is not None and action['created_at'] < since:
+                continue
+            yield dict(id='todo:%s:created' % action['id'], kind='todo', todo_id=action['id'], project=name,
+                       session_id=action['session_id'], title=action['title'], created_at=action['created_at'])
+        for report in deliveries:
+            yield dict(id='goal-report:' + report['report_id'], kind='goal_report', project=name,
+                       session_id=report['leader_session_id'], goal_id=report['goal_id'], report_id=report['report_id'],
+                       title=report['title'], outcome=report['outcome'], created_at=report['finalized_at'])
 
 
 def remote_brief(text, limit=500):
@@ -315,37 +338,13 @@ class Inbox:
             sent = {row['item_id'][len(prefix):] if row['item_id'].startswith(prefix) else row['item_id']
                     for row in self.execute(conn, 'SELECT item_id,status FROM notification_messages')
                     if row['item_id'].startswith(prefix) or row['status'] == 'archived'}
-            projects = board.projects(conn)
-        active = set()
-        for project in projects:
-            state = self.service.state(project['name'])
-            for item in state['attention']:
-                if item['kind'] not in ('decision', 'session_error', 'codex_failed'):
-                    continue
-                if item['kind'] != 'decision' and (item['created_at'] or '') < self.config['since']:
-                    continue
-                if item['id'] not in sent and item['session_id']:
-                    active.add(item['id'])
-                    self.pending[item['id']] = {**item, 'project': project['name']}
-            with closing(store.connect(self.home)) as conn:
-                deliveries = finalized_goal_reports(conn,project['name'],self.config['since'])
-                manual = todo.list(conn, project['name'])
-            for action in manual:
-                identity = 'todo:%s:created' % action['id']
-                if action['created_at'] < self.config['since'] or identity in sent:
-                    continue
-                active.add(identity)
-                self.pending[identity] = dict(id=identity, kind='todo', todo_id=action['id'], project=project['name'],
-                    session_id=action['session_id'], title=action['title'],
-                    created_at=action['created_at'])
-            for report in deliveries:
-                identity = 'goal-report:'+report['report_id']
+            active = set()
+            for item in collect_reminder_items(self.service, conn, since=self.config['since']):
+                identity = item['id']
                 if identity in sent:
                     continue
                 active.add(identity)
-                self.pending[identity] = dict(id=identity, kind='goal_report', project=project['name'],
-                    session_id=report['leader_session_id'], goal_id=report['goal_id'], report_id=report['report_id'],
-                    title=report['title'], outcome=report['outcome'], created_at=report['finalized_at'])
+                self.pending[identity] = item
         self.pending = {key: item for key, item in self.pending.items() if key in active}
         push_now, self.push_now = self.push_now, False
         if not self.pending:
