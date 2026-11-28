@@ -27,6 +27,15 @@
         </activity>
         <activity android:name=".ui.voice.VoiceActivity" android:exported="false" />
         <activity android:name=".notify.NotificationOpenActivity" android:exported="false" android:noHistory="true" />
+        <provider
+            android:name=".web.DownloadFileProvider"
+            android:authorities="${applicationId}.downloads"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/download_paths" />
+        </provider>
         <service
             android:name=".notify.NotificationService"
             android:exported="false"

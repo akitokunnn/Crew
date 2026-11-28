@@ -155,8 +155,15 @@ internal class CrewWebView(
         } else {
             showMessage("手机的系统网页组件版本太旧，请更新后再打开语音")
         }
-        setDownloadListener { _, _, _, _, _ ->
-            if (isActive()) showMessage("手机端暂时不能下载，请在电脑上打开附件")
+        setDownloadListener { url, _, _, _, _ ->
+            if (isActive()) {
+                val target = url.toHttpUrlOrNull()
+                when {
+                    target == null -> showMessage("这种文件链接暂不支持下载")
+                    sameOrigin(origin, target) -> CrewDownloads.start(context.applicationContext, session, target)
+                    else -> openExternalLink(Uri.parse(target.newBuilder().username("").password("").build().toString()))
+                }
+            }
         }
     }
 
@@ -181,13 +188,18 @@ internal class CrewWebView(
         }
         if (sameOrigin(origin, url)) return false
         if (main && uri.scheme in setOf("http", "https", "mailto", "tel")) {
-            try {
-                context.startActivity(Intent(Intent.ACTION_VIEW, uri))
-            } catch (_: ActivityNotFoundException) {
-                showMessage("手机上没有能打开此链接的应用")
-            }
+            openExternalLink(uri)
         }
         return true
+    }
+
+    private fun openExternalLink(uri: Uri) {
+        try {
+            context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+        } catch (failure: ActivityNotFoundException) {
+            android.util.Log.w("CrewWebView", "无法打开链接", failure)
+            showMessage("手机上没有能打开此链接的应用")
+        }
     }
 
     private fun isLogin(url: HttpUrl?) = sameOrigin(origin, url) && url?.encodedPath == "/remote/login"
