@@ -103,4 +103,7 @@ test_trust_mode
 test_workspace_settings
 test_workspace_execution
 test_war_room_plan
+test_war_room_routing
+test_war_room_watchdog
+test_war_room_worktree
 test_batch_contracts

@@ -53,8 +53,10 @@ def token_count(seconds=30, total=3500, info=True):
 
 
 class UsageFixture:
+    temp_parent = Path(__file__).resolve().parent
+
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent)
+        self.temp = tempfile.TemporaryDirectory(dir=self.temp_parent)
         self.addCleanup(cleanup_directory,self.temp)
         self.root = Path(self.temp.name)
         self.home = self.root / "home"

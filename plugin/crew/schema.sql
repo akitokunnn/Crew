@@ -494,12 +494,6 @@ CREATE TABLE IF NOT EXISTS war_room_plans (
     body TEXT NOT NULL, summary TEXT NOT NULL, author TEXT NOT NULL, created_at TEXT NOT NULL,
     budget_tokens INTEGER, entries_json TEXT NOT NULL, approval TEXT, PRIMARY KEY(room_id,version)
 );
-CREATE TABLE IF NOT EXISTS war_room_idle (
-    room_id INTEGER NOT NULL REFERENCES war_rooms(id), item_id INTEGER NOT NULL REFERENCES war_room_items(id),
-    owner TEXT NOT NULL, since TEXT NOT NULL, notice_id INTEGER REFERENCES leader_notices(id),
-    activity_key TEXT, ended_at TEXT, PRIMARY KEY(room_id,item_id,owner,since)
-);
-CREATE UNIQUE INDEX IF NOT EXISTS war_room_current_idle ON war_room_idle(room_id,item_id,owner) WHERE ended_at IS NULL;
 CREATE TABLE IF NOT EXISTS war_room_execution_reads (
     room_id INTEGER NOT NULL REFERENCES war_rooms(id), reader TEXT NOT NULL,
     execution_id TEXT NOT NULL REFERENCES goal_executions(id), seq INTEGER NOT NULL,

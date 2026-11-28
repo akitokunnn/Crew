@@ -552,6 +552,8 @@ class CodexRunning:
         from . import runtimes
         with closing(guard.readonly(self.home)) as conn:
             session = board.session(conn, self.session_id)
+            if self.execution:
+                session = workspace_execution.execution_session(conn, {**session, '_execution': self.execution})
             if (session['project'] != self.session['project'] or session['status'] == 'closed'
                     or board.is_archived(conn, self.session_id)
                     or store.norm_path(session['cwd']) != store.norm_path(self.session['cwd']) or messaging.stopped(conn, self.session_id)):

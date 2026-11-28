@@ -4,7 +4,7 @@ Each handler reads ``ctx.caller``: a war room must know whether the user or whic
 changing the board. Leaders call these through MCP in their own workspace; the user (and the global
 assistant acting as the user) names the workspace with ``project``.
 """
-from ... import board, war_room, war_room_plan, war_room_work
+from ... import board, channel, war_room, war_room_plan, war_room_work
 from ..errors import OpError
 from ..registry import Operation, register
 from ._common import HBD
@@ -130,7 +130,7 @@ def _members(ctx, conn, actor, values):
 def _say(ctx, conn, actor, values):
     return {'message': war_room.say(conn, _in_project(ctx, conn, _room_id(values.get('room'))), actor,
                                     values.get('body'), values.get('to', []), reply_to=values.get('reply_to'),
-                                    detail=values.get('detail', False), now=ctx.now)}
+                                    detail=values.get('detail', False), now=ctx.now, kind=values.get('kind'))}
 
 
 def _item(ctx, conn, actor, values):
@@ -192,7 +192,9 @@ op('war_room.members', '牵头邀请或移出作战室成员', _members, workspa
    schemas=_schemas(['room'], room=ROOM, add=NAMES, remove=NAMES))
 op('war_room.post', '在作战室里发言', _say, workspace=True, access='write',
    schemas=_schemas(['room', 'body'], room=ROOM, body=_text('发言内容'),
-                    to={**NAMES, 'description': '点名成员（会叫醒对方）；"*" 表示全体成员'},
+                    to={**NAMES, 'description': '点名成员，"*" 表示全体成员'},
+                    kind={'type': 'string', 'enum': list(channel.ROOM_POST_KINDS), 'default': 'progress',
+                          'description': '默认 progress，成员报进度不叫醒领头。完成、阻塞、失败或提问时选对应类型。'},
                     reply_to={'type': 'integer', 'minimum': 1, 'description': '回复的房内发言编号'},
                     detail={'type': 'boolean', 'description': '长内容（如方案细节）折叠显示'}),
    description='成员之间直接点名，不经牵头转述。回复房内发言也可以用 channel_post 带 reply_to=<房内编号>，会落在同一作战室。')
@@ -248,9 +250,9 @@ def _approve_plan(ctx, conn, actor, args):
 
 
 op('war_room.plan.update', '领头保存一版作战计划书', _update_plan, workspace=True, assistant=None, access='write',
-   description='固定二级小节 ## 分工、## 等你定、## 完成标准。各行依次用“- [ID] 负责人 | 事项”、'
+   description='固定二级小节 ## 分工、## 等你定、## 完成标准。各行依次用“- [ID] 负责人 | 事项 | 文件: 目录/, 文件路径”、'
                '“- [ID] 问题 | 推荐值”（已答可再接“ | 答复”）、“- [ID] 可核验标准”。分工可写“拟任：姓名”。'
-               'ID 全文唯一，修订保留同一条目的 ID。预算仅在用户提出时填写。',
+               'Git 工作区可按成员追加“ | 独立目录”。共用目录的成员之间文件不能重叠。ID 全文唯一，修订保留同一条目的 ID。预算仅在用户提出时填写。',
    scopes={'leader'}, schemas=_schemas(['room', 'expected_version', 'body', 'summary'], room=ROOM,
                                       expected_version={'type': 'integer', 'minimum': 0}, body=_text('计划书 Markdown'),
                                       summary=_text('改动摘要'), budget_tokens=BUDGET))

@@ -1,5 +1,12 @@
 """The project channel: shared posts, explicit mentions, and per-reader cursors."""
+import re
+import sqlite3
+from contextlib import closing
+from functools import wraps
+from unicodedata import category
+
 from . import board, change_feed, git_admin, messaging, store
+from .ops.errors import OpError
 
 
 def _leader(conn, project_name, session_id):
@@ -13,6 +20,36 @@ def _leader(conn, project_name, session_id):
 
 LEADER_LIMIT_CHARS = 150
 LEADER_LIMIT_LINES = 3
+ROOM_POST_KINDS = ("progress", "done", "blocked", "failed", "question")
+_ACKNOWLEDGMENTS = frozenset(
+    "收到 好的 好 明白 了解 知道了 在等 等待中 我在等 继续等 稍等 马上 马上处理 在处理 处理中 ok 👌".split())
+_LEADING_MENTIONS = re.compile(r"^\s*(?:@\S+(?:\s+|$))+")
+# Unicode 17.0 Emoji property, excluding the ASCII bases used only in keycaps.
+# https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-data.txt
+_EMOJI = re.compile(
+    r"[\u00a9\u00ae\u203c\u2049\u2122\u2139\u2194-\u2199\u21a9-\u21aa\u231a-\u231b\u2328\u23cf"
+    r"\u23e9-\u23f3\u23f8-\u23fa\u24c2\u25aa-\u25ab\u25b6\u25c0\u25fb-\u25fe\u2600-\u2604\u260e"
+    r"\u2611\u2614-\u2615\u2618\u261d\u2620\u2622-\u2623\u2626\u262a\u262e-\u262f\u2638-\u263a"
+    r"\u2640\u2642\u2648-\u2653\u265f-\u2660\u2663\u2665-\u2666\u2668\u267b\u267e-\u267f"
+    r"\u2692-\u2697\u2699\u269b-\u269c\u26a0-\u26a1\u26a7\u26aa-\u26ab\u26b0-\u26b1"
+    r"\u26bd-\u26be\u26c4-\u26c5\u26c8\u26ce-\u26cf\u26d1\u26d3-\u26d4\u26e9-\u26ea"
+    r"\u26f0-\u26f5\u26f7-\u26fa\u26fd\u2702\u2705\u2708-\u270d\u270f\u2712\u2714\u2716\u271d"
+    r"\u2721\u2728\u2733-\u2734\u2744\u2747\u274c\u274e\u2753-\u2755\u2757\u2763-\u2764"
+    r"\u2795-\u2797\u27a1\u27b0\u27bf\u2934-\u2935\u2b05-\u2b07\u2b1b-\u2b1c\u2b50\u2b55\u3030"
+    r"\u303d\u3297\u3299\U0001f004\U0001f0cf\U0001f170-\U0001f171\U0001f17e-\U0001f17f"
+    r"\U0001f18e\U0001f191-\U0001f19a\U0001f1e6-\U0001f1ff\U0001f201-\U0001f202\U0001f21a"
+    r"\U0001f22f\U0001f232-\U0001f23a\U0001f250-\U0001f251\U0001f300-\U0001f321"
+    r"\U0001f324-\U0001f393\U0001f396-\U0001f397\U0001f399-\U0001f39b\U0001f39e-\U0001f3f0"
+    r"\U0001f3f3-\U0001f3f5\U0001f3f7-\U0001f4fd\U0001f4ff-\U0001f53d\U0001f549-\U0001f54e"
+    r"\U0001f550-\U0001f567\U0001f56f-\U0001f570\U0001f573-\U0001f57a\U0001f587"
+    r"\U0001f58a-\U0001f58d\U0001f590\U0001f595-\U0001f596\U0001f5a4-\U0001f5a5\U0001f5a8"
+    r"\U0001f5b1-\U0001f5b2\U0001f5bc\U0001f5c2-\U0001f5c4\U0001f5d1-\U0001f5d3"
+    r"\U0001f5dc-\U0001f5de\U0001f5e1\U0001f5e3\U0001f5e8\U0001f5ef\U0001f5f3"
+    r"\U0001f5fa-\U0001f64f\U0001f680-\U0001f6c5\U0001f6cb-\U0001f6d2\U0001f6d5-\U0001f6d8"
+    r"\U0001f6dc-\U0001f6e5\U0001f6e9\U0001f6eb-\U0001f6ec\U0001f6f0\U0001f6f3-\U0001f6fc"
+    r"\U0001f7e0-\U0001f7eb\U0001f7f0\U0001f90c-\U0001f93a\U0001f93c-\U0001f945"
+    r"\U0001f947-\U0001f9ff\U0001fa70-\U0001fa7c\U0001fa80-\U0001fa8a\U0001fa8e-\U0001fac6"
+    r"\U0001fac8\U0001facd-\U0001fadc\U0001fadf-\U0001faea\U0001faef-\U0001faf8]")
 
 
 def _excerpt(body, size=40):
@@ -21,7 +58,7 @@ def _excerpt(body, size=40):
 
 
 # What a named or answered leader has actually got; chat_delivery.notice_state decides it from stored facts.
-DELIVERY_LABELS = {"queued": "已排队，对方尚未收到", "delivered": "已送达，未回复", "replied": "已回复"}
+DELIVERY_LABELS = {"queued": "已排队，对方尚未收到", "delivered": "已送达，未回复", "replied": "已回复", "cancelled": "已取消"}
 
 
 def _message(conn, row):
@@ -99,7 +136,7 @@ def _reply_hint(scopes, message_id, room, from_user, assistant_lead):
         if 'war_room.post' in scopes:
             lines.append('在房里接话用 `war_room.post`（`project=%s`、`room=%d`、`body`、`reply_to=%d`）。'
                          % (room["project"], room["id"], message_id))
-        if 'war_room.decide' in scopes:
+        if room['phase'] == 'active' and 'war_room.decide' in scopes:
             lines.append('成员报来要用户定的分歧，当场用 war_room.decide 发拍板卡，不自己定案、不在对话里问用户。')
     elif 'channel.post' in scopes:
         if from_user:
@@ -134,13 +171,13 @@ def _mention_text(post, reason, scopes, room, assistant_lead):
 def mention_text_for_delivery(conn, notice, scopes):
     """Use current permissions for a mention and the stored wording for other leader notices."""
     post = conn.execute(
-        "SELECT m.*,t.reason,w.title AS room_title,w.lead_session_id FROM channel_mentions t "
+        "SELECT m.*,t.reason,w.title AS room_title,w.lead_session_id,w.phase FROM channel_mentions t "
         "JOIN channel_messages m ON m.id=t.message_id LEFT JOIN war_rooms w ON w.id=m.room_id "
         "WHERE t.notice_id=?", (notice["id"],)).fetchone()
     if post is None:
         return notice["text"]
     room = None if post["room_id"] is None else {
-        "id": post["room_id"], "title": post["room_title"], "project": post["project"]}
+        "id": post["room_id"], "title": post["room_title"], "project": post["project"], "phase": post["phase"]}
     from . import personal
     assistant_lead = (post["lead_session_id"] == notice["session_id"]
                       and personal.can_lead_as_assistant(conn, notice["session_id"]))
@@ -182,9 +219,38 @@ def _named_in_body(conn, project_name, body, actor):
     return [name for _, name in sorted(found)]
 
 
-@board.atomic
+def _is_empty_room_post(body):
+    text = _LEADING_MENTIONS.sub("", body)
+    text = "".join(char for char in text if char.isalnum() or
+                   (category(char).startswith("S") and _EMOJI.fullmatch(char))).casefold()
+    return len(text) <= 12 and (text in _ACKNOWLEDGMENTS or any(
+        text[:i] in _ACKNOWLEDGMENTS and text[i:] in _ACKNOWLEDGMENTS for i in range(1, len(text))))
+
+
+class _EmptyRoomPost(Exception):
+    """Carry the rejected post out of the writer transaction before recording it."""
+
+
+def _atomic_post(func):
+    @wraps(func)
+    def wrapped(conn, *args, **kwargs):
+        try:
+            with board.transaction(conn):
+                return func(conn, *args, **kwargs)
+        except _EmptyRoomPost as rejected:
+            from . import war_room
+            room_id, actor, body, now = rejected.args
+            db = next(row[2] for row in conn.execute("PRAGMA database_list") if row[1] == "main")
+            with closing(sqlite3.connect(db, timeout=store.BUSY_TIMEOUT_MS / 1000)) as audit, audit:
+                audit.execute("PRAGMA foreign_keys = ON")
+                war_room._event(audit, room_id, actor, "empty_post", {"body": body[:40]}, now)
+            raise OpError("empty_post", "这条没有新信息，不用发") from None
+    return wrapped
+
+
+@_atomic_post
 def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_to=None, detail=False, room_id=None,
-         generated=False, reply_only=False):
+         generated=False, reply_only=False, kind=None):
     """``room_id`` puts the post in a war room's timeline; a reply always lands where the answered post is.
 
     ``generated`` marks Crew's own wording (war room notices), which may run past the leader length limit.
@@ -227,6 +293,12 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
             raise board.BoardError("助手只能在自己牵头的作战室发言")
         if actor != board.HUMAN and not assistant and not war_room.is_member(conn, room_id, actor):
             raise board.BoardError("你不是作战室《%s》的成员；有事在交流区说，或请牵头邀请你" % room["title"])
+        if kind is None:
+            kind = "progress"
+        elif kind not in ROOM_POST_KINDS:
+            raise OpError("invalid_arguments", "发言类型只能是 progress / done / blocked / failed / question")
+    elif kind is not None:
+        raise OpError("invalid_arguments", "只有作战室发言可以指定类型")
     if type(detail) is not bool:
         raise board.BoardError("detail 必须是 true 或 false")
     if actor == board.HUMAN:
@@ -244,10 +316,12 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
         speaker_name = speaker["crew_name"]
         if source != "crew":
             raise board.BoardError("leader 在 Leader 交流区的发言来源必须为 crew")
-    body = body.strip()
+    original_body, body = body, body.strip()
     if not body:
         raise board.BoardError("Leader 交流区发言不能为空")
     if actor != board.HUMAN and not generated:
+        if room is not None and _is_empty_room_post(body):
+            raise _EmptyRoomPost(room_id, actor, original_body, now)
         _check_short(body)
     elif detail:
         raise board.BoardError("用户发言不标私聊详情")
@@ -308,6 +382,7 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
     if room_id is not None:
         # Every room post (also a channel_post reply into a room) changes the room's unread and latest post.
         change_feed.touch(conn, 'war_room', project_name, room_id)
+        war_room._event(conn, room_id, actor, "post", {"message_id": message_id, "kind": kind}, now)
     if reply_to is not None:
         # A leader answering a post it was told about turns that post's badge to replied.
         change_feed.touch(conn, 'channel_message', project_name, reply_to)
@@ -323,19 +398,21 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
                 messaging.clear_stop(conn, target["session_id"])
             scopes = tokens.main_scopes(conn, target["session_id"])
             text = _mention_text(posted, reason, scopes, room, lead is not None and target["session_id"] == lead["session_id"])
+            wake = not (room is not None and kind == "progress" and actor not in (board.HUMAN, room["lead_session_id"])
+                        and target["session_id"] == room["lead_session_id"])
             if target["role"] == "leader":
-                notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now)
+                notice_id = board._queue_leader_notice(conn, target["session_id"], text, source, now, wake=wake)
             else:
                 # The assistant leading this room: the same notice queue, delivered by the same loop.
                 notice_id = conn.execute(
-                    "INSERT INTO leader_notices(project,session_id,source,text,created_at,wake) VALUES(?,?,?,?,?,1)",
-                    (project_name, target["session_id"], source, text, board._time(now))).lastrowid
+                    "INSERT INTO leader_notices(project,session_id,source,text,created_at,wake) VALUES(?,?,?,?,?,?)",
+                    (project_name, target["session_id"], source, text, board._time(now), int(wake))).lastrowid
         if notice_id is not None and room_id is not None:
             conn.execute('UPDATE leader_notices SET room_id=? WHERE id=?', (room_id, notice_id))
         conn.execute("INSERT INTO channel_mentions(message_id,session_id,name,notice_id,await_reply,reason) "
                      "VALUES(?,?,?,?,?,?)", (message_id, target["session_id"], target["crew_name"], notice_id,
                                              int(actor == board.HUMAN and notice_id is not None), reason))
-        if room is not None and target['session_id'] == room['lead_session_id'] and reason == 'mention' and notice_id is not None:
+        if room is not None and notice_id is not None:
             war_room.claim_main_notices(conn, notice_id)
     return _message(conn, conn.execute("SELECT * FROM channel_messages WHERE id=?", (message_id,)).fetchone())
 
