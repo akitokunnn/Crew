@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 from .ops import launch
-from . import behavior_prompts
+from . import behavior_prompts, war_room_worktree
 import subprocess
 import threading
 import traceback
@@ -75,6 +75,7 @@ class Controller:
         return '\n'.join(lines)
 
     def ensure(self, conn, goal_id, session_id):
+        war_room_worktree.effective_path(conn, {'goal_id': goal_id, 'session_id': session_id})
         goal = goals.get(conn, goal_id)
         gate = goals.dispatch_check(conn, goal_id)
         if not gate['allowed']:
@@ -114,8 +115,11 @@ class Controller:
                                       discussion_message_id=identity)
 
     def target(self, conn, execution):
-        return {**board.session(conn, execution['session_id']), '_storage_id': execution['id'],
-                '_execution': execution}
+        target = board.session(conn, execution['session_id'])
+        directory = war_room_worktree.effective_path(conn, execution)
+        if directory:
+            target['cwd'] = directory
+        return {**target, '_storage_id': execution['id'], '_execution': execution}
 
     def human_handoff(self, conn, execution, identity):
         if conn.execute('SELECT 1 FROM goal_context_applied WHERE execution_id=? LIMIT 1', (execution['id'],)).fetchone():
@@ -291,6 +295,7 @@ class Controller:
             current = CodexRunning(self.home, self.manager.plugin_root, session, spec, options, journal,
                                    process_factory=self.manager.process_factory, resume=binding is not None,
                                    execution=execution, maintenance=maintenance)
+            current.execution_cwd = session['cwd']
             self.manager.processes[key] = current
             self.manager.changes.session(key)
             return current.process.args
@@ -329,6 +334,7 @@ class Controller:
             raise
         launch.attach(granted, process)
         current = chat.Running(process, journal)
+        current.execution_cwd = session['cwd']
         current.resumed_native = native_id if binding is not None else None
         current.replacing = session.get('_native_replacing')
         current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_manifest)
@@ -361,6 +367,7 @@ class Controller:
         with self.manager.lock, closing(store.connect(self.home)) as conn:
             goal = goals.get(conn, goal_id)
             goals._member(conn, goal, session_id)
+            war_room_worktree.effective_path(conn, {'goal_id': goal_id, 'session_id': session_id})
             if self.manager.maintenance_held(session_id):
                 # Refuse before any goal or execution state changes.
                 from . import chat
@@ -672,6 +679,10 @@ class Controller:
                 continue
             execution = goals.get_execution(conn, key)
             if runtime is not None and execution['runtime'] != runtime:
+                continue
+            try:
+                war_room_worktree.effective_path(conn, execution)
+            except board.Conflict:
                 continue
             gate = goals.dispatch_check(conn, execution['goal_id'], execution_id=key)
             if not gate['allowed'] or self.manager.running(key):

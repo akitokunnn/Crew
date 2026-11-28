@@ -297,6 +297,8 @@ class MigrationTests(WarRoomFixture):
 
 
 class WarRoomOperationTests(ChannelHttpFixture):
+    temp_parent = None  # The HTTP worker can now create and remove actual worktrees.
+
     def setUp(self):
         super().setUp()
         board.join(self.conn, "s4", "demo", "web", self.project, None, None, role="leader", now=NOW)

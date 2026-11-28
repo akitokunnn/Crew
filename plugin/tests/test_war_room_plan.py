@@ -19,15 +19,16 @@ from test_message_delivery import DeliveryFixture, NOW
 
 
 PLAN = """## 分工
-- [A] beta | 运行校验
+- [A] beta | 运行校验 | 文件: checks/
 ## 等你定
 - [Q] 怎么校验 | 自动
 ## 完成标准
 - [C] 校验通过"""
 
 
-def approve_assignments(conn, room, names):
-    body = '## 分工\n' + ''.join('- [A%d] %s | 校验%d\n' % (n, name, n) for n, name in enumerate(names))
+def approve_assignments(conn, room, names, separate=()):
+    body = '## 分工\n' + ''.join('- [A%d] %s | 校验%d | 文件: checks/%d/%s\n' %
+                                (n, name, n, n, ' | 独立目录' if name in separate else '') for n, name in enumerate(names))
     body += '## 等你定\n## 完成标准\n- [C] 验证完成'
     budget = room['budget']['tokens'] if room['budget'] else None
     war_room_plan.update(conn, room['id'], room['lead_session_id'], 0, body, '首稿', budget, NOW)
@@ -91,7 +92,7 @@ class PlanTests(DeliveryFixture):
             self.assertNotIn('Git 分支', room['brief'])
             war_room.close(self.conn, room['id'], board.HUMAN, reason='cancelled')
             (root / '.git').write_text('gitdir: missing-repository\n', encoding='utf-8')
-            with self.assertRaisesRegex(board.BoardError, '读取工作区 Git 状态失败：.*not a git repository'):
+            with self.assertRaisesRegex(board.BoardError, 'not a git repository'):
                 war_room.start(self.conn, 'demo', board.HUMAN, '损坏的 Git', '核对', lead='a')
             self.assertFalse(self.conn.execute("SELECT id FROM war_rooms WHERE status='open'").fetchall())
             self.assertFalse(self.notices('a'))
@@ -281,7 +282,7 @@ class PlanTests(DeliveryFixture):
         [invite] = self.notices('c')
         self.assertEqual(invite['wake'], 1)
         count = self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0]
-        body = PLAN.replace('beta', 'gamma').replace('## 等你定', '- [B] gamma | 二次校验\n## 等你定')
+        body = PLAN.replace('beta', 'gamma').replace('## 等你定', '- [B] gamma | 二次校验 | 文件: retest/\n## 等你定')
         war_room_plan.update(self.conn, room, 'a', 1, body, '改派', None, NOW)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0], count)
         self.approve(room, 2)
@@ -292,8 +293,9 @@ class PlanTests(DeliveryFixture):
         goals_for_member = self.conn.execute("SELECT goal_id FROM war_room_items WHERE room_id=? AND kind='assignment' "
                                              "ORDER BY id", (room,))
         self.assertEqual([(n['session_id'], n['wake'], n['goal_id']) for n in notices],
-                         [('c', 1, g['goal_id']) for g in goals_for_member])
-        self.assertTrue(all('已批准的计划 v2 开工' in n['text'] for n in notices))
+                         [('c', 1, g['goal_id']) for g in goals_for_member] + [('a', 1, None)])
+        self.assertTrue(all('已批准的计划 v2 开工' in n['text'] for n in notices[:-1]))
+        self.assertIn('这个工作区不是 Git 仓库', notices[-1]['text'])
 
     def test_reservation_approval_and_revision(self):
         room = self.open()
@@ -572,7 +574,7 @@ class PlanTests(DeliveryFixture):
             with self.subTest(runtime=expected):
                 settings.save(self.conn, {'default': {'runtime': 'codex', 'model': None, 'effort': None}, 'war_room': chosen})
                 room = self.open()
-                body = PLAN.replace('## 等你定', '- [NEW] 拟任：新成员' + expected + ' | 核对 tests/\n## 等你定')
+                body = PLAN.replace('## 等你定', '- [NEW] 拟任：新成员' + expected + ' | 核对 tests/ | 文件: tests/\n## 等你定')
                 war_room_plan.update(self.conn, room, 'a', 0, body, '首稿', None, NOW)
                 with mock.patch('crew.settings.shutil.which', side_effect=lambda name: name):
                     active = self.approve(room)

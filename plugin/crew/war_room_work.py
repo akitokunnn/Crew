@@ -1,11 +1,15 @@
 """Room-bound task deliveries in the existing service loop."""
-from . import board, codex_client, goals, messaging, runtimes, war_room
+from . import board, codex_client, goals, messaging, runtimes, war_room, war_room_worktree
 
 
 def can_work(manager, conn, room, item, live):
     sid, goal = item['owner_session_id'], item['goal_id']
     if (not goal or room['paused_at'] or messaging.stopped(conn, sid) or manager.maintenance_held(sid)
             or not goals.dispatch_check(conn, goal)['allowed']):
+        return False
+    try:
+        war_room_worktree.effective_path(conn, {'goal_id': goal, 'session_id': sid})
+    except board.Conflict:
         return False
     if manager.goal_controller.approvals(goal):
         return False

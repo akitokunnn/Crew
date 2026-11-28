@@ -28,8 +28,10 @@ class WorkspaceActivityTests(unittest.TestCase):
         self.register(sid, 'leader', role='leader')
         self.assertEqual(self.snapshot()['war_rooms'], [])
         budget = 100_000
-        with mock.patch.object(hooks, 'git_details', git_details):
-            room = war_room.start(self.conn, 'alpha', sid, '发布演练', '核对版本', budget_tokens=budget)
+        probe = mock.patch.object(hooks, 'git_details', git_details)
+        probe.start()
+        self.addCleanup(probe.stop)
+        room = war_room.start(self.conn, 'alpha', sid, '发布演练', '核对版本', budget_tokens=budget)
         room_id = room['id']
         plan = '## 分工\n## 等你定\n%s## 完成标准\n- [ready] 核对通过'
 

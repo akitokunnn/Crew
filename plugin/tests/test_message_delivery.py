@@ -18,7 +18,7 @@ NOW = "2026-11-27T08:00:00.000Z"
 
 class DeliveryFixture(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir=PLUGIN, prefix="delivery-test-")
+        self.temp = tempfile.TemporaryDirectory(prefix="delivery-test-")
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
         self.home = self.base / "home"

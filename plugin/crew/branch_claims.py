@@ -12,7 +12,7 @@ import sqlite3
 import subprocess
 import sys
 
-from . import board, git_overview, git_process, guard, store
+from . import board, git_overview, git_process, guard, store, war_room_worktree
 
 SEPARATORS = ("&&", "||", ";", "|", "&", "(", ")", "\n")
 # Options of `git` itself that consume the following word.
@@ -169,20 +169,42 @@ def task_branch_reason(home, cwd, command, execution_id):
     """
     if execution_id is None or not store.db_path(home).exists():
         return None
-    created = list(dict.fromkeys(value for kind, value in parse(command, cwd) if kind == "branch"))
-    if not created:
+    actions = parse(command, cwd)
+    created = list(dict.fromkeys(value for kind, value in actions if kind == "branch"))
+    if not actions:
         return None
     with closing(guard.readonly(home)) as conn:
-        goal = conn.execute("SELECT g.id,g.project FROM goal_executions e JOIN goals g ON g.id=e.goal_id "
+        goal = conn.execute("SELECT g.id AS goal_id,g.project,e.session_id FROM goal_executions e JOIN goals g ON g.id=e.goal_id "
                             "WHERE e.id=?", (execution_id,)).fetchone()
         if goal is None:
+            return None
+        room = war_room_worktree.binding(conn, goal)
+        if room is not None:
+            permitted = (room['session_id'] == goal['session_id'] and room['state'] == 'active')
+            for kind, value in actions:
+                if kind == 'branch':
+                    matches = value == room['branch']
+                else:
+                    from . import hooks
+                    top, branch = hooks.git_details(value)
+                    matches = top == store.norm_path(room['path']) and branch == room['branch']
+                if not permitted or not matches:
+                    return 'BLOCKED by Crew: 请在本房当前负责人的独立分支提交。'+guard.TAIL
+            return None
+        reserved = conn.execute("SELECT w.branch,w.path FROM war_room_worktrees w JOIN war_rooms r ON r.id=w.room_id "
+                                "WHERE r.project=? AND w.state<>'removed'", (goal['project'],)).fetchall()
+        for kind, value in actions:
+            if any(value == row['branch'] if kind == 'branch' else store.is_under(os.path.realpath(value), row['path'])
+                   for row in reserved):
+                return 'BLOCKED by Crew: 这个分支属于其他房内分工。'+guard.TAIL
+        if not created:
             return None
         root = board.project(conn, goal["project"])["root"]
         config = board.git_config(conn, goal["project"]) or {}
         shared = {config.get("base"), config.get("integration")}
         claimed = [row["branch"] for row in conn.execute(
             "SELECT DISTINCT branch FROM branch_claims WHERE project=? AND goal_id=? ORDER BY claimed_at,branch",
-            (goal["project"], goal["id"]))]
+            (goal["project"], goal["goal_id"]))]
     existing = [name for name in claimed if name not in shared and _literal(name) and git_process.run(
         ["-C", root, "rev-parse", "--verify", "--quiet", "refs/heads/" + name], timeout=5).returncode == 0]
     if existing:
@@ -243,6 +265,12 @@ def record(home, session_id, cwd, command, execution_id=None, now=None):
         with board.transaction(conn):
             names = [name for name in names if free(name)]
             for name in names:
+                room_owned = conn.execute('SELECT 1 FROM war_room_worktrees w JOIN war_rooms r ON r.id=w.room_id '
+                                          "WHERE r.project=? AND w.branch=? AND w.state<>'removed'", (session['project'], name)).fetchone()
+                if room_owned:
+                    # The host recorded the member on activation. Alternating
+                    # between its assignments never replaces that room claim.
+                    continue
                 conn.execute(
                     "INSERT INTO branch_claims(project,branch,session_id,goal_id,claimed_at) VALUES(?,?,?,?,?) "
                     "ON CONFLICT(project,branch,session_id) DO UPDATE SET "
