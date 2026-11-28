@@ -189,8 +189,8 @@ def post_leader(service, path, data, project_name, conn, now, project):
 
 
 def _voice_prefix(service, session_id, data):
-    prefix = ('（这条是语音转写，可能有同音错字，按意思理解。你的回复会被朗读：'
-              '先说结论，口语、短句，不念代码、路径和链接。语音回合里不要直接改文件或派活；'
+    prefix = ('（这条是语音转写，可能有同音错字，按意思理解。你说的每句话都会被逐句朗读：'
+              '查资料前不要先说打算怎么查，查完直接说结论；口语、短句，不用列表，不念代码、路径和链接。语音回合里不要直接改文件或派活；'
               '需要改动时先发起确认，等用户在屏幕上点。）')
     heard = data.get('heard')
     if heard is None:
