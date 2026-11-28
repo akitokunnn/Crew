@@ -612,6 +612,10 @@ def mark_seen(conn, room_id, reader, message_id, now=None):
     conn.execute('INSERT INTO war_room_reads(room_id,reader,message_id,updated_at) VALUES(?,?,?,?) '
                  'ON CONFLICT(room_id,reader) DO UPDATE SET message_id=MAX(war_room_reads.message_id,excluded.message_id),'
                  'updated_at=excluded.updated_at', (room_id, reader, message_id, board._time(now)))
+    # Quiet posts (a member's progress naming the lead) ride along in the room context this reader just got.
+    conn.execute('UPDATE leader_notices SET sent_at=? WHERE session_id=? AND room_id=? AND wake=0 AND sent_at IS NULL '
+                 'AND id IN (SELECT t.notice_id FROM channel_mentions t JOIN channel_messages m ON m.id=t.message_id '
+                 'WHERE m.room_id=? AND m.id<=?)', (board._time(now), reader, room_id, room_id, message_id))
 
 
 def _latest(conn, room_id):

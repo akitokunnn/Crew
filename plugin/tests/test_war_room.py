@@ -91,6 +91,19 @@ class OpenAndTalkTests(WarRoomFixture):
                 self.assertEqual(war_room.get(self.conn, room)['events'][-1]['detail'],
                                  {'message_id': post['id'], 'kind': args.get('kind', 'progress')})
 
+    def test_quiet_progress_counts_as_delivered_once_the_lead_reads_past_it(self):
+        room = self.open_room()['id']
+        quiet = war_room.say(self.conn, room, 'b', '接口已开始联调', to=['a'])
+        later = war_room.say(self.conn, room, 'b', '联调还在跑', to=['a'])
+        def state(post):
+            return next(m for m in war_room.get(self.conn, room)['messages']
+                        if m['id'] == post['id'])['mentions'][0]['state']
+        self.assertEqual((state(quiet), state(later)), ('queued', 'queued'))
+        war_room.mark_seen(self.conn, room, 'a', quiet['id'], now='2026-11-28T00:00:00+00:00')
+        self.assertEqual((state(quiet), state(later)), ('delivered', 'queued'))
+        war_room.close(self.conn, room, board.HUMAN, reason='user_stop')
+        self.assertEqual((state(quiet), state(later)), ('delivered', 'cancelled'))
+
     def test_opening_tells_the_channel_and_names_each_member_in_the_room(self):
         room = self.open_room()
         self.assertEqual((room["lead_session_id"], [m["crew_name"] for m in room["members"]]),
