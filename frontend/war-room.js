@@ -193,22 +193,47 @@
   }
 
   function memberName(room, id) {
-    return participants(room).find(person => person.session_id === id)?.crew_name ??
+    return memberRoster(room).find(person => person.session_id === id)?.crew_name ??
       room.board.find(item => item.owner_session_id === id)?.owner_name ?? id;
   }
 
-  function isolationHTML(room) {
-    if (room.isolation === "none") {
-      const reason = {not_git:sharedFolder, pre_upgrade:"升级前开的房，没有隔离"}[room.isolation_reason];
-      return `<p class="wr-isolation-note"><strong>没有隔离</strong>${reason ? `<span>${reason}</span>` : ""}</p>`;
-    }
-    if (!room.worktrees?.length) return "";
-    return `<ul class="wr-folders">${room.worktrees.map(tree =>
-      `<li><span>${esc(memberName(room, tree.member))}</span><small data-folder="${esc(tree.state)}">${esc(folderLabel(tree))}</small></li>`).join("")}</ul>`;
+  function isolationNote(room) {
+    if (room.isolation === "mixed") return '<p class="wr-mode-note">部分成员开了独立目录，其余共用目录。</p>';
+    if (room.isolation !== "none") return "";
+    if (room.isolation_reason === "lead_choice") return '<p class="wr-mode-note">领头选择全员共用目录，按文件范围分工。</p>';
+    const reason = {not_git:sharedFolder + "。", pre_upgrade:"升级前开的房，没有隔离"}[room.isolation_reason];
+    return reason ? `<p class="wr-isolation-note">${reason}</p>` : "";
+  }
+
+  function fileDetails(key, label, files) {
+    return `<details class="wr-files" data-wr-card="${esc(key)}"><summary>${label}</summary>
+      <ul>${files.map(path => `<li><code>${esc(path)}</code></li>`).join("")}</ul></details>`;
+  }
+
+  function memberIsolation(room, item) {
+    const tree = item.mode === "worktree" && room.worktrees?.find(row => row.member === item.session_id);
+    const mode = tree ? `<small data-folder="${esc(tree.state)}">${esc(folderLabel(tree))}</small>` :
+      item.mode === "shared" ? '<small class="wr-folder-tag">共用目录</small>' : '<small>独立目录</small>';
+    const scope = item.paths.length ? fileDetails("scope-" + item.session_id,
+      `<span>负责文件</span><code class="wr-path-preview">${esc(item.paths.join("、"))}</code>`, item.paths) : '<p class="wr-mode-note">未列文件范围</p>';
+    const outside = item.out_of_scope.length ? fileDetails("outside-" + item.session_id,
+      `改了范围外的文件 ${item.out_of_scope.length} 个`, item.out_of_scope) : "";
+    return {mode, files:scope + outside};
   }
 
   function attentionHTML(room) {
-    if (!isOpen(room)) return "";
+    const rows = [];
+    for (const item of room.isolation_members ?? []) {
+      if (item.out_of_scope.length) rows.push(fileDetails("attention-" + item.session_id,
+        `${esc(item.member)} 改了分工范围外的文件 ›`, item.out_of_scope));
+    }
+    if (room.unowned_changes?.length) rows.push(fileDetails("unowned",
+      `共用目录里有不属于任何分工的改动 ${room.unowned_changes.length} 个 ›`, room.unowned_changes));
+    if (isOpen(room)) rows.push(...openAttention(room));
+    return rows.length ? `<section class="wr-attention"><h3>需要你关注</h3><ul>${rows.map(row => `<li>${row}</li>`).join("")}</ul></section>` : "";
+  }
+
+  function openAttention(room) {
     const rows = [], watch = room.watchdog;
     if (watch?.state === "attention") rows.push(action("ask-lead", "房里停下了，叫醒领头仍没动静 · 问问领头 ›"));
     if (watch?.state === "waiting_user") rows.push(waitingOnUser(room));
@@ -221,7 +246,7 @@
       rows.push(latest ? action("history", text + " ›", `data-execution="${esc(latest.id)}"`) : text);
     }
     for (const item of pending(room)) rows.push(action("decision-jump", esc(item.question) + " ›", `data-decision="${item.id}"`));
-    return rows.length ? `<section class="wr-attention"><h3>需要你关注</h3><ul>${rows.map(row => `<li>${row}</li>`).join("")}</ul></section>` : "";
+    return rows;
   }
 
   function statusHTML(ctx, internal, inDialog = false) {
@@ -235,7 +260,7 @@
         ${room.budget ? `<p>已用 ${count(room.budget.spent)} / ${count(room.budget.tokens)} tokens</p>` : "<p>未设上限</p>"}
         ${room.usage_pending ? `<p>另有 ${count(room.usage_pending)} 次用量待确认</p>` : ""}</section>` : ""}
       <div class="wr-drawers">${latest(room) ? action("full", `<span>计划书 v${room.draft_version}</span><span>${canApprove(room) ? "有修订待敲定 ›" : "看全文 ›"}</span>`) : ""}
-      ${action("internal", `<span>内部交流</span><span>${internal.length} 条 ›</span>`)}${action("members", `<span>参战成员</span><span>${participants(room).length} 人 ›</span>`)}</div>${isolationHTML(room)}
+      ${action("internal", `<span>内部交流</span><span>${internal.length} 条 ›</span>`)}${action("members", `<span>参战成员</span><span>${memberRoster(room).length} 人 ›</span>`)}</div>${membersHTML(ctx, true)}
       ${steps.length ? `<details class="wr-steps" data-wr-card="steps"><summary>开局记录 · ${steps.length} 项</summary><ul>${steps.map(event => `<li>${esc(launchStep[event.detail.step])}${event.detail.step === "goal" ? ` · ${esc(event.detail.target)}` : ""}</li>`).join("")}</ul></details>` : ""}
       </div>`;
   }
@@ -294,16 +319,30 @@
       <span class="wr-phase" data-state="${open ? room.phase : "closed"}">${esc(label)}</span><div class="wr-room-actions">${actions}</div>`;
   }
 
-  function membersHTML(ctx) {
+  function memberRoster(room) {
+    const roster = new Map(participants(room).map(person => [person.session_id, person]));
+    const members = [];
+    for (const assignment of room.isolation_members ?? []) {
+      const person = roster.get(assignment.session_id);
+      members.push({...person, session_id:assignment.session_id, crew_name:assignment.member, assignment});
+      roster.delete(assignment.session_id);
+    }
+    return members.concat([...roster.values()]);
+  }
+
+  function membersHTML(ctx, compact = false) {
     const room = ctx.room;
-    return `${room.isolation === "none" ? isolationHTML(room) : ""}<ul class="wr-participants">${participants(room).map(item => {
+    const rows = memberRoster(room).filter(item => !compact || item.assignment);
+    return isolationNote(room) + (rows.length ? `<ul class="wr-participants">${rows.map(item => {
       const live = ctx.state.leaders.find(person => person.session_id === item.session_id);
       const lead = item.session_id === room.lead_session_id;
       const working = lead ? room.lead_working_room_id : item.working_room_id;
-      const tree = room.worktrees?.find(row => row.member === item.session_id);
-      return `<li>${ctx.avatar(item.crew_name, 28, true)}<strong>${esc(item.crew_name)}</strong>
-        ${tree ? `<small data-folder="${esc(tree.state)}">${esc(folderLabel(tree))}</small>` : ""}${lead ? "<span>领头</span>" : ""}${isOpen(room) && working === room.id ? '<small class="room-working-tag">作战室中</small>' : isOpen(room) && live ? `<small>${esc(K.presence(live).text)}</small>` : ""}</li>`;
-    }).join("")}</ul>`;
+      const isolation = item.assignment && memberIsolation(room, item.assignment);
+      const presence = isOpen(room) && working === room.id ? '<small class="room-working-tag">作战室中</small>' :
+        isOpen(room) && live ? `<small>${esc(K.presence(live).text)}</small>` : "";
+      return `<li><div class="wr-member-head">${compact ? "" : ctx.avatar(item.crew_name, 28, true)}<strong>${esc(item.crew_name)}</strong>
+        ${isolation ? isolation.mode : ""}${lead ? "<span>领头</span>" : ""}${compact ? "" : presence}</div>${isolation ? isolation.files : ""}</li>`;
+    }).join("")}</ul>` : "");
   }
 
   function render(ctx, follow = false) {
@@ -425,6 +464,20 @@
     return error.message;
   }
 
+  function launchFolders(room) {
+    if (!showsPlan(room)) return "";
+    if (room.isolation_reason === "not_git") return planWarning(room);
+    if (!room.isolation_members?.length) return "";
+    const groups = ["worktree", "shared"].map(mode => room.isolation_members.filter(item => item.mode === mode));
+    // 至少给另一种目录留一个名字，两组共列最多六人。
+    const first = Math.min(groups[0].length, groups[1].length ? 5 : 6);
+    return groups.map((members, index) => {
+      if (!members.length) return "";
+      const names = members.slice(0, index ? 6 - first : first).map(item => esc(item.member));
+      return `<p class="wr-launch-group"><strong>${index ? "共用目录" : "独立目录"}</strong> ${names.join("、")}${names.length < members.length ? ` 等 ${members.length} 人` : ""}</p>`;
+    }).join("");
+  }
+
   function confirm(ctx, kind, args = null) {
     if (ctx.writing) return;
     const {room} = ctx;
@@ -444,7 +497,7 @@
     };
     const [title, description] = knobs[kind];
     ctx.confirmation = {kind, args};
-    const warning = kind === "approve" ? planWarning(room) : "";
+    const warning = kind === "approve" ? launchFolders(room) : "";
     if (kind === "approve" && !n && !warning) { void submit(ctx); return; }
     ctx.form.innerHTML = `<h2 id="wr-confirm-title">${title}</h2>${description.startsWith("<") || !description ? description : `<p>${description}</p>`}${warning}
       <p class="wr-dialog-error" role="alert"></p><div class="wr-dialog-acts">${action("dismiss", "返回")}<button type="submit" class="cx-btn cx-primary">${kind === "approve" && n ? (preparing(room) ? "按推荐开打" : "按推荐敲定") : title}</button></div>`;
