@@ -22,16 +22,28 @@ def waiting_state(value):
     return {'reason': value}
 
 
+WAITING_LABELS = {'busy': '对方还在忙', 'stopped': '已停止', 'external': '在外部窗口',
+                  'maintenance': '维护中', 'liveness_unknown': '还没确认状态'}
+
+
 def notice_state(row):
     """The delivery of one channel mention or reply notice, from its notice row and the answering post."""
     if row['notice_id'] is None:
-        return {'delivery': 'none', 'queued_at': None, 'delivered_at': None, 'via': None, 'waiting': None,
-                'reply_id': row['reply_id']}
+        return {'delivery': 'none', 'state': 'none', 'reason': None, 'queued_at': None, 'delivered_at': None,
+                'via': None, 'waiting': None, 'reply_id': row['reply_id']}
     sent = row['sent_at'] is not None
-    return {'delivery': 'replied' if row['reply_id'] is not None else 'delivered' if sent else 'queued',
+    waiting = waiting_state(None if sent else row['waiting'])
+    error = waiting.get('error', '')
+    reason = WAITING_LABELS.get(waiting['reason'])
+    if error.startswith('已取消：'):
+        state = 'cancelled'
+        reason = error
+    else:
+        state = 'replied' if row['reply_id'] is not None else 'delivered' if sent else 'queued'
+    return {'delivery': state, 'state': state, 'reason': reason,
             'queued_at': row['queued_at'], 'delivered_at': row['sent_at'],
             'via': (row['delivered_via'] or 'input') if sent else None,
-            'waiting': None if sent else waiting_state(row['waiting'])['reason'], 'reply_id': row['reply_id']}
+            'waiting': waiting['reason'], 'reply_id': row['reply_id']}
 
 
 def claim_batch(conn, notice_ids, batch_id):
@@ -271,7 +283,13 @@ class DeliveryMixin:
         while that list is unknown; such a leader is never resumed here, its prompt hook delivers instead.
         """
         self._pause_over_budget(conn, now)
-        war_room.claim_main_notices(conn)
+        with board.transaction(conn):
+            war_room.claim_main_notices(conn)
+            # pending_notices omits paused rooms. Check claims before deciding which carriers can wake.
+            claimed = conn.execute('SELECT id FROM leader_notices WHERE room_id IS NOT NULL AND batch_id IS NOT NULL '
+                                   'AND sent_at IS NULL AND wake=1').fetchall()
+            for (notice_id,) in claimed:
+                war_room.check_claim.__wrapped__(conn, notice_id, now)
         # The global assistant gets notices too when it leads a campaign war room.
         assistant = (" OR s.session_id IN (SELECT session_id FROM personal_assistant)" if conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='personal_assistant'").fetchone() else "")
@@ -319,8 +337,10 @@ class DeliveryMixin:
                             self.journal(sid).set_status('idle')
                     note_waiting(conn, sid, None, waking)
                     journal = self.journal(sid)
-                    batch = self._notice_batch(conn, journal, pending)
+                    batch = self._notice_batch(conn, journal, pending, now)
                     if batch is None:
+                        continue
+                    if 'room_id' in batch and not war_room.check_claim(conn, batch['notice_ids'][0], now):
                         continue
                     receipt = self.send(leader, batch['text'], source='crew', identity=batch['id'],
                                         display_text=batch.get('display'), sender=batch.get('sender'),
@@ -363,16 +383,19 @@ class DeliveryMixin:
         self._budget_checked = moment
         war_room.over_budget(conn, now)
 
-    def _notice_batch(self, conn, journal, pending):
+    def _notice_batch(self, conn, journal, pending, now):
         """The batch to write now: the one already claimed, or a new claim recorded before the journal entry."""
         owned = next((notice['batch_id'] for notice in pending if notice['batch_id'] is not None), None)
         if owned is not None:
-            ids = [notice['id'] for notice in pending if notice['batch_id'] == owned]
+            pending = [n for n in pending if n['batch_id'] == owned
+                       and (n['room_id'] is None or war_room.check_claim(conn, n['id'], now))]
+            if not pending:
+                return None
+            ids = [notice['id'] for notice in pending]
             existing = next((event for event in reversed(journal.events)
                              if event['type'] == 'leader_notice_batch' and event['id'] == owned), None)
             if existing is not None:
                 return {**existing, 'notice_ids': ids}
-            pending = [notice for notice in pending if notice['id'] in ids]
         else:
             # The user's own channel words go in a batch of their own, shown in private as the user's message.
             from_user = channel.user_mentions(conn, [notice['id'] for notice in pending])

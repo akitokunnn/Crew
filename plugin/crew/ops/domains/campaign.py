@@ -63,8 +63,7 @@ def _preview(ctx, args):
 
 def _launch(ctx, args):
     actor = ctx.caller.session_id if ctx.caller.role in ('assistant', 'workspace_assistant') else board.HUMAN
-    return campaign.launch(ctx.service, ctx.conn, ctx.project, _plan(args), args.get('board_version'), actor, ctx.now, ctx.request_id,
-                           repository_info=ctx.room_repository)
+    return campaign.launch(ctx.service, ctx.conn, ctx.project, _plan(args), args.get('board_version'), actor, ctx.now, ctx.request_id)
 
 
 register(Operation(

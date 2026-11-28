@@ -10,7 +10,7 @@ import threading
 import traceback
 import uuid
 
-from . import board, goal_context, goals, install, messaging, models, report_preview, runtimes, spawn, store, trust_mode
+from . import board, goal_context, goals, install, messaging, models, report_preview, runtimes, spawn, store, trust_mode, war_room_watchdog
 
 
 def protocol(conn, execution):
@@ -505,6 +505,7 @@ class Controller:
                             'g.current_round FROM goal_executions e '
                             'JOIN goals g ON g.id=e.goal_id' + (' WHERE e.goal_id=?' if goal_id else ''),
                             (goal_id,) if goal_id else ()).fetchall()
+        previous = {row['id']: row['status'] for row in rows if row['status'] not in goals.TERMINAL}
         pausing = set()
         for row in rows:
             key = row['id']
@@ -586,6 +587,13 @@ class Controller:
             if blocked and not any(self.manager.busy(e['id']) for e in executions):
                 goals.transition(conn, value['id'], 'waiting_user', actor=value['leader_session_id'])
         self.retire_finished_members(conn)
+        if previous:
+            ended = conn.execute("SELECT id,status FROM goal_executions WHERE id IN "
+                                 "(SELECT value FROM json_each(?)) AND status IN "
+                                 "('offline','completed','cancelled','failed')", (json.dumps(list(previous)),))
+            for key, status in ended:
+                if previous[key] != status:
+                    war_room_watchdog.note_storage(key)
 
     def retire_finished_members(self, conn):
         """A member exists for parts of tasks; once every task it worked on is accepted,

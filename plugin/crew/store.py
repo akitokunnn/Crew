@@ -55,11 +55,23 @@ def connect(home):
         _migrate_mindmap_positions(conn)
         native_origins.migrate(conn)
         _migrate_war_room_plans(conn)
+        _retire_war_room_idle(conn)
         change_triggers.install(conn)
     except BaseException:
         conn.close()
         raise
     return conn
+
+
+def _retire_war_room_idle(conn):
+    exists = "SELECT 1 FROM sqlite_master WHERE type='table' AND name='war_room_idle'"
+    if conn.execute(exists).fetchone():
+        with conn:
+            conn.execute('BEGIN IMMEDIATE')
+            if conn.execute(exists).fetchone():
+                conn.execute('UPDATE leader_notices SET wake=0 WHERE sent_at IS NULL AND id IN '
+                             '(SELECT notice_id FROM war_room_idle WHERE notice_id IS NOT NULL)')
+                conn.execute('DROP TABLE war_room_idle')
 
 
 def _migrate_war_room_plans(conn):
