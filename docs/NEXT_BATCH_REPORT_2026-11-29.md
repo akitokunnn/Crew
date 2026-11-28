@@ -95,6 +95,9 @@
 | 人格 | `be9e7e7`，合并 `3f6edbf`；起点措辞加强 `a0a65b6` |
 | 安卓 | 分支最终 `773299f`，合并 `6c36703` |
 | 尾巴 | `e8aa90e`，合并 `108a268`；追加（Lark 默认、离开判定）`6ff0526`，合并 `4483ff7` |
-| 验收修复 | 后台 `d5c6e02` 合并 `76afe52`；界面 `a637f2b` 合并 `f467189`；收尾 `4b8fb1c` |
+| 验收修复 | 后台 `d5c6e02` 合并 `76afe52`；界面 `a637f2b` 合并 `f467189`；收尾 `4b8fb1c`；CI 修复 `fa5ab50` |
+| 报告与合并 | 报告 `859f92a`，main 合并 `6339f01` |
 
-已合入本机 live，未推送。按用户裁决接下来走 `python scripts/live.py push` → 按需 `gh workflow run tests.yml --ref live` → `python scripts/live.py ship`，CI 全绿后合进 main；不出包、不改版本号。本批改动涉及路径、进程、空闲检测（Windows `GetLastInputInfo` / Mac `ioreg`）和 Git worktree，属于有平台差异的改动，推 live 后应手动触发一次 CI。
+已合进 main：[PR #130](https://github.com/akitokunnn/Crew/pull/130) 于 2026-11-28 合并（`6339f01`），live 与主目录已对齐；不出包、不改版本号。合并前在 live 跑了 Python 全量（3,082 项全过，10 跳过）。批次 PR 第一次 CI 的 backend 在 Windows 和 macOS 都失败——[首次 CI](https://github.com/akitokunnn/Crew/actions/runs/46137435610)：人格成长、顾问、暂停恢复的测试依赖本机装了 claude/codex，坏仓库断言写死了一种 Git 报错，mDNS 公告测试在 macOS runner 收不到组播；修测试夹具（`fa5ab50`）后 [第二次 CI](https://github.com/akitokunnn/Crew/actions/runs/46139112610) 四项全过。
+
+本批改动涉及路径、进程、空闲检测（Windows `GetLastInputInfo` / Mac `ioreg`）和 Git worktree，Mac 只有 CI 核心测试覆盖，真机留到下次出包。另一台电脑运行 `python scripts/live.py sync` 后可以试用。
