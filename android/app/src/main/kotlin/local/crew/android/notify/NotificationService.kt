@@ -99,7 +99,7 @@ class NotificationService : Service() {
         if (!manager.areNotificationsEnabled()) throw IOException("手机提醒权限已关闭")
         when (frame) {
             is NotificationFrame.Ready -> Unit
-            is NotificationFrame.Gap -> post(computer, "gap", "待办", "有些提醒太旧已经清掉，打开 Crew 看看", "", "/")
+            is NotificationFrame.Gap -> post(computer, "gap", "待办", "有些提醒太旧已经清掉，打开 Crew 看看", "", "/", actionable = false)
             is NotificationFrame.Item -> {
                 val channel = when (frame.kind) {
                     "decision" -> "待拍板"
@@ -108,12 +108,13 @@ class NotificationService : Service() {
                     "session_error", "codex_failed" -> "卡住"
                     else -> throw IOException("电脑发来了未知类型的提醒（${frame.kind}）")
                 }
-                post(computer, frame.item_id, channel, frame.title, frame.body, frame.url)
+                post(computer, frame.item_id, channel, frame.title, frame.body, frame.url,
+                    actionable = frame.kind == "decision" || frame.kind == "todo")
             }
         }
     }
 
-    private fun post(computer: PairedComputer, itemId: String, channel: String, title: String, body: String, url: String) {
+    private fun post(computer: PairedComputer, itemId: String, channel: String, title: String, body: String, url: String, actionable: Boolean) {
         val id = itemId.hashCode()
         val intent = Intent(this, NotificationOpenActivity::class.java).apply {
             data = Uri.Builder().scheme("crew").authority("notification")
@@ -124,14 +125,17 @@ class NotificationService : Service() {
         val open = PendingIntent.getActivity(this, id, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val notice = Notification.Builder(this, channel)
             .setSmallIcon(R.drawable.ic_crew_notification)
+            .setColor(0xFF3E7C74.toInt())
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(Notification.BigTextStyle().bigText(body))
             .setContentIntent(open)
             .setAutoCancel(true)
             .setOnlyAlertOnce(true)
-            .build()
-        manager.notify("${computer.instanceId}:$itemId", id, notice)
+        if (actionable) {
+            notice.addAction(Notification.Action.Builder(null, "去处理", open).build())
+        }
+        manager.notify("${computer.instanceId}:$itemId", id, notice.build())
     }
 
     private fun ongoing(title: String, subtitle: String? = null): Notification {
@@ -139,6 +143,7 @@ class NotificationService : Service() {
         val open = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_IMMUTABLE)
         return Notification.Builder(this, CONNECTION_CHANNEL)
             .setSmallIcon(R.drawable.ic_crew_notification)
+            .setColor(0xFF3E7C74.toInt())
             .setContentTitle(title)
             .setContentText(subtitle)
             .setContentIntent(open)

@@ -8,7 +8,7 @@ const vm = require("node:vm");
 
 const read = file => fs.readFileSync(path.join(__dirname, "../../frontend", file), "utf8");
 
-function render({search = "?project=田野", hash = "", width = 375, native = true, desktop = false} = {}) {
+function render({search = "?project=田野", hash = "", width = 375, native = true, desktop = false, viewport} = {}) {
   const messages = [];
   let receive;
   function element() {
@@ -31,7 +31,10 @@ function render({search = "?project=田野", hash = "", width = 375, native = tr
   const topbar = element(), toast = element();
   const media = {matches: width <= 760, addEventListener() {}};
   const body = element();
-  body.classList = {contains: () => false, toggle() {}};
+  const bodyClasses = new Set();
+  body.classList = {contains: name => bodyClasses.has(name), toggle(name, on) {
+    if (on) bodyClasses.add(name); else bodyClasses.delete(name);
+  }};
   const document = {
     body, readyState: "complete", addEventListener() {},
     getElementById: id => id === "toast-root" ? toast : null,
@@ -52,6 +55,7 @@ function render({search = "?project=田野", hash = "", width = 375, native = tr
     location: {search, hash}, document, URLSearchParams,
     localStorage: {setItem() {}}, history: {pushState() {}, replaceState() {}},
     matchMedia: () => media, addEventListener() {}, queueMicrotask,
+    innerWidth: width, innerHeight: 812, visualViewport: viewport,
     MutationObserver: class { observe() {} },
     setTimeout() {}, clearTimeout() {},
     crewDesktopShell: desktop,
@@ -65,19 +69,52 @@ function render({search = "?project=田野", hash = "", width = 375, native = tr
   vm.runInContext(read("browser-utils.js"), sandbox);
   vm.runInContext(read("mobile-shell.js"), sandbox);
   const respond = (id, contents) => receive({data: JSON.stringify({id, ...contents})});
-  return {topbar, messages, respond, toast, bridge: sandbox.CrewAndroidBridge};
+  return {topbar, messages, respond, toast, bodyClasses, document, window: sandbox, bridge: sandbox.CrewAndroidBridge};
 }
 
 test("a phone workspace has a voice button that sends its workspace to the native bridge", async () => {
   const page = render();
   const [button] = page.topbar.children;
   assert.equal(button.getAttribute("aria-label"), "语音");
+  assert.equal(button.children[0].textContent, "语音");
   const opening = button.onclick();
   assert.equal(button.disabled, true);
   assert.deepEqual(page.messages[0], {id: "1", method: "openVoice", params: {project: "田野"}});
   page.respond("1", {ok: true, result: null});
   await opening;
   assert.equal(button.disabled, false);
+});
+
+test("the tab bar follows the visual viewport on phones with and without the native bridge", () => {
+  for (const native of [true, false]) {
+    const viewport = new EventTarget();
+    viewport.height = 812;
+    const {bodyClasses} = render({native, viewport});
+    const resize = height => {
+      viewport.height = height;
+      viewport.dispatchEvent(new Event("resize"));
+      return bodyClasses.has("m-ime");
+    };
+    assert.equal(resize(662), false);
+    assert.equal(resize(661), true);
+    assert.equal(resize(812), false);
+  }
+});
+
+test("the Android tab bar also hides when the keyboard resizes both viewports", () => {
+  const viewport = Object.assign(new EventTarget(), {height: 812});
+  const page = render({viewport});
+  const resize = (width, height) => {
+    page.window.innerWidth = width;
+    page.window.innerHeight = viewport.height = height;
+    viewport.dispatchEvent(new Event("resize"));
+    return page.bodyClasses.has("m-ime");
+  };
+  assert.equal(resize(375, 650), false);
+  page.document.activeElement = {matches: () => true};
+  assert.equal(resize(375, 499), true);
+  assert.equal(resize(375, 650), false);
+  assert.equal(resize(760, 430), false);
 });
 
 test("the shortcut is hidden outside the Android phone workspace home", () => {

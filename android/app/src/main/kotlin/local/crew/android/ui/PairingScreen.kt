@@ -2,13 +2,19 @@ package local.crew.android.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -20,15 +26,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,7 +47,7 @@ import local.crew.android.NearbyComputer
 import local.crew.android.core.PairedComputer
 import local.crew.android.ui.theme.LocalCrewColors
 
-internal const val CODE_HELP = "去电脑 Crew「设置 → 局域网访问」生成配对码，扫码或输 8 位码"
+internal const val CODE_HELP = "输入电脑「设置 → 局域网访问」里显示的 8 位数字，用一次就失效"
 internal const val SIGNED_OUT = "这台电脑已让你下线，请重新配对"
 
 internal data class ConnectionIssue(val message: String, val network: Boolean = false, val invalidCode: Boolean = false)
@@ -67,7 +76,7 @@ internal fun PairingPage(
     PairingLayout(onReturn) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Headline("连接你的电脑")
-            Body("在电脑打开 Crew，进「设置 → 局域网访问」打开开关")
+            Body("在电脑 Crew 里打开「设置 → 局域网访问」")
         }
         if (issue != null) IssueCard(issue)
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -83,9 +92,11 @@ internal fun PairingPage(
                         computers.currentId == computer.instanceId && isNearby -> "上次使用 · 在线"
                         computers.currentId == computer.instanceId -> "上次使用"
                         isNearby -> "在线"
-                        else -> "未在附近找到"
+                        else -> null
                     }
-                    ComputerRow(computer.hostName, computer.baseUrl, status, { onSelect(computer) }) { forget = computer }
+                    ComputerRow(computer.hostName, computer.baseUrl, status, { onSelect(computer) }, offline = !isNearby) {
+                        forget = computer
+                    }
                 }
             }
         }
@@ -95,7 +106,7 @@ internal fun PairingPage(
                     Body(discoveryError ?: if (searching) "正在同一无线网里寻找电脑…" else "还没找到电脑")
                     if (!searching) {
                         Meta("确认手机和电脑连着同一个无线网，且电脑已开启局域网访问")
-                        TextButton(onClick = onSearch) { Text("重新寻找") }
+                        PairingTextButton("重新寻找", onSearch)
                     }
                 }
             } else {
@@ -107,9 +118,7 @@ internal fun PairingPage(
             }
         }
         Column {
-            TextButton(onClick = { manual = !manual }, modifier = Modifier.heightIn(min = 48.dp)) {
-                Text(if (manual) "收起手动输入" else "找不到电脑？手动输入地址")
-            }
+            PairingTextButton(if (manual) "收起手动输入" else "找不到电脑？手动输入地址", { manual = !manual })
             AnimatedVisibility(manual) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
@@ -121,13 +130,13 @@ internal fun PairingPage(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                         singleLine = true,
                         shape = RoundedCornerShape(12.dp),
-                        textStyle = TextStyle(fontSize = 15.sp, fontFamily = FontFamily.Monospace),
+                        textStyle = TextStyle(fontSize = 15.sp, fontFeatureSettings = "tnum"),
                     )
                     PrimaryAction("下一步", { onManual(address) }, enabled = address.isNotBlank())
                 }
             }
         }
-        Meta("只在信任的无线网下连接。电脑上可以随时移除这台手机。")
+        Meta("只在信任的无线网里连接，电脑上随时能移除这台手机")
     }
     forget?.let { computer ->
         AlertDialog(
@@ -186,7 +195,7 @@ internal fun CodePage(
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Headline("输入 8 位配对码")
             target.hostName?.let { Body(it) }
-            Meta(target.baseUrl.removePrefix("http://"), monospace = true)
+            Meta(target.baseUrl.removePrefix("http://"))
             Body(CODE_HELP)
         }
         val colors = LocalCrewColors.current
@@ -203,6 +212,8 @@ internal fun CodePage(
             },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
             singleLine = true,
+            cursorBrush = SolidColor(Color.Transparent),
+            textStyle = TextStyle(color = Color.Transparent),
             modifier = Modifier.fillMaxWidth().offset(x = shake.value.dp).focusRequester(focus)
                 .onFocusChanged { focused = it.isFocused }
                 .semantics {
@@ -210,22 +221,25 @@ internal fun CodePage(
                     stateDescription = "已输入 ${code.length} 位，共 8 位"
                 },
             decorationBox = { inner ->
-                Box {
+                BoxWithConstraints {
                     Box(Modifier.size(1.dp)) { inner() }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    val groupGap = 12.dp
+                    val cellGap = 6.dp
+                    val groupWidth = minOf((maxWidth - groupGap) / 2, 48.dp * 4 + cellGap * 3)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(groupGap, Alignment.CenterHorizontally)) {
                         for (group in 0..1) {
-                            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Row(Modifier.width(groupWidth), horizontalArrangement = Arrangement.spacedBy(cellGap)) {
                                 for (index in group * 4 until group * 4 + 4) {
                                     val shape = RoundedCornerShape(12.dp)
-                                    val border = if (focused && index == code.length) colors.accent else colors.lineStrong
+                                    val active = focused && index == code.length
                                     Box(
-                                        Modifier.weight(1f).height(56.dp).background(colors.surface, shape)
-                                            .border(1.dp, border, shape),
+                                        Modifier.weight(1f).height(52.dp).background(colors.surface, shape)
+                                            .border(if (active) 2.dp else 1.dp, if (active) colors.accent else colors.lineStrong, shape),
                                         contentAlignment = Alignment.Center,
                                     ) {
                                         Text(code.getOrNull(index)?.toString().orEmpty(),
-                                            Modifier.clearAndSetSemantics {}, fontSize = 26.sp,
-                                            fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace)
+                                            Modifier.clearAndSetSemantics {}, fontSize = 24.sp,
+                                            fontWeight = FontWeight.SemiBold, style = TextStyle(fontFeatureSettings = "tnum"))
                                     }
                                 }
                             }
@@ -242,7 +256,7 @@ internal fun CodePage(
             IssueCard(issue)
             if (code.length == 8) PrimaryAction("再试一次", { onPair(code) })
         }
-        if (!busy) TextButton(onClick = onScan) { Text("改用扫码连接") }
+        if (!busy) PairingTextButton("改用扫码连接", onScan)
     }
 }
 
@@ -258,12 +272,12 @@ internal fun ReconnectPage(
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Headline("和电脑断开了连接")
             Body(computer.hostName)
-            Meta(computer.baseUrl.removePrefix("http://"), monospace = true)
+            Meta(computer.baseUrl.removePrefix("http://"))
         }
         IssueCard(issue)
         if (busy) BusyText("正在重新连接 ${computer.hostName}…")
         PrimaryAction("重试", onRetry, !busy)
-        TextButton(onClick = onSwitch) { Text("换一台") }
+        PairingTextButton("换一台", onSwitch)
     }
 }
 
@@ -293,13 +307,20 @@ internal fun Headline(value: String) = Text(value, fontSize = 24.sp, lineHeight 
     letterSpacing = (-0.3).sp, fontWeight = FontWeight.SemiBold)
 
 @Composable
-internal fun Body(value: String) = Text(value, fontSize = 15.sp, lineHeight = 24.sp)
+internal fun Body(value: String) = Text(value, fontSize = 15.sp, lineHeight = 24.sp,
+    style = LocalTextStyle.current.copy(lineBreak = LineBreak.Heading))
 
 @Composable
-internal fun Meta(value: String, monospace: Boolean = false) = Text(
+internal fun Meta(value: String) = Text(
     value, color = LocalCrewColors.current.text2, fontSize = 13.sp, lineHeight = 20.sp,
-    fontFamily = if (monospace) FontFamily.Monospace else FontFamily.SansSerif,
+    style = LocalTextStyle.current.copy(lineBreak = LineBreak.Heading, fontFeatureSettings = "tnum"),
 )
+
+@Composable
+private fun PairingTextButton(label: String, action: () -> Unit) {
+    TextButton(onClick = action, modifier = Modifier.heightIn(min = 48.dp),
+        contentPadding = PaddingValues(start = 0.dp, end = 12.dp)) { Text(label) }
+}
 
 @Composable
 internal fun PrimaryAction(label: String, action: () -> Unit, enabled: Boolean = true) {
@@ -338,7 +359,18 @@ private fun ComputerGroup(title: String, status: String? = null, content: @Compo
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(title, Modifier.semantics { heading() }, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            if (status != null) Meta("●  $status")
+            if (status != null) {
+                val transition = rememberInfiniteTransition(label = "寻找电脑")
+                val pulse by transition.animateFloat(
+                    initialValue = 0.35f, targetValue = 1f,
+                    animationSpec = infiniteRepeatable(tween(1200), RepeatMode.Reverse),
+                    label = "寻找圆点",
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(6.dp).graphicsLayer { alpha = pulse }.background(colors.accent, CircleShape))
+                    Meta(status)
+                }
+            }
         }
         val shape = RoundedCornerShape(15.dp)
         Column(Modifier.fillMaxWidth().clip(shape).background(colors.surface).border(1.dp, colors.line, shape), content = content)
@@ -346,7 +378,8 @@ private fun ComputerGroup(title: String, status: String? = null, content: @Compo
 }
 
 @Composable
-private fun ComputerRow(name: String, origin: String, status: String?, click: () -> Unit, forget: (() -> Unit)? = null) {
+private fun ComputerRow(name: String, origin: String, status: String?, click: () -> Unit,
+    offline: Boolean = false, forget: (() -> Unit)? = null) {
     val colors = LocalCrewColors.current
     Row(Modifier.fillMaxWidth().heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically) {
         Row(Modifier.weight(1f).clickable(role = Role.Button, onClick = click)
@@ -363,14 +396,17 @@ private fun ComputerRow(name: String, origin: String, status: String?, click: ()
             }
             Column(Modifier.weight(1f)) {
                 Text(name, fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.Medium)
-                Meta(origin.removePrefix("http://"), monospace = true)
+                Meta(origin.removePrefix("http://"))
+                if (offline) Meta("未开机或不在同一网络")
             }
             if (status != null) {
-                Text(status, Modifier.background(colors.accentSofter, RoundedCornerShape(50))
-                    .padding(horizontal = 8.dp, vertical = 4.dp), color = colors.accentText, fontSize = 11.sp,
-                    textAlign = TextAlign.Center)
+                Text(status, Modifier.background(colors.accentSoft, RoundedCornerShape(50))
+                    .padding(horizontal = 8.dp, vertical = 4.dp), color = colors.accentText, fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium, textAlign = TextAlign.Center)
             } else Text("›", color = colors.text2, fontSize = 20.sp)
         }
-        if (forget != null) TextButton(onClick = forget, modifier = Modifier.heightIn(min = 48.dp)) { Text("忘记") }
+        if (forget != null) TextButton(onClick = forget, modifier = Modifier.heightIn(min = 48.dp)) {
+            Text("忘记", color = colors.text2)
+        }
     }
 }

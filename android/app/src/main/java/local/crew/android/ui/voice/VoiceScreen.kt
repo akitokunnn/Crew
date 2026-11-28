@@ -5,23 +5,27 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
-import local.crew.android.ui.theme.LocalCrewColors
-import local.crew.android.R
-import local.crew.android.voice.CallState
 import kotlinx.coroutines.delay
+import local.crew.android.R
+import local.crew.android.ui.theme.LocalCrewColors
+import local.crew.android.voice.CallState
+import local.crew.android.voice.Confirmation
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun VoiceScreen(c: VoiceCallController, finish: () -> Unit, retry: () -> Unit) {
     val colors = LocalCrewColors.current
@@ -31,125 +35,229 @@ fun VoiceScreen(c: VoiceCallController, finish: () -> Unit, retry: () -> Unit) {
         seconds = 0
         if (c.state == CallState.Thinking) while (true) { delay(1000); seconds++ }
     }
-    val label = when {
-        c.preparing -> "正在准备语音（几秒）"
-        c.partial.isNotEmpty() -> "正在听你说"
-        c.reading -> "助手在说"
+    val status = when {
+        c.preparing -> "准备中"
+        c.state == CallState.Offline -> "已断开"
+        c.muted -> "已静音"
+        c.partial.isNotEmpty() -> "在听"
+        c.reading -> "在说"
         else -> when (c.state) {
-            CallState.Idle, CallState.Connecting -> "正在连接电脑"
+            CallState.Idle, CallState.Connecting -> "连接中"
             CallState.Listening -> "在听"
-            CallState.Thinking -> "助手在想"
-            CallState.Speaking -> "助手在说"
-            CallState.Muted -> "已闭麦"
-            CallState.Offline -> "连接中断，正在重连"
-            CallState.AwaitingConfirm -> "等你点确认"
+            CallState.Thinking -> "在想"
+            CallState.Speaking -> "在说"
+            CallState.Muted -> "已静音"
+            CallState.Offline -> "已断开"
+            CallState.AwaitingConfirm -> "待确认"
         }
     }
-    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 16.dp),horizontalAlignment = Alignment.CenterHorizontally) {
-        LazyColumn(Modifier.weight(1f).widthIn(max = 680.dp).fillMaxWidth(),verticalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(vertical = 12.dp)) {
-            item {
-                Text(c.project,style = MaterialTheme.typography.headlineMedium,fontWeight = FontWeight.SemiBold,color = colors.text)
-                FlowRow(verticalArrangement = Arrangement.Center,horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically,modifier = Modifier.heightIn(min = 48.dp)) {
-                        Box(Modifier.size(8.dp).background(if (c.state == CallState.Offline) colors.warn else colors.accent,RoundedCornerShape(50)))
-                        Spacer(Modifier.width(7.dp))
-                        Text(label,color = colors.text2,modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
-                    }
-                    if (c.canSwitch) TextButton(onClick = c::toggleVoice) { Text(if (c.systemVoice) "系统音色 ⇄" else "内置音色 ⇄") }
-                    TextButton(onClick = { showDiagnostics = true }) { Text("诊断") }
-                }
+    val caption = when {
+        c.partial.isNotBlank() -> c.partial
+        c.reading -> c.line
+        c.state == CallState.Thinking -> when {
+            seconds < 5 -> "好，我看一下…"
+            seconds < 15 -> "正在查看工作区情况 · ${seconds}秒"
+            else -> "还在整理结果 · ${seconds}秒"
+        }
+        c.line.isNotEmpty() -> c.line
+        c.preparing -> "正在准备语音（几秒）"
+        c.state == CallState.Offline -> "连接中断，正在重连"
+        c.state == CallState.AwaitingConfirm -> "请在屏幕上点确认"
+        c.state == CallState.Listening -> if (c.timeline.isEmpty()) "我在。想听今天的汇报，还是派个活？" else "你说，我在听…"
+        c.state == CallState.Idle || c.state == CallState.Connecting -> "正在连接电脑"
+        else -> status
+    }
+    val listState = rememberLazyListState()
+    val latest = c.timeline.lastIndex
+    LaunchedEffect(latest) {
+        if (latest >= 0) listState.animateScrollToItem(latest)
+    }
+
+    BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 16.dp)) {
+        val stageHeight = minOf(if (c.cards.isEmpty()) 204.dp else 140.dp, maxHeight * 0.25f)
+        val cardHeight = maxHeight * 0.45f
+        Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+            VoiceTopBar(c, status, finish) { showDiagnostics = true }
+            Column(Modifier.widthIn(max = 680.dp).fillMaxWidth().weight(1f)) {
                 if (c.preparing) LinearProgressIndicator(Modifier.fillMaxWidth())
-            }
-            item {
-                VoiceField(c,Modifier.fillMaxWidth().height(if (c.cards.isEmpty()) 204.dp else 140.dp))
-                Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp,vertical = 10.dp)) {
-                    val text = when {
-                        c.partial.isNotBlank() -> c.partial
-                        c.reading -> c.line
-                        c.state == CallState.Thinking -> when {
-                            seconds < 5 -> "好，我看一下…"
-                            seconds < 15 -> "正在查看工作区情况 · " + seconds + "秒"
-                            else -> "还在整理结果 · " + seconds + "秒"
-                        }
-                        c.line.isNotEmpty() -> c.line
-                        c.state == CallState.AwaitingConfirm -> "请在屏幕上点确认"
-                        c.state == CallState.Listening -> if (c.timeline.isEmpty()) "我在。想听今天的汇报，还是派个活？" else "你说，我在听…"
-                        else -> label
-                    }
-                    val split = if (text == c.line) text.offsetByCodePoints(0,
-                        (text.codePointCount(0,text.length)*c.progress).toInt().coerceIn(0,text.codePointCount(0,text.length))) else text.length
-                    Text(buildAnnotatedString {
-                        withStyle(SpanStyle(color = colors.text)) { append(text.substring(0,split)) }
-                        withStyle(SpanStyle(color = colors.text2)) { append(text.substring(split)) }
-                    },style = MaterialTheme.typography.headlineSmall)
+                VoiceField(c, Modifier.fillMaxWidth().height(stageHeight))
+                VoiceCaption(caption, if (caption == c.line) c.progress else 1f)
+                if (c.error.isNotEmpty()) {
+                    Text(c.error, color = colors.danger, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+                    if (c.preparationFailed) OutlinedButton(onClick = retry) { Text("重试") }
                 }
-            }
-            // Pending decisions stay above the transcript, reachable even in long conversations.
-            items(c.cards,key = { "card-" + it.id }) { card ->
-                var lit by remember { mutableStateOf(false) }
-                LaunchedEffect(c.flashCount) { if (c.flashCount > 0) { lit = true; delay(420); lit = false } }
-                val border by animateColorAsState(if (lit) colors.accentStrong else colors.warnLine,label = "确认提醒")
-                Surface(modifier = Modifier.fillMaxWidth(),shape = RoundedCornerShape(16.dp),color = if (lit) colors.accentSoft else colors.studioCard,
-                    border = BorderStroke(if (lit) 2.dp else 1.dp,border)) {
-                    Column(Modifier.padding(14.dp)) {
-                        Text("等你确认",color = colors.accentText,style = MaterialTheme.typography.labelLarge)
-                        Text(card.summary,Modifier.padding(vertical = 8.dp).semantics { liveRegion = LiveRegionMode.Assertive },color = colors.text)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { c.decide(card.id,true) }) { Text("确认") }
-                            OutlinedButton(onClick = { c.decide(card.id,false) }) { Text("取消") }
-                        }
+                LazyColumn(
+                    Modifier.fillMaxWidth().weight(1f), state = listState,
+                    verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.Bottom),
+                    contentPadding = PaddingValues(vertical = 12.dp),
+                ) {
+                    items(c.timeline, key = { it.key }) { entry -> TranscriptBubble(entry) }
+                }
+                if (c.generation || c.reading || c.preparingSentence) {
+                    Row(Modifier.align(Alignment.CenterHorizontally), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = c::stopReading) { Text("停止朗读") }
+                        TextButton(onClick = c::cancelGeneration, enabled = c.generation) { Text("停下助手") }
                     }
                 }
             }
-            if (c.error.isNotEmpty()) item {
-                Text(c.error,color = colors.danger,modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
-                if (c.preparationFailed) OutlinedButton(onClick = retry) { Text("重试") }
-            }
-            items(c.timeline.reversed(),key = { "line-" + it.key }) { entry ->
-                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
-                    .background(if (entry.user) colors.userBubble else colors.studioCard).padding(12.dp)) {
-                    Text(if (entry.user) "你" else if (entry.interrupted) "助手 · 已打断" else "助手",style = MaterialTheme.typography.labelSmall,color = colors.text2)
-                    Text(entry.text,color = colors.text)
+            if (c.cards.isNotEmpty()) {
+                Column(
+                    Modifier.widthIn(max = 680.dp).fillMaxWidth().heightIn(max = cardHeight).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    for (card in c.cards) key(card.id) {
+                        ConfirmationCard(card, c.flashCount) { c.decide(card.id, it) }
+                    }
                 }
             }
-        }
-        if (c.generation || c.reading || c.preparingSentence) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = c::stopReading) { Text("停止朗读") }
-                TextButton(onClick = c::cancelGeneration,enabled = c.generation) { Text("取消生成") }
-            }
-        }
-        Surface(Modifier.widthIn(max = 520.dp).fillMaxWidth().padding(vertical = 8.dp),
-            shape = RoundedCornerShape(28.dp),color = colors.studioGlass,border = BorderStroke(1.dp,colors.studioBorder)) {
-            Row(Modifier.padding(4.dp),horizontalArrangement = Arrangement.SpaceEvenly) {
-                Control(R.drawable.voice_mic,if (c.muted) "开麦" else "闭麦","麦克风静音",c::toggleMute,muted = c.muted)
-                Control(R.drawable.voice_speaker,if (c.speaker) "外放" else "听筒",if (c.speaker) "外放中，切换到听筒" else "听筒中，切换到外放",c::toggleRoute)
-                Control(R.drawable.voice_text,"文字","返回文字对话",finish)
-                Control(R.drawable.voice_hangup,"挂断","挂断语音通话",finish,danger = true)
+            Surface(
+                Modifier.widthIn(max = 520.dp).fillMaxWidth().padding(top = 8.dp, bottom = 12.dp),
+                shape = RoundedCornerShape(32.dp), color = colors.studioGlass, border = BorderStroke(1.dp, colors.studioBorder),
+            ) {
+                Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    val muteLabel = if (c.muted) "已静音" else "静音"
+                    Control(R.drawable.voice_mic, muteLabel, muteLabel, c::toggleMute, muted = c.muted)
+                    Control(R.drawable.voice_speaker, if (c.speaker) "外放" else "听筒",
+                        if (c.speaker) "外放中，切换到听筒" else "听筒中，切换到外放", c::toggleRoute)
+                    Control(R.drawable.voice_text, "文字", "返回文字对话", finish)
+                    Control(R.drawable.voice_hangup, "挂断", "挂断语音通话", finish, danger = true)
+                }
             }
         }
     }
-    if (showDiagnostics) AlertDialog(onDismissRequest = { showDiagnostics = false },title = { Text("语音诊断") },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(if (c.systemVoice) "朗读 · 系统音色" else "朗读 · 内置音色")
-            for (row in c.diagnostics) Text(row)
-            if (c.error.isNotBlank()) Text(c.error)
-        } },confirmButton = { TextButton(onClick = { showDiagnostics = false }) { Text("关闭") } })
+    if (showDiagnostics) AlertDialog(
+        onDismissRequest = { showDiagnostics = false },
+        title = { Text("排查问题") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(if (c.systemVoice) "朗读 · 系统音色" else "朗读 · 内置音色")
+                for (row in c.diagnostics) Text(row)
+                if (c.error.isNotBlank()) Text(c.error)
+            }
+        },
+        confirmButton = { TextButton(onClick = { showDiagnostics = false }) { Text("关闭") } },
+    )
 }
 
-@Composable private fun RowScope.Control(icon: Int,label: String, description: String, action: () -> Unit, danger: Boolean = false, muted: Boolean? = null) {
+@Composable
+private fun VoiceTopBar(c: VoiceCallController, status: String, finish: () -> Unit, diagnostics: () -> Unit) {
     val colors = LocalCrewColors.current
-    Box(Modifier.weight(1f).heightIn(min = 48.dp).clip(RoundedCornerShape(24.dp))
-        .background(when { danger -> colors.dangerSoft; muted == true -> colors.accentSoft; else -> androidx.compose.ui.graphics.Color.Transparent })
-        .clickable(role = if (muted == null) Role.Button else Role.Switch,onClick = action).semantics {
-            contentDescription = description
-            if (muted != null) stateDescription = if (muted) "已静音" else "收音中"
-        },contentAlignment = Alignment.Center) {
-        val tint = if (danger) colors.danger else colors.text
-        Column(Modifier.padding(vertical = 6.dp),horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(painterResource(icon),null,Modifier.size(20.dp),tint = tint)
-            Text(label,color = tint,style = MaterialTheme.typography.labelMedium)
+    var expanded by remember { mutableStateOf(false) }
+    Box(Modifier.widthIn(max = 680.dp).fillMaxWidth().height(56.dp)) {
+        TextButton(
+            onClick = finish, modifier = Modifier.align(Alignment.CenterStart).heightIn(min = 48.dp),
+            contentPadding = PaddingValues(horizontal = 4.dp),
+        ) { Text("‹ 文字", maxLines = 1) }
+        Column(Modifier.align(Alignment.Center).padding(horizontal = 118.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(c.project, color = colors.text, fontSize = 16.sp, fontWeight = FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("工作区助手", color = colors.text3, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.widthIn(max = 70.dp).height(28.dp).background(colors.accentSoft, CircleShape)
+                    .padding(horizontal = 10.dp).semantics { liveRegion = LiveRegionMode.Polite },
+                horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val dot = if (c.state == CallState.Offline) colors.danger else colors.accent
+                Box(Modifier.size(7.dp).background(dot, CircleShape))
+                Text(status, color = colors.accentText, fontSize = 12.sp, fontWeight = FontWeight.Medium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Box {
+                IconButton(
+                    onClick = { expanded = true },
+                    modifier = Modifier.size(48.dp).semantics { contentDescription = "更多选项" },
+                ) { Text("⋯", Modifier.clearAndSetSemantics {}, color = colors.text, fontSize = 24.sp) }
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    DropdownMenuItem(text = { Text(if (c.systemVoice) "声音：系统" else "声音：内置") },
+                        enabled = c.canSwitch, onClick = { expanded = false; c.toggleVoice() })
+                    DropdownMenuItem(text = { Text("排查问题") }, onClick = { expanded = false; diagnostics() })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoiceCaption(caption: String, progress: Float) {
+    val colors = LocalCrewColors.current
+    val count = caption.codePointCount(0, caption.length)
+    val split = caption.offsetByCodePoints(0, (count * progress).toInt().coerceIn(0, count))
+    val long = count > 30
+    Text(
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = colors.text)) { append(caption.substring(0, split)) }
+            withStyle(SpanStyle(color = colors.text2)) { append(caption.substring(split)) }
+        },
+        Modifier.fillMaxWidth().padding(vertical = 10.dp),
+        fontSize = if (long) 18.sp else 20.sp, lineHeight = if (long) 29.sp else 32.sp,
+        letterSpacing = 0.2.sp, maxLines = 3, overflow = TextOverflow.Ellipsis,
+    )
+}
+
+@Composable
+private fun TranscriptBubble(entry: TranscriptLine) {
+    val colors = LocalCrewColors.current
+    if (entry.user) {
+        BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+            val shape = RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp)
+            Text(entry.text, Modifier.widthIn(max = maxWidth * 0.82f).background(colors.userBubble, shape).padding(12.dp),
+                color = colors.text, fontSize = 14.sp, lineHeight = 23.sp)
+        }
+    } else {
+        Column(Modifier.fillMaxWidth()) {
+            if (entry.interrupted) Text("助手 · 已打断", style = MaterialTheme.typography.labelSmall, color = colors.text2)
+            Text(entry.text, color = colors.text, fontSize = 14.sp, lineHeight = 23.sp)
+        }
+    }
+}
+
+@Composable
+private fun ConfirmationCard(card: Confirmation, flashCount: Int, decide: (Boolean) -> Unit) {
+    val colors = LocalCrewColors.current
+    var lit by remember { mutableStateOf(false) }
+    LaunchedEffect(flashCount) { if (flashCount > 0) { lit = true; delay(420); lit = false } }
+    val border by animateColorAsState(if (lit) colors.accentStrong else colors.warnLine, label = "确认提醒")
+    Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(15.dp),
+        color = if (lit) colors.accentSoft else colors.studioCard, border = BorderStroke(if (lit) 2.dp else 1.dp, border)) {
+        Column(Modifier.padding(14.dp)) {
+            Text("需要你确认", color = colors.accentText, style = MaterialTheme.typography.labelLarge)
+            Text(card.summary, Modifier.padding(vertical = 8.dp).semantics { liveRegion = LiveRegionMode.Assertive }, color = colors.text)
+            val shape = RoundedCornerShape(12.dp)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { decide(true) }, modifier = Modifier.weight(1f).heightIn(min = 48.dp), shape = shape) {
+                    Text("确认执行", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                }
+                OutlinedButton(onClick = { decide(false) }, modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    shape = shape, border = BorderStroke(1.dp, colors.lineStrong)) {
+                    Text("取消", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+            Text("为防误触，语音不能直接确认，请点上方按钮", Modifier.padding(top = 8.dp), color = colors.text2, fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+private fun RowScope.Control(icon: Int, label: String, description: String, action: () -> Unit,
+    danger: Boolean = false, muted: Boolean? = null) {
+    val colors = LocalCrewColors.current
+    val tint = when {
+        danger -> MaterialTheme.colorScheme.onError
+        muted == true -> colors.accentText
+        else -> colors.text
+    }
+    Box(
+        Modifier.weight(1f).heightIn(min = 52.dp).clip(RoundedCornerShape(26.dp))
+            .background(when { danger -> colors.danger; muted == true -> colors.accentSoft; else -> Color.Transparent })
+            .clickable(role = if (muted == null) Role.Button else Role.Switch, onClick = action)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(Modifier.padding(vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(painterResource(icon), null, Modifier.size(22.dp), tint = tint)
+            Text(label, Modifier.clearAndSetSemantics {}, color = tint, style = MaterialTheme.typography.labelMedium)
         }
     }
 }

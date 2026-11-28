@@ -38,7 +38,7 @@
         button.className = className;
         button.title = "语音";
         button.setAttribute("aria-label", "语音");
-        button.innerHTML = '<svg width="44" height="44" viewBox="-10 -10 44 44" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0m-7 7v3m-3 0h6"/></svg>';
+        button.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0m-7 7v3m-3 0h6"/></svg>';
         button.onclick = async () => {
           button.disabled = true;
           try { await call("openVoice", {project}); }
@@ -51,6 +51,23 @@
   }
   const narrow = window.matchMedia("(max-width:760px)");
   const body = document.body;
+  const viewport = window.visualViewport;
+  if (viewport) {
+    let layoutWidth = window.innerWidth, layoutHeight = window.innerHeight;
+    const syncIme = () => {
+      const {innerWidth, innerHeight} = window;
+      const field = document.activeElement;
+      const nativeEditor = window.CrewAndroidBridge && (field?.isContentEditable || field?.matches("input:read-write, textarea:read-write"));
+      // Android can resize the whole WebView when the IME opens, shrinking both viewport heights.
+      if (!nativeEditor || innerWidth !== layoutWidth || innerHeight > layoutHeight) {
+        layoutWidth = innerWidth;
+        layoutHeight = innerHeight;
+      }
+      body.classList.toggle("m-ime", innerHeight - viewport.height > 150 || Boolean(nativeEditor && layoutHeight - innerHeight > 150));
+    };
+    viewport.addEventListener("resize", syncIme);
+    syncIme();
+  }
   const page = body.classList.contains("assistant-page") ? "assistant" : body.classList.contains("notes-page") ? "notes" : "app";
   const STORE = "crew.mobile.project", OPEN_LEADERS = "crew.mobile.openLeaders";
   const query = new URLSearchParams(location.search).get("project");
@@ -159,14 +176,18 @@
     if (narrow.matches && inProject && scope.mode === "workspace" && view === "all" && window.CrewAndroidBridge) {
       const tools = document.querySelector("#main > .wh-head > .right");
       if (tools && !tools.querySelector(".m-workspace-voice")) {
-        tools.prepend(window.CrewAndroidBridge.voiceButton(scope.project, "icon-btn m-workspace-voice", message => {
+        const button = window.CrewAndroidBridge.voiceButton(scope.project, "icon-btn m-workspace-voice", message => {
           const status = document.createElement("div");
           status.className = "toast show";
           status.setAttribute("role", "status");
           status.textContent = message;
           document.getElementById("toast-root").append(status);
           setTimeout(() => status.remove(), 5000);
-        }));
+        });
+        const label = document.createElement("span");
+        label.textContent = "语音";
+        button.append(label);
+        tools.prepend(button);
       }
     }
     body.classList.toggle("m-chat", view === "chat");
