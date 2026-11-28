@@ -29,6 +29,11 @@
         if (!token.map || token.hidden) return;
         const [start, end] = token.map;
         const entry = byLine.get(start + 1);
+        if (token.type === "inline" && entry?.kind === "assignment" && entry.paths?.length) {
+          token.children.push({type:"html_inline", content:' <span class="wr-plan-files">文件：'},
+            {type:"code_inline", content:entry.paths.join("、")}, {type:"html_inline", content:"</span>"});
+          token.children.push({type:"html_inline", content:` <span class="wr-plan-tail"><span class="wr-folder-tag${entry.worktree ? "" : " wr-shared"}">${entry.worktree ? "独立目录" : "未隔离"}</span></span>`});
+        }
         const isHeading = token.type === "heading_open" && token.level === 0;
         if (isHeading) {
           section = tokens[index + 1].content;

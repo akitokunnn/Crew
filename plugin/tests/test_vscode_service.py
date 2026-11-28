@@ -63,7 +63,7 @@ class VSCodeServiceTests(unittest.TestCase):
             claude_root=self.transcripts, codex_root=self.root / "codex",
             runs_file=self.root / "runs.jsonl", now=store.parse_iso(NOW), cwd=self.alpha,
             process_factory=mock.Mock(side_effect=AssertionError("No model launch")),
-            lock_status=lambda: False, vscode_state_db=self.state_db,
+            idle_status=lambda: 0, vscode_state_db=self.state_db,
         )
 
     def hidden(self, ids):

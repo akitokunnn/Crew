@@ -29,7 +29,7 @@ test("the outline marks each part and leader against the other side and escapes 
   const left = ui.outline(before, after, "before");
   assert.match(left, /class="rs-part removed"[^>]*><span class="rs-status">删除<\/span><span class="rs-name">后端/);
   assert.match(left, /rs-leader out">&lt;乙&gt; · 移出/);
-  assert.match(ui.outline({parts:[], leaders:[]}, before, "after"), /没有 part/);
+  assert.match(ui.outline({parts:[], leaders:[]}, before, "after"), /没有分项/);
   const both = ui.compare(before, after, {beforeTitle:"现在", afterTitle:"回滚后"});
   assert.match(both, /data-showing="after"/);
   assert.match(both, /<h3>现在<\/h3>.*<h3>回滚后<\/h3>/s);
@@ -39,7 +39,7 @@ test("a structural difference reads as counts, skipping what did not change", ()
   const {ui} = load();
   const empty = {added:[], removed:[], renamed:[], moved:[]};
   assert.equal(ui.diffSummary({parts:{...empty, added:[1, 2], removed:[1]}, leaders:{placed:[1], moved:[1], unplaced:[], lead_on:[1], lead_off:[]}}),
-    "新建 2 · 删除 1 · leader 变动 2 · 负责人变化 1");
+    "新建 2 个分项、删掉 1 个分项、调整 2 位 Leader、变更 1 处负责人");
 });
 
 test("the panel previews the plan as given and executes it with the edited drafts and explicit wake choices", async () => {

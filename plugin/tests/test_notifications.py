@@ -85,21 +85,41 @@ class CjkBoldTests(unittest.TestCase):
                 self.assertEqual(notifications.cjk_bold(given), want)
 
 
+class DesktopIdleTests(unittest.TestCase):
+    @mock.patch('crew.notifications.sys.platform', 'darwin')
+    @mock.patch('crew.notifications.subprocess.run')
+    def test_macos_parses_nanoseconds_from_ioreg(self, run):
+        run.return_value.stdout = '''+-o IOHIDSystem  <class IOHIDSystem, registered, matched, active>
+    {
+      "HIDIdleTime" = 3600250000000
+    }
+'''
+        self.assertEqual(notifications.desktop_idle_seconds(), 3600.25)
+        run.return_value.stdout = 'No matching registry property'
+        with self.assertRaisesRegex(ValueError, 'HIDIdleTime'):
+            notifications.desktop_idle_seconds()
+
+
 class NotificationTests(ShellFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
-        self.clock, self.locked, self.client = store.parse_iso(NOW), False, FakeQQ()
+        self.clock, self.client = store.parse_iso(NOW), FakeQQ()
+        self.idle_seconds = 0
         self.credentials = {'app_id': 'fake-app', 'app_secret': 'fake-secret'}
         (self.home / 'qq.json').write_text(json.dumps(self.credentials), encoding='utf-8')
+        (self.home / 'notification-routing.json').write_text('{"target": "qq"}', encoding='utf-8')
         self.write_config(dict(owner_openid='owner', since=NOW, manual_away=False))
         self.service = web.Service(self.home, PLUGIN, cwd=self.project, agents_provider=lambda: [
             {'sessionId': sid, 'name': sid} for sid in ('s1', 's2', 's3')],
             claude_root=self.claude, codex_root=self.codex, runs_file=self.runs,
-            now=lambda: self.clock, notification_client=self.client, lock_status=lambda: self.locked,
+            now=lambda: self.clock, notification_client=self.client,
+            idle_status=lambda: self.idle_seconds,
             process_factory=self.process_factory, vscode_state_db=self.vscode_state_db)
         self.addCleanup(self.service.close)
         self.service.refresh_agents()
         self.inbox, self.counter = self.service.inbox, 0
+        self.presence = self.service.connections
+        self.presence.clock = lambda: self.clock.timestamp()
 
     def write_config(self, config):
         (self.home / 'notify.json').write_text(json.dumps(config), encoding='utf-8')
@@ -109,8 +129,8 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
     def restart(self):
         self.inbox.close()
-        self.inbox = notifications.Inbox(self.service, self.client, lock_status=lambda: self.locked)
-        self.addCleanup(self.inbox.close)
+        self.inbox = notifications.Inbox(self.service, self.client)
+        self.service.inbox = self.presence.inboxes['qq'] = self.inbox
 
     def text(self, identity, text, quoted_ref=None, openid='owner', attachments=()):
         return dict(message_id=identity, openid=openid, text=text, quoted_ref=quoted_ref, attachments=list(attachments))
@@ -190,7 +210,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
     def test_missing_configuration_does_not_create_threads_or_client(self):
         (self.home / 'qq.json').unlink()
-        inbox = notifications.Inbox(self.service, lock_status=lambda: False)
+        inbox = notifications.Inbox(self.service)
         self.addCleanup(inbox.close)
         with mock.patch('crew.notifications.threading.Thread') as thread, mock.patch('crew.notifications.qq.Client') as client:
             inbox.start()
@@ -303,24 +323,48 @@ class NotificationTests(ShellFixture, unittest.TestCase):
                          ['@other/lead 请检查手机布局', '#%s 继续' % identity])
         self.assertEqual(self.decision(identity)['status'], 'open')
 
-    def test_back_clears_manual_away_and_reports_whether_screen_is_still_locked(self):
-        for locked in (True, False):
-            with self.subTest(locked=locked):
+    def test_back_clears_manual_away_and_reports_the_remaining_reason(self):
+        for idle_seconds, message in (
+                (0, '电脑 1 小时无操作时仍会自动算离开'),
+                (3600, '当前因 1 小时无操作仍被视为离开')):
+            with self.subTest(idle_seconds=idle_seconds):
                 self.inbox.set_away(True)
-                self.locked = locked
+                self.idle_seconds = idle_seconds
+                self.presence.refresh_presence()
                 self.receive('/back')
-                self.assertFalse(self.inbox.status()['manual_away'])
-                self.assertEqual(self.inbox.status()['locked'], locked)
-                self.assertEqual(self.inbox.status()['away'], locked)
-                self.assertIn('锁屏', self.client.sent[-1]['text'])
+                status = self.presence.presence()
+                self.assertFalse(status['manual_away'])
+                self.assertEqual(status['idle'], idle_seconds == 3600)
+                self.assertEqual(status['away'], idle_seconds == 3600)
+                self.assertIn(message, self.client.sent[-1]['text'])
 
-    def test_back_reports_unknown_lock_status_when_desktop_is_unavailable(self):
+    def test_back_reports_unreadable_idle_time(self):
         self.inbox.set_away(True)
-        self.inbox.lock_status = mock.Mock(side_effect=OSError('desktop unavailable'))
+        self.presence.idle_status = mock.Mock(side_effect=OSError('idle unavailable'))
+        self.presence.refresh_presence()
         self.receive('/back')
-        self.assertFalse(self.inbox.status()['manual_away'])
-        self.assertIn('无法确认', self.client.sent[-1]['text'])
-        self.assertIn('OSError', self.inbox.status()['error'])
+        status = self.presence.presence()
+        self.assertFalse(status['manual_away'])
+        self.assertFalse(status['idle'])
+        self.assertFalse(status['away'])
+        self.assertIn('当前无法确认电脑空闲时长', self.client.sent[-1]['text'])
+        self.assertIn('无法读取电脑空闲时长，请用“我已离开”开关：OSError: idle unavailable', self.client.sent[-1]['text'])
+
+    def test_idle_threshold_sends_first_reminder_without_batch_delay(self):
+        board.ask(self.conn, 's1', '开始发布吗', ['A', 'B'], now=NOW)
+        self.idle_seconds = 3599.999
+        self.presence.refresh_presence()
+        self.inbox.tick()
+        self.assertFalse(self.presence.presence()['idle'])
+        self.assertFalse(self.presence.presence()['away'])
+        self.assertEqual(self.client.sent, [])
+        self.idle_seconds = 3600
+        self.clock += dt.timedelta(seconds=10)
+        self.presence.refresh_presence()
+        self.inbox.tick()
+        self.assertTrue(self.presence.presence()['idle'])
+        self.assertTrue(self.presence.presence()['away'])
+        self.assertIn('开始发布吗', self.client.sent[-1]['text'])
 
     def test_query_resends_each_open_question_with_buttons_and_persists_refs(self):
         first = board.ask(self.conn, 's1', '第一项目的问题', ['A', 'B'], 'A', now=NOW)
@@ -374,12 +418,8 @@ class NotificationTests(ShellFixture, unittest.TestCase):
             board.report(self.conn, 's3', '阶段进展 ' + str(number), now=NOW)
         self.inbox.tick()
         self.assertEqual(self.client.sent, [])
-        self.locked = True
-        self.inbox.tick()
-        self.clock += dt.timedelta(seconds=29)
-        self.inbox.tick()
-        self.assertEqual(self.client.sent, [])
-        self.clock += dt.timedelta(seconds=1)
+        self.idle_seconds = 3600
+        self.presence.refresh_presence()
         self.inbox.tick()
         self.assertEqual(len(self.client.sent), 1)
         message = self.client.sent[0]
@@ -457,8 +497,9 @@ class NotificationTests(ShellFixture, unittest.TestCase):
                          {'%s:%s' % (identity, n) for n in range(25)})
 
     def test_resolved_before_batch_is_not_sent_and_manual_away_survives_restart(self):
+        self.inbox.set_away(True)
+        self.inbox.tick()
         identity = board.ask(self.conn, 's1', '是否继续', ['继续'], now=NOW)
-        self.locked = True
         self.inbox.tick()
         board.answer(self.conn, identity, '继续', now=NOW)
         self.clock += dt.timedelta(seconds=31)
@@ -468,13 +509,12 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.inbox.tick()
         self.assertEqual(self.client.sent, [])
         self.restart()
-        self.assertTrue(self.inbox.status()['manual_away'])
+        self.assertTrue(self.inbox.config['manual_away'])
 
     def test_failed_batch_retains_error_receipt_without_stage_report_or_replay(self):
         board.report(self.conn, 's3', '内部阶段进展', now=NOW)
         identity = board.ask(self.conn, 's1', '随后发送的问题', ['A'], now=NOW)
-        self.locked = True
-        self.inbox.tick()
+        self.inbox.set_away(True)
         self.client.send_errors.append(qq.QQError('text unavailable', kind='network'))
         self.clock += dt.timedelta(seconds=30)
         with self.assertRaisesRegex(qq.QQError, 'text unavailable'):
@@ -715,7 +755,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
 
         turn('crew', 'before', '离开前说的')
         self.inbox.tick()
-        self.locked = True
+        self.inbox.set_away(True)
         self.inbox.tick()
         self.assertEqual(self.client.sent, [])
         turn('crew', 'notice', '#17 已经转给雷达')
@@ -738,7 +778,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.inbox.tick()
         self.inbox.tick()
         self.assertEqual(len(self.client.sent), 0)
-        self.locked = False
+        self.inbox.set_away(False)
         self.inbox.tick()
         turn('crew', 'back', '回来以后说的')
         self.inbox.tick()
@@ -1002,7 +1042,7 @@ class NotificationTests(ShellFixture, unittest.TestCase):
         self.assertIsNotNone(self.conn.execute("SELECT 1 FROM notification_inbound WHERE event_id='transport-help'").fetchone())
 
     def test_configured_client_receives_only_explicit_credentials_and_transport_states(self):
-        inbox = notifications.Inbox(self.service, lock_status=lambda: self.locked)
+        inbox = notifications.Inbox(self.service)
         self.addCleanup(inbox.close)
         with mock.patch('crew.notifications.qq.Client', return_value=self.client) as factory:
             inbox.start()
@@ -1013,29 +1053,18 @@ class NotificationTests(ShellFixture, unittest.TestCase):
             self.inbox.on_state(state, detail)
             self.assertEqual(self.inbox.status()['channel'], {'state': state, 'detail': detail})
 
-    def test_status_uses_authenticated_post_without_starting_desktop_agent(self):
-        folder = self.root / 'RemoteDev'
-        folder.mkdir()
-        (folder / 'desk_token').write_text('local-test-secret', encoding='ascii')
-        opener = mock.Mock()
-        opener.open.return_value = io.BytesIO(b'{"ok":true,"locked":true}')
-        with mock.patch('crew.notifications.Path.home', return_value=self.root), \
-             mock.patch('crew.notifications.build_opener', return_value=opener):
-            self.assertTrue(notifications.desktop_locked())
-        request = opener.open.call_args.args[0]
-        self.assertEqual(request.get_method(), 'POST')
-        self.assertEqual(request.get_header('X-desk-token'), 'local-test-secret')
-        self.assertEqual(request.data, b'{}')
-
-    def test_unavailable_desktop_status_keeps_inbox_and_manual_away_usable(self):
-        self.inbox.lock_status = mock.Mock(side_effect=OSError('agent not reachable'))
-        self.inbox.tick()
-        self.assertIn('我已离开', self.inbox.status()['error'])
-        self.assertIn('OSError', self.inbox.status()['error'])
-        self.assertFalse(self.inbox.status()['away'])
+    def test_unavailable_idle_status_keeps_inbox_and_manual_away_usable(self):
+        self.presence.idle_status = mock.Mock(side_effect=OSError('input status unavailable'))
+        self.presence.refresh_presence()
+        self.assertIn('我已离开', self.service.notification_status()['error'])
+        self.assertFalse(self.presence.presence()['away'])
         self.inbox.set_away(True)
-        self.inbox.tick()
-        self.assertTrue(self.inbox.status()['away'])
+        self.clock += dt.timedelta(seconds=10)
+        self.presence.refresh_presence()
+        self.assertEqual(self.presence.idle_status.call_count, 2)
+        self.assertTrue(self.presence.presence()['away'])
+        self.assertFalse(self.presence.presence()['idle'])
+        self.assertIsNone(self.presence.presence()['auto_returned_at'])
         self.assistant()
         self.receive('报告进展')
         self.assertEqual(len(self.replies()), 1)

@@ -25,7 +25,7 @@ class RemoteRoutingTests(ShellFixture, unittest.TestCase):
         (self.home / 'notify.json').write_text(json.dumps(dict(owner_openid='owner', since=NOW, manual_away=False)), encoding='utf-8')
         self.service = web.Service(self.home, PLUGIN, cwd=self.project, agents_provider=lambda: [],
             claude_root=self.claude, codex_root=self.codex, runs_file=self.runs, now=lambda: store.parse_iso(NOW),
-            notification_client=self.client, lock_status=lambda: False, process_factory=self.process_factory,
+            notification_client=self.client, idle_status=lambda: 0, process_factory=self.process_factory,
             vscode_state_db=self.vscode_state_db)
         self.addCleanup(self.service.close)
         self.inbox = self.service.inbox

@@ -43,8 +43,8 @@ class LifecycleMixin:
                     idle = self._idle_for(current, now)
                     if idle is None or idle < limit:
                         continue
-                    current.stop_reason = 'idle_reclaim'
                     if getattr(current, 'runtime', 'claude') != 'codex':
+                        current.stop_reason = 'idle_reclaim'
                         try:
                             current.process.stdin.close()
                         except OSError as exc:
@@ -53,7 +53,7 @@ class LifecycleMixin:
                             continue
                 try:
                     if getattr(current, 'runtime', 'claude') == 'codex':
-                        current.close()
+                        current.close(reason='idle_reclaim')
                     else:
                         try:
                             current.process.wait(timeout=10)
@@ -77,10 +77,7 @@ class LifecycleMixin:
             if current is None:
                 return
             if getattr(current, "runtime", "claude") == "codex":
-                with current.input_lock:
-                    if current.process.poll() is None:
-                        current.stop_reason = reason
-                current.close()
+                current.close(reason=reason)
                 if not current.reader_done.wait(10):
                     raise board.BoardError("Codex 进程已关闭，但输出尚未排空")
                 return
@@ -184,7 +181,7 @@ class LifecycleMixin:
                 raise board.Conflict("会话正在回复，请等这一轮结束")
             current = self.processes[session_id]
             if getattr(current, "runtime", "claude") == "codex":
-                current.close()
+                current.close(reason='detach')
                 if not current.reader_done.wait(10):
                     raise board.BoardError("Codex 进程输出尚未排空")
                 return
@@ -221,8 +218,8 @@ class LifecycleMixin:
                     is_codex = getattr(current, "runtime", "claude") == "codex"
                     with current.input_lock:
                         runtime_recovery.record_service_close(current, key)
-                        current.stop_reason = current.stop_reason or 'service_close'
                         if not is_codex:
+                            current.stop_reason = current.stop_reason or 'service_close'
                             try:
                                 current.process.stdin.close()
                             except OSError:
@@ -230,7 +227,7 @@ class LifecycleMixin:
                                     current.stop_reason = None
                                 raise
                     if is_codex:
-                        current.close()
+                        current.close(reason='service_close')
                 current.reader.join(timeout=1)
 
             errors = []

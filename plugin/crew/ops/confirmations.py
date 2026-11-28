@@ -1,4 +1,4 @@
-"""User confirmation of high-risk operations an AI asked for (design §5.6, architecture review §6.3).
+"""User confirmation of high-risk operations and workspace-assistant voice writes.
 
 An AI call of a ``risk=high`` operation never runs it. It records one request
 bound to the caller, the operation and the exact arguments, and returns
@@ -9,18 +9,15 @@ permission table, runs the operation for it, and tells it the outcome.
 from contextlib import closing
 import json
 import re
-import threading
 import traceback
 import uuid
 
-from .. import board, messaging, store, workspace_assistant
-from . import registry
+from .. import board, messaging, personal, store, workspace_assistant
+from . import registry, tokens
 from .caller import Caller
 from .errors import OpError
 
 STATES = ('pending', 'approved', 'rejected', 'failed')
-_deciding = set()
-_deciding_lock = threading.Lock()
 
 
 def _row(conn, identity):
@@ -42,7 +39,8 @@ def view(row):
     value['args'] = json.loads(value['args'])
     value['result'] = json.loads(value['result']) if value['result'] is not None else None
     op = registry.get(value['op'])
-    value['summary'] = op.summary if op else value['op']
+    if value['summary'] is None:  # Cards created before summaries were stored.
+        value['summary'] = op.summary if op else value['op']
     return value
 
 
@@ -58,24 +56,87 @@ def pending_view(row):
     return value
 
 
-def request(service, caller, op, args, request_id, digest, now):
-    """Record (or find again) the confirmation an AI call needs; the operation does not run."""
-    with closing(store.connect(service.home)) as conn, board.transaction(conn):
-        if caller.role == 'workspace_assistant':
-            workspace_assistant.check_operation(conn, caller, op.name, args)
-        row = conn.execute('SELECT * FROM interaction_requests WHERE caller_key=? AND request_id=?',
-                           (caller.key, request_id)).fetchone()
-        if row is None:
-            if caller.role == 'workspace_assistant':
-                workspace_assistant.check_confirmation(conn, caller, op.name, args, service.chat)
-            identity = uuid.uuid4().hex
-            conn.execute(
-                "INSERT INTO interaction_requests(id,kind,caller_key,request_id,session_id,execution_id,role,op,args,"
-                "args_hash,project,status,created_at) VALUES(?, 'confirmation', ?,?,?,?,?,?,?,?,?, 'pending', ?)",
-                (identity, caller.key, request_id, caller.session_id, caller.execution_id, caller.role, op.name,
-                 json.dumps(args, ensure_ascii=False), digest, args.get('project') or caller.project, now))
-            row = _row(conn, identity)
-    if row['op'] != op.name or row['args_hash'] != digest:
+def _workspace_summary(conn, project, op, args):
+    def people(names):
+        result = []
+        for name in names:
+            if name == '*':
+                result.append('全体成员')
+            else:
+                row = conn.execute('SELECT crew_name FROM sessions WHERE project=? AND (session_id=? OR crew_name=?)',
+                                   (project, name, name)).fetchone()
+                result.append(row['crew_name'] or '未命名成员')
+        return '、'.join(result)
+
+    name = op.name
+    data = args.get('data', args)
+    action = op.summary
+    if name == 'campaign.launch':
+        if args['start'] and args.get('room'):
+            action = '开作战室「%s」筹备「%s」，批准计划后开工' % (args['room']['title'], args['note'])
+        else:
+            action = '按「%s」建好架构图' % args['note']
+        if args['start'] and not args.get('room'):
+            action += '，启动' + '、'.join(leader['name'] for leader in args['leaders'])
+        if args['start']:
+            for goal in args.get('goals', ()):
+                action += '，%s负责「%s」' % (goal['leader'], goal['title'])
+    elif name == 'war_room.open':
+        action = '开作战室「%s」，讨论「%s」' % (args['title'], args['goal'])
+        if args.get('members'):
+            action += '，邀请' + people(args['members'])
+    elif name == 'leader.create':
+        action = '请%s负责「%s」' % (args.get('name') or '新负责人', args['message'])
+    elif name == 'note.capture':
+        personal._fields(name, personal.scoped_payload(project, data))
+        action = '记下想法「%s」' % personal._text(data['text'], '想法内容')
+    elif name.startswith('note.') and data.get('note_id'):
+        note = conn.execute('SELECT COALESCE(title,text) FROM personal_notes WHERE project=? AND id=?',
+                            (project, data['note_id'])).fetchone()
+        action += '「%s」' % note[0]
+        if name == 'note.update' and data.get('text'):
+            action += '，改为「%s」' % data['text']
+    elif name.startswith('tag.') and data.get('name'):
+        action += '「%s」' % data['name']
+    elif name.startswith('war_room.') and 'room' in args:
+        room = conn.execute('SELECT title FROM war_rooms WHERE id=? AND project=?', (args['room'], project)).fetchone()
+        action = '在作战室「%s」%s' % (room['title'], op.summary.split('；')[0])
+        fields = ('summary',) if name == 'war_room.plan.update' else ('title', 'body', 'question', 'summary', 'reason')
+        for field in fields:
+            if args.get(field):
+                action += '「%s」' % args[field]
+        for field, verb in [('add', '邀请'), ('remove', '移出'), ('to', '通知')]:
+            if args.get(field):
+                action += '，' + verb + people(args[field])
+        if args.get('owner'):
+            action += '，交给' + people([args['owner']])
+        if name == 'war_room.budget':
+            action += '，新上限为 %s' % args['budget_tokens']
+    workspace = board.project(conn, project)
+    return '在工作区「%s」%s' % (workspace['display_name'] or workspace['name'], action)
+
+
+def request(conn, ctx, args, digest, message_id, now):
+    """Called within the same reservation transaction as an ordinary write."""
+    caller, op = ctx.caller, ctx.op
+    summary = op.summary
+    if caller.role == 'workspace_assistant':
+        workspace_assistant.check_confirmation(conn, caller, op.name, args, ctx.service.chat)
+        if message_id is not None:
+            summary = _workspace_summary(conn, caller.project, op, args)
+    identity = uuid.uuid4().hex
+    conn.execute(
+        "INSERT INTO interaction_requests(id,kind,caller_key,request_id,session_id,execution_id,role,op,args,"
+        "args_hash,project,status,created_at,message_id,summary) VALUES(?, 'confirmation', ?,?,?,?,?,?,?,?,?, 'pending', ?,?,?)",
+        (identity, caller.key, ctx.request_id, caller.session_id, caller.execution_id, caller.role, op.name,
+         json.dumps(args, ensure_ascii=False), digest, args.get('project') or caller.project,
+         now, message_id, summary))
+    return receipt(_row(conn, identity), op, digest, message_id)
+
+
+def receipt(row, op, digest, message_id):
+    if (row['op'] != op.name or row['args_hash'] != digest
+            or message_id is not None and row['message_id'] != message_id):
         raise OpError('request_id_reused', '同一个 request_id 已用于另一项确认请求', {'confirmation_id': row['id']})
     value = view(row)
     return {'status': 'awaiting_user' if value['status'] == 'pending' else value['status'],
@@ -100,30 +161,22 @@ def _still_allowed(conn, row, op):
         raise OpError('forbidden', '提出请求的会话已停止或归档，这条确认请求不再有效')
     if op is None or row['role'] not in op.scopes:
         raise OpError('forbidden', '提出请求的角色已不能使用 %s' % row['op'])
+    if row['role'] == 'workspace_assistant' and op.name not in tokens.main_scopes(conn, row['session_id']):
+        raise OpError('forbidden', '提出请求的助手已没有这项权限')
 
 
 def resolve(service, identity, approve, now, project=None):
-    key = (service.home, identity)
-    with _deciding_lock:
-        if key in _deciding:
-            raise OpError('request_conflict', '这条确认请求正在处理')
-        _deciding.add(key)
-    try:
-        return _resolve(service, identity, approve, now, project)
-    finally:
-        with _deciding_lock:
-            _deciding.remove(key)
-
-
-def _resolve(service, identity, approve, now, project):
     from . import executor
-    with closing(store.connect(service.home)) as conn:
+    with closing(store.connect(service.home)) as conn, board.transaction(conn):
         row = _row(conn, identity) if project is None else scoped_request(conn, identity, project)
         if row['status'] != 'pending':
             raise OpError('conflict', '这条确认请求已经处理过（%s）' % row['status'])
         op = registry.get(row['op'])
         if approve and row['role'] != 'workspace_assistant':
             _still_allowed(conn, row, op)
+        if row['decided_at'] is not None:
+            raise OpError('request_conflict', '已接收这次决定，请核对执行结果')
+        conn.execute('UPDATE interaction_requests SET decided_at=? WHERE id=?', (now, identity))
     if not approve:
         status, result, error = 'rejected', None, None
     else:
@@ -135,8 +188,11 @@ def _resolve(service, identity, approve, now, project):
                 goal_id = goals.get_execution(conn, row['execution_id'])['goal_id'] if row['execution_id'] else None
                 requester = Caller(row['role'], session_id=row['session_id'], execution_id=row['execution_id'],
                                    goal_id=goal_id, project=row['project'])
-            result = executor.call(service, requester, op.name, json.loads(row['args']), request_id=row['request_id'],
-                                   grants=frozenset((op.name,)), confirmed=True)
+            args = json.loads(row['args'])
+            if executor._args_hash(op.name, args) != row['args_hash']:
+                raise OpError('request_conflict', '确认请求的内容已经变化，请重新核对')
+            result = executor.call(service, requester, op.name, args, request_id=row['request_id'],
+                                   grants=frozenset((op.name,)), message_id=row['message_id'], confirmed=True)
             status, error = 'approved', None
         except (OpError, board.BoardError, ValueError) as exc:
             status, result, error = 'failed', None, str(exc)

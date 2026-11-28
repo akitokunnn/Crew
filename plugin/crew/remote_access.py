@@ -16,7 +16,7 @@ from http.cookies import CookieError, SimpleCookie
 from urllib.parse import urlsplit
 import uuid
 
-from . import frontend_root, network_addresses, remote_routes
+from . import discovery, frontend_root, network_addresses, remote_routes
 
 COOKIE = 'crew_remote_session'
 IDLE_SECONDS = 30 * 24 * 60 * 60
@@ -29,8 +29,8 @@ AUTH_EXPIRED = {'error': '设备授权已失效，请在主机上重新生成配
 private_address = network_addresses.private_address
 
 
-def _iso(value):
-    return datetime.datetime.fromtimestamp(value, datetime.timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
+def _iso(value, timespec='seconds'):
+    return datetime.datetime.fromtimestamp(value, datetime.timezone.utc).isoformat(timespec=timespec).replace('+00:00', 'Z')
 
 
 def _hash(value):
@@ -47,7 +47,11 @@ class Controller:
     def __init__(self, home, listener_factory, *, clock=time.time, monotonic=time.monotonic, network=None):
         self.home = Path(home)
         self.path = self.home / 'remote-access.json'
-        self.cookie_name = COOKIE + '_' + hashlib.sha256(os.path.normcase(str(self.home.resolve())).encode('utf-8')).hexdigest()[:16]
+        self.instance_id = hashlib.sha256(os.path.normcase(str(self.home.resolve())).encode('utf-8')).hexdigest()[:16]
+        self.cookie_name = COOKIE + '_' + self.instance_id
+        self.host_name = socket.gethostname()
+        self.advertiser = discovery.Advertiser(self.host_name, self.instance_id)
+        self.device_notifications = None
         self.listener_factory = listener_factory
         self.network = network or network_addresses.Discovery()
         self.clock = clock
@@ -125,6 +129,12 @@ class Controller:
     def set_static_paths(self, paths):
         self.static_paths = frozenset(path for path in paths if isinstance(path, str) and path.startswith('/') and not path.startswith(('/api/', '/remote/')))
 
+    def attach_device_notifications(self, collector):
+        self.device_notifications = collector
+
+    def host_context(self):
+        return {'host_name': self.host_name, 'instance_id': self.instance_id}
+
     @staticmethod
     def _binding_error(bind, network):
         if bind == '0.0.0.0':
@@ -137,6 +147,13 @@ class Controller:
         return '此地址当前不属于本机可用网络接口，请重新选择' + ('；' + network['error'] if network['error'] else '')
 
     def snapshot(self):
+        with self.lifecycle_lock:
+            snapshot = self._snapshot()
+            if snapshot['enabled']:
+                snapshot['discovery_advertising'] = self.advertiser.update(snapshot).copy()
+            return snapshot
+
+    def _snapshot(self):
         network = self.network.snapshot()
         with self.lock:
             now = self.clock()
@@ -153,6 +170,7 @@ class Controller:
                     'bind': self.data['bind'], 'port': port, 'urls': urls,
                     'addresses': addresses,
                     'discovery': {key: network[key] for key in ('source', 'complete', 'error')},
+                    'discovery_advertising': (self.advertiser.status if self.listener is not None else discovery.INACTIVE).copy(),
                     'binding_available': binding_error is None, 'binding_error': binding_error,
                     'last_error': self.last_error, 'configuration_invalid': self.configuration_invalid,
                     'devices': [{'id': item['id'], 'name': item['name'], 'kind': item['kind'],
@@ -161,7 +179,7 @@ class Controller:
                                  'online': self._online(item['id'], monotonic_now)}
                                 for item in self.data['devices'] if item['expires_at'] > now],
                     'pair_pending': bool(self.pair and self.pair['expires_at'] > now),
-                    'pair_expires_at': _iso(self.pair['expires_at']) if self.pair and self.pair['expires_at'] > now else None}
+                    'pair_expires_at': _iso(self.pair['expires_at'], 'microseconds') if self.pair and self.pair['expires_at'] > now else None}
 
     def action(self, data):
         if not isinstance(data, dict):
@@ -176,10 +194,11 @@ class Controller:
                 bind, port = data.get('bind', '0.0.0.0'), data.get('port', 47812)
                 self._address(bind, port)
                 with self.lock:
-                    if self.listener is not None:
-                        if bind == self.data['bind'] and port in (self.data['port'], self.listener.port):
-                            return self.snapshot()
+                    running = self.listener is not None
+                    if running and (bind != self.data['bind'] or port not in (self.data['port'], self.listener.port)):
                         raise ValueError('请先关闭当前远程访问，再更换地址或端口')
+                if running:
+                    return self.snapshot()
                 listener = None
                 try:
                     problem = self._binding_error(bind, self.network.snapshot(force=True))
@@ -196,6 +215,9 @@ class Controller:
                     if listener is not None:
                         listener.close()
                     raise ValueError(self.last_error) from error
+                if self.device_notifications is not None:
+                    self.device_notifications.start()
+                return self.snapshot()
             elif action == 'stop':
                 with self.lock:
                     self._save({**self.data, 'enabled': False})
@@ -208,7 +230,8 @@ class Controller:
                     code = '%08d' % secrets.randbelow(100000000)
                     self.pair = {'hash': _hash(code), 'expires_at': self.clock() + PAIR_SECONDS}
                     self.attempts = []
-                    return {**self.snapshot(), 'code': code, 'expires_at': _iso(self.pair['expires_at'])}
+                    snapshot = self._snapshot()
+                    return {**snapshot, 'code': code, 'expires_at': snapshot['pair_expires_at']}
             elif action in ('revoke', 'revoke_all'):
                 with self.lock:
                     if action == 'revoke' and not any(item['id'] == data.get('device_id') for item in self.data['devices']):
@@ -219,7 +242,7 @@ class Controller:
                         self.last_authenticated.clear()
                     else:
                         self.last_authenticated.pop(data['device_id'], None)
-            return self.snapshot()
+            return self._snapshot()
 
     def start_saved(self):
         if self.data['enabled']:
@@ -234,8 +257,15 @@ class Controller:
             with self.lock:
                 listener, self.listener = self.listener, None
                 self.pair = None
-            if listener is not None:
-                listener.close()
+            try:
+                if self.device_notifications is not None:
+                    self.device_notifications.stop()
+            finally:
+                try:
+                    self.advertiser.close()
+                finally:
+                    if listener is not None:
+                        listener.close()
 
     def request_active(self, identity):
         if not isinstance(identity, dict):
@@ -431,7 +461,7 @@ class Controller:
                 return reply(200, {'remote': True, 'client': identity['kind'], 'authenticated': True,
                                    'local_controls': desktop, 'local_desktop': False, 'host_admin': False,
                                    'capabilities': capabilities,
-                                   'device_id': identity['device_id']})
+                                   'device_id': identity['device_id'], **self.host_context()})
             return False
         except PermissionError as error:
             return reply(429 if str(error).startswith('尝试') else 403, {'error': str(error)})

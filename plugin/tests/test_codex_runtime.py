@@ -222,7 +222,17 @@ class CodexRuntimeTests(unittest.TestCase):
         later = store.parse_iso(store.now_iso()) + chat.datetime.timedelta(minutes=31)
         self.assertEqual(manager.reclaim_idle(now=later), ['worker'])
         self.assertTrue(client.closed)
-        self.assertIn(('thread/archive', {'threadId': running.thread_id}), client.calls)
+        self.assertEqual(client.calls.count(('thread/archive', {'threadId': running.thread_id})), 1)
+        self.assertEqual(running.stop_reason, 'idle_reclaim')
+
+    def test_user_stop_archives_person_once(self):
+        running, client = self.make_running()
+        manager = chat.Manager(self.home, self.plugin, lambda: [])
+        manager.processes['worker'] = running
+        manager.stop_identity('worker')
+        manager.close()
+        self.assertEqual(running.stop_reason, 'user_stop')
+        self.assertEqual(client.calls.count(('thread/archive', {'threadId': running.thread_id})), 1)
 
     def test_explicit_execution_permission_is_used_only_when_a_carrier_starts(self):
         with closing(store.connect(self.home)) as conn:

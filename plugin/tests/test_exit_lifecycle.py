@@ -11,7 +11,7 @@ from types import MethodType, SimpleNamespace
 import unittest
 from unittest import mock
 
-from crew import change_feed, channel, channel_digest, chat, codex_runtime, connections, notifications, report_preview, settings, web
+from crew import change_feed, channel, channel_digest, chat, codex_runtime, connections, notifications, report_preview, settings, store, web
 from test_chat import FakeProcess
 import test_channel
 from test_channel_digest import CARD
@@ -54,6 +54,7 @@ class ExitLifecycleTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.home = Path(self.temporary.name) / 'home'
         self.home.mkdir()
+        store.connect(self.home).close()
         self.manager = chat.Manager(self.home, Path(__file__).parents[1], lambda: [],
                                     process_factory=mock.Mock(side_effect=AssertionError('No real native process')))
         self.runtimes, self.clients = [], []
@@ -84,7 +85,7 @@ class ExitLifecycleTests(unittest.TestCase):
             self.clients.append(client)
             lock = threading.RLock()
             current = SimpleNamespace(runtime='codex', process=process, journal=journal, input_lock=lock,
-                stop_reason=None, _closing=False, _approvals=mock.Mock(), _turn_ready=threading.Condition(lock),
+                session_id=identity, stop_reason=None, _closing=False, _approvals=mock.Mock(), _turn_ready=threading.Condition(lock),
                 _settings=threading.Condition(lock), pending_compact=False, client=client,
                 execution={'id': identity, 'session_id': role} if scoped else None,
                 home=self.home, _archive_lock=threading.Lock(), _crew_created=True,
@@ -108,7 +109,9 @@ class ExitLifecycleTests(unittest.TestCase):
                          'Independent native closes were serialized behind another native exit')
         self.assertTrue(all(current.reader_done.is_set() for current in self.runtimes))
         self.assertTrue(all(current.process.poll() == 0 for current in self.runtimes))
-        self.assertEqual(sum(method == 'thread/archive' for client in self.clients for method, _, _ in client.calls), 2)
+        for client in self.clients:
+            self.assertEqual([method for method, _, _ in client.calls], ['thread/archive'])
+        self.assertTrue(all(current.stop_reason == 'service_close' for current in self.runtimes))
         self.assertTrue(all(current._lease.release.call_count == 1 for current in self.runtimes if getattr(current, 'runtime', 'claude') == 'codex'))
 
     def test_archive_callback_can_finish_without_waiting_for_router_shutdown_lock(self):
@@ -186,7 +189,7 @@ class ExitLifecycleTests(unittest.TestCase):
             inbox.close = MethodType(notifications.Inbox.close, inbox)
             inboxes[channel] = inbox
             inbox.worker.start()
-        connections.Manager.close(SimpleNamespace(inboxes=inboxes))
+        connections.Manager.close(SimpleNamespace(inboxes=inboxes, _presence_stop=threading.Event(), _presence_worker=None))
         self.assertEqual(results, [True, True], 'A second channel did not receive stop until the first channel finished')
 
     def test_desktop_handoff_is_not_archived_by_a_later_manager_shutdown(self):

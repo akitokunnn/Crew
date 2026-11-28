@@ -43,7 +43,12 @@
           ${view.command ? `<p>在终端运行 <code>${view.command}</code></p><button type="button" class="ob-link" data-ob-act="copy" data-runtime="${entry.id}">复制命令</button>` : ''}
           ${usable(entry) ? `<label class="ob-engine"><input type="radio" name="ob-engine" data-ob-field="engine" value="${entry.id}" ${chosen ? 'checked' : ''}>${chosen ? '默认引擎' : '设为默认引擎'}</label>` : ''}
         </article>`;
-      }).join('')}</div>`;
+      }).join('')}</div>
+      <fieldset class="ob-persona"><legend>是否想要 AI 慢慢有自己的性格？</legend>
+        <p>只影响聊天语气，不影响干活，设置里随时能改。</p>
+        <div class="ob-runtimes">${[[true,'慢慢有自己的性格'],[false,'只管老实干活']].map(([value,label]) =>
+          `<label class="ob-runtime ob-persona-option" data-chosen="${state.personaEnabled === value}"><input type="radio" name="ob-persona" data-ob-field="persona" value="${value}" ${state.personaEnabled === value ? 'checked' : ''}><strong>${label}</strong>${value ? '<span class="ob-pill">推荐</span>' : ''}</label>`).join('')}</div>
+      </fieldset>`;
   }
   function appearanceMarkup(state) {
     const scale = state.fontScale;
@@ -78,7 +83,7 @@
   let current = null;
   function open({bridge = window.crewDesktop, onChoose, onWorkspace, onClose} = {}) {
     if (current) { current.dialog.querySelector('#ob-title').focus(); return current; }
-    const state = {step:0, checking:false, readiness:[], readinessError:'', snapshot:null, settingsError:'', engine:null,
+    const state = {step:0, checking:false, readiness:[], readinessError:'', snapshot:null, settingsError:'', engine:null, personaEnabled:true,
       folder:null, folderName:'', appearance:false, mode:'system', fontScale:1, pending:false, error:'', opened:false};
     const dialog = document.createElement('dialog');
     dialog.className = 'onboarding'; dialog.setAttribute('aria-labelledby', 'ob-title');
@@ -134,10 +139,11 @@
       if (state.step === 0) { go(1); return; }
       if (!canSave(state)) return;
       const saved = state.snapshot.ai.default;
+      const changes = {persona_enabled:state.personaEnabled};
       if (state.engine !== saved.runtime) {
-        const ai = {...state.snapshot.ai, default:{runtime:state.engine, model:null, effort:null, speed:null}};
-        state.snapshot = await bridge.settingsSave({ai});
+        changes.ai = {...state.snapshot.ai, default:{runtime:state.engine, model:null, effort:null, speed:null}};
       }
+      state.snapshot = await bridge.settingsSave(changes);
       go(2);
     }
     async function choose(kind) {
@@ -185,6 +191,7 @@
     dialog.addEventListener('change', event => {
       const field = event.target.dataset.obField;
       if (field === 'engine') { state.engine = event.target.value; render(); }
+      else if (field === 'persona') { state.personaEnabled = event.target.value === 'true'; render(); }
       else if (field === 'font') void run(async () => applyAppearance(await bridge.setFontScale(Number(event.target.value))));
     });
     dialog.addEventListener('cancel', event => {

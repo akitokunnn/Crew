@@ -75,7 +75,7 @@
       if (active || pinch) return;
       const target = hit(event);
       if (!target) return;
-      const pan = event.button !== 0 || forcePan() || !editable()
+      const pan = event.button !== 0 || forcePan() || !editable(target)
         || (!target.type && event.pointerType !== "mouse");
       active = {...target, ...point(event), id:event.pointerId, button:event.button, pan, moved:false, camera:camera()};
       if (touch) pointers.set(event.pointerId, point(event));

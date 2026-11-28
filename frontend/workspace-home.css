@@ -3,6 +3,8 @@
 .wh-eyebrow{font-size:calc(11px * var(--fs));color:var(--text-2);letter-spacing:.08em}
 .wh-head .sub{margin:0;color:var(--text-2)}
 .wh-head>.btn{flex:none;min-height:34px;border-radius:10px}
+.wh-head-empty [data-act="workspace-settings"]{color:var(--text-2)}
+.wh-head-empty [data-act="workspace-settings"] .i{width:16px;height:16px}
 .wh-head-empty .btn.primary{background:transparent;border-color:var(--line-strong);color:var(--text-2)}
 .wh-head-empty .btn.primary:hover{background:var(--hover);border-color:var(--line-strong);color:var(--text)}
 .wh-page{padding:14px 24px 28px}
@@ -90,7 +92,7 @@ button.wh-overview-item:hover{color:var(--accent-text);border-color:color-mix(in
 .wh-path strong{font-size:calc(14px * var(--fs));font-weight:500}
 .wh-path .start-description{display:block;margin:6px 0 0;font-size:calc(12.5px * var(--fs));line-height:1.65;color:var(--text-2);overflow-wrap:anywhere}
 .wh-path-arrow{color:var(--text-2)}
-.start-recommended{display:inline-block;margin-inline-start:8px;font-size:calc(11px * var(--fs));color:var(--accent-text)}
+.wh-path .start-recommended{display:inline-block;margin-inline-start:8px;padding:2px 8px;border-radius:999px;font-size:calc(12px * var(--fs));line-height:1.2;vertical-align:baseline;white-space:nowrap;color:var(--accent-text);background:var(--accent-soft)}
 .wh-war-start{width:min(420px,100%);min-width:0}
 .wh-war-start h3 label{font:inherit;color:inherit}
 .wh-war-start textarea{font:inherit;line-height:1.5}

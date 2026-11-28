@@ -27,7 +27,7 @@ from . import appearance, codex_client, frontend_root, member_defaults, operatio
 from . import connections, session_delete, session_presence, storage_cleanup, workspace_activity
 from .storage_service import StorageService, HISTORY_PREFIX
 from . import codex_binding, personal, native_folders, native_home, native_skills
-from . import host_workspace, remote_access, remote_http
+from . import device_notifications, host_workspace, remote_access, remote_http
 from . import report_preview, event_sounds, reading_context
 from . import domains
 from .web_api import personal as personal_api
@@ -65,8 +65,9 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
               WorkspaceMixin, SessionsMixin, ReadsMixin, UsageMixin):
     def __init__(self, home, plugin_root, agents_provider=None,
                  claude_root=None, codex_root=None, runs_file=None, now=None, cwd=None, process_factory=subprocess.Popen,
-                 notification_client=None, lock_status=notifications.desktop_locked, notification_batch_seconds=30,
-                 vscode_state_db=None, isolated_sources=False, mcp_exposure='core'):
+                 notification_client=None, notification_batch_seconds=30,
+                 vscode_state_db=None, isolated_sources=False, mcp_exposure='core',
+                 *, idle_status=notifications.desktop_idle_seconds):
         if mcp_exposure not in ('core', 'all'):
             raise ValueError('mcp_exposure 只能是 core 或 all')
         # core: core tools + crew_search (user ruling 7); all: every permitted tool (A/B candidate, design §5.2).
@@ -116,7 +117,8 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
         # Background branch scans for the leader cards (web_service/git.py): latest request and worker per workspace.
         self.git_scan_lock = threading.Lock()
         self.git_scan_requests, self.git_scan_workers = {}, {}
-        self.connections = connections.Manager(self, notification_client, lock_status, notification_batch_seconds)
+        self.connections = connections.Manager(self, notification_client, notification_batch_seconds,
+                                               idle_status=idle_status)
         self.inbox = self.connections.inboxes['qq']
         # Marks maintenance left unfinished by a previous service as interrupted; nothing is re-sent.
         self.maintenance = maintenance.Manager(self)
@@ -126,6 +128,7 @@ class Service(WorkersMixin, UpdatesMixin, RosterMixin, SnapshotMixin, GitMixin,
             project = board.project_for_path(conn, Path.cwd() if cwd is None else cwd)
             self.default_project = project["name"] if project is not None else None
         self.remote_access = remote_access.Controller(self.home, self._remote_listener)
+        self.remote_access.attach_device_notifications(device_notifications.Collector(self))
         self.remote_access.set_static_paths(STATIC)
 
     def _remote_listener(self, controller, bind, port):
@@ -228,9 +231,8 @@ STATIC.update({'/notes.html': ('notes.html', 'text/html; charset=utf-8'),
                '/notes-model.js': ('notes-model.js', 'text/javascript; charset=utf-8'),
                '/notes.css': ('notes.css', 'text/css; charset=utf-8')})
 STATIC['/global-rail.js'] = ('global-rail.js', 'text/javascript; charset=utf-8')
-STATIC.update({'/voice.html': ('voice.html', 'text/html; charset=utf-8'),
-               '/voice.js': ('voice.js', 'text/javascript; charset=utf-8'),
-               '/voice.css': ('voice.css', 'text/css; charset=utf-8')})
+STATIC.update({'/persona-ui.js': ('persona-ui.js', 'text/javascript; charset=utf-8'),
+               '/persona-ui.css': ('persona-ui.css', 'text/css; charset=utf-8')})
 STATIC.update({'/canvas-core.js': ('canvas-core.js', 'text/javascript; charset=utf-8'),
                '/mindmap.js': ('mindmap.js', 'text/javascript; charset=utf-8'),
                '/mindmap-model.js': ('mindmap-model.js', 'text/javascript; charset=utf-8'),
@@ -245,7 +247,9 @@ STATIC['/channel.css'] = ('channel.css', 'text/css; charset=utf-8')
 STATIC.update({'/access-context.js': ('access-context.js', 'text/javascript; charset=utf-8'),
                '/browser-utils.js': ('browser-utils.js', 'text/javascript; charset=utf-8'),
                '/remote-access-ui.js': ('remote-access-ui.js', 'text/javascript; charset=utf-8'),
-               '/remote-access-ui.css': ('remote-access-ui.css', 'text/css; charset=utf-8')})
+               '/remote-access-ui.css': ('remote-access-ui.css', 'text/css; charset=utf-8'),
+               '/vendor/qrcode-generator.js': ('vendor/qrcode-generator.js', 'text/javascript; charset=utf-8'),
+               '/vendor/qrcode-generator.LICENSE': ('vendor/qrcode-generator.LICENSE', 'text/plain; charset=utf-8')})
 
 
 # A request from another origin or host is refused before routing; a body up to this size is read off the socket
@@ -437,7 +441,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, {'error': '此设置只允许本机 Crew 页面访问'})
         elif url.path == '/api/access/context':
             self._send(200, {'remote': False, 'client': 'local', 'authenticated': True,
-                             'local_controls': True, 'local_desktop': True, 'host_admin': True})
+                             'local_controls': True, 'local_desktop': True, 'host_admin': True,
+                             **service.remote_access.host_context()})
+        elif url.path == '/api/notifications/events':
+            device_notifications.events(self, service, parse_qs(url.query, keep_blank_values=True))
         elif routes.get(self, service, url, query, self._caller()):
             return
         elif url.path in STATIC:

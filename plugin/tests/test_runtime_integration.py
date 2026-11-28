@@ -51,7 +51,11 @@ class FakeCodex:
         self.calls.append(('interrupt', None))
         self.journal.set_status('idle')
 
-    def close(self):
+    def pending_approvals(self):
+        return []
+
+    def close(self, *, reason, archive=True):
+        self.stop_reason = reason
         self.process.poll.return_value = 0
         self.reader_done.set()
 
@@ -174,7 +178,7 @@ class RuntimeFeatureHttpTests(ShellFixture, unittest.TestCase):
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project,
             agents_provider=lambda: [], claude_root=self.claude, codex_root=self.codex,
             runs_file=self.runs, now=store.parse_iso(NOW), process_factory=self.process_factory,
-            notification_client=mock.Mock(), lock_status=lambda: False, vscode_state_db=self.vscode_state_db)
+            notification_client=mock.Mock(), idle_status=lambda: 0, vscode_state_db=self.vscode_state_db)
         self.server.service.refresh_agents()
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .01})
         self.thread.start()

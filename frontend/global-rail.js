@@ -21,10 +21,12 @@
     right: '<path d="m9 5 7 7-7 7"/>'
   };
   const ic = (name, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>`;
-  const roomStates = {empty:"没房", preparing:"筹备中", active:"作战中", waiting:"等你定", loading:"读取中", error:"读取失败"};
+  const roomStates = {empty:"没房", preparing:"筹备中", active:"作战中", waiting:"等你定", approval:"等你审批", attention:"等你关注", loading:"读取中", error:"读取失败"};
   function roomState(rooms) {
     const open = rooms.filter(room => room.status === "open");
-    if (open.some(room => room.open_decisions > 0 || room.phase === "preparing" && room.draft_version > 0 || room.budget?.paused_at)) return "waiting";
+    if (open.some(room => room.watchdog?.state === "attention")) return "attention";
+    if (open.some(room => room.watchdog?.state === "waiting_user" && room.watchdog.reason === "approval")) return "approval";
+    if (open.some(room => room.watchdog?.state === "waiting_user" || room.open_decisions > 0 || room.phase === "preparing" && room.draft_version > 0 || room.budget?.paused_at)) return "waiting";
     if (open.some(room => room.phase === "active")) return "active";
     return open.some(room => room.phase === "preparing" && room.draft_version === 0) ? "preparing" : "empty";
   }
@@ -33,8 +35,8 @@
     const state = error ? "error" : rooms === null ? "loading" : roomState(rooms);
     const label = esc(`作战室 · ${roomStates[state]}${error ? ` · ${error}` : ""}`);
     const mark = {empty:'<path d="M9 15h6" stroke-dasharray="1 2"/>', preparing:'<path d="M9 13h6m-6 3h4"/>',
-      active:'<path d="m9 16 3-4 2 2 2-3"/>', waiting:'<path d="M10 13h4m-4 3h4"/>'}[state] ?? "";
-    return `<a class="rail-button rail-war-room${selected ? " active" : ""}" data-war-room-state="${state}" data-preserve="war-room-entry" href="${esc(projectHref(project, "war-room=0"))}" title="${label}" aria-label="${label}"${selected ? ' aria-current="page"' : ""}><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2.5"/><path d="M4 9h16"/>${mark}</svg>${state === "waiting" ? '<span class="rail-dot" aria-hidden="true"></span>' : ""}</a>`;
+      active:'<path d="m9 16 3-4 2 2 2-3"/>', attention:'<path d="M12 11v3m0 2v1"/>', approval:'<path d="m9 14 2 2 4-4"/>', waiting:'<path d="M10 13h4m-4 3h4"/>'}[state] ?? "";
+    return `<a class="rail-button rail-war-room${selected ? " active" : ""}" data-war-room-state="${state}" data-preserve="war-room-entry" href="${esc(projectHref(project, "war-room=0"))}" title="${label}" aria-label="${label}"${selected ? ' aria-current="page"' : ""}><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2.5"/><path d="M4 9h16"/>${mark}</svg>${["waiting","attention","approval"].includes(state) ? '<span class="rail-dot" aria-hidden="true"></span>' : ""}</a>`;
   }
 
   const FALLBACK_COLORS = ["#3E7C74", "#8A5A7E", "#4F6B8F", "#5E7F55", "#A07A3A", "#A8604F"];

@@ -1,6 +1,7 @@
 """Remote setup uses isolated homes and fake transports; no platform traffic."""
 import tests
 from contextlib import closing
+import datetime as dt
 import json
 import sqlite3
 import threading
@@ -19,12 +20,15 @@ from test_shell import NOW, PLUGIN, ShellFixture
 class ConnectionFixture(ShellFixture):
     def setUp(self):
         super().setUp()
+        self.clock = store.parse_iso(NOW)
+        self.idle = mock.Mock(return_value=0)
         self.service = web.Service(self.home, PLUGIN, cwd=self.project,
             agents_provider=lambda: [], claude_root=self.claude, codex_root=self.codex,
-            runs_file=self.runs, now=store.parse_iso(NOW), process_factory=self.process_factory,
-            lock_status=lambda: False, vscode_state_db=self.vscode_state_db)
+            runs_file=self.runs, now=lambda: self.clock, process_factory=self.process_factory,
+            idle_status=self.idle, vscode_state_db=self.vscode_state_db)
         self.addCleanup(self.service.close)
         self.manager = self.service.connections
+        self.manager.clock = lambda: self.clock.timestamp()
         self.clients = {'qq': FakeQQ(), 'lark': FakeQQ()}
         self.manager.clients.update(self.clients)
         # Exercise real binding/router/delivery synchronously, without worker races.
@@ -52,6 +56,12 @@ class ConnectionFixture(ShellFixture):
 
     def bind(self, channel, owner='owner'):
         self.receive(channel, '/bind ' + self.state(channel)['binding_code'], owner=owner)
+
+    def sample(self, idle, seconds=10):
+        self.clock += dt.timedelta(seconds=seconds)
+        self.idle.return_value = idle
+        self.manager.refresh_presence()
+        return self.service.notification_status()
 
 
 class ConnectionTests(ConnectionFixture, unittest.TestCase):
@@ -86,12 +96,11 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
         for channel in ('qq', 'lark'):
             self.clients[channel].sent.clear()
         self.service.op('connections.preferences.set', {'target': 'lark'})
-        self.manager.inboxes['lark'].push_now = True
         for inbox in self.manager.inboxes.values():
             inbox.tick()
         self.assertFalse(self.clients['qq'].sent)
         self.assertTrue(self.clients['lark'].sent)
-        restored = connections.Manager(self.service, lock_status=lambda: False)
+        restored = connections.Manager(self.service, idle_status=lambda: 0)
         self.addCleanup(restored.close)
         self.assertEqual(restored.snapshot()['preferences'], {'target': 'lark'})
         self.service.op('connections.preferences.set', {'target': 'none'})
@@ -103,8 +112,24 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
         self.assertFalse(any(client.sent for client in self.clients.values()))
         self.assertFalse(any(inbox.pending for inbox in self.manager.inboxes.values()))
 
-    def test_routing_default_keeps_both_and_invalid_settings_do_not_change_saved_value(self):
-        self.assertEqual(self.manager.snapshot()['preferences'], {'target': 'both'})
+    def test_routing_defaults_to_lark_without_creating_a_preference_file(self):
+        self.assertEqual(self.manager.snapshot()['preferences'], {'target': 'lark'})
+        self.assertFalse(self.manager.allows_push('qq'))
+        self.assertTrue(self.manager.allows_push('lark'))
+        self.assertFalse(self.manager.routing_path.exists())
+
+    def test_routing_loads_existing_choices_without_rewriting_them(self):
+        for target, channels in (('qq', {'qq'}), ('both', {'qq', 'lark'}), ('none', set())):
+            with self.subTest(target=target):
+                saved = json.dumps({'target': target}) + '\n'
+                self.manager.routing_path.write_text(saved, encoding='utf-8')
+                restored = connections.Manager(self.service, idle_status=lambda: 0)
+                self.addCleanup(restored.close)
+                self.assertEqual(restored.snapshot()['preferences'], {'target': target})
+                self.assertEqual({name for name in connections.CHANNELS if restored.allows_push(name)}, channels)
+                self.assertEqual(self.manager.routing_path.read_text(encoding='utf-8'), saved)
+
+    def test_invalid_routing_settings_do_not_change_saved_value(self):
         self.service.op('connections.preferences.set', {'target': 'qq'})
         for value in ({}, {'target':'auto'}, {'target':['qq']}, {'target':'qq','other':True}):
             with self.subTest(value=value), self.assertRaises((ValueError, OpError)):
@@ -185,7 +210,7 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
         self.assertNotEqual(self.state('qq')['binding_code'], code)
         self.assertFalse(self.state('qq')['bound'])
         self.action('qq', 'disconnect')
-        restored = connections.Manager(self.service, lock_status=lambda: False)
+        restored = connections.Manager(self.service, idle_status=lambda: 0)
         self.addCleanup(restored.close)
         self.assertEqual(restored.channel_state('qq')['state'], 'disabled')
         self.assertTrue(restored.notification_status()['manual_away'])
@@ -213,22 +238,92 @@ class ConnectionTests(ConnectionFixture, unittest.TestCase):
             self.action('qq', 'test')
         self.assertEqual(self.state('qq')['state'], 'rejected')
 
-    def test_lark_only_lock_and_remote_back_update_global_presence(self):
+    def test_lark_remote_back_clears_manual_away_for_both_channels(self):
         self.configure('lark')
         self.bind('lark')
-        lark = self.manager.inboxes['lark']
-        lark.lock_status = lambda: True
-        lark.refresh_presence()
-        status = self.service.notification_status()
-        self.assertTrue(status['locked'])
-        self.assertTrue(status['away'])
-        self.assertEqual(status['channel']['state'], 'unconfigured')
-        lark.lock_status = lambda: False
-        lark.refresh_presence()
         self.service.set_away(True)
         self.receive('lark', '/back', 'back')
         self.assertFalse(self.service.notification_status()['manual_away'])
         self.assertFalse(any(item.config['manual_away'] for item in self.manager.inboxes.values()))
+
+    def test_idle_away_stays_latched_after_one_new_input_even_without_channels(self):
+        status = self.sample(3600)
+        self.assertTrue(status['idle'])
+        self.assertTrue(status['away'])
+        self.assertFalse(status['manual_away'])
+        self.assertFalse(status['enabled'])
+        self.assertTrue(self.sample(0)['idle'])
+        for seconds in range(10, 141, 10):
+            status = self.sample(seconds)
+        self.assertTrue(status['away'])
+        self.assertIsNone(status['auto_returned_at'])
+
+    def test_return_needs_three_input_samples_spanning_at_least_one_minute(self):
+        self.sample(3600)
+        for offset in range(10, 70, 10):
+            status = self.sample(0 if offset in (10, 20, 30) else 100)
+            self.assertTrue(status['away'])
+        status = self.sample(0, seconds=9)
+        self.assertTrue(status['away'], '59 seconds between first and latest input')
+        status = self.sample(0, seconds=1)
+        self.assertFalse(status['away'])
+        self.assertFalse(status['idle'])
+        self.assertEqual(status['auto_returned_at'], self.clock.isoformat())
+
+    def test_input_older_than_two_minutes_does_not_count_toward_return(self):
+        self.sample(3600)
+        for offset in range(10, 281, 10):
+            status = self.sample(0 if offset in (10, 40, 170, 240) else 400)
+            self.assertTrue(status['away'])
+        self.assertFalse(self.sample(0)['away'], 'the input exactly 120 seconds ago counts')
+
+    def test_manual_return_persists_both_channels_and_marks_one_shared_update(self):
+        for channel in connections.CHANNELS:
+            self.configure(channel)
+            self.bind(channel)
+            self.clients[channel].sent.clear()
+        self.service.set_away(True)
+        self.sample(0, seconds=0)
+        for offset in range(10, 70, 10):
+            status = self.sample(0 if offset in (10, 40) else 80)
+            self.assertTrue(status['manual_away'])
+            for inbox in self.manager.inboxes.values():
+                inbox.tick()
+        self.assertEqual(self.idle.call_count, 7, 'channel ticks do not sample independently')
+        changes = self.service.chat.changes
+        with mock.patch.object(changes, 'mark', wraps=changes.mark) as mark:
+            status = self.sample(0)
+            self.assertFalse(status['manual_away'])
+            self.assertFalse(status['away'])
+            stamp = status['auto_returned_at']
+            self.assertEqual(stamp, self.clock.isoformat())
+            self.assertEqual(self.sample(0)['auto_returned_at'], stamp)
+            for inbox in self.manager.inboxes.values():
+                inbox.tick()
+                config = json.loads(inbox.config_path.read_text(encoding='utf-8'))
+                self.assertFalse(config['manual_away'])
+            mark.assert_called_once_with('notification', None, 'notification')
+        self.assertFalse(any(client.sent for client in self.clients.values()))
+
+    def test_unreadable_sample_reports_error_and_does_not_confirm_return(self):
+        self.sample(3600)
+        self.sample(0)
+        self.idle.side_effect = ValueError('idle clock unavailable')
+        status = self.sample(None)
+        self.assertFalse(status['idle'])
+        self.assertFalse(status['away'])
+        self.assertEqual(status['presence_error'],
+                         '无法读取电脑空闲时长，请用“我已离开”开关：ValueError: idle clock unavailable')
+        self.assertEqual(status['error'], status['presence_error'])
+        self.assertIsNone(status['auto_returned_at'])
+        self.service.set_away(True)
+        self.assertTrue(self.sample(None)['manual_away'])
+        self.idle.side_effect = None
+        status = self.sample(0)
+        self.assertIsNone(status['presence_error'])
+        self.assertTrue(status['away'])
+        self.assertTrue(status['idle'])
+        self.assertIsNone(status['auto_returned_at'])
 
     def test_reset_binding_retires_old_owner_replies_and_references(self):
         self.configure('lark')

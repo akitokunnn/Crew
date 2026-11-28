@@ -362,6 +362,8 @@ def transition(conn, goal_id, status, *, actor=board.HUMAN, reason=None, expecte
     conn.execute('UPDATE goal_rounds SET status=?,outcome=?,reason=?,ended_at=? WHERE goal_id=? AND number=?',
                  (status, status if status in TERMINAL else None, reason, at if status in TERMINAL else None, goal_id, goal['current_round']))
     if status in TERMINAL:
+        from . import war_room_worktree
+        war_room_worktree.goal_finished(conn, goal_id, at)
         conn.execute('UPDATE goal_executions SET status=?,ended_at=?,updated_at=? WHERE goal_id=? AND round=?',
                      (status, at, at, goal_id, goal['current_round']))
     _touch(conn, goal_id, now)
@@ -476,6 +478,8 @@ def continue_task(conn, goal_id, text, *, actor=board.HUMAN, discussion_executio
                   _json(previous_round), at))
     conn.execute("UPDATE goal_round_finishes SET status='superseded' WHERE goal_id=? AND round=?", (goal_id, goal['current_round']))
     conn.execute("UPDATE goals SET status='queued',manual_pause=0,reason=? WHERE id=?", (text, goal_id))
+    from . import war_room_worktree
+    war_room_worktree.request_rebuild(conn, goal_id, at)
     touch(conn, goal_id)
     conn.execute("UPDATE goal_rounds SET status='queued',outcome=NULL,reason=?,ended_at=NULL WHERE goal_id=? AND number=?",
                  (text, goal_id, goal['current_round']))
@@ -514,6 +518,8 @@ def reopen(conn, goal_id, text, *, actor=board.HUMAN, now=None):
     if goal['status'] == 'awaiting_acceptance':
         conn.execute("UPDATE goal_rounds SET outcome='awaiting_acceptance',ended_at=? WHERE goal_id=? AND number=?", (at, goal_id, goal['current_round']))
     conn.execute("UPDATE goals SET current_round=?,status='queued',manual_pause=0,reason=? WHERE id=?", (number, text, goal_id))
+    from . import war_room_worktree
+    war_room_worktree.request_rebuild(conn, goal_id, at)
     conn.execute('INSERT INTO goal_rounds VALUES(?,?,?,?,?,?,?,?)', (goal_id, number, goal['requirement_version'], 'queued', None, text, at, None))
     return amend(conn, goal_id, _text(text, '重开原因'), actor=actor, now=now)
 
@@ -567,6 +573,8 @@ def configure_execution(conn, execution_id, runtime, *, model=None, effort=None,
 @atomic
 def create_execution(conn, goal_id, session_id, *, runtime, model=None, effort=None, discussion_message_id=None, now=None, speed=None):
     goal = _row(conn, goal_id)
+    from . import war_room_worktree
+    war_room_worktree.effective_path(conn, {'goal_id': goal_id, 'session_id': session_id})
     if discussion_message_id is not None:
         _text(discussion_message_id, '用户消息编号', limit=160)
         if goal['status'] not in ('completed', 'failed', 'awaiting_acceptance') or goal['manual_pause']:

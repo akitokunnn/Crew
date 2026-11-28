@@ -16,7 +16,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import behavior_prompts, runtime_recovery, trust_mode
+from . import behavior_prompts, persona, runtime_recovery, trust_mode
 
 from . import board, change_feed, channel, claude_limits, claude_subagents, codex_client, codex_visibility, git_admin, goal_messages, goals, guard, hooks, install, messaging, models, personal, report_preview, runtime_switch, runtimes, settings, spawn, store, subagents, workspace_execution
 from .ops import launch
@@ -227,6 +227,12 @@ class Manager(StatusMixin, NativeMixin, DeliveryMixin, MaintenanceMixin,
             command += ['--append-system-prompt', spec['_workspace_notice']]
         with closing(store.connect(self.home)) as prompt_conn:
             prompt_manifest = behavior_prompts.for_session(prompt_conn, session_id, plugin_root=self.plugin_root)
+            persona_hash, block = persona.injection(prompt_conn, session_id)
+        if block:
+            path = self.home / 'chat' / 'persona' / (session_id + '.md')
+            path.parent.mkdir(parents=True, exist_ok=True)
+            install._write(path, block)
+            command += ['--append-system-prompt-file', str(path.resolve())]
         granted = launch.issue(self.home, session_id=session_id, runtime='claude', now=store.now_iso())
         if granted is not None:
             command += launch.claude_args(self.home, granted)
@@ -252,6 +258,7 @@ class Manager(StatusMixin, NativeMixin, DeliveryMixin, MaintenanceMixin,
         current.replacement_handoff = (None if lost is None else
             '【Crew 新会话交接：原会话 %s 已丢失，这是新开的会话，原会话里的上下文没有接回】\n%s\n【交接结束】' % (lost, handoff))
         current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_manifest)
+        current.persona_hash = persona_hash
         with closing(store.connect(self.home)) as prompt_conn:
             behavior_prompts.record_applied(prompt_conn, session_id, prompt_manifest, status='sent',
                 evidence='Claude 进程创建成功；启动参数已携带 Crew 配置，原生读取尚未回报')
@@ -352,6 +359,9 @@ class Manager(StatusMixin, NativeMixin, DeliveryMixin, MaintenanceMixin,
                         plan["command"] = self._launch(session, spec)
                         # Claude used to fetch this brief with Read before seeing the task.
                         text = plan["files"][spec["md"]] if chosen_runtime == "claude" else spec["task"]
+                        frame = persona.input_frame(conn, session_id, 'crew', None, None)
+                        if frame and spec['task'].strip() != '/compact':
+                            text = frame + '\n\n' + text
                         self._send(session_id, text, spec["task"], source="crew")
                 except Exception:
                     live = [key for key in self._identity_keys(conn, session_id) if self.running(key)]

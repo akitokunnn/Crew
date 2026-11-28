@@ -28,7 +28,8 @@
   let leaderDrag = null, leaderOrderSaving = false;
   let allTab = "overview", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0, usageScannedAt = null;
   let cardId = null, cardReturn = null, rightOpen = false, dialogReturn = null;
-  let theme = "system", leadersOpen = true, presenceOpen = false, presenceFailure = null, workspaceSwitcherOpen = false;
+  let theme = "system", leadersOpen = false, presenceOpen = false, presenceFailure = null, workspaceSwitcherOpen = false;
+  let lastAutoReturn = 0;
   // "#settings" opens settings; "#settings=backend" (the 系统管理员 page's 运维 link in a browser) opens that category.
   let pendingSettingsHash = location.hash === "#settings" ? "ai" : location.hash === "#settings=backend" ? "backend" : false;
   // 手机宽度下 Leader 栏是覆盖在内容上的抽屉：每次打开默认收起，选完即收，不改宽屏的记忆。
@@ -210,9 +211,36 @@
     return result;
   }
   function toast(message, undo = null, root = $("toast-root")) {
-    const node = document.createElement("div"); node.className = "toast show"; node.setAttribute("role", "status"); node.textContent = message;
+    const quiet = root.id === "toast-quiet-root";
+    const node = document.createElement("div"); node.className = quiet ? "toast-quiet" : "toast show"; node.setAttribute("role", "status"); node.textContent = message;
     if (undo !== null) { const button = document.createElement("button"); button.type = "button"; button.textContent = "撤销"; button.onclick = async () => { button.disabled = true; try { await undo(); node.remove(); } catch (error) { button.disabled = false; toast(error.message); } }; node.append(button); }
-    root.replaceChildren(node); setTimeout(() => node.remove(), undo === null ? 5000 : 12000);
+    root.replaceChildren(node);
+    const composer = quiet ? document.querySelector("#chat-host .composer-wrap") : null;
+    let observer = null;
+    if (composer) {
+      const position = () => {
+        const bounds = composer.getBoundingClientRect();
+        if (bounds.height && bounds.top < innerHeight) node.style.setProperty("--quiet-clearance", `${innerHeight - bounds.top + 8}px`);
+        else node.style.removeProperty("--quiet-clearance");
+      };
+      position();
+      observer = new ResizeObserver(position);
+      observer.observe(composer);
+    }
+    setTimeout(() => { observer?.disconnect(); node.remove(); }, quiet ? 4000 : undo === null ? 5000 : 12000);
+  }
+  function showAutoReturn(value) {
+    const at = Date.parse(value);
+    if (!(at > lastAutoReturn)) return;
+    lastAutoReturn = at;
+    if (Date.now() - at > 60_000) return;
+    let root = $("toast-quiet-root");
+    if (!root) {
+      root = document.createElement("div");
+      root.id = "toast-quiet-root";
+      document.body.append(root);
+    }
+    toast("你回来了，已关掉离开模式", null, root);
   }
   document.addEventListener("crew:sound-error", event => toast(event.detail));
   function replace(node, html) {
@@ -891,6 +919,28 @@
     if (roomList !== null) CrewChannel.updateRooms(roomList);
   }
   function openRoom(id) { roomId = id; navigate("war-room"); }
+  // The overview shows the approved assignment's progress beside its bound goal.
+  let homeRoom = null, homeAssignments = new Map();
+  const homeRoomOf = rooms => rooms?.find(row => row.status === "open" && row.approved_version && row.progress.total) ?? null;
+  async function loadHomeAssignments(room) {
+    const shown = homeAssignments.size > 0;
+    homeRoom = room;
+    homeAssignments = new Map();
+    if (!room) {
+      if (shown && view === "all" && allTab === "overview") renderAll();
+      return;
+    }
+    try {
+      const detail = await api(`/api/op/war_room.get?id=${room.id}&limit=1`);
+      if (homeRoom !== room) return;
+      for (const item of detail.board) {
+        if (item.kind === "assignment" && item.goal_id != null) homeAssignments.set(item.goal_id, item.status);
+      }
+      if (view === "all" && allTab === "overview") renderAll();
+    } catch (error) {
+      if (homeRoom === room) toast(error.message);
+    }
+  }
   async function refreshRooms() {
     const name = project, request = ++roomListRequest;
     try {
@@ -904,6 +954,7 @@
     }
     renderSidebar();
     if (mountedRoom !== null) CrewWarRoom.update(state, roomList, roomListError);
+    if (view === "all" && allTab === "overview" && homeRoom !== homeRoomOf(roomList)) void loadHomeAssignments(homeRoomOf(roomList));
   }
   function renderWarRoom() {
     if (mountedRoom !== roomId) {
@@ -917,11 +968,13 @@
   }
   function renderAll() {
     if (allTab === "overview") {
+      const room = homeRoomOf(roomList);
+      if (homeRoom !== room) void loadHomeAssignments(room);
       replace($("main"), CrewWorkspaceHome.render({name:projectDisplay(state.project), project:state.project.name, git_assistant:state.git_assistant, leaders:state.leaders,
         members:state.members, goals:state.goals || [], todos:state.todos || [], decisions:state.decisions,
         errors:state.attention.filter(item => item.kind === "session_error" || item.kind === "codex_failed"),
         unread:state.leaders.reduce((sum, item) => sum + item.unread, 0), statuses:new Map(state.leaders.map(item => [item.session_id, leaderStatus(item)]))},
-        {taskCards:items => CrewGoals.cards(items, state.leaders), decisionCards:items => items.map(decisionCard).join(""), todoCards:items => items.map(todoCard).join(""), todoTint,
+        {taskCards:items => CrewGoals.cards(items, state.leaders, null, homeAssignments), decisionCards:items => items.map(decisionCard).join(""), todoCards:items => items.map(todoCard).join(""), todoTint,
           approvalCount:nativeApprovals?.count() || 0, settingsIcon:ic("settings", "sm")}));
       return;
     }
@@ -1057,7 +1110,7 @@
     if (runtimeSwitch) html += btn("runtime-switch", "更换执行工具…", runtimeSwitch.reason(item));
     html += btn("stop", "停下这一轮", stopReason) + btn("compact", "压缩上下文", compactReason) + submenu(item, runtimeId(item) === "codex" ? "模型、effort 和速度" : "模型和 effort", modelMenu(item, true)) + btn("session-rename", "改名");
     if (isLeader) {
-      html += btn("leader-settings", "Leader 设置…") + btn("member-defaults", "执行默认大脑");
+      html += btn("leader-settings", "Leader 设置…") + btn("persona", "性格…") + btn("member-defaults", "执行默认大脑");
       html += submenu(item, "leader 决策方式", [["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `<button type="button" role="menuitemradio" aria-checked="${Boolean(item.trust?.enabled) === (mode === "autonomous")}" data-act="leader-mode" data-id="${esc(item.session_id)}" data-mode="${mode}">${label}</button>`).join(""));
       html += btn("compact-department", "压缩整个部门…");
       const siblings = sortableLeaders(item), index = siblings.indexOf(item), members = membersOf(item.session_id), busy = members.filter(compactBusy).length;
@@ -1528,6 +1581,7 @@
       replace($("main"), CrewWorkspaceEntry.render(state, {esc, ic, display: projectDisplay}, activityChanged));
       document.title = "工作区 · Crew";
       if (pendingSettingsHash) { const category = pendingSettingsHash; pendingSettingsHash = false; history.replaceState(null, "", `${location.pathname}${location.search}`); openSettings(category); }
+      showAutoReturn(state.notification?.auto_returned_at);
       return;
     }
     try { localStorage.setItem("crew.mobile.project", project); } catch {}
@@ -1544,6 +1598,7 @@
     if (mountedRoom !== null && previous !== null) CrewWarRoom.changed(live);
     if (pendingSettingsHash) { const category = pendingSettingsHash; pendingSettingsHash = false; openSettings(category); }
     refreshUsage();
+    showAutoReturn(state.notification?.auto_returned_at);
     if (previous !== null) notifySounds(previous, meta.source === "snapshot" || meta.catchUp, meta.source === "snapshot" ? snapshotGeneration : soundGeneration);
   }
   function showLoadError(error) {
@@ -1607,6 +1662,7 @@
       panels:{
         // The library adopts into the current workspace, so the workspace list page has no library.
         ...(project !== null ? {library:host => { mountSessionLibrary(host); }} : {}),
+        persona:host => CrewPersona.mountSettings(host,{request:CrewPersona.webRequest((path,body)=>workspaceData().request(path,body,null)),save:body=>api("/api/op/settings.save",body)}),
         sounds:host => window.CrewSoundSettings.mount(host,{read:()=>api("/api/op/settings.get"),save:body=>api("/api/op/settings.save",body),api,toast}),
         ...(hostAdmin() ? {remote:host => window.CrewRemoteAccess.mount(host,{read:()=>api("/api/op/remote_access.get"),action:body=>api("/api/op/remote_access.action",body)})} : {}),prompts:host => window.CrewBehaviorPrompts.mount(host,{...window.CrewBehaviorPrompts.requests(api),project,session:behaviorSession || (view === "chat" ? readOnlyId || leaderId : null),execution:goals?.executionFor(behaviorSession || readOnlyId || leaderId)?.id}),appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections, storage:settingsStorage}});
     if (desktopTheme) {
@@ -1626,7 +1682,9 @@
       try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
       try { const stored = Number(localStorage.getItem("crew.fontScale")); if (stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { toast(error.message); }
     }
-    try { leadersOpen = !narrowLayout() && localStorage.getItem("crew.leadersOpen") !== "false"; } catch { leadersOpen = !narrowLayout(); }
+    if (project !== null && !narrowLayout()) {
+      try { leadersOpen = localStorage.getItem("crew.leadersOpen") !== "false"; } catch { leadersOpen = true; }
+    }
     $("leader-panel").dataset.open = String(leadersOpen); $("leader-panel").inert = !leadersOpen;
     CrewChat.initFiles(api, toast);
     if (window.CrewNativeApprovals) nativeApprovals = window.CrewNativeApprovals.create({api,toast,refreshState:() => loadState(true),onChange() { if (!state || project === null) return; renderSidebar(); if (view === "chat") renderChat(); else if (view === "all") renderAll(); }});
@@ -1727,6 +1785,7 @@
       }
       else if (act === "session-rename") openRename(id);
       else if (act === "leader-settings") openLeaderSettings(id);
+      else if (act === "persona") CrewPersona.open({session_id:id,name:leader(id).name,request:CrewPersona.webRequest(api)});
       else if (act === "look-color" && lookDraft) { lookDraft.color = button.dataset.color; lookDraft.error = ""; renderLeaderSettings(); }
       else if (act === "look-color-reset" && lookDraft) { lookDraft.color = null; renderLeaderSettings(); }
       else if (act === "look-avatar-remove" && lookDraft) { if (lookDraft.preview) URL.revokeObjectURL(lookDraft.preview); lookDraft.avatar = null; lookDraft.preview = null; lookDraft.note = ""; renderLeaderSettings(); }

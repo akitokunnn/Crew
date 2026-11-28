@@ -20,7 +20,9 @@ function harness(api){
     fail(){this.onerror({});}
   }
   const location={hash:"",pathname:"/",search:"?project=fixture",origin:"http://127.0.0.1:47811"};
-  const sandbox={window:{},document:{activeElement:null,addEventListener(){},getElementById:id=>({main,backdrop,"mobile-navigation":navigation,"mobile-project":projectName,"connection-status":connection})[id]||null},
+  const extraNodes={};
+  const sandbox={window:{},document:{activeElement:null,addEventListener(){},createElement:()=>({}),body:{append(node){extraNodes[node.id]=node;}},
+    getElementById:id=>({main,backdrop,"mobile-navigation":navigation,"mobile-project":projectName,"connection-status":connection,...extraNodes})[id]||null},
     location,history:{replaceState(_state,_title,url){location.hash=new URL(url,location.origin).hash;}},localStorage:{setItem(){}},CrewChat:{setTask(){}},URL,URLSearchParams,EventSource:FakeEventSource,
     setTimeout:(fn,delay)=>{const id=nextTimer++;timers.push({id,fn,delay});return id;},clearTimeout:id=>{const index=timers.findIndex(timer=>timer.id===id);if(index>=0)timers.splice(index,1);},
     setInterval(){throw Error("工作台不应再定时轮询");},CrewActivity:{sync(){}},CrewSound:{observe(){}}};
@@ -31,12 +33,35 @@ function harness(api){
   vm.runInContext(read("app.js").replace("  setup();\n})();",`const route=syncRoute;window.ui={loadState,startWorkspace,enableRoute(){syncRoute=route;},services(values){api=values.api;toast=values.toast;applyTheme=()=>{};renderSettings=()=>{};readRoute=()=>{view="all";};render=()=>{values.rendered();document.getElementById("main").innerHTML="已恢复的工作区";};renderSidebar=()=>{};syncRoute=()=>{};syncSidecar=()=>{};refreshUsage=()=>{};}};\n})();`),sandbox);
   // Room badges load independently of workspace snapshots and opening submissions.
   const request=(path,...args)=>path==="/api/op/war_room.list" ? Promise.resolve({rooms:[]}) : api(path,...args);
-  sandbox.window.ui.services({api:request,toast:message=>notices.push(message),rendered:()=>{renders+=1;}});
+  const quietNotices=[];
+  sandbox.window.ui.services({api:request,toast:(message, _undo, root)=>(root?.id==="toast-quiet-root"?quietNotices:notices).push(message),rendered:()=>{renders+=1;}});
   return {ui:sandbox.window.ui,main,retry,notices,streams,timers,connection,location,backdrop,form,input,send,error,
-    setGoal(value){input.value=value;input.change();},get renders(){return renders;}};
+    quietNotices,setGoal(value){input.value=value;input.change();},get renders(){return renders;}};
 }
 const state=()=>({project:{name:"fixture"},leaders:[],members:[],decisions:[],goals:[],todos:[],attention:[],notification:{channels:[],error:null},sounds:{events:[]}});
 const snapshot=seq=>({seq,data:state()});
+
+test("recent automatic returns are shown once per timestamp through the quiet toast",async()=>{
+  const initial=snapshot(1);
+  const now=Date.now();
+  initial.data.notification.auto_returned_at=new Date(now-61_000).toISOString();
+  const h=harness(async()=>initial);
+  await h.ui.loadState();
+  assert.deepEqual(h.quietNotices,[]);
+  const [stream]=h.streams;
+  stream.emit("ready",{seq:1});
+  const update=(seq,offset)=>stream.onmessage({data:JSON.stringify({
+    seq,type:"notification.updated",entity:"notification",
+    data:{channels:[],error:null,auto_returned_at:new Date(now+offset).toISOString()}
+  })});
+  update(2,-2000);
+  update(3,-2000);
+  update(4,-3000);
+  assert.deepEqual(h.quietNotices,["你回来了，已关掉离开模式"]);
+  update(5,0);
+  assert.equal(h.quietNotices.length,2);
+  assert.deepEqual(h.notices,[]);
+});
 
 test("initial state failure shows the actual escaped error, reconnects on its own and retry can recover without toast",async()=>{
   let calls=0,release;const h=harness(async()=>{if(++calls===1)throw Error("prices.json <missing>");return new Promise(resolve=>{release=resolve;});});

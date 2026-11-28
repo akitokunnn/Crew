@@ -40,6 +40,8 @@
   // Page title and header follow the mode; a workspace page speaks for that workspace only.
   function header(state) {
     if(PROJECT===null){document.title="系统管理员 · Crew";return;}
+    $("assistant-persona").hidden=false;
+    $("assistant-persona").onclick=()=>CrewPersona.open({session_id:assistantSession,name:displayName(state)+" · 工作区助手",request:CrewPersona.webRequest(api)});
     const name=displayName(state);
     $("assistant-title").textContent="助手";$("assistant-scope").textContent=name;$("assistant-scope").hidden=false;
     $("assistant-sub").textContent=`「${name}」的助手：只看这个工作区，帮你理清想法、开局和推进。`;
@@ -170,14 +172,24 @@
     $("assistant-confirmation-heading").textContent=label;
     for(const item of requests){
       const special=SPECIAL[item.op],card=document.createElement("article");card.className=`assistant-confirmation${special?" assistant-confirmation-rich":""}`;
-      const title=document.createElement("strong");title.textContent=special?special[0]:item.summary;
-      const meta=document.createElement("p");meta.textContent=`由${ROLE_LABELS[item.role]||item.role}发起${item.project?` · 工作区 ${item.project}`:""}`;card.append(title,meta);
+      const voice=item.role==="workspace_assistant" && item.message_id!=null;
+      const title=document.createElement("strong");title.textContent=special&&!voice?special[0]:item.summary;
+      card.append(title);
+      if(!voice){const meta=document.createElement("p");meta.textContent=`由${ROLE_LABELS[item.role]||item.role}发起${item.project?` · 工作区 ${item.project}`:""}`;card.append(meta);}
       if((item.op==="campaign.launch"||item.op==="domains.restructure.apply")&&item.args.note){const note=document.createElement("p");note.className="ac-note";note.textContent=`方案说明：${item.args.note}`;card.append(note);}
-      const detail=document.createElement(special?"div":"p");detail.className=special?"ac-detail":"assistant-confirmation-args";
+      const detail=document.createElement(special?"div":"details");detail.className=special?"ac-detail":"assistant-confirmation-args";
       if(special){detail.innerHTML='<p class="ac-quiet">正在读取…</p>';void lookup(item).then(result=>{detail.innerHTML=special[1](item,result);});}
-      else detail.textContent=argumentLine(item)||"无参数";
+      else {
+        const toggle=document.createElement("summary"), line=document.createElement("p");
+        toggle.textContent=voice?"看详细内容":"查看参数";
+        if(voice && item.op==="note.capture"){
+          const {title,text,tags}=item.args.data;
+          line.textContent=[title,text,tags?.length && "标签："+tags.join("、")].filter(Boolean).join(" · ");
+        }else line.textContent=argumentLine(item)||"无参数";
+        detail.append(toggle,line);
+      }
       const actions=document.createElement("div");actions.className="assistant-confirmation-actions";
-      for(const [label,approve,kind] of [["确认执行",true,"btn primary"],["拒绝",false,"btn ghost"]]){
+      for(const [label,approve,kind] of [[voice ? (item.op==="note.capture"?"好，记下":"确认") : "确认执行",true,"btn primary"],[voice?"先不要":"拒绝",false,"btn ghost"]]){
         const button=document.createElement("button");button.type="button";button.className=kind;button.textContent=label;button.disabled=resolving.has(item.id);
         button.onclick=async()=>{
           if(button.disabled||resolving.has(item.id))return;
@@ -214,6 +226,12 @@
       if(read===confirmationRead)confirmations(requests);
     }catch(failure){if(read===confirmationRead)confirmationFeedback(`确认请求读取失败：${failure.message}`);}
   }
+  function attachVoice() {
+    if (PROJECT === null || !window.CrewAndroidBridge) return;
+    const actions = $("assistant-chat").querySelector(".composer .c-row");
+    if (!actions || actions.querySelector(".assistant-voice")) return;
+    actions.querySelector(".send").before(window.CrewAndroidBridge.voiceButton(PROJECT, "btn ghost assistant-voice", toast));
+  }
   async function refresh() {
     if(loading || stopped || window.CrewAccess?.expired)return;loading=true;clearTimeout(timer);
     try {
@@ -222,6 +240,7 @@
       const identity=state.assistant.session_id;lastState=state;
       if(mounted!==identity){CrewChat.unmount();CrewChat.mount({host:$("assistant-chat"),session:PROJECT===null?{...state.assistant,name:"系统管理员"}:state.assistant,state,api,toast,onRouted:()=>{},onNoteCleared:dropNote,emptyGuide:PROJECT===null?ADMIN_GUIDE:WORKSPACE_GUIDE});mounted=identity;attachNote();}
       else CrewChat.update(state);
+      attachVoice();
       attachDiscussion();
       await loadConfirmations();
     }catch(failure){

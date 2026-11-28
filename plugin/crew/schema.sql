@@ -494,12 +494,6 @@ CREATE TABLE IF NOT EXISTS war_room_plans (
     body TEXT NOT NULL, summary TEXT NOT NULL, author TEXT NOT NULL, created_at TEXT NOT NULL,
     budget_tokens INTEGER, entries_json TEXT NOT NULL, approval TEXT, PRIMARY KEY(room_id,version)
 );
-CREATE TABLE IF NOT EXISTS war_room_idle (
-    room_id INTEGER NOT NULL REFERENCES war_rooms(id), item_id INTEGER NOT NULL REFERENCES war_room_items(id),
-    owner TEXT NOT NULL, since TEXT NOT NULL, notice_id INTEGER REFERENCES leader_notices(id),
-    activity_key TEXT, ended_at TEXT, PRIMARY KEY(room_id,item_id,owner,since)
-);
-CREATE UNIQUE INDEX IF NOT EXISTS war_room_current_idle ON war_room_idle(room_id,item_id,owner) WHERE ended_at IS NULL;
 CREATE TABLE IF NOT EXISTS war_room_execution_reads (
     room_id INTEGER NOT NULL REFERENCES war_rooms(id), reader TEXT NOT NULL,
     execution_id TEXT NOT NULL REFERENCES goal_executions(id), seq INTEGER NOT NULL,
@@ -1254,6 +1248,8 @@ CREATE TABLE IF NOT EXISTS mcp_loaded_tools (
 CREATE TABLE IF NOT EXISTS interaction_requests (
  id TEXT PRIMARY KEY,
  kind TEXT NOT NULL CHECK (kind IN ('confirmation')),
+ message_id TEXT,
+ summary TEXT,
  caller_key TEXT NOT NULL,
  request_id TEXT NOT NULL,
  session_id TEXT NOT NULL,
@@ -1355,4 +1351,82 @@ CREATE TABLE IF NOT EXISTS imported_note_discussion_history (
     note_id TEXT NOT NULL REFERENCES personal_notes(id),
     source_kind TEXT NOT NULL CHECK(source_kind IN ('workspace','administrator','external')),
     created_at TEXT NOT NULL
+);
+
+-- 2026-11-29 batch contracts (docs/NEXT_BATCH_PLAN_2026-11-29.md §4.1).
+-- One worktree per (war room, participating member); cleanup is replayable from this row.
+CREATE TABLE IF NOT EXISTS war_room_worktrees (
+    room_id INTEGER NOT NULL REFERENCES war_rooms(id),
+    session_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    base_ref TEXT NOT NULL,
+    base_commit TEXT,
+    state TEXT NOT NULL CHECK (state IN ('pending','active','releasing','awaiting_merge','removed','failed')),
+    outcome TEXT CHECK (outcome IN ('merged','backed_up')),
+    snapshot TEXT,
+    backup_ref TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    released_at TEXT,
+    cleaned_at TEXT,
+    PRIMARY KEY (room_id, session_id)
+);
+
+-- Event-triggered stall watch: one open stall segment per room, woken at most once.
+CREATE TABLE IF NOT EXISTS war_room_watch (
+    room_id INTEGER PRIMARY KEY REFERENCES war_rooms(id),
+    stalled_since TEXT,
+    check_at TEXT,
+    woke_at TEXT,
+    notice_id INTEGER REFERENCES leader_notices(id),
+    progress_key TEXT,
+    attention_since TEXT
+);
+
+-- Phone reminders with a replayable cursor, independent of the away switch.
+CREATE TABLE IF NOT EXISTS device_notifications (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('decision','todo','goal_report','session_error','codex_failed')),
+    project TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    url TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- Personality: global switch (no row = off), one text per leader / workspace assistant, bounded history.
+CREATE TABLE IF NOT EXISTS persona_settings (
+    singleton INTEGER PRIMARY KEY CHECK (singleton=1),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0,1)),
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS personas (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    seed TEXT,
+    seed_text TEXT,
+    frozen INTEGER NOT NULL DEFAULT 0 CHECK (frozen IN (0,1)),
+    content TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 0,
+    tokens_estimate INTEGER NOT NULL DEFAULT 0,
+    pending_turns INTEGER NOT NULL DEFAULT 0,
+    growth_cursor TEXT,
+    last_growth_at TEXT,
+    last_growth_summary TEXT,
+    growth_error TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS persona_history (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    version INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    tokens_estimate INTEGER NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('seed','edit','grow','reset','restore')),
+    actor TEXT NOT NULL,
+    summary TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, version)
 );

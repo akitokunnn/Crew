@@ -35,7 +35,7 @@ class MaintenanceFixture(ShellFixture):
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project, agents_provider=lambda: list(self.agents),
                                         claude_root=self.claude, codex_root=self.codex, runs_file=self.runs,
                                         now=lambda: store.parse_iso(NOW), process_factory=self.process_factory,
-                                        vscode_state_db=self.vscode_state_db, lock_status=lambda: False)
+                                        vscode_state_db=self.vscode_state_db, idle_status=lambda: 0)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .02})
         self.thread.start()
         self.addCleanup(self.close_server)
@@ -311,7 +311,7 @@ class DepartmentCompactTests(MaintenanceFixture, unittest.TestCase):
         # A new service on the same HOME, as after a restart, marks the unfinished job interrupted.
         restarted = web.Service(self.home, PLUGIN, agents_provider=lambda: [], claude_root=self.claude, codex_root=self.codex,
                                 runs_file=self.runs, process_factory=self.process_factory,
-                                vscode_state_db=self.vscode_state_db, lock_status=lambda: False)
+                                vscode_state_db=self.vscode_state_db, idle_status=lambda: 0)
         self.addCleanup(restarted.chat.close)
         self.assertEqual(len(self.processes), known, 'Restart starts no native')
         restarted = self.job(job['id'], leader=boss)

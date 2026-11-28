@@ -22,7 +22,7 @@ class LeaderOrderTests(ShellFixture, unittest.TestCase):
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project,
             agents_provider=lambda: [], claude_root=self.claude, codex_root=self.codex,
             runs_file=self.runs, now=store.parse_iso(NOW), process_factory=self.process_factory,
-            notification_client=mock.Mock(), lock_status=lambda: False,
+            notification_client=mock.Mock(), idle_status=lambda: 0,
             vscode_state_db=self.vscode_state_db)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .01})
         self.thread.start()

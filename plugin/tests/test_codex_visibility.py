@@ -87,17 +87,18 @@ class CodexVisibilityTests(unittest.TestCase):
             if origin:
                 with closing(store.connect(self.home)) as conn:
                     native_origins.record(conn, 'codex', 'external', origin)
-            running, client = self.make_running(resume=True)
-            running.stop_reason = 'idle_reclaim'
-            running.close()
-            self.assertTrue(running.reader_done.wait(2))
-            self.assertEqual([method for method, _ in client.calls], ['thread/resume', 'thread/name/set'])
+            for reason in ('user_stop', 'service_close', 'idle_reclaim'):
+                with self.subTest(origin=origin, reason=reason):
+                    running, client = self.make_running(resume=True)
+                    running.close(reason=reason)
+                    self.assertTrue(running.reader_done.wait(2))
+                    self.assertEqual([method for method, _ in client.calls], ['thread/resume', 'thread/name/set'])
 
     def test_wrong_unarchive_receipt_never_resumes_a_different_history(self):
         client = mock.Mock()
         client.request.side_effect = [{'data': [{'id': 'owned'}]}, {'thread': {'id': 'other'}}]
-        with self.assertRaisesRegex(board.BoardError, 'ID'):
-            codex_visibility.restore_internal(client, 'owned')
+        with closing(store.connect(self.home)) as conn, self.assertRaisesRegex(board.BoardError, 'ID'):
+            codex_visibility.restore_internal(conn, client, 'owned')
 
     def test_wrong_resume_id_does_not_replace_the_bound_person(self):
         with closing(store.connect(self.home)) as conn:
@@ -175,6 +176,115 @@ class CodexVisibilityTests(unittest.TestCase):
         self.assertEqual(client.calls[1], ('thread/name/set', {'threadId': 'native-1', 'name': 'worker · 组员'}))
         running.close()
         self.assertNotIn('thread/archive', [name for name, _ in client.calls])
+
+    def test_person_sweep_rechecks_current_owner_and_takes_person_lease(self):
+        running, _ = self.make_running()
+        native_id = running.thread_id
+        running.client.close()  # Native EOF with no archive receipt.
+        self.assertTrue(running.reader_done.wait(2))
+        manager = chat.Manager(self.home, self.plugin, lambda: [])
+        with closing(store.connect(self.home)) as conn, mock.patch.object(codex_client, 'Client') as factory:
+            def sweep():
+                codex_visibility.reconcile_stopped(manager, conn)
+            lease = codex_runtime.RuntimeLease(self.home, 'worker').acquire()
+            try:
+                sweep()
+            finally:
+                lease.release()
+            for state in ('releasing', 'external', 'returning'):
+                conn.execute('UPDATE native_session_controls SET state=?', (state,))
+                sweep()
+            conn.execute("UPDATE native_session_controls SET state='crew'")
+            board.set_status(conn, 'worker', 'idle')
+            sweep()
+            board.set_status(conn, 'worker', 'offline')
+            with mock.patch.object(manager, 'running', return_value=True):
+                sweep()
+            runtimes.set(conn, 'worker', 'claude')
+            sweep()
+            runtimes.set(conn, 'worker', 'codex', native_id)
+            # An older release could switch back to Codex without reopening the thread.
+            conn.execute("INSERT INTO runtime_switches(id,session_id,project,from_runtime,to_runtime,revision,"
+                         "handoff,created_at,expires_at,status,preview_json) VALUES("
+                         "'back','worker','demo','claude','codex','1','handoff',?,?,'configured','{}')",
+                         (store.now_iso(), store.now_iso()))
+            sweep()
+            conn.execute("UPDATE runtime_switches SET consumed_at=? WHERE id='back'", (store.now_iso(),))
+            conn.execute("UPDATE native_binding_origins SET origin='user_adopted'")
+            sweep()
+            conn.execute("UPDATE native_binding_origins SET origin='crew_created'")
+            acquire = codex_runtime.RuntimeLease.acquire
+            def handoff(lease):
+                conn.execute("UPDATE native_session_controls SET state='external'")
+                return acquire(lease)
+            with mock.patch.object(codex_runtime.RuntimeLease, 'acquire', handoff):
+                sweep()
+            factory.assert_not_called()
+            conn.execute("UPDATE native_session_controls SET state='crew'")
+            client = factory.return_value.__enter__.return_value
+            client.process = fixtures.FakeProcess()
+            client.request.side_effect = [{'data': []}, {}]
+            client.resume_thread.return_value = {'thread': {'id': native_id}}
+            factory.return_value.__exit__.side_effect = lambda *args: setattr(client.process, 'returncode', 0)
+            with mock.patch.object(codex_runtime, 'process_identity', return_value='fixture'):
+                sweep()
+                sweep()
+            client.resume_thread.assert_called_once_with(native_id)
+            self.assertEqual([c.args[0] for c in client.request.call_args_list], ['thread/list', 'thread/archive'])
+            self.assertEqual(conn.execute('SELECT archive_confirmed FROM native_binding_origins').fetchone()[0], 1)
+
+    def test_detach_and_archive_false_survive_scanner_restart_until_same_thread_resumes(self):
+        manager = chat.Manager(self.home, self.plugin, lambda: [])
+        for detach in (True, False):
+            with self.subTest(detach=detach):
+                running, client = self.make_running(resume=not detach)
+                self.assertFalse(codex_visibility.archive_skipped(running.journal, running.thread_id))
+                manager.processes['worker'] = running
+                if detach:
+                    manager.detach('worker')
+                    self.assertEqual(running.stop_reason, 'detach')
+                else:
+                    running.close(reason='user_stop', archive=False)
+                self.assertTrue(running.reader_done.wait(2))
+                self.assertNotIn('thread/archive', [name for name, _ in client.calls])
+                manager = chat.Manager(self.home, self.plugin, lambda: [])
+                with closing(store.connect(self.home)) as conn, mock.patch.object(codex_client, 'Client') as factory:
+                    codex_visibility.reconcile_stopped(manager, conn)
+                    factory.assert_not_called()
+
+    def test_person_unarchive_receipt_is_reset_only_after_confirmation(self):
+        first, _ = self.make_running()
+        native_id = first.thread_id
+        first.close(reason='user_stop')
+        self.assertTrue(first.reader_done.wait(2))
+        def receipt(conn):
+            return conn.execute('SELECT archive_confirmed FROM native_binding_origins WHERE native_id=?',
+                                (native_id,)).fetchone()[0]
+        with closing(store.connect(self.home)) as conn:
+            self.assertEqual(receipt(conn), 1)
+            with mock.patch.object(fixtures.FakeClient, 'request', side_effect=[
+                    {'data': [{'id': native_id}]}, {'thread': {'id': 'wrong'}}]):
+                with self.assertRaisesRegex(board.BoardError, 'ID'):
+                    self.make_running(resume=True)
+            self.assertEqual(receipt(conn), 1)
+            request = fixtures.FakeClient.request
+            def metadata(client, method, params, **options):
+                result = request(client, method, params, **options)
+                if method == 'thread/list':
+                    return {'data': [{'id': native_id}]}
+                if method == 'thread/unarchive':
+                    return {'thread': {'id': params['threadId']}}
+                return result
+            with mock.patch.object(fixtures.FakeClient, 'request', metadata):
+                second, client = self.make_running(resume=True)
+                self.assertEqual(receipt(conn), 0)
+                self.assertEqual(second.thread_id, native_id)
+                self.assertEqual([method for method, _ in client.calls[:3]],
+                                 ['thread/list', 'thread/unarchive', 'thread/resume'])
+                second.close(reason='service_close')
+                self.assertTrue(second.reader_done.wait(2))
+                self.assertEqual(receipt(conn), 1)
+                self.assertEqual(client.calls.count(('thread/archive', {'threadId': native_id})), 1)
 
     def test_new_leader_uses_mcp_in_the_same_home_and_resumes_its_bound_thread(self):
         native_home = self.base / 'codex-home'
@@ -295,7 +405,8 @@ class CodexVisibilityTests(unittest.TestCase):
         client = mock.Mock()
         client.request.side_effect = [{'data': [{'id': 'unrelated'}], 'nextCursor': 'page2'},
                                       {'data': [{'id': 'owned'}], 'nextCursor': None}, {'thread': {'id': 'owned'}}]
-        codex_visibility.restore_internal(client, 'owned')
+        with closing(store.connect(self.home)) as conn:
+            codex_visibility.restore_internal(conn, client, 'owned')
         self.assertEqual(client.request.call_args.args, ('thread/unarchive', {'threadId': 'owned'}))
         self.assertEqual(client.request.call_args_list[1].args[1]['cursor'], 'page2')
 
@@ -308,7 +419,8 @@ class CodexVisibilityTests(unittest.TestCase):
                 return {'data': [row for row in rows if not sources or row['source'] in sources], 'nextCursor': None}
             return {'thread': {'id': params['threadId']}}
         client.request.side_effect = native_request
-        codex_visibility.restore_internal(client, 'owned')
+        with closing(store.connect(self.home)) as conn:
+            codex_visibility.restore_internal(conn, client, 'owned')
         self.assertEqual(client.request.call_args.args, ('thread/unarchive', {'threadId': 'owned'}))
 
     def test_archive_failure_preserves_reason_and_still_closes_native_process(self):

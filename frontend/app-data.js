@@ -32,6 +32,7 @@
     runtimes: {field:"runtimes"},
     notification: {field:"notification"},
     scanner: {part:null, keys:["agents_error", "vscode_error"]},
+    persona: {page:"persona"},
   };
   const RECONNECT_DELAYS = [1000, 2000, 5000, 10000];
   // A change this page cannot merge means the page is older than the server; only a reload helps.

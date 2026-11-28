@@ -59,7 +59,7 @@ for (const end of ["pointerup", "pointercancel", "save"]) {
     assert.deepEqual(calls, [["domains.get", undefined], ["domains.versions.list", undefined], ["domains.version.get", 1]]);
     assert.match(drawer.innerHTML, /revision 3/);
     assert.match(drawer.innerHTML, /版本 1<\/b>/);
-    assert.match(drawer.innerHTML, /回滚会：删除 1/);
+    assert.match(drawer.innerHTML, /回滚会：删掉 1/);
     assert.match(drawer.innerHTML, /视觉/);
   });
 }

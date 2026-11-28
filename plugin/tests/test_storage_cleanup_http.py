@@ -20,7 +20,7 @@ class StorageHttpTests(ShellFixture, unittest.TestCase):
         self.service = web.Service(self.home, PLUGIN, cwd=self.root,
             agents_provider=lambda: [], claude_root=self.claude, codex_root=self.codex,
             runs_file=self.runs, now=store.parse_iso(NOW), process_factory=self.process_factory,
-            lock_status=lambda: False, vscode_state_db=self.vscode_state_db)
+            idle_status=lambda: 0, vscode_state_db=self.vscode_state_db)
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), web.Handler)
         self.server.service = self.service
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .02})

@@ -1,16 +1,16 @@
 """Per-channel owner reminders, decision buttons and queued assistant conversations."""
 import base64
+import ctypes
 import hashlib
 import json
 import logging
 import re
 import secrets
+import subprocess
+import sys
 import threading
 import uuid
 from contextlib import closing
-from pathlib import Path
-from urllib.error import URLError
-from urllib.request import ProxyHandler, Request, build_opener
 
 from . import board, chat, decision_briefs, goal_links, goals, messaging, personal, qq, store, todo, trust_mode
 from .web_api import personal as personal_api
@@ -69,7 +69,7 @@ def saved_snapshot(shown):
     return decision_snapshot(decision, decision.get('brief')) if isinstance(decision, dict) else None
 
 
-def finalized_goal_reports(conn, project, since, report_id=None):
+def finalized_goal_reports(conn, project, since=None, report_id=None):
     """Only a finalized finish identifies a goal's delivery, not an ordinary turn."""
     sql = ('SELECT r.id report_id,r.goal_id,r.outcome,f.finalized_at,'
            'g.project,g.title,g.leader_session_id FROM goal_round_finishes f '
@@ -82,12 +82,35 @@ def finalized_goal_reports(conn, project, since, report_id=None):
            "WHERE g.project=? AND f.status='finalized' AND LENGTH(r.html)>0 "
            "AND r.outcome IN ('awaiting_acceptance','completed','failed') "
            "AND s.role='leader' AND s.status!='closed' AND COALESCE(c.removed,0)=0 AND c.archived_status IS NULL "
-           "AND g.status NOT IN ('paused','pausing') AND g.manual_pause=0 "
-           'AND julianday(f.finalized_at)>=julianday(?)')
-    args = [project,since]
+           "AND g.status NOT IN ('paused','pausing') AND g.manual_pause=0")
+    args = [project]
+    if since is not None:
+        sql += ' AND julianday(f.finalized_at)>=julianday(?)'
+        args.append(since)
     if report_id is not None:
         sql += ' AND r.id=?';args.append(report_id)
     return board._rows(conn,sql+' ORDER BY f.finalized_at,r.id',args)
+
+
+def collect_reminder_items(service, conn, *, since=None):
+    for project in board.projects(conn):
+        name = project['name']
+        for item in service.state(name)['attention']:
+            if item['kind'] not in ('decision', 'session_error', 'codex_failed') or not item['session_id']:
+                continue
+            if since is not None and item['kind'] != 'decision' and (item['created_at'] or '') < since:
+                continue
+            yield {**item, 'project': name}
+        deliveries = finalized_goal_reports(conn, name, since)
+        for action in todo.list(conn, name):
+            if since is not None and action['created_at'] < since:
+                continue
+            yield dict(id='todo:%s:created' % action['id'], kind='todo', todo_id=action['id'], project=name,
+                       session_id=action['session_id'], title=action['title'], created_at=action['created_at'])
+        for report in deliveries:
+            yield dict(id='goal-report:' + report['report_id'], kind='goal_report', project=name,
+                       session_id=report['leader_session_id'], goal_id=report['goal_id'], report_id=report['report_id'],
+                       title=report['title'], outcome=report['outcome'], created_at=report['finalized_at'])
 
 
 def remote_brief(text, limit=500):
@@ -96,21 +119,37 @@ def remote_brief(text, limit=500):
     return text[:limit] + ('…' if len(text) > limit else '')
 
 
-def desktop_locked():
-    token = (Path.home() / 'RemoteDev' / 'desk_token').read_text(encoding='ascii').strip()
-    request = Request('http://127.0.0.1:47800/api/status', data=b'{}', method='POST',
-                      headers={'Content-Type': 'application/json', 'X-Desk-Token': token})
-    with build_opener(ProxyHandler({})).open(request, timeout=3) as response:
-        status = json.load(response)
-    if status.get('ok') is not True or type(status.get('locked')) is not bool:
-        raise ValueError('桌面代理没有返回锁屏状态')
-    return status['locked']
+def desktop_idle_seconds():
+    if sys.platform == 'win32':
+        from ctypes import wintypes
+
+        class LastInputInfo(ctypes.Structure):
+            _fields_ = [('cbSize', wintypes.UINT), ('dwTime', wintypes.DWORD)]
+
+        info = LastInputInfo(ctypes.sizeof(LastInputInfo))
+        user32 = ctypes.WinDLL('user32', use_last_error=True)
+        if not user32.GetLastInputInfo(ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        get_tick_count = ctypes.WinDLL('kernel32').GetTickCount
+        get_tick_count.restype = wintypes.DWORD
+        return ((get_tick_count() - info.dwTime) & 0xFFFFFFFF) / 1000
+    if sys.platform == 'darwin':
+        try:
+            result = subprocess.run(['/usr/sbin/ioreg', '-c', 'IOHIDSystem', '-d', '4', '-r', '-k', 'HIDIdleTime'],
+                                    capture_output=True, text=True, check=True, timeout=3)
+        except subprocess.SubprocessError as exc:
+            raise OSError(str(exc)) from exc
+        match = re.search(r'^\s*"HIDIdleTime"\s*=\s*([0-9]+)\s*$', result.stdout, re.MULTILINE)
+        if match is None:
+            raise ValueError('ioreg 没有返回有效的 HIDIdleTime')
+        return int(match[1]) / 1_000_000_000
+    raise OSError('不支持读取空闲时长')
 
 
 class Inbox:
     # Fields status() and the channel state show; assigning one a different value marks the snapshot's
-    # `notification` field (docs/EVENT_STREAM_DESIGN.md §6.1). Config changes mark in save_config.
-    SHOWN = frozenset({'error', 'presence_error', 'locked', 'channel', 'enabled', 'credentials', 'domain'})
+    # `notification` field (docs/EVENT_STREAM_DESIGN.md §6.1). Binding and presence writes mark separately.
+    SHOWN = frozenset({'error', 'channel', 'enabled', 'credentials', 'domain'})
 
     def __setattr__(self, name, value):
         changed = name in self.SHOWN and name in self.__dict__ and self.__dict__[name] != value
@@ -118,7 +157,7 @@ class Inbox:
         if changed:
             self.service.chat.changes.mark('notification', None, 'notification')
 
-    def __init__(self, service, client=None, lock_status=desktop_locked, batch_seconds=30, channel_id='qq'):
+    def __init__(self, service, client=None, batch_seconds=30, channel_id='qq'):
         if channel_id not in ('qq', 'lark'):
             raise ValueError('未知远程通道')
         self.channel_id = channel_id
@@ -135,9 +174,9 @@ class Inbox:
         self.config_path = self.home / ('notify.json' if channel_id == 'qq' else 'lark-notify.json')
         self.config = (json.loads(self.config_path.read_text(encoding='utf-8')) if self.config_path.exists()
                        else dict(owner_openid=None, since=None, manual_away=False))
-        self.client, self.lock_status, self.batch_seconds = client, lock_status, batch_seconds
+        self.client, self.batch_seconds = client, batch_seconds
         self.lock = threading.RLock()
-        self.locked, self.error, self.presence_error = False, None, None
+        self.error = None
         self.connection_state = 'connecting'
         self.channel = dict(state=('unconfigured' if self.credentials is None else 'disabled' if not self.enabled else
                                    'connecting'), detail=None)
@@ -152,8 +191,7 @@ class Inbox:
         if failed or uncertain_reply:
             self.error = '上次 %s 投递未完成，请检查服务日志。' % self.channel_name + ((failed['error'] or '') if failed else '')
         self.pending, self.pending_at = {}, None
-        # Switching "我已离开" on by hand means the user has gone; only lock-screen absence waits out the batch window.
-        self.push_now = False
+        self.last_away_revision = None
         self.stop, self.wake = threading.Event(), threading.Event()
         self.worker, self.receiver = None, None
 
@@ -169,30 +207,20 @@ class Inbox:
 
     def status(self):
         with self.lock:
-            manual = self.config['manual_away']
-            return dict(manual_away=manual, locked=self.locked, away=manual or self.locked,
-                        enabled=self.enabled, channel=self.channel.copy(),
-                        error=self.error or self.presence_error)
+            return dict(enabled=self.enabled, channel=self.channel.copy(), error=self.error)
 
     def set_away(self, away):
-        manager = getattr(self.service, 'connections', None)
-        if manager is not None and manager.inboxes.get(self.channel_id) is self:
-            return manager.set_away(away)
-        return self._set_away(away)
+        return self.service.connections.set_away(away)
 
     def _set_away(self, away):
         with self.lock:
             self.config['manual_away'] = away
             self.save_config()
-            self.push_now = away
-        self.wake.set()
-        return self.status()
 
     def save_config(self):
         # A rename-into-place collides with Windows scanners holding the fresh temp file; the file is tiny.
         with self.lock:
             self.config_path.write_text(json.dumps(self.config, ensure_ascii=False, indent=2), encoding='utf-8')
-        self.service.chat.changes.mark('notification', None, 'notification')
 
     def start(self):
         if self.credentials is None or not self.enabled:
@@ -289,22 +317,13 @@ class Inbox:
             return None
         return leader
 
-    def refresh_presence(self):
-        if not self.config['manual_away']:
-            try:
-                self.locked = self.lock_status()
-                self.presence_error = None
-            except (OSError, URLError, ValueError) as exc:
-                self.locked = False
-                self.presence_error = '无法读取锁屏状态，请用“我已离开”开关：%s: %s' % (type(exc).__name__, exc)
-
     def tick(self):
         if self.config['owner_openid'] is None:
             return
-        self.refresh_presence()
         self.process_replies()
-        manager = getattr(self.service, 'connections', None)
-        if not self.status()['away'] or (manager is not None and not manager.allows_push(self.channel_id)):
+        manager = self.service.connections
+        away_revision = manager.away_revision()
+        if away_revision is None or not manager.allows_push(self.channel_id):
             self.pending.clear()
             self.pending_at = None
             return
@@ -315,45 +334,24 @@ class Inbox:
             sent = {row['item_id'][len(prefix):] if row['item_id'].startswith(prefix) else row['item_id']
                     for row in self.execute(conn, 'SELECT item_id,status FROM notification_messages')
                     if row['item_id'].startswith(prefix) or row['status'] == 'archived'}
-            projects = board.projects(conn)
-        active = set()
-        for project in projects:
-            state = self.service.state(project['name'])
-            for item in state['attention']:
-                if item['kind'] not in ('decision', 'session_error', 'codex_failed'):
-                    continue
-                if item['kind'] != 'decision' and (item['created_at'] or '') < self.config['since']:
-                    continue
-                if item['id'] not in sent and item['session_id']:
-                    active.add(item['id'])
-                    self.pending[item['id']] = {**item, 'project': project['name']}
-            with closing(store.connect(self.home)) as conn:
-                deliveries = finalized_goal_reports(conn,project['name'],self.config['since'])
-                manual = todo.list(conn, project['name'])
-            for action in manual:
-                identity = 'todo:%s:created' % action['id']
-                if action['created_at'] < self.config['since'] or identity in sent:
-                    continue
-                active.add(identity)
-                self.pending[identity] = dict(id=identity, kind='todo', todo_id=action['id'], project=project['name'],
-                    session_id=action['session_id'], title=action['title'],
-                    created_at=action['created_at'])
-            for report in deliveries:
-                identity = 'goal-report:'+report['report_id']
+            active = set()
+            for item in collect_reminder_items(self.service, conn, since=self.config['since']):
+                identity = item['id']
                 if identity in sent:
                     continue
                 active.add(identity)
-                self.pending[identity] = dict(id=identity, kind='goal_report', project=project['name'],
-                    session_id=report['leader_session_id'], goal_id=report['goal_id'], report_id=report['report_id'],
-                    title=report['title'], outcome=report['outcome'], created_at=report['finalized_at'])
+                self.pending[identity] = item
         self.pending = {key: item for key, item in self.pending.items() if key in active}
-        push_now, self.push_now = self.push_now, False
+        # The first eligible delivery pass of an absence sends immediately for either trigger.
+        first_pass = self.last_away_revision != away_revision
+        self.last_away_revision = away_revision
         if not self.pending:
             self.pending_at = None
         else:
             self.pending_at = self.pending_at or now
-            if push_now or (now - self.pending_at).total_seconds() >= self.batch_seconds:
-                self.flush()
+            if first_pass or (now - self.pending_at).total_seconds() >= self.batch_seconds:
+                if manager.away_revision() == away_revision:
+                    self.flush()
                 self.pending.clear()
                 self.pending_at = None
 
@@ -553,6 +551,7 @@ class Inbox:
                         self.save_config()
                         self.channel = dict(state='connected' if self.connection_state == 'connected' else self.connection_state,
                                             detail=None)
+                    self.service.chat.changes.mark('notification', None, 'notification')
                     owner = event['openid']
                     bound = True
                 else:
@@ -683,12 +682,13 @@ class Inbox:
         elif command in ('/where', '/w'):
             text = '普通文字和图片将交给系统管理员。' if self.assistant_session(conn) else ASSISTANT_UNAVAILABLE
         elif command in ('/back', '/b'):
-            self.set_away(False)
-            self.refresh_presence()
-            if self.presence_error is not None:
-                text = '已取消手动离开；当前无法确认是否仍因锁屏被视为离开。' + self.presence_error
+            presence = self.set_away(False)
+            if presence['presence_error']:
+                text = '已取消手动离开。当前无法确认电脑空闲时长。' + presence['presence_error']
+            elif presence['idle']:
+                text = '已取消手动离开。当前因 1 小时无操作仍被视为离开。'
             else:
-                text = '已取消手动离开；当前仍因锁屏被视为离开。' if self.locked else '已取消手动离开；当前未因锁屏被视为离开。'
+                text = '已取消手动离开。电脑 1 小时无操作时仍会自动算离开。'
         elif command in ('/decisions', '/d'):
             return self.show_questions(conn, identity)
         elif command in ('/todo', '/t'):

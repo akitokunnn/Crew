@@ -6,8 +6,8 @@ import uuid
 
 from . import behavior_prompts, trust_mode
 from . import (
-    board, channel, codex_client, domains, git_admin, guard, messaging, personal, runtime_switch, runtimes, store,
-    war_room, workspace_execution,
+    board, channel, codex_client, domains, git_admin, guard, messaging, personal, persona, runtime_switch, runtimes,
+    store, war_room, workspace_execution,
 )
 from .chat_base import MAINTENANCE_HELD, _admitted, IMAGE_TYPES, validate_images
 
@@ -22,16 +22,28 @@ def waiting_state(value):
     return {'reason': value}
 
 
+WAITING_LABELS = {'busy': '对方还在忙', 'stopped': '已停止', 'external': '在外部窗口',
+                  'maintenance': '维护中', 'liveness_unknown': '还没确认状态'}
+
+
 def notice_state(row):
     """The delivery of one channel mention or reply notice, from its notice row and the answering post."""
     if row['notice_id'] is None:
-        return {'delivery': 'none', 'queued_at': None, 'delivered_at': None, 'via': None, 'waiting': None,
-                'reply_id': row['reply_id']}
+        return {'delivery': 'none', 'state': 'none', 'reason': None, 'queued_at': None, 'delivered_at': None,
+                'via': None, 'waiting': None, 'reply_id': row['reply_id']}
     sent = row['sent_at'] is not None
-    return {'delivery': 'replied' if row['reply_id'] is not None else 'delivered' if sent else 'queued',
+    waiting = waiting_state(None if sent else row['waiting'])
+    error = waiting.get('error', '')
+    reason = WAITING_LABELS.get(waiting['reason'])
+    if error.startswith('已取消：'):
+        state = 'cancelled'
+        reason = error
+    else:
+        state = 'replied' if row['reply_id'] is not None else 'delivered' if sent else 'queued'
+    return {'delivery': state, 'state': state, 'reason': reason,
             'queued_at': row['queued_at'], 'delivered_at': row['sent_at'],
             'via': (row['delivered_via'] or 'input') if sent else None,
-            'waiting': None if sent else waiting_state(row['waiting'])['reason'], 'reply_id': row['reply_id']}
+            'waiting': waiting['reason'], 'reply_id': row['reply_id']}
 
 
 def claim_batch(conn, notice_ids, batch_id):
@@ -86,9 +98,21 @@ class DeliveryMixin:
             raise board.Conflict(MAINTENANCE_HELD)
         identity = identity or str(uuid.uuid4())
         original_text=text if display_text is None else display_text
+        if original_text.strip() == '/compact':
+            text = original_text
         prompt_application = None
+        pending_persona = None
         if text.strip() != '/compact':
             with closing(store.connect(self.home)) as prompt_conn:
+                if current.execution is None:
+                    fingerprint, block = persona.injection(prompt_conn, logical)
+                    previous = getattr(current, 'persona_hash', None)
+                    if fingerprint != previous:
+                        pending_persona = fingerprint
+                        if not block and previous not in (None, persona.OFF_HASH, persona.EMPTY_HASH):
+                            block = behavior_prompts.text(prompt_conn, 'persona_off', session_id=logical)
+                        if block:
+                            text = block + '\n\n' + text
                 current_manifest = behavior_prompts.for_session(prompt_conn, logical, plugin_root=self.plugin_root)
                 if behavior_prompts.manifest_hash(current_manifest) != getattr(current, 'behavior_prompt_hash', None):
                     prompt_application = behavior_prompts.prepare_input(prompt_conn, logical, session_id, identity,
@@ -161,6 +185,9 @@ class DeliveryMixin:
                 if channel_upto is not None:
                     with closing(store.connect(self.home)) as channel_conn:
                         channel.seen(channel_conn, logical, channel_upto)
+                # A receipt write can still fail after the native accepted input.
+                if pending_persona is not None:
+                    current.persona_hash = pending_persona
                 return result
             except Exception as exc:
                 with closing(store.connect(self.home)) as handoff_conn:runtime_switch.failed(handoff_conn,session_id,exc)
@@ -184,6 +211,8 @@ class DeliveryMixin:
                         behavior_prompts.delivered(prompt_conn, prompt_application['id'],
                             evidence='Claude 输入已写入并flush；未将传输成功冒充模型读取')
                     current.behavior_prompt_hash = behavior_prompts.manifest_hash(prompt_application['manifest'])
+                if pending_persona is not None:
+                    current.persona_hash = pending_persona
                 current.git_context_revision = git_revision
                 current.trust_context = trust_context
                 current.domain_context = domain_context
@@ -271,7 +300,13 @@ class DeliveryMixin:
         while that list is unknown; such a leader is never resumed here, its prompt hook delivers instead.
         """
         self._pause_over_budget(conn, now)
-        war_room.claim_main_notices(conn)
+        with board.transaction(conn):
+            war_room.claim_main_notices(conn)
+            # pending_notices omits paused rooms. Check claims before deciding which carriers can wake.
+            claimed = conn.execute('SELECT id FROM leader_notices WHERE room_id IS NOT NULL AND batch_id IS NOT NULL '
+                                   'AND sent_at IS NULL AND wake=1').fetchall()
+            for (notice_id,) in claimed:
+                war_room.check_claim.__wrapped__(conn, notice_id, now)
         # The global assistant gets notices too when it leads a campaign war room.
         assistant = (" OR s.session_id IN (SELECT session_id FROM personal_assistant)" if conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='personal_assistant'").fetchone() else "")
@@ -319,8 +354,10 @@ class DeliveryMixin:
                             self.journal(sid).set_status('idle')
                     note_waiting(conn, sid, None, waking)
                     journal = self.journal(sid)
-                    batch = self._notice_batch(conn, journal, pending)
+                    batch = self._notice_batch(conn, journal, pending, now)
                     if batch is None:
+                        continue
+                    if 'room_id' in batch and not war_room.check_claim(conn, batch['notice_ids'][0], now):
                         continue
                     receipt = self.send(leader, batch['text'], source='crew', identity=batch['id'],
                                         display_text=batch.get('display'), sender=batch.get('sender'),
@@ -363,16 +400,19 @@ class DeliveryMixin:
         self._budget_checked = moment
         war_room.over_budget(conn, now)
 
-    def _notice_batch(self, conn, journal, pending):
+    def _notice_batch(self, conn, journal, pending, now):
         """The batch to write now: the one already claimed, or a new claim recorded before the journal entry."""
         owned = next((notice['batch_id'] for notice in pending if notice['batch_id'] is not None), None)
         if owned is not None:
-            ids = [notice['id'] for notice in pending if notice['batch_id'] == owned]
+            pending = [n for n in pending if n['batch_id'] == owned
+                       and (n['room_id'] is None or war_room.check_claim(conn, n['id'], now))]
+            if not pending:
+                return None
+            ids = [notice['id'] for notice in pending]
             existing = next((event for event in reversed(journal.events)
                              if event['type'] == 'leader_notice_batch' and event['id'] == owned), None)
             if existing is not None:
                 return {**existing, 'notice_ids': ids}
-            pending = [notice for notice in pending if notice['id'] in ids]
         else:
             # The user's own channel words go in a batch of their own, shown in private as the user's message.
             from_user = channel.user_mentions(conn, [notice['id'] for notice in pending])
@@ -424,16 +464,19 @@ class DeliveryMixin:
 
     @_admitted
     def send(self, session, text, source='human', identity=None, images=None, display_text=None, sender=None,
-             *, resume_existing=False, steer=False, room_id=None):
+             *, resume_existing=False, steer=False, room_id=None, input_mode='text'):
         """``steer`` lets a non-human input join a turn already in progress, as the user's input does."""
         images = validate_images(images)
+        if input_mode not in ('text', 'voice'):
+            raise board.BoardError('输入方式只能是 text 或 voice')
         session_id = session.get('_storage_id', session["session_id"])
         identity = str(uuid.uuid4()) if identity is None else identity
         if not isinstance(identity, str) or not identity.strip() or len(identity) > 160:
             raise board.BoardError("消息标识必须是非空文本，最多 160 个字符")
-        digest = hashlib.sha256(json.dumps({'text': text if display_text is None else display_text,
-                                          'images': images, 'source': source},
-                                          ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
+        payload = {'text': text if display_text is None else display_text, 'images': images, 'source': source}
+        if input_mode != 'text':
+            payload['input_mode'] = input_mode
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
         with self.lock:
             if self.maintenance_held(session['session_id']):
                 raise board.Conflict(MAINTENANCE_HELD)
@@ -472,6 +515,11 @@ class DeliveryMixin:
                 if active is not None:
                     raise board.Conflict('成员的目标执行正在工作，不能向总对话重复派工；'
                                          '请明确目标继续原执行或等待当前任务结束：' + active)
+            if '_execution' in session and self.running(session_id):
+                if store.norm_path(self.processes[session_id].execution_cwd) != store.norm_path(session['cwd']):
+                    if self.busy(session_id):
+                        raise board.Conflict('执行目录已改变，等当前回合结束后在新目录继续')
+                    self.stop_managed(session_id, reason='directory_changed')
             steering = self.running(session_id) and self.journal(session_id).status == "working"
             if steering and source not in ("human", "qq", "lark") and not steer:
                 raise board.Conflict("会话正在回复，自动消息等待当前轮次结束")
@@ -490,8 +538,17 @@ class DeliveryMixin:
                     text = ('[Crew 留档通知：用户在你上次回复后处理了以下事项，供参考，按需继续安排]\n'
                             + '\n'.join('%s. %s' % (index, notice['text']) for index, notice in enumerate(quiet, 1))
                             + '\n\n[用户消息]\n' + text)
+            if '_execution' not in session:
+                with closing(store.connect(self.home)) as frame_conn:
+                    frames = [line for line in (
+                        war_room.main_input_note(frame_conn, session['session_id'], source, room_id),
+                        persona.input_frame(frame_conn, session['session_id'], source, room_id, identity)) if line]
+                if frames:
+                    display_text = text if display_text is None else display_text
+                    text = '\n'.join(frames) + '\n\n' + text
             journal.emit('input_delivery', message_id=identity, digest=digest, status='submitted', delivery=delivery,
-                         **({'room_id': room_id} if room_id is not None else {}))
+                         **({'room_id': room_id} if room_id is not None else {}),
+                         **({'input_mode': input_mode} if input_mode != 'text' else {}))
             try:
                 identity = self._send(session_id, text, display_text=display_text,
                                       source=source, identity=identity, images=images, sender=sender, steer=steer)
@@ -504,6 +561,9 @@ class DeliveryMixin:
                              delivery=delivery, error=type(exc).__name__, detail=str(exc))
                 raise
             journal.emit('input_delivery', message_id=identity, digest=digest, status='accepted', delivery=delivery)
+            if '_execution' not in session:
+                with closing(store.connect(self.home)) as frame_conn:
+                    persona.note_input(frame_conn, session['session_id'], source, room_id, identity)
             if quiet:
                 with closing(store.connect(self.home)) as notice_conn:
                     for notice in quiet:

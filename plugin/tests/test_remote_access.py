@@ -7,7 +7,9 @@ import hashlib
 import http.client
 from http.server import BaseHTTPRequestHandler
 import json
+import os
 from pathlib import Path
+import socket
 import tempfile
 import threading
 import time
@@ -111,7 +113,8 @@ class RemoteAccessTests(unittest.TestCase):
         return headers['Set-Cookie'].split(';')[0], pair
 
     def test_unauthenticated_get_post_sse_files_and_reports_never_reach_business(self):
-        for path in ('/api/op/workspace.state', '/api/chat/events', '/api/op/chat.file?name=x', '/api/op/goal.report.view', '/app.js'):
+        for path in ('/api/op/workspace.state', '/api/chat/events', '/api/notifications/events',
+                     '/api/op/chat.file?name=x', '/api/op/goal.report.view', '/app.js'):
             self.assertEqual(401, self.request(path)[0])
         status, value, _ = self.request('/api/op/chat.send', {'text': 'do not deliver'}, cookie='wrong=value')
         self.assertEqual(401, status)
@@ -150,6 +153,16 @@ class RemoteAccessTests(unittest.TestCase):
         self.controller.action({'action': 'revoke_all'})
         self.assertEqual(401, self.request('/api/op/workspace.state', cookie=jar)[0])
         self.assertEqual(200, self.request('/api/op/workspace.state', cookie=jar, controller=other)[0])
+
+    def test_remote_context_and_cookie_name_share_stable_home_identity(self):
+        cookie, snapshot = self.login()
+        expected = hashlib.sha256(os.path.normcase(str(self.home.resolve())).encode('utf-8')).hexdigest()[:16]
+        status, value, _ = self.request('/api/access/context', cookie=cookie)
+        self.assertEqual(200, status)
+        self.assertEqual((socket.gethostname(), expected), (value['host_name'], value['instance_id']))
+        self.assertEqual(remote_access.COOKIE + '_' + expected, cookie.split('=', 1)[0])
+        self.assertEqual({'active': False, 'error': None}, snapshot['discovery_advertising'])
+        self.assertIn('discovery', snapshot)
 
     def test_host_origin_and_public_peers_cannot_be_replaced_by_forwarded_headers(self):
         cookie, _ = self.login()
@@ -404,6 +417,9 @@ class RemoteAccessTests(unittest.TestCase):
             connection.close()
         context = self.request('/api/access/context', cookie=browser, headers=bearer)[1]
         self.assertEqual(desktop['device_id'], context['device_id'])
+        browser_context = self.request('/api/access/context', cookie=browser)[1]
+        for field in ('host_name', 'instance_id'):
+            self.assertEqual(browser_context[field], context[field])
         status, _, headers = self.request('/remote/logout', {}, cookie=browser, headers=bearer, origin=False)
         self.assertEqual(200, status)
         self.assertNotIn('Set-Cookie', headers)

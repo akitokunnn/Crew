@@ -3,9 +3,9 @@ from urllib.parse import unquote, urlsplit
 
 CAPABILITIES = {key: True for key in ('chat', 'tasks', 'decisions', 'todos', 'notes', 'reports', 'files')}
 DESKTOP_CAPABILITIES = {**CAPABILITIES, 'settings': True, 'workspaces': True, 'storage': True}
-# Not operations: access probing, the chat event stream and the workspace change stream; the desktop client also probes health.
-TRANSPORT_GET = {'browser': frozenset(('/api/access/context', '/api/chat/events', '/api/events')),
-                 'desktop': frozenset(('/api/access/context', '/api/chat/events', '/api/events', '/api/admin/health'))}
+# Access probing and event streams are transport routes. Desktop also probes health.
+_SHARED_GET = frozenset(('/api/access/context', '/api/chat/events', '/api/events', '/api/notifications/events'))
+TRANSPORT_GET = {'browser': _SHARED_GET, 'desktop': _SHARED_GET | {'/api/admin/health'}}
 OP_PATH = '/api/op'
 
 

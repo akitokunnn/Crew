@@ -31,6 +31,9 @@
 .arch-node{position:absolute;left:0;top:0;border-radius:12px;background:var(--surface);border:1px solid var(--line-strong);box-shadow:var(--shadow-sm);
   transition:box-shadow .15s,border-color .15s;color:var(--text)}
 .arch-node.selected{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 32%,transparent),var(--shadow-sm)}
+@media (max-width:760px){
+  .arch-node.selected{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 55%,transparent),var(--shadow-sm)}
+}
 .arch-node.dragging{pointer-events:none;opacity:.9;box-shadow:var(--shadow-lg);transition:none}
 .arch-node.drop-target{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft),var(--shadow-lg)}
 .arch-node.flash{animation:arch-flash 1.8s var(--ease)}
@@ -38,6 +41,7 @@
 
 /* part: a blueprint-style header, then the leaders working in it (the lead first) */
 .arch-part{width:248px}
+#arch-view:has(.arch-target:not([hidden])) .arch-part:not(.selected){border-style:dashed;border-color:color-mix(in srgb,var(--accent) 50%,var(--line-strong))}
 .arch-part.collapsed{box-shadow:5px 5px 0 -1px var(--surface),5px 5px 0 0 var(--line-strong),var(--shadow-sm)}
 .arch-part.collapsed.selected{box-shadow:5px 5px 0 -1px var(--surface),5px 5px 0 0 var(--line-strong),0 0 0 2px color-mix(in srgb,var(--accent) 32%,transparent)}
 .arch-part-head{height:42px;display:flex;align-items:center;gap:6px;padding:0 10px 0 6px;border-bottom:1px solid var(--line);border-radius:11px 11px 0 0;
@@ -114,7 +118,8 @@
   background:color-mix(in srgb,var(--panel-2) 85%,transparent);pointer-events:none}
 .arch-zoom{position:absolute;right:14px;bottom:12px;z-index:2;display:flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--line-strong);border-radius:11px;background:var(--surface);box-shadow:var(--shadow-sm)}
 .arch-zoom button{height:30px;min-width:30px;display:grid;place-items:center;padding:0 4px;border:0;border-radius:8px;background:transparent;color:var(--text-2);cursor:pointer;font-size:calc(12px * var(--fs));font-variant-numeric:tabular-nums}
-.arch-zoom button:hover{background:var(--hover);color:var(--text)}
+.arch-zoom button:disabled{opacity:.5;cursor:default}
+.arch-zoom button:enabled:hover{background:var(--hover);color:var(--text)}
 .arch-zoom .arch-zoom-value{min-width:48px}
 .arch-menu{position:absolute;left:0;top:0;z-index:6;min-width:184px;padding:5px;border:1px solid var(--line-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-lg)}
 .arch-menu button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:7px 10px;border:0;border-radius:8px;background:transparent;text-align:left;cursor:pointer;font-size:calc(13px * var(--fs))}
@@ -139,11 +144,22 @@
   .arch-head .right{flex-wrap:wrap;justify-content:flex-end}
   .arch-empty{flex-direction:column;align-items:stretch;gap:10px;top:10px}
   .arch-hint{left:10px;bottom:10px;max-width:calc(100% - 196px)}
+  .arch-history-warn,.arch-history-confirm p{text-wrap:balance}
+  .arch-node :is(.arch-member-brief,.st,.arch-part-note){font-size:max(12px,calc(12px * var(--fs)))}
   .arch-zoom{right:10px;bottom:8px}
-  .arch-zoom button{height:36px;min-width:36px}
+  .arch-zoom button{height:44px;min-width:44px}
   .arch-zoom .arch-zoom-value{min-width:50px}
-  .arch-fold{width:34px;height:34px;margin-left:-4px}
-  .arch-pin{pointer-events:none;cursor:default}
+  .arch-part.collapsed.selected{box-shadow:5px 5px 0 -1px var(--surface),5px 5px 0 0 var(--line-strong),0 0 0 3px color-mix(in srgb,var(--accent) 55%,transparent),var(--shadow-sm)}
+  .arch-part-head{min-height:44px}
+  .arch-node.selected .arch-part-head{background:color-mix(in srgb,var(--accent) 18%,var(--surface))}
+  .arch-fold{width:44px;height:44px;margin-left:-4px}
+  .arch-fold:disabled{pointer-events:none}
+  .arch-pin::after{inset:auto;left:50%;top:50%;width:var(--arch-pin-hit,44px);height:var(--arch-pin-hit,44px);transform:translate(-50%,-50%)}
+  /* Keep most of the invisible target outside the card, clear of its name and members. */
+  .arch-canvas[data-dir="TB"] .arch-pin.in::after{top:100%;transform:translate(-50%,-100%)}
+  .arch-canvas[data-dir="TB"] .arch-pin.out::after{top:0;transform:translateX(-50%)}
+  .arch-canvas[data-dir="LR"] .arch-pin.in::after{left:100%;transform:translate(-100%,-50%)}
+  .arch-canvas[data-dir="LR"] .arch-pin.out::after{left:0;transform:translateY(-50%)}
   .arch-pin:hover{transform:none}
   .arch-empty{left:10px;width:calc(100% - 20px);top:58px}
   /* Phone chat header: a second-row chip beside the runtime, model and trust tags, shortened first when tight. */
@@ -155,6 +171,7 @@
 }
 @media (max-width:620px){.arch-hint{display:none}}
 @media (max-width:400px){
+  .arch-zoom .arch-zoom-value{display:none}
   /* The narrowest phones keep the model readable: the path becomes its icon, still one tap from the board. */
   #chat-head .head .chat-domain-path{padding:0 7px;margin-left:4px}
   #chat-head .chat-domain-path>span{display:none}
@@ -217,14 +234,38 @@
 @media (max-width:760px){
   .arch-history{position:fixed;inset:0;width:auto;z-index:50;border-left:0;box-shadow:none;padding-top:var(--m-safe-t,0px)}
   .arch-history-head{padding:10px 10px 9px 16px}
-  .arch-history-close{width:40px;height:40px}
+  .arch-history-close{width:44px;height:44px}
   .arch-history-body{grid-template-columns:minmax(0,1fr)}
   .arch-history-list{border-right:0;padding:10px 12px calc(16px + var(--m-safe-b,0px))}
   .arch-history-detail{padding:12px 14px calc(20px + var(--m-safe-b,0px))}
   .arch-history[data-pane="list"] .arch-history-detail,.arch-history[data-pane="detail"] .arch-history-list{display:none}
-  .arch-history-back{display:inline-flex;min-height:36px}
-  .arch-head .arch-history-open{min-height:38px}
+  .arch-history-back{display:inline-flex;min-height:44px}
+  .arch-head .btn,.arch-history button,.arch-empty button,.arch-menu button{min-width:44px;min-height:44px}
   .arch-history-open .arch-history-label{display:inline}
   .arch-version{padding:10px 12px}
-  .arch-history-acts .btn{min-height:40px}
+  .arch-history-acts .btn{min-height:44px}
+  .arch-head .right{flex-shrink:0}
+  .arch-actions:not([hidden]){display:flex;flex:none;justify-content:center;gap:6px;padding:6px 8px;border-top:1px solid var(--line-strong);background:var(--surface)}
+  .arch-actions .btn{display:inline-flex;justify-content:center;align-items:center;flex:1;max-width:108px;min-width:44px;min-height:44px;padding:6px 10px;white-space:nowrap}
+  #arch-view button{touch-action:manipulation}
+  body:has(.arch-actions:not([hidden])) .toast{bottom:calc(var(--m-bottom,0px) + 70px)!important}
+  body:has(#arch-view) .toast.show{pointer-events:none}
+  body:has(#arch-view) .toast.show button{pointer-events:auto}
+  body:has(.arch-actions:not([hidden])):has(.arch-menu:not([hidden])) .toast{bottom:auto!important;top:calc(var(--m-safe-t,0px) + 70px)}
+  .arch-actions button:first-child{background:var(--accent-soft);color:var(--accent-text)}
+  .arch-actions [data-cmd="delete"]{color:color-mix(in srgb,var(--danger) 75%,var(--text))}
+  .arch-member.selected{background:var(--accent-soft);outline:2px solid var(--accent);outline-offset:-2px}
+  .arch-target:not([hidden]){position:absolute;z-index:4;top:8px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:12px;
+    width:max-content;max-width:calc(100vw - 32px);padding:4px 4px 4px 14px;border:1px solid var(--accent);border-radius:14px;background:color-mix(in srgb,var(--accent) 12%,var(--surface));color:var(--accent-text);box-shadow:var(--shadow-sm)}
+  .arch-target button{border-radius:10px}
+  .arch-target button,.arch-name-dialog button{min-width:44px;min-height:44px}
+  .arch-menu{max-height:calc(100% - 16px);overflow:auto}
+  .arch-menu button{color:var(--text)}
+  .arch-menu button:disabled{color:var(--text-3);cursor:default}
+  .arch-name-dialog{width:min(320px,calc(100% - 32px));padding:18px;border:1px solid var(--line-strong);border-radius:14px;background:var(--surface);color:var(--text);box-shadow:var(--shadow-lg)}
+  .arch-name-dialog::backdrop{background:rgb(0 0 0 / .4)}
+  .arch-name-dialog form{display:grid;gap:12px}
+  .arch-name-dialog label{font-weight:600}
+  .arch-name-dialog input{min-width:0;width:100%;height:44px;padding:0 10px;border:1px solid var(--line-strong);border-radius:8px;background:var(--panel-2);color:var(--text);font:inherit}
+  .arch-name-dialog form>div{display:flex;justify-content:flex-end;gap:8px}
 }
