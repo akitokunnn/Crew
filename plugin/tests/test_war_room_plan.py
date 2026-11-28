@@ -3,13 +3,15 @@ import tests
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import json
+from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 from unittest import mock
 
-from crew import board, chat, goals, settings, store, war_room, war_room_plan, war_room_work, workspace_assistant
+from crew import board, channel, chat, git_process, goals, settings, store, war_room, war_room_plan, war_room_work, workspace_assistant
 from crew.ops.errors import OpError
 from test_channel_digest import FakeProcess
 from test_channel_digest_codex import SERVER
@@ -43,11 +45,55 @@ class PlanTests(DeliveryFixture):
         self.assertTrue(war_room.start(*args, lead=sid, request_id='open')['replayed'])
         [opening] = self.notices(sid)
         self.assertEqual((opening['room_id'], opening['wake']), (room, 1))
-        for expected in ('测试', '校验一个文件', 'war_room.plan.update'):
+        self.assertTrue(opening['text'].startswith('先用 war_room.plan.update 按骨架保存 v1，再细化。\n'))
+        for expected in ('测试', '校验一个文件', '工作区概况', '## 分工\n- [A1] 成员名 |',
+                         '## 等你定\n- [Q1]', '## 完成标准\n- [C1]'):
             self.assertIn(expected, opening['text'])
         war_room.close(self.conn, room, 'user', '撤销', reason='cancelled')
         war_room.start(self.conn, 'demo', sid, '助手开房', '自己拟稿')
         self.assertEqual([(n['id'], n['wake']) for n in self.notices(sid)], [(opening['id'], 0)])
+
+    def test_opening_brief_reports_sorted_workspace_contents_and_git_status(self):
+        root = self.root
+
+        def git(*args):
+            git_process.run(['-C', str(root), *args], timeout=10).check_returncode()
+
+        git('init', '-b', 'crew-test')
+        (root / '00-folder').mkdir()
+        for index in range(1, 40):
+            (root / ('%02d-file' % index)).touch()
+        git('add', '.')
+        git('-c', 'user.email=crew@example.test', '-c', 'user.name=Crew test', 'commit', '-m', 'test root')
+        room = war_room.start(self.conn, 'demo', 'a', '概况', '干净分支')
+        self.assertIn('Git 分支：crew-test。没有未提交改动。', room['brief'])
+        war_room.close(self.conn, room['id'], board.HUMAN, reason='cancelled')
+        (root / '39-file').write_text('dirty', encoding='utf-8')
+        (root / '40-file').touch()
+        room = war_room.start(self.conn, 'demo', board.HUMAN, '概况', '有改动', lead='a')
+        [notice] = self.notices('a')
+        lines = notice['text'].splitlines()
+        starts = lines.index('工作区概况') + 1
+        self.assertEqual(lines[starts:starts + 40], ['- .git/', '- 00-folder/'] +
+                         ['- %02d-file' % index for index in range(1, 39)])
+        self.assertEqual(lines[starts + 40:starts + 42], ['……还有 2 项', 'Git 分支：crew-test。有未提交改动。'])
+        self.assertNotIn('brief', room)
+
+    def test_opening_brief_supports_plain_folders_and_exposes_broken_git(self):
+        with tempfile.TemporaryDirectory(prefix='crew-plain-workspace-') as directory:
+            root = Path(directory).resolve()
+            self.conn.execute("UPDATE projects SET root=? WHERE name='demo'", (str(root),))
+            (root / 'docs').mkdir()
+            (root / 'README.md').touch()
+            room = war_room.start(self.conn, 'demo', 'a', '普通文件夹', '核对')
+            self.assertIn('工作区概况\n- README.md\n- docs/\n', room['brief'])
+            self.assertNotIn('Git 分支', room['brief'])
+            war_room.close(self.conn, room['id'], board.HUMAN, reason='cancelled')
+            (root / '.git').write_text('gitdir: missing-repository\n', encoding='utf-8')
+            with self.assertRaisesRegex(board.BoardError, '读取工作区 Git 状态失败：.*not a git repository'):
+                war_room.start(self.conn, 'demo', board.HUMAN, '损坏的 Git', '核对', lead='a')
+            self.assertFalse(self.conn.execute("SELECT id FROM war_rooms WHERE status='open'").fetchall())
+            self.assertFalse(self.notices('a'))
 
     def test_room_mention_uses_one_main_input_and_the_original_reply_receipt(self):
         sid = workspace_assistant.ensure(self.conn, self.home, 'demo')['session_id']
@@ -57,6 +103,10 @@ class PlanTests(DeliveryFixture):
         post = war_room.say(self.conn, room, 'user', '确认范围', [sid])
         [notice] = self.notices(sid)
         self.assertEqual((notice['wake'], notice['room_id']), (1, room))
+        self.assertIn('war_room.post', notice['text'])
+        self.assertNotIn('当场用 war_room.decide', notice['text'])
+        self.assertNotIn('当场用 war_room.decide',
+                         channel.mention_text_for_delivery(self.conn, notice, {'war_room.post', 'war_room.decide'}))
         # An existing preparing room can have this same mention still waiting after an upgrade.
         self.conn.execute('UPDATE leader_notices SET batch_id=NULL WHERE id=?', (notice['id'],))
         manager = chat.Manager(self.home, self.base, lambda: [])
@@ -84,7 +134,7 @@ class PlanTests(DeliveryFixture):
         reply = war_room.say(self.conn, room, sid, '范围已确认', reply_to=post['id'])
         self.assertEqual((mention()['delivery'], mention()['reply_id'], reply['room_id']), ('replied', reply['id'], room))
 
-    def test_preparing_leads_decision_answer_wakes_main_once_after_failed_receipt(self):
+    def test_old_preparing_decision_answer_wakes_main_once_after_failed_receipt(self):
         sid = workspace_assistant.ensure(self.conn, self.home, 'demo')['session_id']
         room = war_room.start(self.conn, 'demo', board.HUMAN, '筹备', '验证', lead=sid)['id']
         manager = chat.Manager(self.home, self.base, lambda: [])
@@ -93,14 +143,21 @@ class PlanTests(DeliveryFixture):
             manager.deliver_leader_notices(self.conn, set(), NOW)
         with self.assertRaises(board.BoardError):
             war_room.decide(self.conn, room, 'b', '其他人不能发卡')
-        card = war_room.decide(self.conn, room, sid, '是否附上备用说明？')
+        for actor in (sid, board.HUMAN):
+            with self.assertRaises(OpError) as error:
+                war_room.decide(self.conn, room, actor, '是否附上备用说明？')
+            self.assertEqual((error.exception.code, str(error.exception)),
+                             ('conflict', '筹备期的问题写进计划书「等你定」，批准后再发拍板卡'))
+        self.assertEqual(war_room.get(self.conn, room)['decisions'], [])
+        card_id = board.ask(self.conn, sid, '是否附上备用说明？', project='demo')
+        self.conn.execute('INSERT INTO war_room_decisions(decision_id,room_id) VALUES(?,?)', (card_id, room))
         with mock.patch.object(war_room, 'claim_main_notices', side_effect=ValueError('inject')):
             with self.assertRaises(ValueError):
-                board.answer(self.conn, card['id'], '附上')
+                board.answer(self.conn, card_id, '附上')
         self.assertEqual(war_room.get(self.conn, room)['decisions'][0]['status'], 'open')
-        board.answer(self.conn, card['id'], '附上')
+        board.answer(self.conn, card_id, '附上')
         with self.assertRaises(board.BoardError):
-            board.answer(self.conn, card['id'], '重复提交')
+            board.answer(self.conn, card_id, '重复提交')
         [notice] = [n for n in self.notices(sid) if n['sent_at'] is None]
         self.assertEqual((notice['room_id'], notice['wake']), (room, 1))
         # Also recover answers already queued by the previous version.
@@ -112,7 +169,7 @@ class PlanTests(DeliveryFixture):
             self.assertEqual((target['session_id'], send.call_args.kwargs['room_id']), (sid, room))
             self.assertIn('问题：是否附上备用说明？\n答复：附上', body)
         def delivery():
-            return self.conn.execute('SELECT delivered_at FROM decisions WHERE id=?', (card['id'],)).fetchone()[0]
+            return self.conn.execute('SELECT delivered_at FROM decisions WHERE id=?', (card_id,)).fetchone()[0]
         self.assertIsNone(delivery())
         with mock.patch.object(manager, 'send', return_value={'accepted': True}) as send:
             manager.deliver_leader_notices(self.conn, set(), NOW)
@@ -138,9 +195,15 @@ class PlanTests(DeliveryFixture):
         self.assertEqual([e['id'] for e in manager.history('a')['events'] if 'id' in e],
                          ['private-input', 'private-output'])
 
+    def active_room_with_old_lead_assignment(self):
+        room = war_room.start(self.conn, 'demo', 'b', '作战', '验证')
+        active = approve_assignments(self.conn, room, ['alpha'])
+        # Before M9, an already approved plan could have a goal assigned to the lead.
+        self.conn.execute("UPDATE war_rooms SET lead_session_id='a' WHERE id=?", (room['id'],))
+        return active
+
     def test_active_lead_mention_uses_main_until_execution_is_bound(self):
-        room = war_room.start(self.conn, 'demo', 'a', '作战', '验证')
-        approve_assignments(self.conn, room, ['alpha'])
+        room = self.active_room_with_old_lead_assignment()
         first = war_room.say(self.conn, room['id'], 'user', '没有执行', ['a'])
         item = self.conn.execute("SELECT goal_id FROM war_room_items WHERE kind='assignment'").fetchone()
         exe = goals.create_execution(self.conn, item['goal_id'], 'a', runtime='claude')
@@ -159,8 +222,7 @@ class PlanTests(DeliveryFixture):
         self.assertEqual(tuple(rows[1]), (second['id'], None, NOW, exe['id']))
 
     def test_active_leads_decision_answer_keeps_its_bound_execution(self):
-        room = war_room.start(self.conn, 'demo', 'a', '作战', '验证')
-        approve_assignments(self.conn, room, ['alpha'])
+        room = self.active_room_with_old_lead_assignment()
         goal_id = self.conn.execute("SELECT goal_id FROM war_room_items WHERE kind='assignment'").fetchone()[0]
         execution = goals.create_execution(self.conn, goal_id, 'a', runtime='claude')
         manager = mock.Mock()
@@ -188,6 +250,49 @@ class PlanTests(DeliveryFixture):
 
     def plan(self, room):
         war_room_plan.update(self.conn, room, 'a', 0, PLAN, '首稿', None, NOW)
+
+    def test_plan_rejects_the_lead_by_name_or_session_id(self):
+        assistant = workspace_assistant.ensure(self.conn, self.home, 'demo')['session_id']
+        for actor, name in (('a', 'alpha'), (assistant, '助手')):
+            room = war_room.start(self.conn, 'demo', actor, '拟稿', '分工')['id']
+            for owner in (actor, name):
+                with self.subTest(owner=owner), self.assertRaises(OpError) as error:
+                    war_room_plan.update(self.conn, room, actor, 0, PLAN.replace('beta', owner), '坏稿', None)
+                self.assertEqual((error.exception.code, error.exception.detail, str(error.exception)),
+                                 ('invalid_plan', {'line': 2}, '第 2 行：分工只写参战成员的活，领头的协调不写进分工'))
+            self.assertEqual(war_room.get(self.conn, room)['draft_version'], 0)
+            war_room.close(self.conn, room, board.HUMAN, reason='cancelled')
+
+    def test_consult_rejects_v0_before_model_work(self):
+        room = self.open()
+        with mock.patch('subprocess.Popen') as popen, self.assertRaises(OpError) as error:
+            war_room_plan.consult(self.conn, room, 'a', 0, 'Q', 'routine', '挑刺')
+        self.assertEqual((error.exception.code, str(error.exception)), ('conflict', '先保存一版计划书'))
+        popen.assert_not_called()
+        self.assertEqual(war_room.get(self.conn, room)['consults'], [])
+
+    def test_approval_notifies_an_existing_member_with_new_assignments_only_once_per_goal(self):
+        board.join(self.conn, 'c', 'demo', 'gamma', self.root, None, None, role='leader', now=NOW)
+        room = self.open()
+        self.plan(room)
+        self.approve(room)
+        war_room.change_members(self.conn, room, 'a', add=['gamma'], now=NOW)
+        [invite] = self.notices('c')
+        self.assertEqual(invite['wake'], 1)
+        count = self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0]
+        body = PLAN.replace('beta', 'gamma').replace('## 等你定', '- [B] gamma | 二次校验\n## 等你定')
+        war_room_plan.update(self.conn, room, 'a', 1, body, '改派', None, NOW)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0], count)
+        self.approve(room, 2)
+        self.assertTrue(self.approve(room, 2)['replayed'])
+        notices = self.conn.execute('SELECT n.session_id,n.wake,n.text,d.goal_id FROM leader_notices n '
+                                    'LEFT JOIN war_room_delivery d ON d.notice_id=n.id WHERE n.id>? ORDER BY n.id',
+                                    (invite['id'],)).fetchall()
+        goals_for_member = self.conn.execute("SELECT goal_id FROM war_room_items WHERE room_id=? AND kind='assignment' "
+                                             "ORDER BY id", (room,))
+        self.assertEqual([(n['session_id'], n['wake'], n['goal_id']) for n in notices],
+                         [('c', 1, g['goal_id']) for g in goals_for_member])
+        self.assertTrue(all('已批准的计划 v2 开工' in n['text'] for n in notices))
 
     def test_reservation_approval_and_revision(self):
         room = self.open()

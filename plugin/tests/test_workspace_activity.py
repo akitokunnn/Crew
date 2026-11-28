@@ -1,4 +1,5 @@
 import tests
+import tempfile
 import threading
 import unittest
 from types import SimpleNamespace
@@ -6,7 +7,8 @@ from unittest import mock
 
 import test_vscode_service as fixtures
 from test_vscode_service import identity, NOW
-from crew import board, channel, codex_events, goals, runtimes, session_ops, store, war_room, war_room_plan, workspace_activity
+from crew import board, channel, codex_events, goals, hooks, runtimes, session_ops, store, war_room, war_room_plan, workspace_activity
+from crew.hooks import git_details
 
 
 class WorkspaceActivityTests(unittest.TestCase):
@@ -18,11 +20,16 @@ class WorkspaceActivityTests(unittest.TestCase):
         return workspace_activity.snapshot(self.service, self.conn, 'alpha')
 
     def test_war_room_snapshot_follows_the_current_plan_and_room_lifecycle(self):
+        # This fixture forbids subprocesses. Use a real plain workspace outside the source checkout.
+        root = tempfile.TemporaryDirectory(prefix='crew-activity-workspace-')
+        self.addCleanup(root.cleanup)
+        self.conn.execute("UPDATE projects SET root=? WHERE name='alpha'", (store.norm_path(root.name),))
         sid = identity(1)
         self.register(sid, 'leader', role='leader')
         self.assertEqual(self.snapshot()['war_rooms'], [])
         budget = 100_000
-        room = war_room.start(self.conn, 'alpha', sid, '发布演练', '核对版本', budget_tokens=budget)
+        with mock.patch.object(hooks, 'git_details', git_details):
+            room = war_room.start(self.conn, 'alpha', sid, '发布演练', '核对版本', budget_tokens=budget)
         room_id = room['id']
         plan = '## 分工\n## 等你定\n%s## 完成标准\n- [ready] 核对通过'
 

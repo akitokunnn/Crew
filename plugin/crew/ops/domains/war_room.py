@@ -4,7 +4,7 @@ Each handler reads ``ctx.caller``: a war room must know whether the user or whic
 changing the board. Leaders call these through MCP in their own workspace; the user (and the global
 assistant acting as the user) names the workspace with ``project``.
 """
-from ... import board, war_room, war_room_plan, war_room_work
+from ... import board, channel, war_room, war_room_plan, war_room_work
 from ..errors import OpError
 from ..registry import Operation, register
 from ._common import HBD
@@ -130,7 +130,7 @@ def _members(ctx, conn, actor, values):
 def _say(ctx, conn, actor, values):
     return {'message': war_room.say(conn, _in_project(ctx, conn, _room_id(values.get('room'))), actor,
                                     values.get('body'), values.get('to', []), reply_to=values.get('reply_to'),
-                                    detail=values.get('detail', False), now=ctx.now)}
+                                    detail=values.get('detail', False), now=ctx.now, kind=values.get('kind'))}
 
 
 def _item(ctx, conn, actor, values):
@@ -192,7 +192,9 @@ op('war_room.members', '牵头邀请或移出作战室成员', _members, workspa
    schemas=_schemas(['room'], room=ROOM, add=NAMES, remove=NAMES))
 op('war_room.post', '在作战室里发言', _say, workspace=True, access='write',
    schemas=_schemas(['room', 'body'], room=ROOM, body=_text('发言内容'),
-                    to={**NAMES, 'description': '点名成员（会叫醒对方）；"*" 表示全体成员'},
+                    to={**NAMES, 'description': '点名成员，"*" 表示全体成员'},
+                    kind={'type': 'string', 'enum': list(channel.ROOM_POST_KINDS), 'default': 'progress',
+                          'description': '默认 progress，成员报进度不叫醒领头。完成、阻塞、失败或提问时选对应类型。'},
                     reply_to={'type': 'integer', 'minimum': 1, 'description': '回复的房内发言编号'},
                     detail={'type': 'boolean', 'description': '长内容（如方案细节）折叠显示'}),
    description='成员之间直接点名，不经牵头转述。回复房内发言也可以用 channel_post 带 reply_to=<房内编号>，会落在同一作战室。')
