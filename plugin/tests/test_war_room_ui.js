@@ -16,7 +16,8 @@ function room(extra = {}) {
   return {id:3, status:"open", phase:"preparing", draft_version:2, approved_version:null, legacy:false, close_reason:null, title:"签名",
     goal:"统一 v2", lead_session_id:"assistant", lead_name:"工作区助手", budget:null, messages:[message(1,"assistant","先写计划")],
     decisions:[], consults:[], plans:[plan2, plan1], board:[], events:[], has_more:false, origin:null, read_id:1, latest_id:1, unread:0, open_decisions:0, members:[], summary:null,
-    watchdog:null, isolation:"worktree", isolation_reason:null, worktrees:[], executions:[], unread_execution_events:0, lead_working_room_id:null, usage_pending:0, ...extra};
+    watchdog:null, isolation:"worktree", isolation_reason:null, worktrees:[], isolation_members:[], unowned_changes:[],
+    executions:[], unread_execution_events:0, lead_working_room_id:null, usage_pending:0, ...extra};
 }
 function element() {
   const classes = new Set();
@@ -611,7 +612,8 @@ test("目录状态按授权行展示，失败单独触发关注，关房后收�
     ["removed","merged","已清理"],["removed","backed_up","已备份"],["releasing",null,"收尾中"],["failed",null,"没建好"]];
   const worktrees = rows.map(([state,outcome],i) => ({member:"s"+i,state,outcome,error:i === 6 ? "目录被占用" : null}));
   const members = rows.map((_,i) => ({session_id:"s"+i,crew_name:"成员"+i}));
-  const detail = room({phase:"active",worktrees,members});
+  const isolation_members = members.map(item => ({session_id:item.session_id,member:item.crew_name,mode:"worktree",paths:["src/"],out_of_scope:[]}));
+  const detail = room({phase:"active",worktrees,members,isolation_members});
   const f = harness(detail);
   await tick();
   assert.match(f.node(".wr-plan-panel").innerHTML,/成员6 的独立目录没建好：目录被占用<\/li>/);
@@ -651,7 +653,86 @@ test("普通文件夹筹备提示覆盖空计划、计划和开打确认，升�
   for (const [isolation_reason,label] of [["not_git", note.slice(0,-1)],["pre_upgrade","升级前开的房，没有隔离"]]) {
     const active = harness(room({...shared,phase:"active",isolation_reason}));
     await tick(); active.click("members");
-    assert.match(active.node(".wr-pane-content").innerHTML, new RegExp(`没有隔离</strong><span>${label}`));
+    assert(active.node(".wr-pane-content").innerHTML.includes(label));
+    assert.doesNotMatch(active.node(".wr-pane-content").innerHTML, /<strong>没有隔离/);
+  }
+});
+
+test("混合房按成员显示范围和目录，开放与关房时均可展开文件问题", async () => {
+  const paths = ["src/pay/", "tools/<fixture>.py", "docs/验收说明.md"];
+  const isolation_members = [
+    {member:"支付",session_id:"pay",mode:"shared",paths,out_of_scope:["src/<other>.py","tools/check.py"]},
+    {member:"验收",session_id:"qa",mode:"worktree",paths:["tests/"],out_of_scope:[]}
+  ];
+  const detail = room({phase:"active",isolation:"mixed",isolation_reason:"lead_choice",isolation_members,
+    unowned_changes:["old/<unused>.md"],worktrees:[{member:"qa",state:"active"}]});
+  const f = harness(detail, {mobile:true});
+  await tick();
+  const status = f.node(".wr-plan-panel"), drawer = f.node(".wr-pane-content");
+  f.click("members");
+  for (const surface of [status,drawer]) {
+    assert.match(surface.innerHTML,/部分成员开了独立目录，其余共用目录。/);
+    assert.match(surface.innerHTML,/支付<\/strong>\s*<small class="wr-folder-tag">共用目录/);
+    assert.match(surface.innerHTML,/验收<\/strong>\s*<small[^>]*>独立目录运行中/);
+    assert.match(surface.innerHTML,/<summary><span>负责文件<\/span><code[^>]*>src\/pay\/、tools\/&lt;fixture&gt;.py、docs\/验收说明.md<\/code><\/summary>\s*<ul><li><code>src\/pay\/<\/code>[\s\S]*?<li><code>docs\/验收说明.md<\/code>/);
+    assert.match(surface.innerHTML,/<summary>改了范围外的文件 2 个<\/summary>\s*<ul><li><code>src\/&lt;other&gt;.py<\/code>[\s\S]*?<code>tools\/check.py<\/code>/);
+    assert.doesNotMatch(surface.innerHTML,/<other>|<fixture>|这里没有隔离/);
+  }
+  for (const statusValue of ["open","closed"]) {
+    f.reload({...detail,status:statusValue,close_reason:statusValue === "closed" ? "completed" : null});
+    await tick();
+    const attention = status.innerHTML.match(/<section class="wr-attention">[\s\S]*?<\/section>/)[0];
+    assert.match(attention,/<summary>支付 改了分工范围外的文件 ›<\/summary>\s*<ul><li><code>src\/&lt;other&gt;.py/);
+    assert.match(attention,/<summary>共用目录里有不属于任何分工的改动 1 个 ›<\/summary>\s*<ul><li><code>old\/&lt;unused&gt;.md/);
+    assert.doesNotMatch(attention,/验收 改了/);
+  }
+  f.reload({...detail,worktrees:[],unowned_changes:[],isolation_members:isolation_members.map(item => ({...item,out_of_scope:[]}))});
+  await tick();
+  assert.doesNotMatch(status.innerHTML,/需要你关注|独立目录运行中/);
+  assert.match(status.innerHTML,/验收<\/strong>\s*<small>独立目录/);
+  f.reload({...detail,isolation:"none",worktrees:[],isolation_members:[isolation_members[0]]});
+  await tick();
+  assert.match(status.innerHTML,/领头选择全员共用目录，按文件范围分工。/);
+  assert.doesNotMatch(status.innerHTML,/这里没有隔离|部分成员开了/);
+});
+
+test("计划书用原分工锚点渲染文件和可选标签，历史计划仍可读", async () => {
+  const assignments = plan3.entries.filter(item => item.kind === "assignment");
+  const entries = plan3.entries.map(item => item.kind === "assignment" ?
+    {...item,paths:["src/<main>.js","docs/"],worktree:item.entry_id === assignments[0].entry_id} : item);
+  const lines = plan3.body.split("\n");
+  for (const item of entries.filter(entry => entry.kind === "assignment"))
+    lines[item.line-1] += " | 文件: src/<main>.js, docs/" + (item.worktree ? " | 独立目录" : "");
+  const f = harness(room({draft_version:3,plans:[{...plan3,entries,body:lines.join("\n")},plan2]}));
+  await tick();
+  const html = f.node(".wr-plan-panel").innerHTML;
+  for (const item of assignments) {
+    const row = html.match(new RegExp(`<li data-wr-block="entry:${item.entry_id}">[\\s\\S]*?</li>`))[0];
+    assert(row.includes(item.owner + " · " + item.title));
+    assert.match(row,/文件：<code>src\/&lt;main&gt;.js、docs\/<\/code>/);
+    assert.equal(row.includes('class="wr-folder-tag">独立目录'),item === assignments[0]);
+  }
+  assert.doesNotMatch(f.P.document(plan2).html,/wr-folder-tag|wr-plan-files/);
+});
+
+test("Git 开打前显示两组成员，合计最多六个名字，无待定项也先确认", async () => {
+  const people = Array.from({length:9}, (_,i) => ({member:`成员${i}`,session_id:`s${i}`,mode:i < 7 ? "worktree" : "shared",paths:[`src/${i}/`],out_of_scope:[]}));
+  const answered = {...plan2, entries:plan2.entries.map(item => ({...item,answer:"已定"}))};
+  for (const [members, expected] of [
+    [people, ["独立目录</strong> 成员0、成员1、成员2、成员3、成员4 等 7 人","共用目录</strong> 成员7 等 2 人"]],
+    [people.slice(0,6), ["独立目录</strong> 成员0、成员1、成员2、成员3、成员4、成员5</p>"]],
+    [people.slice(7), ["共用目录</strong> 成员7、成员8</p>"]]
+  ]) {
+    const mode = members[0].mode === "shared" ? "none" : members.length > 6 ? "mixed" : "worktree";
+    const f = harness(room({plans:[answered],isolation:mode,isolation_reason:mode === "worktree" ? null : "lead_choice",isolation_members:members}));
+    await tick(); f.click("approve",{version:"2"});
+    assert.equal(f.node(".wr-confirm").open,true);
+    const html = f.node(".wr-confirm form").innerHTML;
+    for (const label of expected) assert(html.includes(label));
+    assert.equal(html.match(/成员\d/g).length,Math.min(members.length,6));
+    assert.equal(f.calls.filter(call => call.name === "plan.approve").length,0);
+    await f.confirm();
+    assert.equal(f.calls.filter(call => call.name === "plan.approve").length,1);
   }
 });
 
