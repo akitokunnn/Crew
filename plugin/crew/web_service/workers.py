@@ -296,9 +296,10 @@ class WorkersMixin:
                             else frozenset(agent['sessionId'] for agent in self.agents))
                 with self.chat.lock:
                     war_room_work.stop_room_processes(self.chat, conn)
-                    war_room_work.watch(self.chat, conn, live, now)
                     war_room_worktree.sweep(self.chat, conn, now)
-                    war_room_watchdog.tick(self.chat, conn, live, now)
+            now = self.now().isoformat()
+            war_room_watchdog.tick(self.chat, conn, live, now)
+            with self.write_lock:
                 self.chat.deliver_leader_notices(conn, live, now)
             # Do not hold the service write lock while waiting for a carrier receipt.
             war_room_work.deliver(self.chat, conn, live, now)

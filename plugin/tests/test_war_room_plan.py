@@ -379,53 +379,37 @@ class PlanTests(DeliveryFixture):
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM war_rooms').fetchone()[0], 0)
             self.assertFalse(conn.execute('PRAGMA foreign_key_check').fetchall())
 
-    def test_bound_task_guard_restart_and_private_delivery(self):
+    def test_bound_task_guard_and_private_delivery(self):
         from crew import channel, goals, war_room_work
         room = self.open()
         self.plan(room)
         self.approve(room)
+        room_data = war_room._room(self.conn, room)
         item = self.conn.execute("SELECT * FROM war_room_items WHERE kind='assignment'").fetchone()
         self.assertFalse('运行校验' in (channel.preview(self.conn, 'b')[0] or ''))
         manager = mock.Mock()
         manager.maintenance_held.return_value = False
         manager.goal_controller.approvals.return_value = []
         manager.goal_controller.current.return_value = None
-        tick = lambda minute: '2026-11-01T10:%02d:00.000Z' % minute
         manager.goal_controller.approvals.return_value = ['approval']
-        war_room_work.watch(manager, self.conn, set(), tick(0))
-        self.assertFalse(self.conn.execute('SELECT * FROM war_room_idle WHERE ended_at IS NULL').fetchall())
+        self.assertFalse(war_room_work.can_work(manager, self.conn, room_data, item, set()))
         manager.goal_controller.approvals.return_value = []
-        war_room_work.watch(manager, self.conn, set(), tick(1))
-        war_room_work.watch(manager, self.conn, set(), tick(10))
-        self.assertIsNone(self.conn.execute('SELECT notice_id FROM war_room_idle WHERE ended_at IS NULL').fetchone()[0])
-        war_room_work.watch(manager, self.conn, set(), tick(11))
-        first = self.conn.execute('SELECT notice_id FROM war_room_idle WHERE ended_at IS NULL').fetchone()[0]
-        self.assertIsNotNone(first)
-        with closing(store.connect(self.home)) as resumed:
-            war_room_work.watch(manager, resumed, set(), tick(13))
-            self.assertEqual(resumed.execute('SELECT notice_id FROM war_room_idle WHERE ended_at IS NULL').fetchone()[0], first)
+        self.assertTrue(war_room_work.can_work(manager, self.conn, room_data, item, set()))
         exe = goals.create_execution(self.conn, item['goal_id'], 'b', runtime='claude')
-        manager.journal.return_value.events = []
         manager.goal_controller.current.return_value = exe
         manager.running.return_value = True
         manager.busy.return_value = True
-        war_room_work.watch(manager, self.conn, set(), tick(14))
-        self.assertFalse(self.conn.execute('SELECT * FROM war_room_idle WHERE ended_at IS NULL').fetchall())
+        self.assertFalse(war_room_work.can_work(manager, self.conn, room_data, item, set()))
         manager.running.return_value = False
-        war_room_work.watch(manager, self.conn, None, tick(15))
-        self.assertFalse(self.conn.execute('SELECT * FROM war_room_idle WHERE ended_at IS NULL').fetchall())
+        self.assertFalse(war_room_work.can_work(manager, self.conn, room_data, item, None))
         manager.running.return_value = True
         manager.busy.return_value = False
-        for t in (16, 26):
-            war_room_work.watch(manager, self.conn, set(), tick(t))
-        self.assertNotEqual(self.conn.execute('SELECT notice_id FROM war_room_idle WHERE ended_at IS NULL').fetchone()[0], first)
         manager.goal_controller.send.return_value = {'accepted': True, 'execution_id': exe['id']}
-        war_room_work.deliver(manager, self.conn, set(), tick(27))
+        war_room_work.deliver(manager, self.conn, set(), NOW)
         self.assertEqual(manager.goal_controller.send.call_args.args[0], item['goal_id'])
         self.assertFalse(self.conn.execute("SELECT * FROM leader_notices WHERE session_id='b' AND sent_at IS NULL").fetchall())
         goals.request_pause(self.conn, item['goal_id'])
-        war_room_work.watch(manager, self.conn, set(), tick(28))
-        self.assertFalse(self.conn.execute('SELECT * FROM war_room_idle WHERE ended_at IS NULL').fetchall())
+        self.assertFalse(war_room_work.can_work(manager, self.conn, room_data, item, set()))
 
     def test_timeout_is_durable_even_without_native_usage(self):
         room = self.open()
@@ -503,7 +487,7 @@ class PlanTests(DeliveryFixture):
         self.assertEqual(result['close_reason'], 'user_stop')
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM channel_messages').fetchone()[0], 0)
 
-    def test_idle_excludes_waiting_user_manual_stop_and_paused_room(self):
+    def test_can_work_excludes_waiting_user_manual_stop_and_paused_room(self):
         from crew import goals, war_room_work
         room_id = self.open()
         self.plan(room_id)

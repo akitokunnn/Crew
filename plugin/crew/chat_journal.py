@@ -4,7 +4,7 @@ import json
 import threading
 from pathlib import Path
 
-from . import board, claude_subagents, store, subagents
+from . import board, claude_subagents, store, subagents, war_room_watchdog
 from .chat_base import has_native_output, compact_command, tool_label
 
 
@@ -122,6 +122,13 @@ class Journal:
                 self._room_id = None
             stat = self.path.stat()
             self.signature = (stat.st_size, stat.st_mtime_ns)
+            if kind == 'turn_result':
+                if event.get('room_id') is not None:
+                    war_room_watchdog.note_turn(event['room_id'])
+                else:
+                    war_room_watchdog.note_storage(self.path.stem)
+            elif kind == 'status' and event['status'] == 'working':
+                war_room_watchdog.note_storage(self.path.stem)
             self.condition.notify_all()
             self.changed()
             return event

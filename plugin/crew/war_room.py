@@ -5,7 +5,7 @@ channel's (docs/WAR_ROOM_DESIGN.md). ``actor`` is a leader's session id or ``boa
 """
 import json
 
-from . import board, change_feed, channel, personal, workspace_assistant
+from . import board, change_feed, channel, personal, war_room_watchdog, workspace_assistant
 from .ops.errors import OpError
 
 TITLE_LIMIT, GOAL_LIMIT, ITEM_LIMIT, CONTRACT_LIMIT = 30, 200, 60, 8000
@@ -338,6 +338,12 @@ def task_returned(conn, goal, outcome, now=None, report_text=None):
     return True
 
 
+def criteria_complete(conn, room):
+    count, done = conn.execute("SELECT COUNT(*),SUM(status='done') FROM war_room_items WHERE room_id=? "
+                               "AND kind='criterion' AND plan_version=?", (room['id'], room['approved_version'])).fetchone()
+    return bool(count and count == done)
+
+
 @board.atomic
 def close(conn, room_id, actor, summary=None, now=None, reason=None):
     """Wrap up: a closing notice in the channel, and each member keeps the outcome for its next conversation."""
@@ -349,9 +355,7 @@ def close(conn, room_id, actor, summary=None, now=None, reason=None):
         raise OpError('forbidden', '只有用户能结束')
     _gate(conn, room, actor, lead_only=True)
     if reason == 'completed':
-        count, done = conn.execute("SELECT COUNT(*),SUM(status='done') FROM war_room_items WHERE room_id=? "
-                                   "AND kind='criterion' AND plan_version=?", (room_id, room['approved_version'])).fetchone()
-        if not count or done != count:
+        if not criteria_complete(conn, room):
             raise OpError('criteria_incomplete', '已批准的完成标准必须非空且全部勾上')
     elif reason == 'abandoned':
         if actor != room['lead_session_id']:
@@ -379,6 +383,7 @@ def close(conn, room_id, actor, summary=None, now=None, reason=None):
     conn.execute('UPDATE leader_notices SET wake=0 WHERE sent_at IS NULL AND id IN (SELECT t.notice_id FROM '
                  'channel_mentions t JOIN channel_messages m ON m.id=t.message_id WHERE m.room_id=?)', (room_id,))
     conn.execute('UPDATE leader_notices SET wake=0 WHERE room_id=? AND sent_at IS NULL', (room_id,))
+    war_room_watchdog.end_segment(conn, room_id)
     pause_work(conn, room_id, '作战室已结束', stamp)
     _event(conn, room_id, actor, 'closed', {'summary': summary, 'reason': reason}, now)
     _touch(conn, room_id, room['project'])
@@ -419,13 +424,14 @@ def pause_work(conn, room_id, reason, now):
 def resume_budget_work(conn, room_id=None, now=None):
     """An immediate top-up may arrive while a native is still finishing its pause."""
     from . import goals
-    query = ("SELECT DISTINCT g.id FROM goals g JOIN war_room_items i ON i.goal_id=g.id "
+    query = ("SELECT DISTINCT g.id,r.id AS room_id FROM goals g JOIN war_room_items i ON i.goal_id=g.id "
              "JOIN war_rooms r ON r.id=i.room_id WHERE r.status='open' AND r.paused_at IS NULL "
              "AND i.plan_version=r.approved_version AND g.status='paused' AND g.manual_pause=0 "
              "AND g.reason='作战室预算暂停'")
     for row in conn.execute(query if room_id is None else query+' AND r.id=?',
                             () if room_id is None else (room_id,)).fetchall():
         goals.resume(conn, row['id'], now=now)
+        war_room_watchdog.note_turn(row['room_id'])
 
 
 def over_budget(conn, now=None):
@@ -439,6 +445,7 @@ def over_budget(conn, now=None):
                     or used < room['budget_tokens']):
                 continue
             conn.execute('UPDATE war_rooms SET paused_at=? WHERE id=?', (board._time(now), room['id']))
+            war_room_watchdog.end_segment(conn, room['id'])
             pause_work(conn, room['id'], '作战室预算暂停', now)
             _event(conn, room['id'], room['lead_session_id'], 'budget', {'paused': True, 'spent': used}, now)
             _touch(conn, room['id'], room['project'])
@@ -461,6 +468,7 @@ def set_budget(conn, room_id, actor, budget_tokens, now=None):
     conn.execute('UPDATE war_rooms SET budget_tokens=?,paused_at=NULL WHERE id=?', (budget_tokens, room_id))
     if room['paused_at'] is not None:
         resume_budget_work(conn, room_id, now)
+        war_room_watchdog.note_turn(room_id)
         _post(conn, room, room['lead_session_id'], '用户确认继续：预算上限改为 %d tokens（已用约 %d）。' % (budget_tokens, used),
               now=now)
     _event(conn, room_id, actor, 'budget', {'paused': False, 'spent': used, 'budget': budget_tokens}, now)
@@ -528,6 +536,7 @@ def _card(conn, room, reader):
     return {key: room[key] for key in ('id', 'project', 'title', 'goal', 'lead_session_id', 'origin_message_id',
                                        'opened_message_id', 'closed_message_id', 'status', 'summary', 'created_at',
                                        'closed_at', 'phase', 'draft_version', 'approved_version', 'legacy', 'close_reason')} | {
+        'watchdog': war_room_watchdog.card(conn, room),
         'usage_pending': usage_pending,
         'lead_name': lead, 'members': members(conn, room['id']), 'items': counts, 'progress': progress,
         'open_decisions': conn.execute("SELECT COUNT(*) FROM war_room_decisions w JOIN decisions d ON d.id=w.decision_id "
