@@ -41,6 +41,13 @@
 .ob-runtime .ob-link{justify-self:start;padding-inline:0}
 .ob-engine{display:flex;align-items:center;min-height:34px;gap:6px;color:var(--accent-text);cursor:pointer}
 .ob-engine input,.ob-range{accent-color:var(--accent)}
+.ob-persona{min-width:0;margin:22px 0 0;padding:0;border:0}
+.ob-persona legend{padding:0;color:var(--text);font-size:15px;font-weight:500}
+.ob-persona>p{margin:4px 0 12px;color:var(--text-2);line-height:1.6}
+.ob-persona-option{display:flex;align-items:center;gap:7px;min-height:48px;cursor:pointer}
+.ob-persona-option input{margin:0;accent-color:var(--accent)}
+.ob-persona-option[data-chosen=true]{background:var(--accent-softer)}
+.ob-persona-option .ob-pill{background:var(--accent-soft);color:var(--accent-text)}
 .ob-pill{padding:2px 7px;border-radius:6px;background:var(--hover);color:var(--text-2);font-size:11px;white-space:nowrap}
 .ob-pill[data-tone=ok]{background:color-mix(in srgb,var(--working) 14%,transparent);color:var(--working-text)}
 .ob-pill[data-tone=warn]{background:var(--warn-soft);color:var(--warn)}
@@ -57,6 +64,7 @@
 .ob-choice:has(button:disabled){opacity:.68}
 .ob-choice>div{min-width:0}
 .ob-choice button{flex:none}
+@media(max-width:620px){.ob-choice[data-start="war-room"]{display:grid;justify-content:stretch}.ob-choice[data-start="war-room"] button{justify-self:start}}
 .start-recommended{display:inline-block;margin-inline-start:8px;font-size:11px;color:var(--accent-text);vertical-align:1px}
 .ob-foot{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:12px 26px;border-top:1px solid var(--line)}
 .ob-foot-space{flex:1}
@@ -69,6 +77,7 @@
 .ob-row button{margin-left:auto}
 .ob-range{width:100%;margin:4px 0}
 @media(max-width:760px){
+  .ob-choice[data-start="war-room"] .start-description{text-wrap:pretty}
   .ob-sheet{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
   .ob-rail{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 16px;border-right:0;border-bottom:1px solid var(--line)}
   .ob-brand{padding:0}

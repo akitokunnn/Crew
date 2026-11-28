@@ -40,6 +40,8 @@
   // Page title and header follow the mode; a workspace page speaks for that workspace only.
   function header(state) {
     if(PROJECT===null){document.title="系统管理员 · Crew";return;}
+    $("assistant-persona").hidden=false;
+    $("assistant-persona").onclick=()=>CrewPersona.open({session_id:assistantSession,name:displayName(state)+" · 工作区助手",request:CrewPersona.webRequest(api)});
     const name=displayName(state);
     $("assistant-title").textContent="助手";$("assistant-scope").textContent=name;$("assistant-scope").hidden=false;
     $("assistant-sub").textContent=`「${name}」的助手：只看这个工作区，帮你理清想法、开局和推进。`;

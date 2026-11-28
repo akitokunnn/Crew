@@ -81,6 +81,7 @@ test('cancelling the folder picker leaves the guide open and a repeated start op
       theme:async () => ({mode:'system',fontScale:1}), onTheme:() => () => {},
       runtimeReadiness:async () => ({runtimes:[ready('codex')]}),
       settingsGet:async () => ({ai:{default:{runtime:'codex'}}}),
+      settingsSave:async body => body,
       onboardingSave:async outcome => outcomes.push(outcome)
     },
     onChoose:async () => choices.shift(),

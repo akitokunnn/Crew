@@ -59,6 +59,10 @@ SPECS = (
          'CC / Codex · leader、成员、Git 助手', _BUNDLED),
     Spec('context', '上下文与交接', 'shared', '装载范围、按需检索、压缩与换载体交接。',
          'CC / Codex · 全部角色', _BUNDLED),
+    Spec('persona_frame', '性格包裹说明', 'shared', 'leader 和工作区助手总对话里包住性格正文的说明：性格只管怎么说，守则优先，作战室和任务不带性格。',
+         'CC / Codex · leader、工作区助手总对话', '性格开启且有内容时，总对话启动和性格变化后的下一次输入', ('persona',)),
+    Spec('persona_off', '性格关闭提示', 'shared', '用户关闭 AI 性格后告诉总对话恢复默认口吻。',
+         'CC / Codex · leader、工作区助手总对话', '关闭性格后的下一次输入'),
     Spec('goal_protocol', '目标执行协议', 'delivery', '目标执行的工作方式：只处理当前目标、补充需求、AI 工作清单和轮次边界。',
          'CC / Codex · 目标执行（leader、成员）', '每轮目标输入时作为“最小执行指令”装载', max_length=2000),
     Spec('execution_identity', '目标执行身份', 'delivery', '目标执行进程的身份声明。',
@@ -103,6 +107,8 @@ SPECS = (
          'CC / Codex · leader、成员', '用户在阅读区旁边发消息时', ('reading',)),
     Spec('summary', '频道摘要', 'helper', '把交流区新发言整理进累积要点卡。',
          '辅助调用 · 摘要模型', '交流区摘要更新时'),
+    Spec('persona_growth', '性格成长', 'helper', '后台根据最近私聊改写某位 AI 自己的性格正文。',
+         '辅助调用 · 性格成长', '满足成长条件或用户点“现在长一次”时', ('current', 'percent', 'limit', 'dialogue', 'last_error')),
 )
 SPEC = {spec.key: spec for spec in SPECS}
 LABELS = {spec.key: spec.label for spec in SPECS}

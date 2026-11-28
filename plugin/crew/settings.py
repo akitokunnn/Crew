@@ -5,7 +5,7 @@ import json
 import shutil
 import sqlite3
 
-from . import board, change_feed, guard, store
+from . import board, change_feed, guard, persona, store
 
 
 PURPOSES = ('default', 'leader', 'member', 'assistant', 'digest', 'git', 'operations', 'creative', 'routine', 'difficult', 'war_room')
@@ -130,7 +130,17 @@ def save_canvas_wheel_zoom(conn, value):
             change_feed.touch(conn, 'domains', row['name'], row['name'])
 
 
-SETTINGS_FIELDS = frozenset(('ai', 'execution', 'sounds', 'canvas_wheel_zoom'))
+def persona_enabled(home):
+    if not store.db_path(home).exists():
+        return False
+    with closing(guard.readonly(home)) as conn:
+        # The desktop worker can read settings before the backend migrates an older HOME.
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='persona_settings'").fetchone():
+            return False
+        return persona.enabled(conn)
+
+
+SETTINGS_FIELDS = frozenset(('ai', 'execution', 'sounds', 'canvas_wheel_zoom', 'persona_enabled'))
 
 
 def save_execution(source, value):

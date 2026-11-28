@@ -46,6 +46,7 @@ KINDS = {
     'sound_settings': 'global', 'limits': 'global',
     'conversations': 'workspace', 'channel_digest': 'workspace', 'sound_events': 'global',
     'runtimes': 'global', 'notification': 'global', 'scanner': 'global',
+    'persona': 'workspace',
     'snapshot': 'workspace',
 }
 # Kinds whose value is built from the database alone: kind -> 'module:function' taking
@@ -65,6 +66,7 @@ BUILDERS = {
     'channel_message': 'snapshot_values:channel_message',
     'war_room': 'war_room:change_value',
     'sound_settings': 'snapshot_values:sound_settings',
+    'persona': 'persona:change_value',
 }
 # Logged entity ids are text; these kinds' builders take the integer id.
 INTEGER_ENTITIES = frozenset({'todo', 'decision', 'channel_message', 'war_room'})

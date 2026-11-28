@@ -1057,7 +1057,7 @@
     if (runtimeSwitch) html += btn("runtime-switch", "更换执行工具…", runtimeSwitch.reason(item));
     html += btn("stop", "停下这一轮", stopReason) + btn("compact", "压缩上下文", compactReason) + submenu(item, runtimeId(item) === "codex" ? "模型、effort 和速度" : "模型和 effort", modelMenu(item, true)) + btn("session-rename", "改名");
     if (isLeader) {
-      html += btn("leader-settings", "Leader 设置…") + btn("member-defaults", "执行默认大脑");
+      html += btn("leader-settings", "Leader 设置…") + btn("persona", "性格…") + btn("member-defaults", "执行默认大脑");
       html += submenu(item, "leader 决策方式", [["human","由我拍板"],["autonomous","自主推进"]].map(([mode,label]) => `<button type="button" role="menuitemradio" aria-checked="${Boolean(item.trust?.enabled) === (mode === "autonomous")}" data-act="leader-mode" data-id="${esc(item.session_id)}" data-mode="${mode}">${label}</button>`).join(""));
       html += btn("compact-department", "压缩整个部门…");
       const siblings = sortableLeaders(item), index = siblings.indexOf(item), members = membersOf(item.session_id), busy = members.filter(compactBusy).length;
@@ -1607,6 +1607,7 @@
       panels:{
         // The library adopts into the current workspace, so the workspace list page has no library.
         ...(project !== null ? {library:host => { mountSessionLibrary(host); }} : {}),
+        persona:host => CrewPersona.mountSettings(host,{request:CrewPersona.webRequest((path,body)=>workspaceData().request(path,body,null)),save:body=>api("/api/op/settings.save",body)}),
         sounds:host => window.CrewSoundSettings.mount(host,{read:()=>api("/api/op/settings.get"),save:body=>api("/api/op/settings.save",body),api,toast}),
         ...(hostAdmin() ? {remote:host => window.CrewRemoteAccess.mount(host,{read:()=>api("/api/op/remote_access.get"),action:body=>api("/api/op/remote_access.action",body)})} : {}),prompts:host => window.CrewBehaviorPrompts.mount(host,{...window.CrewBehaviorPrompts.requests(api),project,session:behaviorSession || (view === "chat" ? readOnlyId || leaderId : null),execution:goals?.executionFor(behaviorSession || readOnlyId || leaderId)?.id}),appearance(host) { host.append($("settings")); return () => $("settings-parking").append($("settings")); }, connections:settingsConnections, storage:settingsStorage}});
     if (desktopTheme) {
@@ -1727,6 +1728,7 @@
       }
       else if (act === "session-rename") openRename(id);
       else if (act === "leader-settings") openLeaderSettings(id);
+      else if (act === "persona") CrewPersona.open({session_id:id,name:leader(id).name,request:CrewPersona.webRequest(api)});
       else if (act === "look-color" && lookDraft) { lookDraft.color = button.dataset.color; lookDraft.error = ""; renderLeaderSettings(); }
       else if (act === "look-color-reset" && lookDraft) { lookDraft.color = null; renderLeaderSettings(); }
       else if (act === "look-avatar-remove" && lookDraft) { if (lookDraft.preview) URL.revokeObjectURL(lookDraft.preview); lookDraft.avatar = null; lookDraft.preview = null; lookDraft.note = ""; renderLeaderSettings(); }

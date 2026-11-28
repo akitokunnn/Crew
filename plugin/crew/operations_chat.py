@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 
-from . import behavior_prompts, board, chat, codex_client, operations_settings, runtime_catalog, settings, store
+from . import behavior_prompts, board, chat, codex_client, operations_settings, persona, runtime_catalog, settings, store
 from .codex_runtime import process_identity
 from .service_lock import HomeServiceLock
 from .supervisor import _atomic_json, _directory, _now, _read_json
@@ -340,6 +340,7 @@ def settings_snapshot(home, backend_root):
     from . import event_sounds
     return {'ai': settings.get(home), 'execution': settings.get_execution(home),
             'canvas_wheel_zoom': settings.canvas_wheel_zoom(home),
+            'persona_enabled': settings.persona_enabled(home),
             **event_sounds.settings_snapshot(home),
             'runtimes': runtime_catalog.Catalog().refresh(force=True),
             'home': str(Path(home).resolve()), 'backend': str(Path(backend_root).resolve())}
@@ -358,6 +359,8 @@ def save_settings(home, backend_root, value):
             event_sounds.save(conn, value['sounds'], home)
         if 'canvas_wheel_zoom' in value:
             settings.save_canvas_wheel_zoom(conn, value['canvas_wheel_zoom'])
+        if 'persona_enabled' in value:
+            persona.set_enabled(conn, value['persona_enabled'])
     return settings_snapshot(home, backend_root)
 
 

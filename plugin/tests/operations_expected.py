@@ -6,6 +6,9 @@ Do not generate these from the registry: a change here must be made on purpose.
 # Not operations (design §8.14).
 TRANSPORT_GET = frozenset(('/api/admin/health', '/api/chat/events', '/api/events'))
 
+PERSONA = frozenset(('persona.get', 'persona.save', 'persona.seed', 'persona.reset', 'persona.freeze',
+                     'persona.restore', 'persona.history', 'persona.list', 'persona.grow'))
+
 # Operations each remote device kind may call, frozen from the remote route rules
 # (remote_routes allow list for browsers, deny list for desktops) when they were replaced.
 DEVICE_BROWSER = frozenset((
@@ -37,7 +40,7 @@ DEVICE_BROWSER = frozenset((
     # Board versions, rollback, restructure and leader merge / retire (docs/ASSISTANT_CAMPAIGN_DESIGN.md §5).
     'domains.restructure.apply', 'domains.restructure.preview', 'domains.rollback', 'domains.version.get',
     'domains.versions.list', 'leader.merge', 'leader.retire',
-))
+)) | PERSONA
 DEVICE_DESKTOP = frozenset((
     'interaction.list', 'interaction.resolve',
     'approval.resolve', 'assistant.open', 'assistant.state', 'attention.dismiss', 'channel.digest.start',
@@ -80,7 +83,7 @@ DEVICE_DESKTOP = frozenset((
     # Board versions, rollback, restructure and leader merge / retire (docs/ASSISTANT_CAMPAIGN_DESIGN.md §5).
     'domains.restructure.apply', 'domains.restructure.preview', 'domains.rollback', 'domains.version.get',
     'domains.versions.list', 'leader.merge', 'leader.retire',
-))
+)) | PERSONA
 
 # Operations-worker actions that only concern this computer's Crew HOME and deployment;
 # they must work while the backend is broken, so they are not operations (design §10 item 9).
