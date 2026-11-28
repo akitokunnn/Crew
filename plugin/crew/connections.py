@@ -1,8 +1,10 @@
 """Local connection settings and lifecycle for independent remote inboxes."""
 import json
+import logging
 import os
 import secrets
 import threading
+import time
 from contextlib import closing
 
 from . import board, notifications, qq, store
@@ -11,6 +13,12 @@ from . import board, notifications, qq, store
 CHANNELS = ('qq', 'lark')
 NAMES = {'qq': 'QQ', 'lark': 'Lark / 飞书'}
 NOTIFICATION_TARGETS = ('both', 'qq', 'lark', 'none')
+IDLE_AWAY_SECONDS = 3600
+PRESENCE_SAMPLE_SECONDS = 10
+RETURN_WINDOW_SECONDS = 120
+RETURN_INPUT_SAMPLES = 3
+RETURN_MIN_SPAN_SECONDS = 60
+LOG = logging.getLogger(__name__)
 
 
 def _text(value, label, limit):
@@ -30,37 +38,109 @@ def _write(path, value):
 
 
 class Manager:
-    def __init__(self, service, client=None, lock_status=notifications.desktop_locked, batch_seconds=30):
+    def __init__(self, service, client=None, batch_seconds=30, *, idle_status=notifications.desktop_idle_seconds,
+                 clock=time.monotonic):
         self.service = service
-        self.lock_status, self.batch_seconds = lock_status, batch_seconds
+        self.batch_seconds = batch_seconds
+        self.idle_status, self.clock = idle_status, clock
         self.clients = {'qq': client}
         self.lock = threading.RLock()
         self.presence_lock = threading.RLock()
         self.routing_path = service.home / 'notification-routing.json'
-        self.notification_target = json.loads(self.routing_path.read_text(encoding='utf-8'))['target'] if self.routing_path.exists() else 'both'
+        self.notification_target = json.loads(self.routing_path.read_text(encoding='utf-8'))['target'] if self.routing_path.exists() else 'lark'
         if self.notification_target not in NOTIFICATION_TARGETS:
             raise ValueError('主动通知渠道必须是 both、qq、lark 或 none')
         self.inboxes = {channel: self._inbox(channel) for channel in CHANNELS}
         # Absence is a desktop-wide choice; targets and routing stay per channel.
         self.manual_away = self.inboxes['qq'].config['manual_away']
         self.inboxes['lark'].config['manual_away'] = self.manual_away
+        self._idle_away = False
+        self.presence_error = None
+        self.auto_returned_at = None
+        self._away_revision = int(self.manual_away)
+        self._last_sample = None
+        self._inputs = []
+        self._presence_stop = threading.Event()
+        self._presence_worker = None
 
     def _inbox(self, channel):
-        return notifications.Inbox(self.service, self.clients.get(channel), self.lock_status,
-                                   self.batch_seconds, channel_id=channel)
+        return notifications.Inbox(self.service, self.clients.get(channel), self.batch_seconds, channel_id=channel)
 
     def start(self):
+        self._presence_worker = threading.Thread(target=self._sample_presence, name='crew-presence', daemon=True)
+        self._presence_worker.start()
         for inbox in self.inboxes.values():
             inbox.start()
 
     def close(self):
         # Both receivers must hear shutdown before waiting for either one's
         # in-flight network operation; stopping channels is independent.
+        self._presence_stop.set()
         for inbox in self.inboxes.values():
             inbox.stop.set()
             inbox.wake.set()
+        if self._presence_worker is not None:
+            self._presence_worker.join()
         for inbox in self.inboxes.values():
             inbox.close()
+
+    def _sample_presence(self):
+        while not self._presence_stop.is_set():
+            try:
+                self.refresh_presence()
+            except OSError:
+                LOG.exception('Saving the automatic return failed')
+            self._presence_stop.wait(PRESENCE_SAMPLE_SECONDS)
+
+    def _away(self):
+        return self.manual_away or (self._idle_away and self.presence_error is None)
+
+    def away_revision(self):
+        with self.presence_lock:
+            return self._away_revision if self._away() else None
+
+    def presence(self):
+        with self.presence_lock:
+            return dict(manual_away=self.manual_away, idle=self._idle_away and self.presence_error is None,
+                        away=self._away(), presence_error=self.presence_error, auto_returned_at=self.auto_returned_at)
+
+    def refresh_presence(self):
+        try:
+            idle_seconds = self.idle_status()
+        except (OSError, ValueError) as exc:
+            idle_seconds = None
+            error = '无法读取电脑空闲时长，请用“我已离开”开关：%s: %s' % (type(exc).__name__, exc)
+        else:
+            error = None
+        now = self.clock()
+        with self.presence_lock:
+            was_away, previous_error = self._away(), self.presence_error
+            was_idle = self._idle_away
+            self.presence_error = error
+            if idle_seconds is None:
+                # Suspend automatic absence and discard input evidence until idle can be read again.
+                self._last_sample = None
+                self._inputs.clear()
+            else:
+                self._idle_away |= idle_seconds >= IDLE_AWAY_SECONDS
+                if self._away():
+                    last, self._last_sample = self._last_sample, now
+                    self._inputs = [sample for sample in self._inputs if now - sample <= RETURN_WINDOW_SECONDS]
+                    if last is not None and idle_seconds < now - last:
+                        self._inputs.append(now)
+                    if (len(self._inputs) >= RETURN_INPUT_SAMPLES
+                            and self._inputs[-1] - self._inputs[0] >= RETURN_MIN_SPAN_SECONDS):
+                        self.set_away(False, auto_returned_at=self.service.now().isoformat())
+                        return
+            if was_away != self._away() or was_idle != self._idle_away or previous_error != error:
+                if not was_away and self._away():
+                    self._away_revision += 1
+                self._presence_changed()
+
+    def _presence_changed(self):
+        self.service.chat.changes.mark('notification', None, 'notification')
+        for inbox in self.inboxes.values():
+            inbox.wake.set()
 
     def _channel(self, channel):
         if channel not in CHANNELS:
@@ -87,9 +167,9 @@ class Manager:
     def notification_status(self, conn=None):
         result = self.inboxes['qq'].status()
         active = [inbox.status() for inbox in self.inboxes.values() if inbox.enabled]
-        result.update(manual_away=self.manual_away, locked=any(item['locked'] for item in active),
-                      away=self.manual_away or any(item['locked'] for item in active),
-                      enabled=bool(active), error='；'.join(item['error'] for item in active if item['error']) or None)
+        presence = self.presence()
+        errors = [presence['presence_error'], *(item['error'] for item in active)]
+        result.update(presence, enabled=bool(active), error='；'.join(error for error in errors if error) or None)
         result['channels'] = [self.channel_state(channel, conn) for channel in CHANNELS]
         result['target'] = self.notification_target
         for channel in result['channels']:
@@ -114,15 +194,23 @@ class Manager:
         self.service.chat.changes.mark('notification', None, 'notification')
         return self.snapshot()
 
-    def set_away(self, away):
+    def set_away(self, away, *, auto_returned_at=None):
         # This short lock is never held while stopping/joining a receiver.
         # It also prevents a retired inbox from overwriting new binding prefs.
         with self.presence_lock:
-            self.manual_away = away
             for inbox in self.inboxes.values():
                 inbox._set_away(away)
-        self.service.chat.changes.mark('notification', None, 'notification')
-        return self.notification_status()
+            if away:
+                self._away_revision += 1
+            if auto_returned_at is not None:
+                self._idle_away = False
+                self.auto_returned_at = auto_returned_at
+            self.manual_away = away
+            if not self._away():
+                self._last_sample = None
+                self._inputs.clear()
+            self._presence_changed()
+            return self.presence()
 
     def _stop(self, inbox):
         inbox.close()
@@ -150,6 +238,7 @@ class Manager:
                 inbox.config.update(owner_openid=None, since=None,
                                     binding_code=secrets.token_hex(4).upper(), generation=secrets.token_hex(12))
                 inbox.save_config()
+        self.service.chat.changes.mark('notification', None, 'notification')
 
     def configure(self, data):
         if not isinstance(data, dict) or set(data) - {'channel', 'app_id', 'app_secret', 'domain', 'enabled'}:

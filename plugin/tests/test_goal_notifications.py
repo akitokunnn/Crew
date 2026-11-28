@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from crew import board, change_feed, chat, goal_links, goal_runtime, goals, notifications, qq, session_ops, store, todo
+from crew import board, change_feed, chat, connections, goal_links, goal_runtime, goals, notifications, qq, session_ops, store, todo
 from tests.test_goals import GoalFixture
 from tests.test_notifications import FakeQQ
 
@@ -18,7 +18,7 @@ NOW='2026-10-25T01:00:00.000Z'
 class GoalNotificationTests(GoalFixture):
     def setUp(self):
         super().setUp()
-        self.clock=store.parse_iso(NOW);self.locked=False;self.client=FakeQQ();self.journals={}
+        self.clock=store.parse_iso(NOW);self.client=FakeQQ();self.journals={}
         (self.home/'qq.json').write_text(json.dumps({'app_id':'fake-app','app_secret':'fake-secret'}),encoding='utf-8')
         (self.home/'notify.json').write_text(json.dumps({'owner_openid':'owner','since':NOW,'manual_away':False,
             }),encoding='utf-8')
@@ -29,15 +29,18 @@ class GoalNotificationTests(GoalFixture):
         self.controller.send=mock.Mock(return_value={'accepted':True,'delivery':'started'})
         self.service=SimpleNamespace(home=self.home,now=lambda:self.clock,chat=manager,write_lock=threading.RLock(),
                                      state=lambda project:{'attention':[]})
-        self.inbox=self.new_inbox()
+        (self.home/'notification-routing.json').write_text('{"target":"qq"}', encoding='utf-8')
+        self.service.connections=connections.Manager(self.service,self.client,idle_status=lambda:0)
+        self.addCleanup(self.service.connections.close)
+        self.inbox=self.service.connections.inboxes['qq']
 
     def journal(self, sid):
         if sid not in self.journals:self.journals[sid]=chat.Journal(self.home/'chat'/(sid+'.jsonl'), None)
         return self.journals[sid]
 
     def new_inbox(self):
-        result=notifications.Inbox(self.service,self.client,lock_status=lambda:self.locked)
-        self.addCleanup(result.close)
+        result=notifications.Inbox(self.service,self.client)
+        self.service.connections.inboxes['qq']=result
         return result
 
     def stamp(self):return self.clock.isoformat(timespec='milliseconds').replace('+00:00','Z')
@@ -86,8 +89,9 @@ class GoalNotificationTests(GoalFixture):
         self.assertIsNone(self.conn.execute('SELECT 1 FROM notification_messages WHERE item_id=?',('goal-report:'+report['id'],)).fetchone())
 
     def test_pause_between_pending_and_flush_is_rechecked_before_sending(self):
+        self.push()
         target,report=self.finish('awaiting_acceptance')
-        self.locked=True;self.inbox.tick()
+        self.inbox.tick()
         self.assertIn('goal-report:'+report['id'],self.inbox.pending)
         goals.request_pause(self.conn,target['id'],now=self.stamp())
         self.clock+=dt.timedelta(seconds=35);self.inbox.flush()
@@ -181,7 +185,8 @@ class GoalNotificationTests(GoalFixture):
         self.assertTrue(all(len(item['text'])<notifications.TEXT_LIMIT for item in self.client.sent))
 
     def test_archived_leader_after_batching_suppresses_final_report_at_flush(self):
-        _,report=self.finish();self.locked=True;self.inbox.tick()
+        self.push()
+        _,report=self.finish();self.inbox.tick()
         self.assertIn('goal-report:'+report['id'],self.inbox.pending)
         session_ops.archive(self.conn,'chief-id',now=self.stamp())
         self.inbox.flush();self.inbox.tick()

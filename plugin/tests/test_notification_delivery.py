@@ -7,7 +7,7 @@ import threading
 from types import SimpleNamespace
 from unittest import mock
 
-from crew import board, change_feed, chat, goal_links, goal_reports, goal_runtime, goals, notifications, qq, store, todo
+from crew import board, change_feed, chat, connections, goal_links, goal_reports, goal_runtime, goals, notifications, qq, store, todo
 from tests.test_goals import GoalFixture
 from tests.test_notifications import FakeQQ
 
@@ -17,7 +17,7 @@ NOW = '2026-10-25T01:00:00.000Z'
 class NotificationDeliveryTests(GoalFixture):
     def setUp(self):
         super().setUp()
-        self.clock, self.clients, self.inboxes, self.journals = store.parse_iso(NOW), {}, {}, {}
+        self.clock, self.clients, self.journals = store.parse_iso(NOW), {}, {}
         manager = SimpleNamespace(home=self.home, path=lambda sid:self.home/'chat'/(sid+'.jsonl'), journal=self.journal,
                                   busy=mock.Mock(return_value=False), work=lambda **kwargs: contextlib.nullcontext(True),
                                   changes=change_feed.Notifier())
@@ -30,7 +30,11 @@ class NotificationDeliveryTests(GoalFixture):
             (self.home/(channel+'.json')).write_text(json.dumps({'app_id':'fake-app','app_secret':'fake-secret'}), encoding='utf-8')
             (self.home/('notify.json' if channel == 'qq' else 'lark-notify.json')).write_text(json.dumps({
                 'owner_openid':channel+'-owner','since':NOW,'manual_away':True}), encoding='utf-8')
-            self.restart(channel)
+        (self.home/'notification-routing.json').write_text('{"target":"both"}', encoding='utf-8')
+        self.service.connections = connections.Manager(self.service, self.clients['qq'], batch_seconds=0, idle_status=lambda: 0)
+        self.addCleanup(self.service.connections.close)
+        self.inboxes = self.service.connections.inboxes
+        self.inboxes['lark'].client = self.clients['lark']
 
     def journal(self, sid):
         if sid not in self.journals:
@@ -39,7 +43,7 @@ class NotificationDeliveryTests(GoalFixture):
 
     def restart(self, channel):
         if channel in self.inboxes: self.inboxes[channel].close()
-        self.inboxes[channel] = notifications.Inbox(self.service, self.clients[channel], lock_status=lambda:False, batch_seconds=0, channel_id=channel)
+        self.inboxes[channel] = notifications.Inbox(self.service, self.clients[channel], batch_seconds=0, channel_id=channel)
         self.addCleanup(self.inboxes[channel].close)
 
     def item(self):
@@ -162,10 +166,10 @@ class NotificationDeliveryTests(GoalFixture):
         self.clients['qq'].send_errors.append(qq.QQError('busy', kind='api', status=503))
         with self.assertRaises(qq.QQError): self.inboxes['qq'].tick()
         self.clock += dt.timedelta(seconds=10)
-        self.inboxes['qq'].config['manual_away'] = False
+        self.service.connections.set_away(False)
         self.inboxes['qq'].tick(); self.assertEqual(len(self.clients['qq'].operations), 1)
-        self.inboxes['qq'].config['manual_away'] = True
-        self.service.connections = SimpleNamespace(allows_push=lambda channel:False)
+        self.service.connections.set_away(True)
+        self.service.connections.save_preferences({'target': 'none'})
         self.inboxes['qq'].tick(); self.assertEqual(len(self.clients['qq'].operations), 1)
 
     def test_archived_portable_markers_suppress_replay_under_a_new_owner_generation(self):

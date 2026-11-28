@@ -48,7 +48,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.project,
             agents_provider=self.provider, claude_root=self.claude, codex_root=self.codex, vscode_state_db=self.vscode_state_db,
             runs_file=self.runs, now=lambda: self.clock, process_factory=self.process_factory,
-            notification_client=mock.Mock(), lock_status=lambda: False)
+            notification_client=mock.Mock(), idle_status=lambda: 0)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": .01})
         self.thread.start()
         self.addCleanup(self.close_server)
@@ -688,7 +688,7 @@ class WebContractTests(ShellFixture, unittest.TestCase):
         lifecycle = web.Service(self.root / "lifecycle-home", PLUGIN, cwd=self.project, isolated_sources=True,
             agents_provider=self.provider, claude_root=self.claude, codex_root=self.codex, vscode_state_db=self.vscode_state_db,
             runs_file=self.runs, now=lambda: self.clock, process_factory=self.process_factory,
-            notification_client=mock.Mock(), lock_status=lambda: False)
+            notification_client=mock.Mock(), idle_status=lambda: 0)
         self.addCleanup(lifecycle.close)
         with mock.patch.object(web.Service, "_poll_notices", self.real_notice_poll):
             lifecycle.start()

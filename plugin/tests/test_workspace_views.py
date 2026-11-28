@@ -55,7 +55,7 @@ class WorkspaceViewsTests(UsageFixture, unittest.TestCase):
         self.launch = mock.Mock(side_effect=AssertionError("A view test must never start a model"))
         self.server = web.create_server(self.home, PLUGIN, port=0, cwd=self.alpha,
             agents_provider=lambda: list(self.members.values()), claude_root=self.claude, codex_root=self.codex,
-            runs_file=self.runs, now=lambda: self.clock, process_factory=self.launch, lock_status=lambda: False,
+            runs_file=self.runs, now=lambda: self.clock, process_factory=self.launch, idle_status=lambda: 0,
             vscode_state_db=self.vscode_state_db)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": .01})
         self.thread.start()
