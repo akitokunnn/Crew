@@ -1,6 +1,7 @@
 package local.crew.android.ui.voice
 
 import android.content.Intent
+import android.util.Log
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import local.crew.android.voice.*
@@ -28,11 +29,19 @@ class DebugWavInput : LaunchAudioInput {
                         }
                     }
                 }
-                for (path in paths.split(';')) {
+                for (entry in paths.split(';')) {
+                    val gated = entry.endsWith("@wait")
+                    val path = if (gated) entry.removeSuffix("@wait") else entry
                     val file = File(path)
                     require(file.isAbsolute) { "测试音频需要绝对路径" }
+                    if (gated) {
+                        val gate = File(path + ".ready")
+                        while (!gate.exists()) delay(25)
+                    }
                     val audio = readPcmWave(file, requireInputFormat = true)
+                    Log.i("CrewWav", "begin ${file.name}")
                     append(audio.samples)
+                    Log.i("CrewWav", "end ${file.name}")
                     append(FloatArray(INPUT_RATE*3/2))
                 }
                 if (used != 0) emit(window)

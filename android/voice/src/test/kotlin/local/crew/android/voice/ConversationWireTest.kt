@@ -150,6 +150,7 @@ class ConversationWireTest {
             assertTrue("已确认执行" in notices); assertTrue(call.cards.isEmpty())
             val paths = requests.groupBy { it.url.encodedPath.substringAfterLast('/') }
             assertEquals(1,paths.getValue("assistant.open").size)
+            assertEquals("{}",paths.getValue("assistant.open").single().body!!.utf8())
             assertEquals(listOf("7","9"),paths.getValue("events").map { it.url.queryParameter("after") })
             assertEquals(listOf("7","9"),paths.getValue("events").map { it.headers["Last-Event-ID"] })
             assertEquals(listOf(user,secondId),paths.getValue("chat.send").map { it.headers["X-Crew-Request-Id"] })

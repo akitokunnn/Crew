@@ -59,7 +59,8 @@ class CrewVoiceApi(session: ServerSession, val project: String, client: OkHttpCl
         json(request("api/op/$op").header("X-Crew-Request-Id",id)
             .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build())
 
-    suspend fun open() = post("assistant.open", buildJsonObject { put("project", project) }).string("session_id")
+    // The workspace travels in the query like every other call; assistant.open refuses it in both places.
+    suspend fun open() = post("assistant.open", buildJsonObject {}).string("session_id")
     suspend fun leaderNames(): List<String> = json(request("api/op/assistant.state").build())
         .getValue("leaders").jsonArray.map { it.jsonObject.string("crew_name") }
     suspend fun tail(session: String): Long {
