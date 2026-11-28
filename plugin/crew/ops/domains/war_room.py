@@ -119,7 +119,8 @@ def _get(ctx, conn, actor, values):
 def _start(ctx, conn, actor, values):
     return war_room.start(conn, ctx.project, actor, values.get('title'), values.get('goal'), values.get('members', []),
                           from_message=values.get('from_message'), lead=values.get('lead'),
-                          budget_tokens=values.get('budget_tokens'), now=ctx.now, request_id=ctx.request_id)
+                          budget_tokens=values.get('budget_tokens'), now=ctx.now, request_id=ctx.request_id,
+                          repository_info=ctx.room_repository)
 
 
 def _members(ctx, conn, actor, values):
@@ -244,7 +245,7 @@ def _update_plan(ctx, conn, actor, args):
 
 def _approve_plan(ctx, conn, actor, args):
     return war_room_plan.approve(conn, _in_project(ctx, conn, args['room']), actor, args['version'],
-                                 args['recommendations'], args['budget_tokens'], ctx.now)
+                                 args['recommendations'], args['budget_tokens'], ctx.now, repository_info=ctx.room_repository)
 
 
 op('war_room.plan.update', '领头保存一版作战计划书', _update_plan, workspace=True, assistant=None, access='write',

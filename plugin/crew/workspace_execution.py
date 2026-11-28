@@ -1,7 +1,7 @@
 """Stop workspace execution and bind future native launches to current DB paths."""
 from pathlib import Path
 
-from . import board, goals, store
+from . import board, goals, store, war_room_worktree
 
 
 def stop_project(manager, conn, project):
@@ -40,6 +40,13 @@ def execution_session(conn, session):
             raise board.Conflict('系统管理员仍绑定旧工作区，需要先迁移原会话')
     else:
         board.project(conn, current['project'])  # Removed workspaces cannot launch.
+    if session.get('_execution'):
+        execution = goals.get_execution(conn, session['_execution']['id'])
+        if execution['session_id'] != current['session_id']:
+            raise board.Conflict('目标执行与会话不匹配')
+        isolated = war_room_worktree.effective_path(conn, execution)
+        if isolated:
+            current['cwd'] = isolated
     directory = Path(current['cwd']).expanduser().resolve(strict=True)
     if not directory.is_dir():
         raise NotADirectoryError(str(directory))

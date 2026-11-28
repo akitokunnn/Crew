@@ -297,9 +297,10 @@ class WorkersMixin:
                 with self.chat.lock:
                     war_room_work.stop_room_processes(self.chat, conn)
                     war_room_work.watch(self.chat, conn, live, now)
-                    war_room_worktree.sweep(self.chat, conn, now)
                     war_room_watchdog.tick(self.chat, conn, live, now)
                 self.chat.deliver_leader_notices(conn, live, now)
+            with closing(store.connect(self.home)) as worktree_conn:
+                war_room_worktree.sweep(self.chat, worktree_conn, now)
             # Do not hold the service write lock while waiting for a carrier receipt.
             war_room_work.deliver(self.chat, conn, live, now)
 

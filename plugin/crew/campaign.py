@@ -187,7 +187,7 @@ def part_ops(parts):
             'x': 260 * index, 'y': 160 * depth[part['ref']]} for index, part in enumerate(parts)]
 
 
-def launch(service, conn, project, plan, board_version, actor, now, request_id=None):
+def launch(service, conn, project, plan, board_version, actor, now, request_id=None, *, repository_info=None):
     """Run a previewed plan. Leaders and tasks start model work, so they come after the structure is checked; the
     board is written once (parts, places, leads) as one architecture version."""
     checked = preview(conn, project, plan, service.home)
@@ -202,7 +202,8 @@ def launch(service, conn, project, plan, board_version, actor, now, request_id=N
         lead = workspace_assistant.ensure(conn, service.home, project)['session_id'] if actor == board.HUMAN else actor
         spec = checked['room']
         room = war_room.start(conn, project, actor, spec['title'], spec['goal'], lead=lead if actor == board.HUMAN else None,
-                              budget_tokens=spec.get('budget_tokens'), now=now, request_id=request_id, campaign=checked)
+                              budget_tokens=spec.get('budget_tokens'), now=now, request_id=request_id, campaign=checked,
+                              repository_info=repository_info)
         return {'version': board_version, 'started': False, 'room': room}
     note = '助手开局：' + plan['note'].strip()
     ops = part_ops(checked['parts'])

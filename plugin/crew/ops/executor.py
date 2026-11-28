@@ -28,6 +28,7 @@ class Context:
         self.request_id, self.project_name = request_id, project_name
         self.http, self.query = http, query
         self.conn = self.now = self.project = None
+        self.room_repository = None
         self.proof = None  # A verified original user message for assistant writes.
         self.as_user = op.as_user(caller)  # the assistant running the user's handler
 
@@ -124,8 +125,8 @@ def _run(service, op, ctx, args):
         with closing(guard.readonly(service.home)) as conn:
             ctx.conn = conn
             return execute(conn)
-    with service.write_lock, closing(store.connect(service.home)) as conn:
-        ctx.conn, ctx.now = conn, _stamp(service)
+
+    def select_project(conn):
         if op.lock == 'project' and ctx.caller.is_ai and not ctx.as_user:
             # An AI acts in its own workspace; the assistant names one in its arguments.
             ctx.project = ctx.caller.project
@@ -143,6 +144,17 @@ def _run(service, op, ctx, args):
                 ctx.project = service.selected_project(conn, ctx.project_name)
         elif ctx.caller.is_ai and not ctx.as_user:
             ctx.project = ctx.caller.project
+
+    if (op.name in ('war_room.open', 'war_room.plan.approve') or
+            op.name == 'campaign.launch' and args.get('start') and args.get('room') is not None):
+        from .. import war_room_worktree
+        with closing(guard.readonly(service.home)) as probe:
+            select_project(probe)
+            ctx.room_repository = war_room_worktree.repository(probe, ctx.project)
+
+    with service.write_lock, closing(store.connect(service.home)) as conn:
+        ctx.conn, ctx.now = conn, _stamp(service)
+        select_project(conn)
         _gate(ctx)
         return execute(conn)
 

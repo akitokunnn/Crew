@@ -5,7 +5,7 @@ channel's (docs/WAR_ROOM_DESIGN.md). ``actor`` is a leader's session id or ``boa
 """
 import json
 
-from . import board, change_feed, channel, personal, workspace_assistant
+from . import board, change_feed, channel, personal, war_room_worktree, workspace_assistant
 from .ops.errors import OpError
 
 TITLE_LIMIT, GOAL_LIMIT, ITEM_LIMIT, CONTRACT_LIMIT = 30, 200, 60, 8000
@@ -133,11 +133,19 @@ def _post(conn, room, actor, body, to=(), now=None, reply_to=None):
                                     reply_to=reply_to, room_id=room['id'], generated=True)
 
 
-@board.atomic
 def start(conn, project_name, actor, title, goal, member_names=(), from_message=None, lead=None,
-          budget_tokens=None, now=None, request_id=None, campaign=None):
+          budget_tokens=None, now=None, request_id=None, campaign=None, *, repository_info=None):
     """Reserve the workspace before any invitation, announcement, or model work."""
-    board.project(conn, project_name)
+    root, top = war_room_worktree.repository(conn, project_name) if repository_info is None else repository_info
+    return _reserve(conn, project_name, actor, title, goal, member_names, from_message, lead,
+                    budget_tokens, now, request_id, campaign, root, top)
+
+
+@board.atomic
+def _reserve(conn, project_name, actor, title, goal, member_names, from_message, lead,
+             budget_tokens, now, request_id, campaign, root, top):
+    if board.project(conn, project_name)['root'] != root:
+        raise board.Conflict('工作区目录已改变，请重试')
     title, goal = _text(title, '作战室标题', TITLE_LIMIT), _text(goal, '目标', GOAL_LIMIT)
     if actor == board.HUMAN:
         if not lead:
@@ -158,7 +166,10 @@ def start(conn, project_name, actor, title, goal, member_names=(), from_message=
                                 "WHERE r.project=? AND r.open_request_id=? AND e.kind='reserved' AND e.actor=?",
                                 (project_name, request_id, actor)).fetchone()
         if existing:
-            return {**get(conn, existing['id'], actor), 'replayed': True}
+            result = get(conn, existing['id'], actor)
+            if actor != board.HUMAN and result['isolation_reason'] == 'not_git':
+                result['brief'] = war_room_worktree.NOT_GIT
+            return {**result, 'replayed': True}
     occupied = conn.execute("SELECT id FROM war_rooms WHERE project=? AND status='open' ORDER BY id LIMIT 1",
                             (project_name,)).fetchone()
     if occupied:
@@ -174,14 +185,29 @@ def start(conn, project_name, actor, title, goal, member_names=(), from_message=
                            (project_name, title, goal, lead_id, from_message, stamp, _budget(budget_tokens), request_id)).lastrowid
     if channel._leader(conn, project_name, lead_id):
         conn.execute('INSERT INTO war_room_members(room_id,session_id,joined_at) VALUES(?,?,?)', (room_id, lead_id, stamp))
+    war_room_worktree.remember_repository(conn, room_id, root, top, stamp)
     _event(conn, room_id, actor, 'reserved', {'proposed_members': list(member_names), 'request_id': request_id, 'campaign': campaign}, stamp)
     if actor == board.HUMAN:
         text = ('用户开了作战室 #%d《%s》。目标：%s\n请先和用户沟通并起草作战计划书（war_room.plan.update）。'
                 '请用 war_room.post 在这个房间和用户说话。' % (room_id, title, goal))
+        if top is None:
+            text += '\n'+war_room_worktree.NOT_GIT
         conn.execute("INSERT INTO leader_notices(project,session_id,room_id,text,source,created_at,wake,batch_id) "
                      "VALUES(?,?,?,?,'web',?,1,?)", (project_name, lead_id, room_id, text, stamp, 'room:%d:open' % room_id))
     _touch(conn, room_id, project_name)
-    return get(conn, room_id, actor)
+    result = get(conn, room_id, actor)
+    if actor != board.HUMAN and top is None:
+        result['brief'] = war_room_worktree.NOT_GIT
+    return result
+
+
+def cleanup_notice(conn, room_id, body, now):
+    """Host-only backup receipt, also valid after the room has closed."""
+    room = _room(conn, room_id)
+    lead = room['lead_session_id']
+    conn.execute('INSERT INTO channel_messages(project,speaker_session_id,speaker_name,body,created_at,room_id) '
+                 'VALUES(?,?,?,?,?,?)', (room['project'], lead, _name(conn, lead), body, board._time(now), room_id))
+    _touch(conn, room_id, room['project'])
 
 
 def require_active(room):
@@ -207,6 +233,7 @@ def change_members(conn, room_id, actor, add=(), remove=(), now=None):
             raise board.BoardError('不能移出牵头 leader')
         if conn.execute('UPDATE war_room_members SET left_at=? WHERE room_id=? AND session_id=? AND left_at IS NULL',
                         (board._time(now), room_id, target['session_id'])).rowcount:
+            war_room_worktree.release(conn, room_id, target['session_id'], board._time(now))
             removed.append(target['crew_name'])
     if added:
         _post(conn, room, actor, '邀请 %s 加入作战室。目标：%s。先看状态板和契约，再接你负责的那块。' % (
@@ -379,6 +406,8 @@ def close(conn, room_id, actor, summary=None, now=None, reason=None):
     conn.execute('UPDATE leader_notices SET wake=0 WHERE sent_at IS NULL AND id IN (SELECT t.notice_id FROM '
                  'channel_mentions t JOIN channel_messages m ON m.id=t.message_id WHERE m.room_id=?)', (room_id,))
     conn.execute('UPDATE leader_notices SET wake=0 WHERE room_id=? AND sent_at IS NULL', (room_id,))
+    for sid, in conn.execute('SELECT session_id FROM war_room_worktrees WHERE room_id=?', (room_id,)).fetchall():
+        war_room_worktree.release(conn, room_id, sid, stamp)
     pause_work(conn, room_id, '作战室已结束', stamp)
     _event(conn, room_id, actor, 'closed', {'summary': summary, 'reason': reason}, now)
     _touch(conn, room_id, room['project'])
@@ -528,6 +557,7 @@ def _card(conn, room, reader):
     return {key: room[key] for key in ('id', 'project', 'title', 'goal', 'lead_session_id', 'origin_message_id',
                                        'opened_message_id', 'closed_message_id', 'status', 'summary', 'created_at',
                                        'closed_at', 'phase', 'draft_version', 'approved_version', 'legacy', 'close_reason')} | {
+        **war_room_worktree.isolation(conn, room),
         'usage_pending': usage_pending,
         'lead_name': lead, 'members': members(conn, room['id']), 'items': counts, 'progress': progress,
         'open_decisions': conn.execute("SELECT COUNT(*) FROM war_room_decisions w JOIN decisions d ON d.id=w.decision_id "
@@ -554,7 +584,7 @@ def get(conn, room_id, reader=board.HUMAN, limit=50, before=None):
         row = conn.execute('SELECT * FROM channel_messages WHERE id=?', (room['origin_message_id'],)).fetchone()
         origin = {'id': row['id'], 'speaker_name': row['speaker_name'], 'excerpt': channel._excerpt(row['body'], 80),
                   'replies': conn.execute('SELECT COUNT(*) FROM channel_messages WHERE reply_to=?', (row['id'],)).fetchone()[0]}
-    events = board._rows(conn, 'SELECT * FROM war_room_events WHERE room_id=? ORDER BY id', (room_id,))
+    events = board._rows(conn, "SELECT * FROM war_room_events WHERE room_id=? AND kind NOT GLOB 'worktree_*' ORDER BY id", (room_id,))
     for event in events:
         event['detail'] = json.loads(event['detail'])
         event['actor_name'] = _name(conn, event['actor'])
@@ -564,6 +594,7 @@ def get(conn, room_id, reader=board.HUMAN, limit=50, before=None):
         if plan['approval']:
             plan['approval'] = json.loads(plan['approval'])
     return {**_card(conn, room, reader), 'origin': origin,
+            'worktrees': war_room_worktree.details(conn, room, reader),
             'consults': [war_room_plan.consult_view(row) for row in conn.execute(
                 'SELECT * FROM war_room_consults WHERE room_id=? ORDER BY created_at', (room_id,))],
             'plans': plans,

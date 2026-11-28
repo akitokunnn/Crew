@@ -3,7 +3,7 @@ import json
 import re
 import uuid
 
-from . import board, channel, goals, war_room
+from . import board, channel, goals, war_room, war_room_worktree
 from .ops.errors import OpError
 
 SECTIONS = {'分工': 'assignment', '等你定': 'decision', '完成标准': 'criterion'}
@@ -164,6 +164,7 @@ def publish_items(conn, room_id, version, entries, by_name, recommendations, cam
     room = war_room._room(conn, room_id)
     actor = board.HUMAN
     criteria = [{'id': e['entry_id'], 'title': e['title']} for e in entries if e['kind'] == 'criterion']
+    reassigned = set()
     for entry in entries:
         key, kind, title = entry['entry_id'], entry['kind'], entry['title']
         owner = by_name.get(entry['owner'])
@@ -175,6 +176,7 @@ def publish_items(conn, room_id, version, entries, by_name, recommendations, cam
             if old['goal_id'] and old['owner_session_id'] != owner:
                 if not channel._leader(conn, room['project'], owner):
                     fail(kind, entry['line'], '已绑定任务的分工需要交给本区 leader')
+                reassigned.add(old['owner_session_id'])
                 goals.request_transfer(conn, old['goal_id'], owner, '批准计划 v%d' % version, now=stamp)
             conn.execute('UPDATE war_room_items SET title=?,owner_session_id=?,plan_version=?,updated_by=?,updated_at=?,answer=? '
                          'WHERE id=?', (title, owner, version, actor, stamp, answer, old['id']))
@@ -194,15 +196,28 @@ def publish_items(conn, room_id, version, entries, by_name, recommendations, cam
             goal = goals.create(conn, room['project'], owner, title, task['request'] if task else title,
                                 task['acceptance'] if task else criteria, constraints=constraints, now=stamp)
             conn.execute('UPDATE war_room_items SET goal_id=? WHERE id=?', (goal['id'], item_id))
+            war_room_worktree.request_rebuild(conn, goal['id'], stamp)
             step('goal', key)
+        if old and old['goal_id'] and old['owner_session_id'] != owner:
+            war_room_worktree.request_rebuild(conn, old['goal_id'], stamp)
+    for sid in reassigned:
+        if not conn.execute('SELECT 1 FROM war_room_items WHERE room_id=? AND plan_version=? '
+                            'AND owner_session_id=? AND goal_id IS NOT NULL', (room_id, version, sid)).fetchone():
+            war_room_worktree.release(conn, room_id, sid, stamp)
     for previous in conn.execute("SELECT DISTINCT g.id FROM war_room_items i JOIN goals g ON g.id=i.goal_id "
                                  "WHERE i.room_id=? AND i.plan_version<>? AND g.status IN ('queued','running')",
                                  (room_id, version)).fetchall():
         goals.request_pause(conn, previous['id'], manual=False, reason='已批准版本移除了这项分工', now=stamp)
 
 
+def approve(conn, room_id, actor, version, recommendations, budget_tokens, now=None, *, repository_info=None):
+    room = war_room.open_room(conn, room_id)
+    root, top = war_room_worktree.repository(conn, room['project']) if repository_info is None else repository_info
+    return _approve(conn, room_id, actor, version, recommendations, budget_tokens, now, root, top)
+
+
 @board.atomic
-def approve(conn, room_id, actor, version, recommendations, budget_tokens, now=None):
+def _approve(conn, room_id, actor, version, recommendations, budget_tokens, now, root, top):
     if actor != board.HUMAN:
         raise OpError('forbidden', '只有用户能批准计划书')
     room = war_room.open_room(conn, room_id)
@@ -229,6 +244,14 @@ def approve(conn, room_id, actor, version, recommendations, budget_tokens, now=N
                         {'version': version, 'step': kind, 'target': target,
                          'request_id': 'room:%d:v%d:%s:%s' % (room_id, version, kind, target)}, stamp)
 
+    if board.project(conn, room['project'])['root'] != root:
+        raise board.Conflict('工作区目录已改变，请重试')
+    existing = conn.execute('SELECT 1 FROM war_room_worktrees WHERE room_id=? LIMIT 1', (room_id,)).fetchone()
+    if existing:
+        previous = war_room_worktree.repository_record(conn, room_id)
+        if (root, top) != tuple(previous):
+            raise board.Conflict('作战室登记的仓库已改变')
+    war_room_worktree.remember_repository(conn, room_id, root, top, stamp)
     campaign, proposals = create_planned_leaders(conn, room, by_name, stamp, step)
     conn.execute("UPDATE war_rooms SET phase='active',approved_version=?,budget_tokens=? WHERE id=?",
                  (version, budget_tokens, room_id))
@@ -241,6 +264,8 @@ def approve(conn, room_id, actor, version, recommendations, budget_tokens, now=N
             invited.append(war_room._name(conn, sid))
             step('invite', sid)
     publish_items(conn, room_id, version, entries, by_name, recommendations, campaign, proposals, stamp, step)
+    if top is not None and (room['approved_version'] is None or existing):
+        war_room_worktree.register(conn, room, root, version, stamp)
     if invited:
         war_room._post(conn, room, room['lead_session_id'], '请按已批准的计划 v%d 开工。' % version, to=invited, now=stamp)
     if room['opened_message_id'] is None:
@@ -250,7 +275,12 @@ def approve(conn, room_id, actor, version, recommendations, budget_tokens, now=N
         step('announce', room_id)
     conn.execute('UPDATE war_room_plans SET approval=? WHERE room_id=? AND version=?',
                  (json.dumps({'recommendations': recommendations, 'budget_tokens': budget_tokens, 'at': stamp}), room_id, version))
-    changed(conn, room, 'approved', {'version': version, 'request_id': 'room:%d:v%d:approve' % (room_id, version)}, stamp, actor)
+    detail = {'version': version, 'request_id': 'room:%d:v%d:approve' % (room_id, version)}
+    if top is None:
+        detail['提示'] = war_room_worktree.NOT_GIT
+    elif board.git_config(conn, room['project']) is None:
+        detail['提示'] = war_room_worktree.NO_ADMIN
+    changed(conn, room, 'approved', detail, stamp, actor)
     return war_room.get(conn, room_id, actor)
 
 

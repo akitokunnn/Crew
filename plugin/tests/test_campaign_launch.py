@@ -27,6 +27,8 @@ def plan(**extra):
 
 
 class CampaignTests(ShellFixture, unittest.TestCase):
+    temp_parent = None  # A campaign workspace must not inherit the source repository.
+
     def setUp(self):
         super().setUp()
         self.service = web.Service(
