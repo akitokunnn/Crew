@@ -4,6 +4,7 @@ Posts are channel posts with ``room_id`` set, so mentions, reply notices and the
 channel's (docs/WAR_ROOM_DESIGN.md). ``actor`` is a leader's session id or ``board.HUMAN``.
 """
 import json
+from contextlib import nullcontext
 from pathlib import Path
 import subprocess
 
@@ -91,27 +92,78 @@ def _source(actor):
     return 'web' if actor == board.HUMAN else 'crew'
 
 
+def _room_delivery_reason(conn, room, sid):
+    if room['status'] != 'open':
+        return '房间已结束'
+    if room['paused_at'] is not None:
+        return '房间已暂停'
+    if sid != room['lead_session_id'] and not is_member(conn, room['id'], sid):
+        return '对方已离开房间'
+    return None
+
+
+def delivery_assignment(conn, room, sid, goal_id=None):
+    query = ("SELECT * FROM war_room_items WHERE room_id=? AND owner_session_id=? AND plan_version=? "
+             "AND kind='assignment' AND goal_id IS NOT NULL AND status IN ('todo','doing')")
+    args = [room['id'], sid, room['approved_version']]
+    if goal_id is not None:
+        query += ' AND goal_id=?'
+        args.append(goal_id)
+    return conn.execute(query + ' ORDER BY id LIMIT 1', args).fetchone()
+
+
+def route(conn, notice):
+    if notice['room_id'] is None:
+        return None
+    room = _room(conn, notice['room_id'])
+    sid = notice['session_id']
+    if _room_delivery_reason(conn, room, sid):
+        return None
+    claimed = conn.execute('SELECT goal_id FROM war_room_delivery WHERE notice_id=?', (notice['id'],)).fetchone()
+    if claimed is not None:
+        return 'goal', claimed['goal_id']
+    if notice['batch_id'] is not None:
+        return 'main', None
+    item = delivery_assignment(conn, room, sid)
+    return ('goal', item['goal_id']) if item is not None else ('main', None)
+
+
 def claim_main_notices(conn, notice_id=None):
-    """Route room mentions and decision answers to the lead's main session when needed."""
-    query = """
-        UPDATE leader_notices AS n SET batch_id='room:'||room_id||':notice:'||id
-        WHERE n.sent_at IS NULL AND n.wake=1 AND n.batch_id IS NULL AND n.room_id IS NOT NULL
-          AND (EXISTS (SELECT 1 FROM channel_mentions m WHERE m.notice_id=n.id AND m.reason='mention')
-               OR EXISTS (SELECT 1 FROM war_room_decisions d WHERE d.answer_notice_id=n.id))
-          AND NOT EXISTS (SELECT 1 FROM war_room_delivery d WHERE d.notice_id=n.id)
-          AND EXISTS (
-              SELECT 1 FROM war_rooms r WHERE r.id=n.room_id AND r.lead_session_id=n.session_id
-                AND r.status='open' AND r.paused_at IS NULL AND (r.phase='preparing' OR NOT EXISTS (
-                    SELECT 1 FROM war_room_items i JOIN goals g ON g.id=i.goal_id
-                    JOIN goal_executions e ON e.goal_id=g.id AND e.round=g.current_round AND e.session_id=i.owner_session_id
-                    WHERE i.room_id=r.id AND i.owner_session_id=n.session_id AND i.plan_version=r.approved_version
-                      AND i.status IN ('todo','doing')
-                ))
-          )"""
-    if notice_id is None:
-        conn.execute(query)
-    else:
-        conn.execute(query + ' AND n.id=?', (notice_id,))
+    query = ("SELECT * FROM leader_notices WHERE wake=1 AND sent_at IS NULL AND room_id IS NOT NULL "
+             "AND batch_id IS NULL AND NOT EXISTS (SELECT 1 FROM war_room_delivery WHERE notice_id=leader_notices.id)")
+    # Posting and answering a decision already own the write transaction.
+    with nullcontext() if conn.in_transaction else board.transaction(conn):
+        notices = conn.execute(query) if notice_id is None else conn.execute(query + ' AND id=?', (notice_id,))
+        for notice in notices.fetchall():
+            destination = route(conn, notice)
+            if destination is None:
+                # The recipient left (or the room closed): cancel instead of leaving a wake that never lands.
+                check_claim.__wrapped__(conn, notice['id'], board._time(None))
+            elif destination == ('main', None):
+                conn.execute('UPDATE leader_notices SET batch_id=? WHERE id=?',
+                             ('room:%d:notice:%d' % (notice['room_id'], notice['id']), notice['id']))
+
+
+@board.atomic
+def check_claim(conn, notice_id, now, goal_id=None):
+    """Re-read a claimed notice before sending. Record a lost qualification once."""
+    notice = conn.execute('SELECT * FROM leader_notices WHERE id=? AND wake=1 AND sent_at IS NULL',
+                          (notice_id,)).fetchone()
+    if notice is None:
+        return False
+    room = _room(conn, notice['room_id'])
+    sid = notice['session_id']
+    reason = _room_delivery_reason(conn, room, sid)
+    if reason == '房间已暂停':
+        # A budget pause holds room input until the user goes on; it is not lost.
+        return False
+    if reason is None and goal_id is not None and delivery_assignment(conn, room, sid, goal_id) is None:
+        reason = '这项分工已撤下'
+    if reason is not None:
+        conn.execute('UPDATE leader_notices SET wake=0,waiting=? WHERE id=?',
+                     ('failed|%s|已取消：%s' % (now, reason), notice_id))
+        return False
+    return True
 
 
 def _gate(conn, room, actor, lead_only=False):
@@ -414,9 +466,12 @@ def close(conn, room_id, actor, summary=None, now=None, reason=None):
     conn.execute("UPDATE war_rooms SET status='closed',summary=?,closed_at=?,closed_message_id=?,close_reason=? WHERE id=?",
                  (summary, stamp, notice_id, reason, room_id))
     # Room mentions not yet delivered no longer wake anyone: there is nothing left to answer in a closed room.
-    conn.execute('UPDATE leader_notices SET wake=0 WHERE sent_at IS NULL AND id IN (SELECT t.notice_id FROM '
-                 'channel_mentions t JOIN channel_messages m ON m.id=t.message_id WHERE m.room_id=?)', (room_id,))
-    conn.execute('UPDATE leader_notices SET wake=0 WHERE room_id=? AND sent_at IS NULL', (room_id,))
+    conn.execute("UPDATE leader_notices SET wake=0,waiting=? WHERE sent_at IS NULL "
+                 "AND (waiting IS NULL OR waiting NOT GLOB 'failed|*|已取消：*') AND id IN (SELECT t.notice_id FROM "
+                 "channel_mentions t JOIN channel_messages m ON m.id=t.message_id WHERE m.room_id=?)",
+                 ('failed|%s|已取消：房间已结束' % stamp, room_id))
+    conn.execute("UPDATE leader_notices SET wake=0,waiting=? WHERE room_id=? AND sent_at IS NULL "
+                 "AND (waiting IS NULL OR waiting NOT GLOB 'failed|*|已取消：*')", ('failed|%s|已取消：房间已结束' % stamp, room_id))
     pause_work(conn, room_id, '作战室已结束', stamp)
     _event(conn, room_id, actor, 'closed', {'summary': summary, 'reason': reason}, now)
     _touch(conn, room_id, room['project'])
@@ -617,7 +672,12 @@ def get(conn, room_id, reader=board.HUMAN, limit=50, before=None):
 
 
 def main_input_note(conn, session_id, source, room_id):
-    """A one-line note for room input borrowed into a member's main session, or None (plan M17; stage-0 stub)."""
+    if room_id is None:
+        return None
+    room = conn.execute('SELECT * FROM war_rooms WHERE id=?', (room_id,)).fetchone()
+    if (room is not None and session_id != room['lead_session_id'] and not _room_delivery_reason(conn, room, session_id)
+            and delivery_assignment(conn, room, session_id) is None):
+        return '要改文件的活，等分工批准后在本房任务里做。'
     return None
 
 
