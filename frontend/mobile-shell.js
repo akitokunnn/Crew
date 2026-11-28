@@ -2,6 +2,53 @@
    导航按钮沿用页面已有的 data-act（由 app.js 的委托点击处理），角标从桌面图标栏读取。 */
 (() => {
   "use strict";
+  const android = window.CrewAndroid;
+  if (android && !window.crewDesktopShell && !window.crewDesktopTheme) {
+    let nextId = 0;
+    const pending = new Map();
+    android.addEventListener("message", event => {
+      const reply = JSON.parse(event.data);
+      const request = pending.get(reply.id);
+      if (!request) return;
+      pending.delete(reply.id);
+      clearTimeout(request.timeout);
+      if (reply.ok) request.resolve(reply.result);
+      else request.reject(new Error(reply.error));
+    });
+    const call = (method, params = {}) => new Promise((resolve, reject) => {
+      const id = String(++nextId);
+      const timeout = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error("手机没有响应，请再试一次"));
+      }, method === "requestNotifications" ? 120000 : 5000);
+      pending.set(id, {resolve, reject, timeout});
+      try {
+        android.postMessage(JSON.stringify({id, method, params}));
+      } catch (error) {
+        clearTimeout(timeout);
+        pending.delete(id);
+        reject(error);
+      }
+    });
+    window.CrewAndroidBridge = {
+      call,
+      voiceButton(project, className, onError) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = className;
+        button.title = "语音";
+        button.setAttribute("aria-label", "语音");
+        button.innerHTML = '<svg width="44" height="44" viewBox="-10 -10 44 44" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0m-7 7v3m-3 0h6"/></svg>';
+        button.onclick = async () => {
+          button.disabled = true;
+          try { await call("openVoice", {project}); }
+          catch (error) { onError(error.message); }
+          finally { button.disabled = false; }
+        };
+        return button;
+      },
+    };
+  }
   const narrow = window.matchMedia("(max-width:760px)");
   const body = document.body;
   const page = body.classList.contains("assistant-page") ? "assistant" : body.classList.contains("notes-page") ? "notes" : "app";
@@ -109,6 +156,19 @@
     const leaders = document.getElementById("leader-panel");
     const leadersOpen = inProject && leaders?.dataset.open === "true";
     const view = currentView();
+    if (narrow.matches && inProject && scope.mode === "workspace" && view === "all" && window.CrewAndroidBridge) {
+      const tools = document.querySelector("#main > .wh-head > .right");
+      if (tools && !tools.querySelector(".m-workspace-voice")) {
+        tools.prepend(window.CrewAndroidBridge.voiceButton(scope.project, "icon-btn m-workspace-voice", message => {
+          const status = document.createElement("div");
+          status.className = "toast show";
+          status.setAttribute("role", "status");
+          status.textContent = message;
+          document.getElementById("toast-root").append(status);
+          setTimeout(() => status.remove(), 5000);
+        }));
+      }
+    }
     body.classList.toggle("m-chat", view === "chat");
     body.classList.toggle("m-leaders", leadersOpen);
     const active = leadersOpen ? "leaders" : page === "app" ? (["all", "todos"].includes(view) || !inProject ? "home" : view === "chat" ? "leaders" : "more") : adminPage ? "more" : page;
@@ -198,6 +258,8 @@
   function apply() {
     if (narrow.matches && !tabbar) mount();
     if (tabbar) { tabbar.hidden = !narrow.matches; if (!narrow.matches && sheet.dataset.open === "true") setSheet(false); }
+    if (tabbar && narrow.matches) schedule();
+    if (!narrow.matches && inProject && window.CrewAndroidBridge) document.querySelector(".m-workspace-voice")?.remove();
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", apply); else apply();
   narrow.addEventListener("change", apply);

@@ -15,23 +15,36 @@ function element(tag) {
   return node;
 }
 function assistantPage(requests, {preview, room, restructure, failPreview = false, wide = true, storage = new Map(),
-  resolve = async () => ({ok: true, status: 200, json: async () => ({status: "approved"})})} = {}) {
+  resolve = async () => ({ok: true, status: 200, json: async () => ({status: "approved"})}),
+  search = "", android = false, desktop = false} = {}) {
   const nodes = new Map(), calls = [];
+  const voiceButtons = [], nativeCalls = [];
+  let nativeReply;
+  const composer = {querySelector: selector => {
+    if (selector === ".send") return {before: button => voiceButtons.push(button)};
+    return voiceButtons.find(button => button.className.includes(selector.slice(1)));
+  }};
   let refresh;
   const sandbox = {URLSearchParams, URL, Date, JSON, Promise, console,
     matchMedia: query => ({matches: query === "(min-width:761px)" ? wide : false, addEventListener() {}}),
     localStorage: {getItem: key => storage.has(key) ? storage.get(key) : null, setItem: (key, value) => storage.set(key, value)},
-    location: {hash: "", pathname: "/assistant.html", search: "", href: "http://127.0.0.1/assistant.html"},
+    location: {hash: "", pathname: "/assistant.html", search, href: "http://127.0.0.1/assistant.html" + search},
     history: {replaceState() {}}, setTimeout: (fn, delay) => { if (delay === 4000) refresh = fn; }, clearTimeout() {}, addEventListener() {},
-    document: {documentElement: {dataset: {}}, addEventListener() {}, createElement: element, createTextNode: text => ({text}),
-      getElementById: id => { if (!nodes.has(id)) nodes.set(id, element("div")); return nodes.get(id); }},
+    document: {documentElement: {dataset: {}}, body: {classList: {contains: name => name === "assistant-page"}},
+      addEventListener() {}, createElement: tag => ({...element(tag), setAttribute() {}}), createTextNode: text => ({text}),
+      getElementById: id => {
+        if (!nodes.has(id)) nodes.set(id, element("div"));
+        const node = nodes.get(id);
+        if (id === "assistant-chat") node.querySelector = () => composer;
+        return node;
+      }},
     fetch: async (url, options) => {
       const body = options.body === undefined ? undefined : JSON.parse(options.body);
       calls.push({url, body});
       if (url === "/api/op/interaction.resolve") return resolve(body);
       if (url === "/api/op/campaign.preview" && failPreview) return {ok: false, status: 409, json: async () => ({error: "工作区不存在"})};
-      const value = url === "/api/op/assistant.state" ? {assistant: {session_id: "assistant"}, projects: [], todos: [], goals: [], sounds: {}, now: "now"}
-        : url === "/api/op/interaction.list" ? {requests}
+      const value = url.startsWith("/api/op/assistant.state") ? {assistant: {session_id: "assistant"}, projects: [], todos: [], goals: [], sounds: {}, now: "now"}
+        : url.startsWith("/api/op/interaction.list") ? {requests}
         : url === "/api/op/campaign.preview" ? preview
         : url === "/api/op/domains.restructure.preview" ? restructure
         : url.startsWith("/api/op/war_room.get?") ? room
@@ -41,11 +54,21 @@ function assistantPage(requests, {preview, room, restructure, failPreview = fals
     CrewSound: {observe() {}}, CrewPersonalNotes: {create: () => ({open() {}})},
     CrewChat: {initFiles() {}, unmount() {}, update() {}, mount() {}, setNote() {}, prefill: () => true}};
   sandbox.window = sandbox;
+  sandbox.crewDesktopTheme = desktop;
+  if (android) sandbox.CrewAndroid = {
+    addEventListener: (type, listener) => { nativeReply = listener; },
+    postMessage: raw => {
+      const request = JSON.parse(raw);
+      nativeCalls.push(request);
+      nativeReply({data: JSON.stringify({id: request.id, ok: true, result: null})});
+    },
+  };
   vm.createContext(sandbox);
   vm.runInContext(web("browser-utils.js"), sandbox);
   vm.runInContext(web("restructure-ui.js"), sandbox);
+  vm.runInContext(web("mobile-shell.js"), sandbox);
   vm.runInContext(web("assistant.js"), sandbox);
-  return {calls, refresh: () => refresh(), dialog: () => nodes.get("assistant-confirmation-dialog"),
+  return {calls, voiceButtons, nativeCalls, refresh: () => refresh(), dialog: () => nodes.get("assistant-confirmation-dialog"),
     trigger: () => nodes.get("assistant-confirmation-trigger"), status: () => nodes.get("assistant-confirmation-status"),
     cards: () => nodes.get("assistant-confirmation-cards").children};
 }
@@ -240,4 +263,21 @@ test("a card a workspace assistant asked for names it 助手, never the internal
   assert.match(text(card), /^开局方案\n由助手发起 · 工作区 fitness\n/);
   assert(detail(card).innerHTML.includes("助手牵头，新建的 2 位 leader 都是成员"));
   assert(!text(card).includes("workspace_assistant"));
+});
+
+test("only an Android workspace assistant gets a voice button beside send", async () => {
+  const workspace = "?project=%E7%94%B0%E9%87%8E";
+  const page = assistantPage([], {android: true, search: workspace});
+  await settle();
+  assert.equal(page.voiceButtons.length, 1);
+  await page.voiceButtons[0].onclick();
+  assert.deepEqual(page.nativeCalls[0], {id: "1", method: "openVoice", params: {project: "田野"}});
+  await page.refresh();
+  assert.equal(page.voiceButtons.length, 1);
+  for (const options of [{android: true}, {search: workspace},
+    {android: true, desktop: true, search: workspace}]) {
+    const hidden = assistantPage([], options);
+    await settle();
+    assert.equal(hidden.voiceButtons.length, 0);
+  }
 });

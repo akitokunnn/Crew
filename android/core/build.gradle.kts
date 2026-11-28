@@ -18,6 +18,7 @@ java {
 
 dependencies {
     api(libs.okhttp.client)
+    implementation(libs.okhttp.sse)
     implementation(libs.coroutines.core)
     implementation(libs.serialization.json)
 

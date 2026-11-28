@@ -214,6 +214,12 @@
       if(read===confirmationRead)confirmations(requests);
     }catch(failure){if(read===confirmationRead)confirmationFeedback(`确认请求读取失败：${failure.message}`);}
   }
+  function attachVoice() {
+    if (PROJECT === null || !window.CrewAndroidBridge) return;
+    const actions = $("assistant-chat").querySelector(".composer .c-row");
+    if (!actions || actions.querySelector(".assistant-voice")) return;
+    actions.querySelector(".send").before(window.CrewAndroidBridge.voiceButton(PROJECT, "btn ghost assistant-voice", toast));
+  }
   async function refresh() {
     if(loading || stopped || window.CrewAccess?.expired)return;loading=true;clearTimeout(timer);
     try {
@@ -222,6 +228,7 @@
       const identity=state.assistant.session_id;lastState=state;
       if(mounted!==identity){CrewChat.unmount();CrewChat.mount({host:$("assistant-chat"),session:PROJECT===null?{...state.assistant,name:"系统管理员"}:state.assistant,state,api,toast,onRouted:()=>{},onNoteCleared:dropNote,emptyGuide:PROJECT===null?ADMIN_GUIDE:WORKSPACE_GUIDE});mounted=identity;attachNote();}
       else CrewChat.update(state);
+      attachVoice();
       attachDiscussion();
       await loadConfirmations();
     }catch(failure){
