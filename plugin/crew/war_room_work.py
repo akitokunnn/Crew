@@ -77,47 +77,47 @@ def watch(manager, conn, live, now):
 
 
 def deliver(manager, conn, live, now):
-    notices = conn.execute("SELECT n.* FROM leader_notices n JOIN war_rooms r ON r.id=n.room_id "
-                         "WHERE n.sent_at IS NULL AND n.wake=1 AND n.batch_id IS NULL "
-                         "AND r.status='open' AND r.paused_at IS NULL ORDER BY n.id").fetchall()
-    for notice in notices:
-        room = war_room._room(conn, notice['room_id'])
-        sid = notice['session_id']
-        prior = conn.execute('SELECT * FROM war_room_delivery WHERE notice_id=?', (notice['id'],)).fetchone()
-        target = conn.execute("SELECT * FROM war_room_items WHERE room_id=? AND owner_session_id=? AND goal_id IS NOT NULL "
-                            "AND plan_version=? AND status IN ('todo','doing') AND (? IS NULL OR goal_id=?) ORDER BY id LIMIT 1",
-                            (room['id'], sid, room['approved_version'], prior['goal_id'] if prior else None,
-                             prior['goal_id'] if prior else None)).fetchone()
-        if target is None or not can_work(manager, conn, room, target, live):
-            continue
+    pending = "room_id IS NOT NULL AND sent_at IS NULL AND wake=1 AND batch_id IS NULL"
+    for (notice_id,) in conn.execute('SELECT id FROM leader_notices WHERE ' + pending + ' ORDER BY id').fetchall():
         with board.transaction(conn):
-            available = conn.execute("SELECT 1 FROM leader_notices n JOIN war_rooms r ON r.id=n.room_id "
-                                     "WHERE n.id=? AND n.wake=1 AND n.sent_at IS NULL AND n.batch_id IS NULL AND r.status='open' "
-                                     "AND r.paused_at IS NULL", (notice['id'],)).fetchone()
-            if not available:
+            notice = conn.execute('SELECT * FROM leader_notices WHERE id=? AND ' + pending, (notice_id,)).fetchone()
+            if notice is None:
                 continue
-            prior = conn.execute('SELECT * FROM war_room_delivery WHERE notice_id=?', (notice['id'],)).fetchone()
-            if not prior:
+            destination = war_room.route(conn, notice)
+            prior = conn.execute('SELECT * FROM war_room_delivery WHERE notice_id=?', (notice_id,)).fetchone()
+            if prior is not None and not war_room.check_claim.__wrapped__(conn, notice_id, now, prior['goal_id']):
+                continue
+            if destination is None or destination[0] != 'goal':
+                continue
+            room = war_room._room(conn, notice['room_id'])
+            sid = notice['session_id']
+            goal_id = destination[1]
+            target = war_room.delivery_assignment(conn, room, sid, goal_id)
+            if prior is None:
                 context, upto = war_room.context(conn, room, sid)
+                context += '\n' + notice['text']
                 conn.execute('INSERT INTO war_room_delivery(notice_id,room_id,goal_id,context,upto) VALUES(?,?,?,?,?)',
-                             (notice['id'], room['id'], target['goal_id'], context+'\n'+notice['text'], upto))
-            prior = conn.execute('SELECT * FROM war_room_delivery WHERE notice_id=?', (notice['id'],)).fetchone()
+                             (notice_id, room['id'], goal_id, context, upto))
+            else:
+                context, upto = prior['context'], prior['upto']
+        if not can_work(manager, conn, room, target, live) or not war_room.check_claim(conn, notice_id, now, goal_id):
+            continue
         try:
-            result = manager.goal_controller.send(prior['goal_id'], sid, prior['context'], source='crew',
-                                               identity='room:%d:notice:%d' % (room['id'], notice['id']))
+            result = manager.goal_controller.send(goal_id, sid, context, source='crew',
+                                                  identity='room:%d:notice:%d' % (room['id'], notice_id))
             if result.get('accepted') is not True:
                 raise board.Conflict('房内输入尚未确认')
         except (board.BoardError, codex_client.CodexError, OSError) as exc:
-            conn.execute('UPDATE leader_notices SET waiting=? WHERE id=?',
-                         ('failed|%s|%s' % (now, str(exc)), notice['id']))
+            conn.execute('UPDATE leader_notices SET waiting=? WHERE id=? AND wake=1 AND sent_at IS NULL',
+                         ('failed|%s|%s' % (now, str(exc)), notice_id))
             continue
         with board.transaction(conn):
             conn.execute("UPDATE leader_notices SET sent_at=?,waiting=NULL WHERE id=?",
-                         (now, notice['id']))
+                         (now, notice_id))
             conn.execute('UPDATE war_room_delivery SET execution_id=? WHERE notice_id=?',
-                         (result['execution_id'], notice['id']))
-            war_room.mark_decision_answer_delivered(conn, notice['id'], now)
-            war_room.mark_seen(conn, room['id'], sid, prior['upto'], now)
+                         (result['execution_id'], notice_id))
+            war_room.mark_decision_answer_delivered(conn, notice_id, now)
+            war_room.mark_seen(conn, room['id'], sid, upto, now)
 
 
 def stop_room_processes(manager, conn):

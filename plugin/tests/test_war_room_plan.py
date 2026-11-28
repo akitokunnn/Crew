@@ -138,11 +138,12 @@ class PlanTests(DeliveryFixture):
         self.assertEqual([e['id'] for e in manager.history('a')['events'] if 'id' in e],
                          ['private-input', 'private-output'])
 
-    def test_active_lead_mention_uses_main_until_execution_is_bound(self):
+    def test_active_lead_mention_uses_assignment_before_and_after_execution_is_bound(self):
         room = war_room.start(self.conn, 'demo', 'a', '作战', '验证')
         approve_assignments(self.conn, room, ['alpha'])
         first = war_room.say(self.conn, room['id'], 'user', '没有执行', ['a'])
         item = self.conn.execute("SELECT goal_id FROM war_room_items WHERE kind='assignment'").fetchone()
+        self.assertEqual(war_room.route(self.conn, self.notices('a')[-1]), ('goal', item['goal_id']))
         exe = goals.create_execution(self.conn, item['goal_id'], 'a', runtime='claude')
         second = war_room.say(self.conn, room['id'], 'user', '走执行', ['a'])
         manager = mock.Mock()
@@ -154,8 +155,7 @@ class PlanTests(DeliveryFixture):
         rows = self.conn.execute('SELECT t.message_id,n.batch_id,n.sent_at,d.execution_id FROM channel_mentions t '
                                  'JOIN leader_notices n ON n.id=t.notice_id LEFT JOIN war_room_delivery d ON d.notice_id=n.id '
                                  'WHERE t.message_id IN (?,?) ORDER BY t.message_id', (first['id'], second['id'])).fetchall()
-        self.assertIsNotNone(rows[0]['batch_id'])
-        self.assertIsNone(rows[0]['sent_at'])
+        self.assertEqual(tuple(rows[0]), (first['id'], None, NOW, exe['id']))
         self.assertEqual(tuple(rows[1]), (second['id'], None, NOW, exe['id']))
 
     def test_active_leads_decision_answer_keeps_its_bound_execution(self):

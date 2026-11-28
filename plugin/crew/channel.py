@@ -21,7 +21,7 @@ def _excerpt(body, size=40):
 
 
 # What a named or answered leader has actually got; chat_delivery.notice_state decides it from stored facts.
-DELIVERY_LABELS = {"queued": "已排队，对方尚未收到", "delivered": "已送达，未回复", "replied": "已回复"}
+DELIVERY_LABELS = {"queued": "已排队，对方尚未收到", "delivered": "已送达，未回复", "replied": "已回复", "cancelled": "已取消"}
 
 
 def _message(conn, row):
@@ -335,7 +335,7 @@ def post(conn, project_name, actor, body, to=(), source="crew", now=None, reply_
         conn.execute("INSERT INTO channel_mentions(message_id,session_id,name,notice_id,await_reply,reason) "
                      "VALUES(?,?,?,?,?,?)", (message_id, target["session_id"], target["crew_name"], notice_id,
                                              int(actor == board.HUMAN and notice_id is not None), reason))
-        if room is not None and target['session_id'] == room['lead_session_id'] and reason == 'mention' and notice_id is not None:
+        if room is not None and notice_id is not None:
             war_room.claim_main_notices(conn, notice_id)
     return _message(conn, conn.execute("SELECT * FROM channel_messages WHERE id=?", (message_id,)).fetchone())
 
