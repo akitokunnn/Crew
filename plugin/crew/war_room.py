@@ -4,14 +4,17 @@ Posts are channel posts with ``room_id`` set, so mentions, reply notices and the
 channel's (docs/WAR_ROOM_DESIGN.md). ``actor`` is a leader's session id or ``board.HUMAN``.
 """
 import json
+from pathlib import Path
+import subprocess
 
-from . import board, change_feed, channel, personal, workspace_assistant
+from . import board, change_feed, channel, git_process, personal, workspace_assistant
 from .ops.errors import OpError
 
 TITLE_LIMIT, GOAL_LIMIT, ITEM_LIMIT, CONTRACT_LIMIT = 30, 200, 60, 8000
 # One leader's first turn already writes tens of thousands of cache tokens; a lower cap pauses the room at once.
 BUDGET_MIN, BUDGET_MAX = 100_000, 1_000_000_000
 ITEM_STATES = {'todo': '待办', 'doing': '进行中', 'blocked': '阻塞', 'done': '完成'}
+LEAD_ASSIGNMENT_ERROR = '分工只写参战成员的活，领头的协调不写进分工'
 
 
 def _text(value, what, limit, empty=False):
@@ -133,11 +136,39 @@ def _post(conn, room, actor, body, to=(), now=None, reply_to=None):
                                     reply_to=reply_to, room_id=room['id'], generated=True)
 
 
+def _opening_brief(root, room_id, title, goal):
+    from . import hooks
+
+    root = Path(root)
+    entries = sorted(root.iterdir(), key=lambda entry: entry.name)
+    lines = ['先用 war_room.plan.update 按骨架保存 v1，再细化。',
+             '作战室 #%d《%s》。目标：%s' % (room_id, title, goal),
+             '请用 war_room.post 在这个房间和用户说话。', '', '工作区概况']
+    lines.extend('- ' + entry.name + ('/' if entry.is_dir() else '') for entry in entries[:40])
+    if len(entries) > 40:
+        lines.append('……还有 %d 项' % (len(entries) - 40))
+    try:
+        repo, branch = hooks.git_details(root)
+        if repo is not None:
+            status = git_process.run(['--no-optional-locks', '-C', str(root), 'status', '--porcelain'], timeout=10)
+            status.check_returncode()
+            lines.append('Git 分支：%s。%s。' % (branch or '分离 HEAD',
+                                               '有未提交改动' if status.stdout else '没有未提交改动'))
+    except subprocess.CalledProcessError as exc:
+        raise board.BoardError('读取工作区 Git 状态失败：' + (exc.stderr.strip() if exc.stderr else str(exc))) from exc
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise board.BoardError('读取工作区 Git 状态失败：' + str(exc)) from exc
+    lines.extend(('', '## 分工', '- [A1] 成员名 | 负责的文件和事项',
+                  '## 等你定', '- [Q1] 要用户定的问题 | 推荐做法',
+                  '## 完成标准', '- [C1] 可核验的结果'))
+    return '\n'.join(lines)
+
+
 @board.atomic
 def start(conn, project_name, actor, title, goal, member_names=(), from_message=None, lead=None,
           budget_tokens=None, now=None, request_id=None, campaign=None):
     """Reserve the workspace before any invitation, announcement, or model work."""
-    board.project(conn, project_name)
+    workspace = board.project(conn, project_name)
     title, goal = _text(title, '作战室标题', TITLE_LIMIT), _text(goal, '目标', GOAL_LIMIT)
     if actor == board.HUMAN:
         if not lead:
@@ -158,7 +189,10 @@ def start(conn, project_name, actor, title, goal, member_names=(), from_message=
                                 "WHERE r.project=? AND r.open_request_id=? AND e.kind='reserved' AND e.actor=?",
                                 (project_name, request_id, actor)).fetchone()
         if existing:
-            return {**get(conn, existing['id'], actor), 'replayed': True}
+            room = {**get(conn, existing['id'], actor), 'replayed': True}
+            if actor != board.HUMAN:
+                room['brief'] = _opening_brief(workspace['root'], room['id'], room['title'], room['goal'])
+            return room
     occupied = conn.execute("SELECT id FROM war_rooms WHERE project=? AND status='open' ORDER BY id LIMIT 1",
                             (project_name,)).fetchone()
     if occupied:
@@ -175,13 +209,15 @@ def start(conn, project_name, actor, title, goal, member_names=(), from_message=
     if channel._leader(conn, project_name, lead_id):
         conn.execute('INSERT INTO war_room_members(room_id,session_id,joined_at) VALUES(?,?,?)', (room_id, lead_id, stamp))
     _event(conn, room_id, actor, 'reserved', {'proposed_members': list(member_names), 'request_id': request_id, 'campaign': campaign}, stamp)
+    brief = _opening_brief(workspace['root'], room_id, title, goal)
     if actor == board.HUMAN:
-        text = ('用户开了作战室 #%d《%s》。目标：%s\n请先和用户沟通并起草作战计划书（war_room.plan.update）。'
-                '请用 war_room.post 在这个房间和用户说话。' % (room_id, title, goal))
         conn.execute("INSERT INTO leader_notices(project,session_id,room_id,text,source,created_at,wake,batch_id) "
-                     "VALUES(?,?,?,?,'web',?,1,?)", (project_name, lead_id, room_id, text, stamp, 'room:%d:open' % room_id))
+                     "VALUES(?,?,?,?,'web',?,1,?)", (project_name, lead_id, room_id, brief, stamp, 'room:%d:open' % room_id))
     _touch(conn, room_id, project_name)
-    return get(conn, room_id, actor)
+    room = get(conn, room_id, actor)
+    if actor != board.HUMAN:
+        room['brief'] = brief
+    return room
 
 
 def require_active(room):
@@ -217,12 +253,11 @@ def change_members(conn, room_id, actor, add=(), remove=(), now=None):
     return get(conn, room_id, actor)
 
 
-@board.atomic
-def say(conn, room_id, actor, body, to=(), reply_to=None, detail=False, now=None):
+def say(conn, room_id, actor, body, to=(), reply_to=None, detail=False, now=None, kind=None):
     room = open_room(conn, room_id)
     _gate(conn, room, actor)
-    return channel.post.__wrapped__(conn, room['project'], actor, body, to, source=_source(actor), now=now,
-                                    reply_to=reply_to, detail=detail, room_id=room_id)
+    return channel.post(conn, room['project'], actor, body, to, source=_source(actor), now=now,
+                        reply_to=reply_to, detail=detail, room_id=room_id, kind=kind)
 
 
 @board.atomic
@@ -233,6 +268,8 @@ def set_item(conn, room_id, actor, title=None, owner=None, status=None, note=Non
     _gate(conn, room, actor)
     if status is not None and status not in ITEM_STATES:
         raise board.BoardError('状态只能是 todo / doing / blocked / done')
+    if owner is not None and owner in (room['lead_session_id'], _name(conn, room['lead_session_id'])):
+        raise board.BoardError(LEAD_ASSIGNMENT_ERROR)
     owner_id = None if owner is None else _leaders(conn, room['project'], [owner])[0]['session_id']
     if owner_id is not None and not is_member(conn, room_id, owner_id):
         raise board.BoardError('%s 不是作战室成员' % owner)
@@ -251,8 +288,7 @@ def set_item(conn, room_id, actor, title=None, owner=None, status=None, note=Non
     if before is None:
         title = _text(title, '事项', ITEM_LIMIT)
         item_id = conn.execute('INSERT INTO war_room_items(room_id,title,owner_session_id,status,note,updated_at,updated_by) '
-                               'VALUES(?,?,?,?,?,?,?)', (room_id, title, owner_id if owner is not None else
-                                                         (None if actor == board.HUMAN else actor),
+                               'VALUES(?,?,?,?,?,?,?)', (room_id, title, owner_id,
                                                          status or 'todo', note or None, stamp, actor)).lastrowid
     else:
         conn.execute('UPDATE war_room_items SET title=?,owner_session_id=?,status=?,note=?,updated_at=?,updated_by=? '
@@ -260,13 +296,13 @@ def set_item(conn, room_id, actor, title=None, owner=None, status=None, note=Non
                                     before['owner_session_id'] if owner is None else owner_id,
                                     before['status'] if status is None else status,
                                     before['note'] if note is None else (note or None), stamp, actor, item_id))
-    item = dict(conn.execute('SELECT * FROM war_room_items WHERE id=?', (item_id,)).fetchone())
+    item = _item(conn, conn.execute('SELECT * FROM war_room_items WHERE id=?', (item_id,)).fetchone())
     from . import war_room_plan
-    war_room_plan.changed(conn, room, 'item', {'id': item_id, 'title': item['title'], 'status': item['status'],
-                                          'was': None if before is None else before['status'], 'note': item['note'],
-                                          'owner': None if item['owner_session_id'] is None else
-                                          _name(conn, item['owner_session_id'])}, now, actor)
-    return _item(conn, item)
+    detail = {'id': item_id, 'title': item['title'], 'status': item['status'], 'note': item['note'],
+              'was': None if before is None else before['status'], 'owner': item['owner_name']}
+    war_room_plan.changed(conn, room, 'item', detail, now, actor, owner=item['owner_session_id'],
+                          previous_owner=None if before is None else before['owner_session_id'])
+    return item
 
 
 @board.atomic
@@ -290,6 +326,8 @@ def decide(conn, room_id, actor, question, options=(), recommendation=None, now=
     """The lead gathers the room's open question into one decision card for the user."""
     room = open_room(conn, room_id)
     _gate(conn, room, actor, lead_only=True)
+    if room['phase'] == 'preparing':
+        raise OpError('conflict', '筹备期的问题写进计划书「等你定」，批准后再发拍板卡')
     question = _text(question, '拍板问题', 300)
     decision_id = board.ask.__wrapped__(conn, room['lead_session_id'], question,
                                         options, recommendation, now=now, project=room['project'])

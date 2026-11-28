@@ -64,8 +64,8 @@ def owners(conn, room, entries):
         if name is None or name in found:
             continue
         if name in (room['lead_session_id'], war_room._name(conn, room['lead_session_id'])):
-            found[name] = room['lead_session_id']
-        elif name.startswith('拟任：') and name[3:].strip():
+            fail('assignment', item['line'], war_room.LEAD_ASSIGNMENT_ERROR)
+        if name.startswith('拟任：') and name[3:].strip():
             found[name] = None
         else:
             try:
@@ -75,21 +75,55 @@ def owners(conn, room, entries):
     return found
 
 
-def changed(conn, room, kind, detail, now, actor):
+def _notify(conn, room, sid, text, now):
+    return conn.execute("INSERT INTO leader_notices(room_id,project,session_id,source,text,created_at,wake) "
+                        "VALUES(?,?,?,'crew',?,?,1)",
+                        (room['id'], room['project'], sid, text, board._time(now))).lastrowid
+
+
+def _kickoff(conn, room, version, now):
+    room = war_room._room(conn, room['id'])
+    assignments = conn.execute("SELECT owner_session_id,goal_id,status FROM war_room_items "
+                               "WHERE room_id=? AND plan_version=? AND kind='assignment' ORDER BY id",
+                               (room['id'], version))
+    by_owner = {}
+    for sid, goal_id, status in assignments:
+        goals_for_owner = by_owner.setdefault(sid, [])
+        if goal_id is not None and status in ('todo', 'doing') and goal_id not in goals_for_owner:
+            goals_for_owner.append(goal_id)
+    if not by_owner:
+        return
+    post = war_room._post(conn, room, room['lead_session_id'], '请按已批准的计划 v%d 开工。' % version,
+                          to=[war_room._name(conn, sid) for sid in by_owner], now=now)
+    notices = conn.execute('SELECT n.id,n.session_id,n.text FROM channel_mentions t '
+                           'JOIN leader_notices n ON n.id=t.notice_id WHERE t.message_id=?', (post['id'],))
+    for notice_id, sid, text in notices:
+        goal_ids = by_owner[sid]
+        if not goal_ids:
+            continue
+        context, upto = war_room.context(conn, room, sid)
+        # The kickoff post supplies the first receipt. Each additional goal retains its own delivery.
+        for index, goal_id in enumerate(goal_ids):
+            if index:
+                notice_id = _notify(conn, room, sid, text, now)
+            conn.execute('INSERT INTO war_room_delivery(notice_id,room_id,goal_id,context,upto) VALUES(?,?,?,?,?)',
+                         (notice_id, room['id'], goal_id, context+'\n'+text, upto))
+
+
+def changed(conn, room, kind, detail, now, actor, *, owner=None, previous_owner=None):
     war_room._event(conn, room['id'], actor, kind, detail, now)
-    recipients = {m['session_id'] for m in war_room.members(conn, room['id'])} | {room['lead_session_id']}
-    for sid in recipients - {actor}:
-        targets = conn.execute("SELECT DISTINCT i.goal_id FROM war_room_items i JOIN war_rooms r ON r.id=i.room_id "
-                               "WHERE r.id=? AND i.owner_session_id=? AND i.plan_version=r.approved_version "
-                               "AND i.goal_id IS NOT NULL AND i.status IN ('todo','doing')", (room['id'], sid)).fetchall()
-        text = '作战室 #%s %s：%s' % (room['id'], kind, json.dumps(detail, ensure_ascii=False))
-        for goal_id in [target[0] for target in targets] or [None]:
-            notice = conn.execute("INSERT INTO leader_notices(room_id,project,session_id,source,text,created_at,wake) "
-                                  "VALUES(?,?,?,'crew',?,?,1)", (room['id'], room['project'], sid, text, board._time(now))).lastrowid
-            if goal_id is not None:
-                context, upto = war_room.context(conn, war_room._room(conn, room['id']), sid)
-                conn.execute('INSERT INTO war_room_delivery(notice_id,room_id,goal_id,context,upto) VALUES(?,?,?,?,?)',
-                             (notice, room['id'], goal_id, context+'\n'+text, upto))
+    if kind == 'approved':
+        _kickoff(conn, room, detail['version'], now)
+    elif kind == 'item':
+        lead, status = room['lead_session_id'], detail['status']
+        heading = '作战室 #%d「%s」' % (room['id'], detail['title'])
+        if actor != lead and status in ('done', 'blocked') and detail['was'] != status:
+            text = heading + '：' + war_room.ITEM_STATES[status]
+            if detail['note']:
+                text += '\n' + detail['note']
+            _notify(conn, room, lead, text, now)
+        if owner is not None and owner != previous_owner:
+            _notify(conn, room, owner, heading + '交给你负责。', now)
     war_room._touch(conn, room['id'], room['project'])
 
 
@@ -232,17 +266,13 @@ def approve(conn, room_id, actor, version, recommendations, budget_tokens, now=N
     campaign, proposals = create_planned_leaders(conn, room, by_name, stamp, step)
     conn.execute("UPDATE war_rooms SET phase='active',approved_version=?,budget_tokens=? WHERE id=?",
                  (version, budget_tokens, room_id))
-    invited = []
     for sid in dict.fromkeys(by_name.values()):
         if sid != room['lead_session_id'] and not war_room.is_member(conn, room_id, sid):
             conn.execute('INSERT INTO war_room_members(room_id,session_id,joined_at) VALUES(?,?,?) '
                          'ON CONFLICT(room_id,session_id) DO UPDATE SET left_at=NULL,joined_at=excluded.joined_at',
                          (room_id, sid, stamp))
-            invited.append(war_room._name(conn, sid))
             step('invite', sid)
     publish_items(conn, room_id, version, entries, by_name, recommendations, campaign, proposals, stamp, step)
-    if invited:
-        war_room._post(conn, room, room['lead_session_id'], '请按已批准的计划 v%d 开工。' % version, to=invited, now=stamp)
     if room['opened_message_id'] is None:
         post = channel.post.__wrapped__(conn, room['project'], actor, '作战室 #%d《%s》已批准开打。' % (room_id, room['title']),
                                         source='web', now=stamp, generated=True)
@@ -262,6 +292,8 @@ def consult(conn, room_id, actor, version, question_id, purpose, question, now=N
         room = war_room.open_room(conn, room_id)
         if actor != room['lead_session_id'] or room['legacy']:
             raise OpError('forbidden', '只有新房领头可以请顾问')
+        if room['draft_version'] == 0:
+            raise OpError('conflict', '先保存一版计划书')
         existing = conn.execute('SELECT * FROM war_room_consults WHERE room_id=? AND question_id=?',
                                 (room_id, question_id)).fetchone()
         if existing:
@@ -284,7 +316,7 @@ def consult(conn, room_id, actor, version, question_id, purpose, question, now=N
                      'model,effort,requested_model,requested_effort,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                      (room_id, question_id, version, purpose, question, choice['runtime'], model, effort,
                       model, effort, board._time(now)))
-    prompt = question if plan is None else question + '\n\n' + plan['body']
+    prompt = question + '\n\n' + plan['body']
     receipt = {}
     from . import codex_client
     try:
