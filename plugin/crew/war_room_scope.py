@@ -175,6 +175,12 @@ def _record(conn, room, sid, source, outside, now):
             if current['status'] == 'open':
                 title = war_room._name(conn, sid)+' 改了分工范围外的文件：' if sid else '共用目录里有不属于任何分工的改动：'
                 war_room_plan._notify(conn, current, current['lead_session_id'], title+'、'.join(outside[:5])+'……请核对。', now)
+            else:
+                member = war_room._name(conn, sid) if sid else '共用目录中有人'
+                text = (f"作战室 #{room}《{current['title']}》收尾时发现越界改动："
+                        f"{member} 改了范围外的文件 {'、'.join(outside[:10])}，请核对是否要保留。")
+                conn.execute("INSERT INTO leader_notices(project,session_id,source,text,created_at,wake) "
+                             "VALUES(?,?,'crew',?,?,1)", (current['project'], current['lead_session_id'], text, board._time(now)))
             war_room._touch(conn, room, current['project'])
 
 

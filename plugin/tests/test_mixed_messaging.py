@@ -37,7 +37,7 @@ class FakeCodex(codex_runtime.CodexRunning):
         self.journal.set_status("working")
         return identity
 
-    def close(self):
+    def close(self, *, reason='close', archive=True):
         self.process.finish()
         self.reader_done.set()
 

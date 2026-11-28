@@ -46,10 +46,17 @@ class DeviceNotificationTests(ShellFixture, unittest.TestCase):
         return rows
 
     def test_collects_reminder_kinds_without_channels_and_deduplicates(self):
+        self.assert_reminder_collection(away=True)
+
+    def test_collects_reminder_kinds_when_not_away(self):
+        self.assert_reminder_collection(away=False)
+
+    def assert_reminder_collection(self, *, away):
         with patch.object(device_notifications, 'COLLECT_SECONDS', .04):
-            self.service.inbox.set_away(True)
-            self.assertTrue(self.service.inbox.status()['away'])
-            self.assertTrue(all(inbox.credentials is None for inbox in self.service.connections.inboxes.values()))
+            connections = self.service.connections
+            connections.set_away(away)
+            self.assertEqual(connections.notification_status()['away'], away)
+            self.assertTrue(all(inbox.credentials is None for inbox in connections.inboxes.values()))
             workspace_settings.apply_update(self.conn, 'demo', '示例工作区', None, 0, now=NOW)
             self.start_lan()
             decision = board.ask(self.conn, 's1', '哪一步？\nhttp://localhost:123/private', now=NOW)
