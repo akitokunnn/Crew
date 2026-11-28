@@ -41,6 +41,28 @@
     let request = 0, previewRequest = 0, loadedAt = 0, draft = {name:"",group:""}, dirty = false;
     root.innerHTML = `<header class="head big"><div><div class="title">会话库</div><div class="sub">找到已有工作，看清内容，再决定交给谁继续。</div></div><button class="btn" data-sl="refresh">刷新</button></header><div class="sl-body"><div class="sl-toolbar"><label class="sl-search"><span class="sl-search-label">搜索会话</span><input type="search" data-sl-field="query" placeholder="标题、名字、目录或会话 ID" autocomplete="off"></label><label>范围<select data-sl-field="scope"><option value="project">当前工作区</option><option value="all">全部工作区</option></select></label><label data-sl-session-filter>载体<select data-sl-field="runtime"><option value="all">全部载体</option><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label><label data-sl-session-filter>状态<select data-sl-field="status"><option value="all">全部状态</option><option value="running">正在运行</option><option value="ungrouped">未分组</option></select></label></div><nav class="sl-categories" aria-label="会话分类"></nav><p class="sl-scope"></p><p class="sl-error" role="alert" hidden></p><p class="sl-warning" role="status" hidden></p><div class="sl-layout"><div class="sl-results" aria-live="polite"></div><aside class="sl-preview" aria-label="会话预览" hidden></aside></div></div>`;
     const find = selector => root.querySelector(selector);
+    const categoryNav = find(".sl-categories");
+    function updateCategoryEdge() {
+      const {scrollLeft, clientWidth, scrollWidth} = categoryNav;
+      categoryNav.dataset.more = [
+        scrollLeft > 1 ? "start" : "",
+        scrollLeft + clientWidth < scrollWidth - 1 ? "end" : "",
+      ].join(" ").trim();
+    }
+    function revealCategory(button) {
+      if (categoryNav.scrollWidth > categoryNav.clientWidth) {
+        button.scrollIntoView({block:"nearest",inline:"nearest"});
+      }
+    }
+    categoryNav.addEventListener("scroll", updateCategoryEdge, {passive:true});
+    categoryNav.addEventListener("focusin", event => {
+      if (event.target.matches(":focus-visible")) revealCategory(event.target);
+    });
+    window.addEventListener("resize", () => {
+      const button = categoryNav.querySelector(":focus-visible") ?? categoryNav.querySelector(".on");
+      if (button) revealCategory(button);
+      updateCategoryEdge();
+    });
     const when = value => new Date(value).toLocaleString("zh-CN", {month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"});
     function notices() {
       for (const [selector,text] of [[".sl-error",error],[".sl-warning",warning]]) { const node = find(selector); node.hidden = !text; node.textContent = text; }
@@ -138,8 +160,8 @@
     function renderList() {
       const active = document.activeElement;
       const focus = root.contains(active) && active.dataset.sl ? {...active.dataset} : null;
-      const nav = find(".sl-categories");
-      nav.innerHTML = categories.map(([key,label]) => {
+      const previousCategory = categoryNav.querySelector(".on")?.dataset.category;
+      categoryNav.innerHTML = categories.map(([key,label]) => {
         const count = key === "task_history" ? "" : `<span>${items.filter(item => matches(item,{...filters,category:key,query:""})).length}</span>`;
         return `<button class="${filters.category === key ? "on" : ""}" data-sl="category" data-category="${key}" aria-pressed="${filters.category === key}">${label}${count}</button>`;
       }).join("");
@@ -155,6 +177,8 @@
         if (focus.category) selector += `[data-category="${CSS.escape(focus.category)}"]`;
         find(selector)?.focus({preventScroll:true});
       }
+      if (filters.category !== previousCategory) revealCategory(categoryNav.querySelector(".on"));
+      updateCategoryEdge();
     }
     function leadersFor(item) { return item.project === state.project.name ? state.leaders : []; }
     function renderDetail() {
@@ -248,7 +272,7 @@
     });
     return {mount(target,nextState) {
       state = nextState;
-      if (root.parentElement !== target) { target.replaceChildren(root); delete target.dataset.render; }
+      if (root.parentElement !== target) { target.replaceChildren(root); delete target.dataset.render; updateCategoryEdge(); }
       if (!loading && !busy && Date.now() - loadedAt > 15000) void load();
       notices();
     }, refresh:load};

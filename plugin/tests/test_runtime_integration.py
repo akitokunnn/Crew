@@ -51,7 +51,11 @@ class FakeCodex:
         self.calls.append(('interrupt', None))
         self.journal.set_status('idle')
 
-    def close(self):
+    def pending_approvals(self):
+        return []
+
+    def close(self, *, reason, archive=True):
+        self.stop_reason = reason
         self.process.poll.return_value = 0
         self.reader_done.set()
 

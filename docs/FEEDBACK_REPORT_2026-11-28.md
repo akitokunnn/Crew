@@ -1,5 +1,7 @@
 # Crew 试用反馈交付报告（2026-11-28）
 
+> 出处里反引号括起的 `Temp/`、`.claude/worktrees/` 路径是本机材料，被 git 忽略，不在仓库内。
+
 ## 1. 一句话结论
 
 **作战室现在先聊计划、你敲定后才开打，通知、报告和导图也已更新，成员目录隔离、独立房内上下文和人格留到下一批，四条桌面体验等下次出包。**
@@ -17,7 +19,7 @@
 11. **做完** · 新手引导。三步从认识 Leader、导图、作战室走到选文件夹和开局，引擎步骤只看安装、登录和默认引擎，模型及思考强度按裁决移出。空首页同步给三种开局，安装版引导待出包。
 12. **部分** · Codex 最近列表。新建的 Crew 持久线程从默认列表隐藏，能确认是 Crew 建的旧线程空闲后归档。旧内部线程续用时仍可能露出，用户接入和来源不明的线程保持原样。
 
-出处 · [原始反馈](../Temp/tasks/用户反馈_原文.md)、[试用反馈规划书](FEEDBACK_PLAN_2026-11-28.md)、[后台与真 AI 验收](../../../Crew/Temp/archive/feedback-1128/fb-accept1/集成验收_后台与真AI_交付.md)、[集成验收第二段](../Temp/tasks/集成验收_第二段_交付.md)、[第二段修复](../Temp/tasks/验收修复_第二段_交付.md)。
+出处 · 原始反馈（`Temp/tasks/用户反馈_原文.md`）、[试用反馈规划书](FEEDBACK_PLAN_2026-11-28.md)、后台与真 AI 验收（`Temp/archive/feedback-1128/fb-accept1/集成验收_后台与真AI_交付.md`）、集成验收第二段（`Temp/tasks/集成验收_第二段_交付.md`）、第二段修复（`Temp/tasks/验收修复_第二段_交付.md`）。
 
 ## 2. 遗留和下一批
 
@@ -25,7 +27,7 @@
 2. **没绑定执行时的专用房内上下文 · 只调研。** 领头可借已有主会话收开房、点名和拍板答复，其他无绑定收件人显示「待送达」。按房间单独恢复会话、授予和收回权限还没做。
 3. **Leader 和全局助手的人格 · 没做。** 规划记下了自定义人格、用久了能长出性格的需求。
 
-出处 · [规划书「下一批」](FEEDBACK_PLAN_2026-11-28.md#下一批本批不做)、[筹备房唤醒领头](../Temp/tasks/筹备房唤醒领头_交付.md)、[视觉修复](../Temp/tasks/视觉修复_交付.md)。
+出处 · [规划书「下一批」](FEEDBACK_PLAN_2026-11-28.md#下一批本批不做)、筹备房唤醒领头（`Temp/tasks/筹备房唤醒领头_交付.md`）、视觉修复（`Temp/tasks/视觉修复_交付.md`）。
 
 **7 条审美细节**
 
@@ -37,7 +39,7 @@
 6. 筹备房左右两栏的空状态统一对齐。
 7. 窄屏引导的「开作战室」卡调整换行，避免单独掉一个「工。」。
 
-出处 · [视觉修复任务书](../Temp/tasks/视觉修复_任务书.md)、[视觉修复交付](../Temp/tasks/视觉修复_交付.md)。
+出处 · 视觉修复任务书（`Temp/tasks/视觉修复_任务书.md`）、视觉修复交付（`Temp/tasks/视觉修复_交付.md`）。
 
 **全量里还红着的 3 个 `test_install_launchers` 用例**
 
@@ -45,7 +47,7 @@
 2. `test_real_git_bash_help_uses_native_installed_paths_with_quoted_home` 仍要求 Git Bash 的 `crew --help` 列出 `goal`，现有 CLI 返回主机命令帮助。
 3. `test_windows_launcher_does_not_resolve_python_from_sandbox_path` 在 Windows `cmd` 也遇到同一个旧帮助断言。后两项启动器本身均正常退出。
 
-出处 · [全量测试交付的失败清单](../Temp/tasks/全量测试_交付.md#失败清单)，三项都追溯到原有 CLI 拆分提交 `3a56f29`。
+出处 · 全量测试交付的失败清单（`Temp/tasks/全量测试_交付.md#失败清单`），三项都追溯到原有 CLI 拆分提交 `3a56f29`。
 
 **4 条安装版检查等下次出包**
 
@@ -54,7 +56,7 @@
 3. 引导第三步分别走「开作战室」「建第一位 Leader」「先画思维导图」，核对三种落点。
 4. 首页设置打开「鼠标滚轮缩放」，确认两张图都切到滚轮缩放。
 
-这次不出包。源码 Electron 和浏览器的走查已经做过，安装版的这四条留待出包后确认。出处 · [手测清单第 2、10、11、16 项](../../../Crew/Temp/手动测试流程_1128.md)、[集成验收第二段](../Temp/tasks/集成验收_第二段_交付.md)。
+这次不出包。源码 Electron 和浏览器的走查已经做过，安装版的这四条留待出包后确认。出处 · 手测清单第 2、10、11、16 项（`Temp/手动测试流程_1128.md`）、集成验收第二段（`Temp/tasks/集成验收_第二段_交付.md`）。
 
 ## 3. 现在能用什么
 
@@ -76,11 +78,11 @@
 | 会话库 | 助手、管理员和待接入一眼能分开，执行按任务看历史。 |
 | 空首页开局 | 开作战室、建 Leader、画导图三种入口，不确定时也能直接找工作区助手聊。 |
 
-出处 · [规划书](FEEDBACK_PLAN_2026-11-28.md)、[B1 后台交付](../../../Crew/Temp/archive/feedback-1128/fb-b1/B1作战室契约_交付.md)、[B2 作战室界面](../../../Crew/.claude/worktrees/arch-review-afe4eb/Temp/tasks/B2作战室界面_交付.md)、[C 画布](../../../Crew/Temp/archive/feedback-1128/fb-c/C画布_交付.md)、[D1 报告](../../../Crew/Temp/archive/feedback-1128/fb-d1/D1报告_第2轮_交付.md)、[D2 第二批](../../../Crew/.claude/worktrees/ui-finish-8155b6/Temp/tasks/D2第二批_交付.md)、[CI 修复交付](../Temp/tasks/CI修复_对话路由冒烟_交付.md)。
+出处 · [规划书](FEEDBACK_PLAN_2026-11-28.md)、B1 后台交付（`Temp/archive/feedback-1128/fb-b1/B1作战室契约_交付.md`）、B2 作战室界面（`.claude/worktrees/arch-review-afe4eb/Temp/tasks/B2作战室界面_交付.md`）、C 画布（`Temp/archive/feedback-1128/fb-c/C画布_交付.md`）、D1 报告（`Temp/archive/feedback-1128/fb-d1/D1报告_第2轮_交付.md`）、D2 第二批（`.claude/worktrees/ui-finish-8155b6/Temp/tasks/D2第二批_交付.md`）、CI 修复交付（`Temp/tasks/CI修复_对话路由冒烟_交付.md`）。
 
 ## 4. 怎么体验
 
-用新建的测试文件夹做工作区，按 [手动测试流程_1128.md](../../../Crew/Temp/手动测试流程_1128.md) 走。先试作战室从开房、看计划到敲定，再试一条消息或一份 Markdown 报告。网页和后台的体验以本机实际运行的源码版本为准，安装版先跳过标了「出包后才能测」的四条。手测清单页头的 main 状态以第 6 节核对结果为准。
+用新建的测试文件夹做工作区，按 手动测试流程_1128.md（`Temp/手动测试流程_1128.md`） 走。先试作战室从开房、看计划到敲定，再试一条消息或一份 Markdown 报告。网页和后台的体验以本机实际运行的源码版本为准，安装版先跳过标了「出包后才能测」的四条。手测清单页头的 main 状态以第 6 节核对结果为准。
 
 ## 5. 测试与真 AI
 
@@ -91,7 +93,7 @@
 | 对话路由 CI 修复后的 Windows 本地验证 · `9e6c6ba` | 对话路由冒烟 47/47，工作区冒烟 49/49，网页 396/396，桌面 254 通过、1 跳过。六组宽度和主题下都能看全「推进中 · 6 个执行」。 |
 | 本次补跑远程后台 · `9e6c6ba` | 27/27，配对 10、远程操作与重新配对 16、重连 1，49 张截图。配对阶段本机报告预览打印两条 `fetch failed`，确切触发原因未确认，远程流程通过。 |
 
-出处 · [全量测试](../Temp/tasks/全量测试_交付.md)、[CI 修复后冒烟](../Temp/tasks/CI修复_对话路由冒烟_交付.md)、[远程冒烟交付](../Temp/tasks/报告与远程冒烟_交付.md)。
+出处 · 全量测试（`Temp/tasks/全量测试_交付.md`）、CI 修复后冒烟（`Temp/tasks/CI修复_对话路由冒烟_交付.md`）、远程冒烟交付（`Temp/tasks/报告与远程冒烟_交付.md`）。
 
 真 AI 用 Codex `gpt-6-luna`（low）和 Claude Code `claude-haiku-5-5`。CC 常驻会话回执为 medium，CC 顾问的原生实际推理强度未确认。各场景来自本批隔离验收及各块实测，记录对应各自的源码快照。
 
@@ -110,7 +112,7 @@
 | 导图恢复自动排列 · Codex | 模型调用 Crew 工具清掉手动坐标，版本更新，节点和父子关系保留。 |
 | 引导后第一次对话 · Codex | 引导保存默认引擎，打开第一位 Leader 并收到预期回复。 |
 
-出处 · [第一段真 AI](../../../Crew/Temp/archive/feedback-1128/fb-accept1/集成验收_后台与真AI_交付.md)、[第二段真 AI](../Temp/tasks/集成验收_第二段_交付.md)、[A1 回帖](../../../Crew/Temp/archive/feedback-1128/fb-a1/A1投递与回帖_交付.md)、[A2 线程来源](../../../Crew/Temp/archive/feedback-1128/fb-a2/A2线程来源_交付.md)、[B1 顾问](../../../Crew/Temp/archive/feedback-1128/fb-b1/B1作战室契约_交付.md)、[B2 领头写计划](../../../Crew/.claude/worktrees/arch-review-afe4eb/Temp/tasks/B2作战室界面_交付.md)、[C 画布](../../../Crew/Temp/archive/feedback-1128/fb-c/C画布_交付.md)、[D2 第一批](../../../Crew/.claude/worktrees/ui-finish-8155b6/Temp/tasks/D2第一批_交付.md)、[后台修复](../Temp/tasks/验收修复_后台_交付.md)、[第二段修复](../Temp/tasks/验收修复_第二段_交付.md)、[无绑定拍板复验](../Temp/tasks/视觉修复_交付.md)。
+出处 · 第一段真 AI（`Temp/archive/feedback-1128/fb-accept1/集成验收_后台与真AI_交付.md`）、第二段真 AI（`Temp/tasks/集成验收_第二段_交付.md`）、A1 回帖（`Temp/archive/feedback-1128/fb-a1/A1投递与回帖_交付.md`）、A2 线程来源（`Temp/archive/feedback-1128/fb-a2/A2线程来源_交付.md`）、B1 顾问（`Temp/archive/feedback-1128/fb-b1/B1作战室契约_交付.md`）、B2 领头写计划（`.claude/worktrees/arch-review-afe4eb/Temp/tasks/B2作战室界面_交付.md`）、C 画布（`Temp/archive/feedback-1128/fb-c/C画布_交付.md`）、D2 第一批（`.claude/worktrees/ui-finish-8155b6/Temp/tasks/D2第一批_交付.md`）、后台修复（`Temp/tasks/验收修复_后台_交付.md`）、第二段修复（`Temp/tasks/验收修复_第二段_交付.md`）、无绑定拍板复验（`Temp/tasks/视觉修复_交付.md`）。
 
 ## 6. 提交与 PR
 
@@ -128,4 +130,4 @@
 | 联调修整 | `da6ba34`（测试夹具）、`559cf31`（网页复验、拍板来源、房间进度、手机导图）、`463e080`（无绑定答复和视觉修复）、`2f9e400`（全量后测试修订）、`9e6c6ba`（侧栏执行数与 CI 冒烟修复） |
 | 规划 | `dbcf57c`、`bc25b1e`、`4bd9158`、`4bcb29c` |
 
-**本批发布范围仅合进 `main`，桌面版本保持 `0.4.0`，不出包、不发布。** 截至本次核对，批次 PR #129（`live → main`）仍打开，GitHub 上的 HEAD 是 `2f9e400`。第一次 CI 的 Windows 和 macOS 后台通过，两个桌面任务都卡在对话路由冒烟。本地 `9e6c6ba` 已修复并通过上述 Windows 冒烟，GitHub 对该提交的 CI 结果和 main 合并均待确认。出处 · [PR #129](https://github.com/akitokunnn/Crew/pull/129)、[首次 CI](https://github.com/akitokunnn/Crew/actions/runs/46068836455)、[CI 修复交付](../Temp/tasks/CI修复_对话路由冒烟_交付.md)。
+**本批发布范围仅合进 `main`，桌面版本保持 `0.4.0`，不出包、不发布。** 截至本次核对，批次 PR #129（`live → main`）仍打开，GitHub 上的 HEAD 是 `2f9e400`。第一次 CI 的 Windows 和 macOS 后台通过，两个桌面任务都卡在对话路由冒烟。本地 `9e6c6ba` 已修复并通过上述 Windows 冒烟，GitHub 对该提交的 CI 结果和 main 合并均待确认。出处 · [PR #129](https://github.com/akitokunnn/Crew/pull/129)、[首次 CI](https://github.com/akitokunnn/Crew/actions/runs/46068836455)、CI 修复交付（`Temp/tasks/CI修复_对话路由冒烟_交付.md`）。
