@@ -34,10 +34,13 @@
     frame.addEventListener("load", load, {once:true});
     return () => { frame.removeEventListener("load", load); observer.disconnect(); };
   }
-  function cards(goals, leaders = [], selected = null) {
+  function cards(goals, leaders = [], selected = null, assignments) {
     return goals.length ? `<div class="goal-rows">${goals.map(goal => {
       const owner = leaders.find(item => item.session_id === goal.leader_session_id), work = goal.work_summary;
-      return `<button class="goal-row" data-goal-act="open" data-goal-id="${esc(goal.id)}" aria-pressed="${String(selected) === String(goal.id)}"><span class="goal-status" data-status="${esc(goal.observing ? "observing" : goal.status)}">${goal.observing ? "观察中" : esc(status(goal.status))}</span><strong title="${esc(goal.title)}">${esc(goal.title)}</strong>${work?.total ? `<progress max="${work.total}" value="${work.done}" aria-label="${esc(goal.title)} 工作清单进度"></progress>` : '<span class="goal-row-progress-empty" title="尚无工作清单"></span>'}<span class="goal-row-owner">${esc(owner?.name || "负责人")}</span></button>`;
+      const assignment = assignments?.get(goal.id);
+      const tone = assignment ?? (goal.observing ? "observing" : goal.status);
+      const label = assignment ? CrewWarRoom.itemStatus[assignment] : goal.observing ? "观察中" : status(goal.status);
+      return `<button class="goal-row" data-goal-act="open" data-goal-id="${esc(goal.id)}" aria-pressed="${String(selected) === String(goal.id)}"><span class="goal-status" data-status="${esc(tone)}">${esc(label)}</span><strong title="${esc(goal.title)}">${esc(goal.title)}</strong>${work?.total ? `<progress max="${work.total}" value="${work.done}" aria-label="${esc(goal.title)} 工作清单进度"></progress>` : '<span class="goal-row-progress-empty" title="尚无工作清单"></span>'}<span class="goal-row-owner">${esc(owner?.name || "负责人")}</span></button>`;
     }).join("")}</div>` : '<div class="goals-empty">还没有执行目标。需求明确后再建立目标。</div>';
   }
   // A report's relation is recomputed from the newest goal state, so an open report follows later round,

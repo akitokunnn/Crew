@@ -28,7 +28,7 @@
   let leaderDrag = null, leaderOrderSaving = false;
   let allTab = "overview", period = "week", usageTab = "tree", usage = null, usageLoading = false, usageRequest = 0, usageScannedAt = null;
   let cardId = null, cardReturn = null, rightOpen = false, dialogReturn = null;
-  let theme = "system", leadersOpen = true, presenceOpen = false, presenceFailure = null, workspaceSwitcherOpen = false;
+  let theme = "system", leadersOpen = false, presenceOpen = false, presenceFailure = null, workspaceSwitcherOpen = false;
   let lastAutoReturn = 0;
   // "#settings" opens settings; "#settings=backend" (the 系统管理员 page's 运维 link in a browser) opens that category.
   let pendingSettingsHash = location.hash === "#settings" ? "ai" : location.hash === "#settings=backend" ? "backend" : false;
@@ -240,7 +240,7 @@
       root.id = "toast-quiet-root";
       document.body.append(root);
     }
-    toast("检测到你回到电脑前，已退出离开模式", null, root);
+    toast("你回来了，已关掉离开模式", null, root);
   }
   document.addEventListener("crew:sound-error", event => toast(event.detail));
   function replace(node, html) {
@@ -919,6 +919,23 @@
     if (roomList !== null) CrewChannel.updateRooms(roomList);
   }
   function openRoom(id) { roomId = id; navigate("war-room"); }
+  // The overview shows the approved assignment's progress beside its bound goal.
+  let homeRoom = null, homeAssignments = new Map();
+  async function loadHomeAssignments(room) {
+    homeRoom = room;
+    homeAssignments = new Map();
+    if (!room) return;
+    try {
+      const detail = await api(`/api/op/war_room.get?id=${room.id}&limit=1`);
+      if (homeRoom !== room) return;
+      for (const item of detail.board) {
+        if (item.kind === "assignment" && item.goal_id != null) homeAssignments.set(item.goal_id, item.status);
+      }
+      if (view === "all" && allTab === "overview") renderAll();
+    } catch (error) {
+      if (homeRoom === room) toast(error.message);
+    }
+  }
   async function refreshRooms() {
     const name = project, request = ++roomListRequest;
     try {
@@ -932,6 +949,7 @@
     }
     renderSidebar();
     if (mountedRoom !== null) CrewWarRoom.update(state, roomList, roomListError);
+    if (view === "all" && allTab === "overview") renderAll();
   }
   function renderWarRoom() {
     if (mountedRoom !== roomId) {
@@ -945,11 +963,13 @@
   }
   function renderAll() {
     if (allTab === "overview") {
+      const room = roomList?.find(row => row.status === "open" && row.approved_version && row.progress.total) ?? null;
+      if (homeRoom !== room) void loadHomeAssignments(room);
       replace($("main"), CrewWorkspaceHome.render({name:projectDisplay(state.project), project:state.project.name, git_assistant:state.git_assistant, leaders:state.leaders,
         members:state.members, goals:state.goals || [], todos:state.todos || [], decisions:state.decisions,
         errors:state.attention.filter(item => item.kind === "session_error" || item.kind === "codex_failed"),
         unread:state.leaders.reduce((sum, item) => sum + item.unread, 0), statuses:new Map(state.leaders.map(item => [item.session_id, leaderStatus(item)]))},
-        {taskCards:items => CrewGoals.cards(items, state.leaders), decisionCards:items => items.map(decisionCard).join(""), todoCards:items => items.map(todoCard).join(""), todoTint,
+        {taskCards:items => CrewGoals.cards(items, state.leaders, null, homeAssignments), decisionCards:items => items.map(decisionCard).join(""), todoCards:items => items.map(todoCard).join(""), todoTint,
           approvalCount:nativeApprovals?.count() || 0, settingsIcon:ic("settings", "sm")}));
       return;
     }
@@ -1657,7 +1677,9 @@
       try { const stored = localStorage.getItem("crew.theme"); if (["system", "light", "dark"].includes(stored)) theme = stored; } catch (error) { toast(error.message); }
       try { const stored = Number(localStorage.getItem("crew.fontScale")); if (stored >= FONT_MIN && stored <= FONT_MAX) fontScale = stored; } catch (error) { toast(error.message); }
     }
-    try { leadersOpen = !narrowLayout() && localStorage.getItem("crew.leadersOpen") !== "false"; } catch { leadersOpen = !narrowLayout(); }
+    if (project !== null && !narrowLayout()) {
+      try { leadersOpen = localStorage.getItem("crew.leadersOpen") !== "false"; } catch { leadersOpen = true; }
+    }
     $("leader-panel").dataset.open = String(leadersOpen); $("leader-panel").inert = !leadersOpen;
     CrewChat.initFiles(api, toast);
     if (window.CrewNativeApprovals) nativeApprovals = window.CrewNativeApprovals.create({api,toast,refreshState:() => loadState(true),onChange() { if (!state || project === null) return; renderSidebar(); if (view === "chat") renderChat(); else if (view === "all") renderAll(); }});

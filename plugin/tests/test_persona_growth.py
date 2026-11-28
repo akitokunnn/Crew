@@ -296,7 +296,7 @@ class GrowthTests(RuntimeFixture):
         persona.set_enabled(self.conn, True)
         growth.tick(self.manager, self.conn, NOW)
         self.finish()
-        self.assertEqual((self.view()['pending_turns'], self.view()['growth_error']), (0, growth.NO_MATERIAL))
+        self.assertEqual((self.view()['pending_turns'], self.view()['growth_error']), (0, None))
         self.native.assert_not_called()
 
     def test_close_kills_only_owned_process_and_joins_worker(self):

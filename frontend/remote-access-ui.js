@@ -110,7 +110,7 @@
     }
     function devicesMarkup(){
       const devices=snapshot.devices.map(device=>`<div class="remote-device">
-        <div><strong>${esc(device.name)}</strong><small>${device.kind==="desktop"?"Crew 桌面客户端":"浏览器"}</small>
+        <div><strong>${esc(device.name)}</strong><small>${device.kind==="desktop"?"Crew 桌面客户端":device.name.startsWith("Crew 安卓版 · ")?"安卓 App":"浏览器"}</small>
         ${device.online?'<small class="remote-online">在线</small>':`<small>最近使用 ${esc(lastUsed(device.last_seen_at))}</small>`}</div>
         <button class="cs-button" data-remote-action="revoke" data-device-id="${esc(device.id)}" ${busy?"disabled":""}>强制下线</button>
       </div>`).join("");
@@ -121,12 +121,12 @@
     function render(){
       if(disposed)return;if(address===allNetworks&&(!snapshot.enabled||snapshot.bind!==allNetworks))selectCurrent();if(pair&&Date.parse(pair.expires_at)<=Date.now())setPair(null);
       const canPair=!busy&&snapshot?.binding_available!==false&&(!address||address===snapshot?.bind);
-      const markup=`<section class="cs-card remote-access"><div class="cs-card-heading"><div><h2>局域网访问</h2><p>让手机和其他电脑通过局域网使用这里的 Crew。</p></div><span class="cs-badge">${snapshot?.enabled?snapshot.binding_available===false?"地址不可用":"已开启":"未开启"}</span></div>${!snapshot?'<p>正在读取…</p>':bindingMarkup()+(snapshot.enabled?`
+      const markup=`<section class="cs-card remote-access"><div class="cs-card-heading"><div><h2>局域网访问</h2><p>让手机和其他电脑通过局域网使用这里的 Crew。</p></div><span class="cs-badge${snapshot?.enabled && snapshot.binding_available!==false?" remote-enabled":""}">${snapshot?.enabled?snapshot.binding_available===false?"地址不可用":"已开启":"未开启"}</span></div>${!snapshot?'<p>正在读取…</p>':bindingMarkup()+(snapshot.enabled?`
         <h3>当前访问地址</h3><p>生成配对码后复制连接链接发到另一台设备即可；也可以在那台设备打开下方地址，手动输入配对码。</p>
         <div class="remote-addresses">${snapshot.urls.map(url=>`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`).join("")||`<p class="cs-error">${esc(snapshot.binding_error||"暂未找到可访问地址，请检查所选网络。")}</p>`}</div>
-        ${advertisingMarkup()}
         ${pair?pairMarkup():snapshot.pair_pending?'<p class="remote-hint">已有待使用的配对码。需要时可重新生成，旧码会失效。</p>':""}
         <div class="remote-actions"><button class="cs-button cs-primary" data-remote-action="pair" ${canPair?"":"disabled"}>${pair||snapshot.pair_pending?"重新生成配对码":"生成配对码"}</button><button class="cs-button" data-remote-action="stop" ${busy?"disabled":""}>关闭访问</button></div>
+        ${advertisingMarkup()}
         ${devicesMarkup()}`:`<p>文件和 AI 仍在这台电脑上运行。选择地址不会启动任务。</p><button class="cs-button cs-primary" data-remote-action="start" ${busy||!selected()?.available?"disabled":""}>开启访问</button>`)}
         <p class="remote-status ${error?"cs-error":""}" role="status">${esc(error||(busy?"正在处理…":""))}</p>
         ${error&&!snapshot?'<button class="cs-button" data-remote-action="refresh">重新读取</button>':""}</section>`;

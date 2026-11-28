@@ -118,7 +118,8 @@
   background:color-mix(in srgb,var(--panel-2) 85%,transparent);pointer-events:none}
 .arch-zoom{position:absolute;right:14px;bottom:12px;z-index:2;display:flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--line-strong);border-radius:11px;background:var(--surface);box-shadow:var(--shadow-sm)}
 .arch-zoom button{height:30px;min-width:30px;display:grid;place-items:center;padding:0 4px;border:0;border-radius:8px;background:transparent;color:var(--text-2);cursor:pointer;font-size:calc(12px * var(--fs));font-variant-numeric:tabular-nums}
-.arch-zoom button:hover{background:var(--hover);color:var(--text)}
+.arch-zoom button:disabled{opacity:.5;cursor:default}
+.arch-zoom button:enabled:hover{background:var(--hover);color:var(--text)}
 .arch-zoom .arch-zoom-value{min-width:48px}
 .arch-menu{position:absolute;left:0;top:0;z-index:6;min-width:184px;padding:5px;border:1px solid var(--line-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-lg)}
 .arch-menu button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:7px 10px;border:0;border-radius:8px;background:transparent;text-align:left;cursor:pointer;font-size:calc(13px * var(--fs))}
@@ -143,6 +144,8 @@
   .arch-head .right{flex-wrap:wrap;justify-content:flex-end}
   .arch-empty{flex-direction:column;align-items:stretch;gap:10px;top:10px}
   .arch-hint{left:10px;bottom:10px;max-width:calc(100% - 196px)}
+  .arch-history-warn,.arch-history-confirm p{text-wrap:balance}
+  .arch-node :is(.arch-member-brief,.st,.arch-part-note){font-size:max(12px,calc(12px * var(--fs)))}
   .arch-zoom{right:10px;bottom:8px}
   .arch-zoom button{height:44px;min-width:44px}
   .arch-zoom .arch-zoom-value{min-width:50px}

@@ -46,11 +46,11 @@ test("replacing an existing start needs confirmation, cancellation writes nothin
 test("blank personality accepts a custom start directly and shows the 80 percent warning only at the threshold",async()=>{
   const ui=await panel({content:"",percent:79,seed:null});
   assert.match(ui.html(),/再聊几句就会长出性格，也可以先选个起点。/);
-  assert.match(ui.html(),/容量已用 79%（上限 20k，估算）/);assert.match(ui.html(),/data-warning="false"/);
+  assert.match(ui.html(),/已用 79%（上限约 2 万 token，估算）/);assert.match(ui.html(),/data-warning="false"/);
   await ui.click("seed",{key:"custom"});assert.match(ui.html(),/maxlength="1000"/);
   ui.input("seed","请先讲结论");await ui.click("custom-save");
   assert.deepEqual(ui.calls.at(-1),["persona.seed",{session_id:"a",seed:"custom",expected_version:3,seed_text:"请先讲结论"}]);
-  assert.match((await panel()).html(),/data-warning="true"[\s\S]*容量已用 80%/);
+  assert.match((await panel()).html(),/data-warning="true"[\s\S]*已用 80%/);
 });
 test("a conflict keeps the draft beside the new version and retries only when the user saves",async()=>{
   const ui=await panel({},(op,body,saved)=>{
@@ -90,7 +90,7 @@ test("growth state, errors and disabled mode keep their own controls and feedbac
   const growing=await panel({growing:true});assert.match(growing.html(),/正在整理最近的对话/);
   for(const action of ["edit","reset"]) assert.match(growing.html(),new RegExp('data-ps="'+action+'" disabled'));
   growing.close();
-  for (const [code,message] of [["persona_disabled","打开总开关"],["persona_nothing_new","再聊几句"],["persona_busy","请稍等"],["persona_frozen","取消定型"]]) {
+  for (const [code,message] of [["persona_disabled","打开总开关"],["persona_nothing_new","多聊几句会自动长"],["persona_busy","请稍等"],["persona_frozen","取消定型"]]) {
     const ui=await panel({enabled:false,growth_error:"连接超时"},()=>{throw Object.assign(Error("操作失败"),{body:{error_code:code}});});
     assert.match(ui.html(),/上次整理没成功：连接超时/);assert.match(ui.html(),/AI 性格已关闭/);
     assert.doesNotMatch(ui.html(),/data-ps="edit" disabled/);await ui.click("grow");assert.ok(ui.html().includes(message));
@@ -120,8 +120,8 @@ test("the settings directory groups both roles and the switch saves immediately 
     },
     save:async body=>{writes.push(plain(body));if(body.persona_enabled)throw Error("写入失败");return body;}
   });
-  await settle();assert.match(root.innerHTML,/<h3>甲<\/h3>[\s\S]*小叶[\s\S]*Leader[\s\S]*已定型[\s\S]*容量 80%/);
-  assert.match(root.innerHTML,/<h3>乙<\/h3>[\s\S]*小林[\s\S]*工作区助手[\s\S]*成长失败/);
+  await settle();assert.match(root.innerHTML,/<h3>工作区 甲<\/h3>[\s\S]*小叶[\s\S]*Leader[\s\S]*已定型[\s\S]*容量 80%/);
+  assert.match(root.innerHTML,/<h3>工作区 乙<\/h3>[\s\S]*小林[\s\S]*工作区助手[\s\S]*成长失败/);
   await root.handlers.change({target:{checked:false}});assert.match(root.innerHTML,/已暂停，内容保留/);
   const input={checked:true};await root.handlers.change({target:input});
   assert.deepEqual(writes,[{persona_enabled:false},{persona_enabled:true}]);
