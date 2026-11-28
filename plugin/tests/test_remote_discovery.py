@@ -1,14 +1,12 @@
-"""DNS-SD announcement over a real IPv4 adapter, with injected discovery failures."""
+"""DNS-SD announcement lifecycle and LAN access during discovery failures."""
 import tests
 import builtins
 from contextlib import closing
 import http.client
 import socket
 import tempfile
-import threading
 import unittest
 from unittest.mock import patch
-import uuid
 
 from crew import discovery, network_addresses, remote_access, remote_http, web
 
@@ -18,55 +16,47 @@ INTERFACES = [item for item in network_addresses.Discovery().snapshot()['address
 ADDRESS = next((item for item in INTERFACES if item['kind'] == 'lan'), INTERFACES[0] if INTERFACES else None)
 
 
-@unittest.skipUnless(ADDRESS, '需要可用的非回环 IPv4 网卡验证 mDNS 多播')
 class DiscoveryTests(unittest.TestCase):
     def test_announce_txt_addresses_and_port_then_withdraw_on_rebind_and_close(self):
-        host = 'Crew-test-' + uuid.uuid4().hex[:8] + '会' * 20
-        instance = uuid.uuid4().hex[:16]
-        service_name = host.encode()[:58].decode(errors='ignore') + ' Crew.' + discovery.SERVICE_TYPE
-        address = ADDRESS['address']
-        snapshot = {'enabled': True, 'port': 41321, 'addresses': [
-            {**ADDRESS, 'bound': True},
-            {'address': '127.0.0.1', 'bound': True, 'available': True},
+        host = 'Crew-test-' + '会' * 20
+        instance = '0123456789abcdef'
+        service_name = 'Crew-test-' + '会' * 16 + ' Crew.' + discovery.SERVICE_TYPE
+        address = '192.0.2.10'
+        loopback = {'address': '127.0.0.1', 'bound': True, 'available': True}
+        snapshot = {'enabled': True, 'addresses': [
+            {'address': address, 'bound': True, 'available': True},
+            loopback,
             {'address': '10.255.255.2', 'bound': False, 'available': True},
             {'address': '10.255.255.3', 'bound': True, 'available': False},
         ]}
         zc = discovery.load_zeroconf()
         advertiser = discovery.Advertiser(host, instance)
         self.addCleanup(advertiser.close)
-        added, removed = threading.Event(), threading.Event()
 
-        def change(zeroconf, service_type, name, state_change):
-            if name == service_name and service_type == discovery.SERVICE_TYPE:
-                if state_change is zc.ServiceStateChange.Added:
-                    added.set()
-                elif state_change is zc.ServiceStateChange.Removed:
-                    removed.set()
+        # Keep real ServiceInfo parsing. Replace the socket-owning transport.
+        for port in (41321, 41322):
+            with self.subTest(port=port), patch.object(zc, 'Zeroconf') as transport:
+                client = transport.return_value
+                client.engine.senders = [object()]
+                state = {**snapshot, 'port': port}
+                self.assertEqual({'active': True, 'error': None}, advertiser.update(state))
+                transport.assert_called_once_with(interfaces=[address], ip_version=zc.IPVersion.V4Only)
+                client.register_service.assert_called_once()
+                (info,), _ = client.register_service.call_args
+                self.assertIsInstance(info, zc.ServiceInfo)
+                self.assertEqual((discovery.SERVICE_TYPE, service_name), (info.type, info.name))
+                self.assertEqual((port, [socket.inet_aton(address)]), (info.port, info.addresses))
+                self.assertEqual({b'v': b'1', b'id': instance.encode(),
+                                  b'name': ('Crew-test-' + '会' * 17).encode()}, info.properties)
+                client.close.assert_not_called()
+                if port == 41321:
+                    self.assertEqual(discovery.INACTIVE, advertiser.update({**state, 'addresses': [loopback]}))
+                else:
+                    self.assertEqual(discovery.INACTIVE, advertiser.close())
+                client.close.assert_called_once()
+                transport.assert_called_once()
 
-        with zc.Zeroconf(interfaces=[address], ip_version=zc.IPVersion.V4Only) as listener:
-            browser = zc.ServiceBrowser(listener, discovery.SERVICE_TYPE, handlers=[change])
-            try:
-                for port in (41321, 41322):
-                    snapshot['port'] = port
-                    self.assertEqual({'active': True, 'error': None}, advertiser.update(snapshot))
-                    self.assertTrue(added.wait(8), '浏览器未收到添加公告')
-                    info = zc.ServiceInfo(discovery.SERVICE_TYPE, service_name)
-                    self.assertTrue(info.request(listener, 4000))
-                    self.assertEqual((port, [socket.inet_aton(address)]), (info.port, info.addresses))
-                    self.assertEqual({b'v': b'1', b'id': instance.encode(),
-                                      b'name': host.encode()[:63].decode(errors='ignore').encode()}, info.properties)
-                    added.clear()
-                    removed.clear()
-                    if port == 41321:
-                        self.assertEqual(discovery.INACTIVE, advertiser.update(
-                            {**snapshot, 'addresses': [snapshot['addresses'][1]]}))
-                    else:
-                        self.assertEqual(discovery.INACTIVE, advertiser.close())
-                    self.assertTrue(removed.wait(8), '浏览器未收到注销公告')
-                    self.assertFalse(zc.ServiceInfo(discovery.SERVICE_TYPE, service_name).request(listener, 500))
-            finally:
-                browser.cancel()
-
+    @unittest.skipUnless(ADDRESS, '需要可用的非回环 IPv4 地址启动局域网监听')
     def test_import_or_registration_failure_keeps_lan_listener_serving(self):
         original = builtins.__import__
 

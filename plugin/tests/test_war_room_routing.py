@@ -194,6 +194,7 @@ class RoomRoutingTests(DeliveryFixture):
         self.assertEqual((receipt['state'], receipt['reason'], self.notice(post, 'b')['sent_at']), ('cancelled', '已取消：房间已结束', None))
 
     def test_paused_room_holds_a_claim_until_the_user_goes_on(self):
+        self.enterContext(mock.patch('crew.chat.claude_executable', return_value='fixture-claude'))
         self.open_room()
         post = self.mention('b')
         self.conn.execute('UPDATE war_rooms SET paused_at=? WHERE id=?', (NOW, self.room))
@@ -203,7 +204,7 @@ class RoomRoutingTests(DeliveryFixture):
         self.assertEqual(self.receipt(post, 'b')['state'], 'queued')
         self.conn.execute('UPDATE war_rooms SET paused_at=NULL WHERE id=?', (self.room,))
         self.tick()
-        self.assertIsNotNone(self.notice(post, 'b')['sent_at'])
+        self.assertEqual(self.notice(post, 'b')['sent_at'], NOW)
 
     def test_unclaimed_notice_of_a_member_who_left_is_cancelled(self):
         self.open_room()

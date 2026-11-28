@@ -92,8 +92,12 @@ class PlanTests(DeliveryFixture):
             self.assertNotIn('Git 分支', room['brief'])
             war_room.close(self.conn, room['id'], board.HUMAN, reason='cancelled')
             (root / '.git').write_text('gitdir: missing-repository\n', encoding='utf-8')
-            with self.assertRaisesRegex(board.BoardError, 'not a git repository'):
+            git = git_process.run(['-C', str(root), 'rev-parse', '--show-toplevel'])
+            self.assertNotEqual(git.returncode, 0)
+            self.assertTrue(git.stderr.strip())
+            with self.assertRaises(board.BoardError) as error:
                 war_room.start(self.conn, 'demo', board.HUMAN, '损坏的 Git', '核对', lead='a')
+            self.assertEqual(str(error.exception), git.stderr.strip())
             self.assertFalse(self.conn.execute("SELECT id FROM war_rooms WHERE status='open'").fetchall())
             self.assertFalse(self.notices('a'))
 

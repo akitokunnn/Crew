@@ -90,6 +90,8 @@ class GrowthTests(RuntimeFixture):
 
     def setUp(self):
         super().setUp()
+        executables = {'claude': 'fixture-claude', 'codex': 'fixture-codex'}
+        self.enterContext(mock.patch('crew.settings.shutil.which', side_effect=executables.get))
         self.manager = chat.Manager(self.home, self.root, lambda: [])
         self.addCleanup(self.manager.close)
         self.addCleanup(growth.close, self.manager)

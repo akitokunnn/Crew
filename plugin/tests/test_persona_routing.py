@@ -235,7 +235,8 @@ class AdvisorTests(DeliveryFixture):
         persona.save(self.conn, 'a', MARK, 0, board.HUMAN)
         room = room_fixtures.PlanTests.open(self)
         room_fixtures.PlanTests.plan(self, room)
-        with mock.patch('crew.channel_digest._claude', return_value=('意见', 0, 'fake')) as native:
+        with (mock.patch('crew.settings.shutil.which', return_value='fixture-claude'),
+              mock.patch('crew.channel_digest._claude', return_value=('意见', 0, 'fake')) as native):
             war_room_plan.consult(self.conn, room, 'a', 1, '问题', 'routine', '请检查')
         self.assertIn('请检查', native.call_args.args[1])
         self.assertNotIn(MARK, native.call_args.args[1])
