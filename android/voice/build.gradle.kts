@@ -42,8 +42,12 @@ dependencies {
     implementation(project(":core"))
     implementation(files("libs/sherpa-onnx-2.0.3.aar"))
     implementation(libs.coroutines.android)
+    implementation(libs.okhttp.client)
+    implementation(libs.okhttp.sse)
+    implementation(libs.serialization.json)
 
     testImplementation(libs.junit)
+    testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.robolectric)
 }
