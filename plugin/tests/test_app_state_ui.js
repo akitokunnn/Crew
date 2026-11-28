@@ -57,7 +57,7 @@ test("recent automatic returns are shown once per timestamp through the quiet to
   update(2,-2000);
   update(3,-2000);
   update(4,-3000);
-  assert.deepEqual(h.quietNotices,["检测到你回到电脑前，已退出离开模式"]);
+  assert.deepEqual(h.quietNotices,["你回来了，已关掉离开模式"]);
   update(5,0);
   assert.equal(h.quietNotices.length,2);
   assert.deepEqual(h.notices,[]);

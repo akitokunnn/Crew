@@ -471,7 +471,7 @@ class RoomCheckoutTests(DeliveryFixture):
         self.assertEqual((row['state'], row['outcome']), ('removed', 'backed_up'), row['error'])
         self.assertFalse(path.exists())
         posts = war_room.get(self.conn, self.room)['messages']
-        [post] = [p for p in posts if '恢复命令：' in p['body']]
+        [post] = [p for p in posts if '复制恢复命令' in p['body']]
         self.assertEqual((post['speaker_session_id'], post['mentions']), ('a', []))
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM leader_notices').fetchone()[0], before)
         command = post['body'].splitlines()[-1]

@@ -921,10 +921,15 @@
   function openRoom(id) { roomId = id; navigate("war-room"); }
   // The overview shows the approved assignment's progress beside its bound goal.
   let homeRoom = null, homeAssignments = new Map();
+  const homeRoomOf = rooms => rooms?.find(row => row.status === "open" && row.approved_version && row.progress.total) ?? null;
   async function loadHomeAssignments(room) {
+    const shown = homeAssignments.size > 0;
     homeRoom = room;
     homeAssignments = new Map();
-    if (!room) return;
+    if (!room) {
+      if (shown && view === "all" && allTab === "overview") renderAll();
+      return;
+    }
     try {
       const detail = await api(`/api/op/war_room.get?id=${room.id}&limit=1`);
       if (homeRoom !== room) return;
@@ -949,7 +954,7 @@
     }
     renderSidebar();
     if (mountedRoom !== null) CrewWarRoom.update(state, roomList, roomListError);
-    if (view === "all" && allTab === "overview") renderAll();
+    if (view === "all" && allTab === "overview" && homeRoom !== homeRoomOf(roomList)) void loadHomeAssignments(homeRoomOf(roomList));
   }
   function renderWarRoom() {
     if (mountedRoom !== roomId) {
@@ -963,7 +968,7 @@
   }
   function renderAll() {
     if (allTab === "overview") {
-      const room = roomList?.find(row => row.status === "open" && row.approved_version && row.progress.total) ?? null;
+      const room = homeRoomOf(roomList);
       if (homeRoom !== room) void loadHomeAssignments(room);
       replace($("main"), CrewWorkspaceHome.render({name:projectDisplay(state.project), project:state.project.name, git_assistant:state.git_assistant, leaders:state.leaders,
         members:state.members, goals:state.goals || [], todos:state.todos || [], decisions:state.decisions,
