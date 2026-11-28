@@ -1248,6 +1248,8 @@ CREATE TABLE IF NOT EXISTS mcp_loaded_tools (
 CREATE TABLE IF NOT EXISTS interaction_requests (
  id TEXT PRIMARY KEY,
  kind TEXT NOT NULL CHECK (kind IN ('confirmation')),
+ message_id TEXT,
+ summary TEXT,
  caller_key TEXT NOT NULL,
  request_id TEXT NOT NULL,
  session_id TEXT NOT NULL,

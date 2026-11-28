@@ -39,6 +39,10 @@ class BatchContractTests(ShellFixture, unittest.TestCase):
 
     def test_voice_input_is_recorded_on_the_delivery_and_limited_to_the_workspace_assistant(self):
         sid = self.workspace_assistant()
+        code, value, _ = self.request('/api/op/chat.send', {'project': 'demo', 'session_id': sid, 'text': '先报进度'})
+        self.assertEqual(code, 200, value)
+        self.server.service.chat.journal(sid).emit('assistant', id='r1',
+                                                  content=[{'type': 'text', 'text': '上一条助手回复包含十二个以上的字。'}])
         body = {'project': 'demo', 'session_id': sid, 'text': '现在进度怎么样', 'message_id': 'voice-1',
                 'input_mode': 'voice', 'heard': {'reply_id': 'r1', 'chars': 12}}
         code, value, _ = self.request('/api/op/chat.send', body)

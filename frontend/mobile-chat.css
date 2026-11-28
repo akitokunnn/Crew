@@ -124,7 +124,7 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 :is(#chat-host,.assistant-chat) .composer>.attach{grid-column:1/-1;margin:6px 8px 6px;overflow-x:auto}
 :is(#chat-host,.assistant-chat) .composer>:is(.chat-note-chip,.chat-reading-chip){grid-column:1/-1;justify-self:start;max-width:calc(100% - 16px);margin:6px 8px 2px;min-height:32px;font-size:var(--m-fs-meta)}
 #chat-host .composer>.chat-reading-chip{grid-row:1}
-:is(#chat-host,.assistant-chat) .composer>textarea{grid-column:2;grid-row:3;align-self:center;min-height:42px;max-height:40dvh;padding:9px 4px;font-size:16px!important;line-height:1.5}
+:is(#chat-host,.assistant-chat) .composer>textarea{grid-column:2;grid-row:3;align-self:center;min-height:42px;max-height:calc(var(--m-viewport) * .4);padding:9px 4px;font-size:16px!important;line-height:1.5}
 :is(#chat-host,.assistant-chat) .composer>.c-row{display:contents}
 :is(#chat-host,.assistant-chat) .composer>textarea::placeholder{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 :is(#chat-host,.assistant-chat) .c-row>.chat-image-button{grid-column:1;grid-row:3;width:var(--m-tap);height:var(--m-tap);min-height:0;border-radius:50%;color:var(--text-2)}
@@ -134,6 +134,10 @@ body:has(#chat-head .member-scope-bar){--mc-scope:48px}
 :is(#chat-host,.assistant-chat) .c-row>.chat-stop{grid-column:3;grid-row:3;width:40px;height:40px;min-height:0;margin:2px 0;border-radius:50%}
 :is(#chat-host,.assistant-chat) .c-row>.send{grid-column:4;grid-row:3;width:40px;height:40px;min-height:0;margin:2px 0;border-radius:50%}
 :is(#chat-host,.assistant-chat) .c-row>.send .i{width:20px;height:20px}
+.assistant-chat .composer:has(.assistant-voice){grid-template-columns:auto minmax(0,1fr) auto auto auto}
+.assistant-chat .c-row>.assistant-voice{grid-column:3;grid-row:3;display:grid;place-items:center;width:40px;height:40px;min-height:40px;margin:2px 0;padding:0;border:0;border-radius:50%;background:transparent;color:var(--accent-text)}
+.assistant-chat .composer:has(.assistant-voice) .c-row>.chat-stop{grid-column:4}
+.assistant-chat .composer:has(.assistant-voice) .c-row>.send{grid-column:5}
 :is(#chat-host,.assistant-chat) .composer>:is(.chat-interrupt-status,.chat-delivery-status){grid-column:1/-1;padding:4px 10px 6px;font-size:var(--m-fs-min)}
 
 /* ================= 任务清单 / 任务详情：铺满顶栏以下 ================= */
@@ -220,7 +224,7 @@ body:has(#main[data-reader]) #chat-attention{display:none!important}
 #chat-attention .tree{overflow:visible!important;padding:12px var(--m-gutter) 16px!important}
 
 /* ================= 助手页 ================= */
-.assistant-page{display:flex!important;flex-direction:column;height:calc(100dvh - var(--m-bottom))!important}
+.assistant-page{display:flex!important;flex-direction:column;height:calc(var(--m-viewport) - var(--m-bottom))!important}
 .assistant-page .assistant-main{flex:1;min-height:0}
 .assistant-main>.head{display:flex;flex-wrap:nowrap!important;align-items:center!important;height:auto!important;min-height:0!important;padding:calc(var(--m-safe-t) + 6px) 10px 6px var(--m-gutter)!important;gap:4px!important;border-bottom:1px solid var(--line)}
 .assistant-main>.head>div:first-child{flex:1;min-width:0}

@@ -107,3 +107,6 @@ test_war_room_routing
 test_war_room_watchdog
 test_war_room_worktree
 test_batch_contracts
+test_voice_input
+test_remote_discovery
+test_device_notifications

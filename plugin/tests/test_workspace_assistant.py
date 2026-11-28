@@ -333,3 +333,23 @@ class WorkspaceAssistantTests(ShellFixture, unittest.TestCase):
         confirmations.resolve(self.service, next_id, False, NOW, project='demo')
         self.assertFalse(self.service.chat.running(sid))
         self.assertTrue(any(next_id in notice['text'] for notice in board.pending_notices(self.conn, sid)))
+
+    def test_voice_campaign_shows_task_assignees_and_rechecks_current_permission(self):
+        sid = self.assistant()
+        journal = self.service.chat.journal(sid)
+        journal.emit('input_delivery', message_id='start', status='submitted', input_mode='voice')
+        journal.message('start', '给登录项目开个作战室')
+        journal.emit('input_delivery', message_id='start', status='accepted')
+        request = ai_call(self.service, self.conn, sid, 'campaign.launch', plan(board_version=0))
+        card, = executor.human_call(self.service, 'interaction.list')['requests']
+        self.assertIn('批准计划后开工', card['summary'])
+        self.assertIn('后端负责「登录接口」', card['summary'])
+        self.assertNotIn('login01', card['summary'])
+        token = tokens.issue(self.conn, session_id=sid, runtime='claude', now=NOW)
+        self.conn.execute("UPDATE mcp_tokens SET own_scopes='[]' WHERE token_hash=?", (tokens.digest(token),))
+        with mock.patch('crew.ops.launch.live', return_value=True):
+            result = executor.human_call(self.service, 'interaction.resolve',
+                                        {'id':request['confirmation_id'], 'approve':True})
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('没有这项权限', result['error'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM war_rooms').fetchone()[0], 0)

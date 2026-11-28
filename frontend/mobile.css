@@ -8,10 +8,11 @@
   --m-tap:44px; --m-gutter:16px; --m-radius:14px; --m-radius-sm:10px;
   --m-tabbar-h:50px; --m-safe-b:env(safe-area-inset-bottom,0px); --m-safe-t:env(safe-area-inset-top,0px);
   --m-bottom:calc(64px + var(--m-safe-b));
+  --m-viewport:var(--crew-webview-height, 100dvh);
   --m-appbar-h:52px;
   --fs:1;
 }
-html{-webkit-text-size-adjust:100%;text-size-adjust:100%;-webkit-tap-highlight-color:transparent}
+html{height:var(--crew-webview-height, 100%);-webkit-text-size-adjust:100%;text-size-adjust:100%;-webkit-tap-highlight-color:transparent}
 body{font-size:var(--m-fs-body);line-height:1.55;overflow-x:hidden;overscroll-behavior-y:none}
 /* iOS 输入框小于 16px 会自动放大页面 */
 input,textarea,select{font-size:16px!important}
@@ -22,9 +23,9 @@ button,a,[role=button]{touch-action:manipulation}
 .assistant-page,.notes-page{grid-template-columns:minmax(0,1fr)!important}
 :is(.app,body)>.sb{position:fixed!important;inset:auto!important;width:0!important;height:0!important;padding:0!important;border:0!important;overflow:visible!important;transform:none!important;visibility:visible!important}
 :is(.app,body)>.sb>:not(.presence-popover){display:none!important}
-.main{width:100%;max-width:100vw;height:calc(100dvh - var(--m-bottom))!important;overflow-x:hidden;background:var(--bg)}
-.workspace-entry .main{height:calc(100dvh - var(--m-bottom))!important}
-body.m-chat .main{height:100dvh!important}
+.main{width:100%;max-width:100vw;height:calc(var(--m-viewport) - var(--m-bottom))!important;overflow-x:hidden;background:var(--bg)}
+.workspace-entry .main{height:calc(var(--m-viewport) - var(--m-bottom))!important}
+body.m-chat .main{height:var(--m-viewport)!important}
 
 /* 在场与消息：从侧栏弹层改为底部面板 */
 .app>.sb>.presence-popover{position:fixed!important;left:0!important;right:0!important;top:auto!important;bottom:0!important;width:auto!important;max-width:none!important;z-index:62;border-radius:18px 18px 0 0;padding:20px var(--m-gutter) calc(20px + var(--m-safe-b));box-shadow:var(--shadow-lg)}
@@ -32,6 +33,8 @@ body.m-chat .main{height:100dvh!important}
 /* ---- 底部标签栏 ---- */
 #m-tabbar{position:fixed;left:12px;right:12px;bottom:max(8px,var(--m-safe-b));z-index:40;display:flex;height:50px;box-sizing:border-box;background:var(--studio-glass);-webkit-backdrop-filter:saturate(1.5) blur(18px);backdrop-filter:saturate(1.5) blur(18px);padding:3px 4px;border-radius:999px;border:1px solid var(--studio-border);box-shadow:var(--studio-shadow-float)}
 #m-tabbar[hidden],body.m-chat:not(.m-leaders) #m-tabbar{display:none}
+body.m-ime{--m-bottom:var(--m-safe-b)}
+body.m-ime #m-tabbar{display:none}
 .m-tab{position:relative;flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:4px 0;border:0;background:none;color:var(--text-3);font:inherit;font-size:11px;font-weight:500;line-height:1;text-decoration:none;cursor:pointer;border-radius:999px;transition:background-color .14s ease,color .14s ease}
 .m-tab svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .m-tab[aria-current=page]{color:var(--accent-text);background:var(--accent-soft);font-weight:600}
@@ -43,7 +46,7 @@ body.m-chat .main{height:100dvh!important}
 /* ---- “更多”底部面板 ---- */
 #m-sheet-backdrop{display:block;position:fixed;inset:0;z-index:58;background:rgba(0,0,0,.42);opacity:0;pointer-events:none;transition:opacity .2s ease}
 #m-sheet-backdrop[data-open=true]{opacity:1;pointer-events:auto}
-#m-sheet{display:block;position:fixed;left:0;right:0;bottom:0;z-index:59;max-height:82dvh;overflow:auto;box-sizing:border-box;padding:8px 0 calc(12px + var(--m-safe-b));border-radius:22px 22px 0 0;background:var(--studio-sheet);box-shadow:var(--shadow-lg);transform:translateY(105%);transition:transform .26s var(--ease);border-top:1px solid var(--studio-border)}
+#m-sheet{display:block;position:fixed;left:0;right:0;bottom:0;z-index:59;max-height:calc(var(--m-viewport) * .82);overflow:auto;box-sizing:border-box;padding:8px 0 calc(12px + var(--m-safe-b));border-radius:22px 22px 0 0;background:var(--studio-sheet);box-shadow:var(--shadow-lg);transform:translateY(105%);transition:transform .26s var(--ease);border-top:1px solid var(--studio-border)}
 #m-sheet[data-open=true]{transform:none}
 #m-sheet::before{content:"";display:block;width:38px;height:5px;margin:0 auto 10px;border-radius:3px;background:var(--line-strong)}
 .m-sheet-title{margin:0;padding:4px var(--m-gutter) 8px;font-size:var(--m-fs-meta);font-weight:600;color:var(--text-3);letter-spacing:.02em}
@@ -92,3 +95,4 @@ body.m-chat .toast{bottom:calc(96px + var(--m-safe-b))!important}
 /* The disconnection notice sits above the tab bar (or the composer) instead of over the page header. */
 .connection-status{top:auto;bottom:calc(var(--m-bottom) + 12px);max-width:calc(100vw - 2 * var(--m-gutter))}
 body.m-chat .connection-status{bottom:calc(96px + var(--m-safe-b))}
+.wh-head .right>.m-workspace-voice{display:inline-flex;align-items:center;gap:4px;width:auto;height:40px;min-height:40px;flex:none;padding:0 12px 0 8px;border:1px solid var(--line-strong);border-radius:999px;background:var(--surface);color:var(--accent-text);white-space:nowrap}

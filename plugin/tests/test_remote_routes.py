@@ -35,6 +35,15 @@ class RemoteRouteTests(unittest.TestCase):
         self.assertTrue(remote_routes.permitted('GET', '/app.js', {'/app.js'}, 'browser'))
         self.assertFalse(remote_routes.permitted('GET', '/new.js', {'/app.js'}, 'browser'))
 
+    def test_notifications_stream_and_qr_assets_are_allowed_to_paired_clients(self):
+        for kind in ('browser', 'desktop'):
+            with self.subTest(kind=kind):
+                path = '/api/notifications/events'
+                self.assertTrue(remote_routes.permitted('GET', path, (), kind))
+                self.assertFalse(remote_routes.permitted('POST', path, (), kind))
+                for asset in ('/vendor/qrcode-generator.js', '/vendor/qrcode-generator.LICENSE'):
+                    self.assertTrue(remote_routes.permitted('GET', asset, web.STATIC, kind))
+
     def test_goal_report_and_version_controls_never_select_an_ai_actor(self):
         for kind in ('browser', 'desktop'):
             caller = device({'kind': kind})

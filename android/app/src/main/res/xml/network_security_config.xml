@@ -1,0 +1,5 @@
+<network-security-config>
+    <!-- M53：局域网 IP 不固定且不支持 IP 段通配。明文由应用层仅放给已配对主机，
+         首次配对单次请求例外按 M53 处理。 -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

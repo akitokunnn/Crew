@@ -56,6 +56,7 @@ def connect(home):
         native_origins.migrate(conn)
         _migrate_war_room_plans(conn)
         _retire_war_room_idle(conn)
+        _migrate_interaction_proof(conn)
         change_triggers.install(conn)
     except BaseException:
         conn.close()
@@ -72,6 +73,18 @@ def _retire_war_room_idle(conn):
                 conn.execute('UPDATE leader_notices SET wake=0 WHERE sent_at IS NULL AND id IN '
                              '(SELECT notice_id FROM war_room_idle WHERE notice_id IS NOT NULL)')
                 conn.execute('DROP TABLE war_room_idle')
+
+
+def _migrate_interaction_proof(conn):
+    def missing():
+        present = {row['name'] for row in conn.execute('PRAGMA table_info(interaction_requests)')}
+        return [name for name in ('message_id', 'summary') if name not in present]
+
+    if missing():
+        with conn:
+            conn.execute('BEGIN IMMEDIATE')
+            for name in missing():
+                conn.execute('ALTER TABLE interaction_requests ADD COLUMN %s TEXT' % name)
 
 
 def _migrate_war_room_plans(conn):

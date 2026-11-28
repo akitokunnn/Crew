@@ -238,7 +238,10 @@ class RemoteIntegrationTests(ShellFixture, unittest.TestCase):
         self.start_remote()
         browser = self.login()
         desktop, bearer = self.pair_desktop()
-        common = {'authenticated': True}
+        host = self.server.service.remote_access.host_context()
+        self.assertEqual(16, len(host['instance_id']))
+        self.assertTrue(host['host_name'])
+        common = {'authenticated': True, **host}
         status, local_context, _ = self.request('/api/access/context')
         self.assertEqual(200, status)
         self.assertEqual({**common, 'remote': False, 'client': 'local', 'local_controls': True,

@@ -10,7 +10,7 @@ import json
 import uuid
 
 from .. import board, guard, store, workspace_assistant
-from . import registry, scopes
+from . import confirmations, registry, scopes
 from .caller import HUMAN
 from .errors import OpError
 from .legacy import Content  # noqa: F401  (MCP and HTTP render it)
@@ -50,16 +50,51 @@ def _args_hash(name, args):
                                      separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
-def _receipt_begin(service, caller, op, request_id, digest, args):
+def turn_input(events, message_id=None):
+    """Resolve a user's delivery. The mode is on submitted, acceptance is a later event."""
+    modes, users = {}, set()
+    latest = None
+    accepted = set()
+    for event in events:
+        if event.get('room_id') is not None:
+            continue
+        if event['type'] == 'message' and event.get('role') == 'user' and event.get('source') in ('human', 'qq', 'lark'):
+            users.add(event['id'])
+        elif event['type'] == 'input_delivery':
+            identity = event['message_id'] if 'message_id' in event else event['id']
+            if event['status'] == 'submitted':
+                modes[identity] = event.get('input_mode', 'text')
+            elif event['status'] == 'accepted':
+                accepted.add(identity)
+                if identity in users:
+                    latest = identity
+    if message_id is not None:
+        if message_id not in users or (message_id in modes and message_id not in accepted):
+            raise OpError('invalid_arguments', '原始消息必须是这个会话已接收的用户输入')
+        # Older journal messages have no delivery events and predate voice.
+        return message_id, modes.get(message_id, 'text')
+    return latest, modes.get(latest, 'text')
+
+
+def _receipt_begin(ctx, args, *, needs_card, confirmed, message_id, bound_id):
     """Reserve (caller, request_id) or return the earlier outcome (design §5.5)."""
+    service, caller, op, request_id = ctx.service, ctx.caller, ctx.op, ctx.request_id
+    digest = _args_hash(op.name, args)
     with closing(store.connect(service.home)) as conn, board.transaction(conn):
         if caller.role == 'workspace_assistant':
             workspace_assistant.check_operation(conn, caller, op.name, args)
         row = conn.execute('SELECT * FROM op_requests WHERE caller_key=? AND request_id=?',
                            (caller.key, request_id)).fetchone()
+        if caller.is_ai and not confirmed:
+            card = conn.execute('SELECT * FROM interaction_requests WHERE caller_key=? AND request_id=?',
+                                (caller.key, request_id)).fetchone()
+            if card is not None:
+                return confirmations.receipt(card, op, digest, message_id)
         if row is None:
             if caller.role == 'workspace_assistant':
                 workspace_assistant.check_idea_refs(conn, caller.project, op.name, args)
+            if needs_card:
+                return confirmations.request(conn, ctx, args, digest, bound_id, _stamp(service))
             if caller.role == 'workspace_assistant' and op.risk == 'high':
                 workspace_assistant.check_confirmation(conn, caller, op.name, args, service.chat)
             conn.execute("INSERT INTO op_requests(caller_key,request_id,op,args_hash,status,created_at) "
@@ -68,7 +103,7 @@ def _receipt_begin(service, caller, op, request_id, digest, args):
         # Room reservation, draft and publication each have a durable domain receipt and no
         # native side effects before commit. Re-entering the transaction recovers even a lost reply.
         resumable = op.name in ('war_room.open', 'war_room.plan.update', 'war_room.plan.approve')
-        if (resumable and row['op'] == op.name and row['args_hash'] == digest and row['status'] != 'done'):
+        if (resumable and not needs_card and row['op'] == op.name and row['args_hash'] == digest and row['status'] != 'done'):
             conn.execute("UPDATE op_requests SET status='running',result=NULL,finished_at=NULL "
                          "WHERE caller_key=? AND request_id=?", (caller.key, request_id))
             return None
@@ -190,7 +225,6 @@ def call(service, caller, name, args, *, request_id=None, project_name=None, htt
         with closing(guard.readonly(service.home)) as conn:
             workspace_assistant.available(conn, args['project'])
     if name == 'interaction.resolve' and 'project' in args:
-        from . import confirmations
         with closing(guard.readonly(service.home)) as conn:
             confirmations.scoped_request(conn, args['id'], args['project'])
     if caller.is_ai:
@@ -198,15 +232,17 @@ def call(service, caller, name, args, *, request_id=None, project_name=None, htt
     else:
         scopes.human_payload(op, caller, args)
     receipt = op.access != 'read' and not op.query_get
-    if caller.is_ai and op.risk == 'high' and not confirmed:
+    bound_id, input_mode = message_id, 'text'
+    if caller.role == 'workspace_assistant' and op.access != 'read':
+        turn_id, input_mode = turn_input(service.chat.history(caller.session_id)['events'], message_id)
+        if input_mode == 'voice':
+            bound_id = turn_id
+    needs_card = caller.is_ai and not confirmed and (op.risk == 'high' or input_mode == 'voice')
+    if receipt or needs_card:
         if request_id is None:
             raise OpError('invalid_arguments', '写操作必须带 request_id（同一操作重试时保持不变）')
-        from . import confirmations
-        return confirmations.request(service, caller, op, args, request_id, _args_hash(name, args), _stamp(service))
-    if receipt:
-        if request_id is None:
-            raise OpError('invalid_arguments', '写操作必须带 request_id（同一操作重试时保持不变）')
-        earlier = _receipt_begin(service, caller, op, request_id, _args_hash(name, args), args)
+        earlier = _receipt_begin(ctx, args, needs_card=needs_card, confirmed=confirmed,
+                                 message_id=message_id, bound_id=bound_id)
         if earlier is not None:
             return earlier
     try:
