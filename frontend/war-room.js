@@ -6,9 +6,12 @@
     budget:"预算用完了", cancelled:"筹备已撤销", legacy:"已退出旧房"};
   const purposes = {creative:"创意", routine:"常规", difficult:"疑难"};
   const itemStatus = {todo:"待做", doing:"在做", blocked:"卡住", done:"完成"};
-  const deliveryStatus = {queued:"待送达", undelivered:"未送达", delivered:"已送达", replied:"已回复"};
-  const deliveryWait = {busy:"领头还在忙", stopped:"领头已停止", external:"领头在外部窗口", maintenance:"领头正在维护",
-    liveness_unknown:"还不清楚领头是否在线", failed:"上次没送成"};
+  const deliveryStatus = {queued:"待送达", undelivered:"未送达", delivered:"已送达", replied:"已回复", cancelled:"已取消"};
+  const deliveryWait = {busy:"对方还在忙", stopped:"已停止", external:"在外部窗口", maintenance:"维护中",
+    liveness_unknown:"还没确认状态", failed:"上次没送成"};
+  const folderStatus = {pending:"准备目录中", active:"独立目录运行中", awaiting_merge:"等合并", releasing:"收尾中", failed:"没建好"};
+  const folderOutcome = {merged:"已清理", backed_up:"已备份"};
+  const sharedFolder = "这是普通文件夹，大家共用同一目录直接改文件";
   const launchStep = {leader:"建好领队", invite:"邀请成员", goal:"建好任务", announce:"发布开打公告"};
   const roomPath = "/api/op/war_room.";
   let active = null;
@@ -21,6 +24,9 @@
   const isOpen = room => room.status === "open";
   const preparing = room => room.phase === "preparing";
   const showsPlan = room => isOpen(room) && preparing(room) && !room.approved_version;
+  const planWarning = room => showsPlan(room) && room.isolation === "none" && room.isolation_reason === "not_git"
+    ? `<p class="wr-isolation-note">${sharedFolder}。</p>` : "";
+  const waitingOnUser = room => ({approval:"在等你审批", decision:"在等你定"})[room.watchdog.reason];
   const latest = room => room.plans.find(plan => plan.version === room.draft_version);
   const selectedPlan = ctx => ctx.planVersion === null ? latest(ctx.room) : ctx.room.plans.find(plan => plan.version === ctx.planVersion);
   const previousPlan = (ctx, plan) => ctx.room.plans.find(item => item.version === plan.version - 1);
@@ -43,15 +49,38 @@
     }
   }
 
+  function roomSubtitle(room) {
+    const trimStops = text => text?.trim().replace(/[。.]+$/, "").trimEnd();
+    const goal = trimStops(room.goal);
+    return `${goal && goal !== trimStops(room.title) ? goal + " · " : ""}领头 ${room.lead_name}`;
+  }
+
   function roomListHTML(ctx) {
     if (ctx.roomsError) return `<p role="alert">${esc(ctx.roomsError)}</p>${action("reload", "重试")}`;
     if (ctx.rooms === null) return '<p role="status">正在读取作战室…</p>';
     const live = ctx.rooms.filter(isOpen), history = ctx.rooms.filter(room => !isOpen(room));
     const rows = (rooms, label, empty) => `<section class="wr-room-group"><h2>${label}</h2>${rooms.length ? rooms.map(room =>
-      `<a class="wr-room-row" href="${roomLink(room.id)}" data-wr-route="${room.id}"><span><strong>${esc(room.title)}</strong><small>${esc(room.goal)} · 领头 ${esc(room.lead_name)}</small></span><span class="wr-room-state" data-state="${CrewGlobalRail.roomState([room])}">${esc(isOpen(room) ? CrewGlobalRail.roomLabel([room]) : ending[room.close_reason])}${room.unread ? ` · ${room.unread} 条未读` : ""}${isOpen(room) && !preparing(room) ? `<small>分工 ${room.progress.done}/${room.progress.total}</small>` : ""}</span></a>`).join("") : `<p>${empty}</p>`}</section>`;
+      `<a class="wr-room-row" href="${roomLink(room.id)}" data-wr-route="${room.id}"><span><strong>${esc(room.title)}</strong><small>${esc(roomSubtitle(room))}</small></span><span class="wr-room-state" data-state="${CrewGlobalRail.roomState([room])}">${esc(isOpen(room) ? CrewGlobalRail.roomLabel([room]) : ending[room.close_reason])}${room.unread ? ` · ${room.unread} 条未读` : ""}${isOpen(room) && !preparing(room) ? `<small>分工 ${room.progress.done}/${room.progress.total}</small>` : ""}</span></a>`).join("") : `<p>${empty}</p>`}</section>`;
     return `<div class="wr-directory-head"><h1>作战室</h1>${live.length ? "" : ctx.state.leaders.length ? action("open", "开作战室") :
       `<a class="cx-btn" href="/assistant.html?project=${encodeURIComponent(ctx.state.project.name)}#opening=${encodeURIComponent(ctx.state.project.name)}">找助手开局</a>`}</div>` +
       rows(live, "进行中", "当前没有作战室") + rows(history, "历史", "还没有结束的作战室");
+  }
+
+  function receiptHTML(room, message, mention) {
+    const status = mention.state === "queued" && !isOpen(room) ? "undelivered" : mention.state;
+    if (!deliveryStatus[status]) return "";
+    const label = `${esc(mention.name)} · ${deliveryStatus[status]}`;
+    if (status === "cancelled") return `<details class="wr-delivery" data-delivery="cancelled" data-wr-card="receipt-${message.id}-${esc(mention.session_id)}"><summary title="${esc(mention.reason)}">${label}</summary><span>${esc(mention.reason)}</span></details>`;
+    const wait = status === "queued" && deliveryWait[mention.waiting?.split("|")[0]];
+    return `<small class="wr-delivery" data-delivery="${status}">${label}${wait ? ` · ${wait}` : ""}</small>`;
+  }
+
+  function messageBody(message) {
+    const lines = message.body.split(/\r?\n/);
+    const command = lines.at(-1);
+    if (!/^git branch \S+ refs\/crew-backup\/\S+$/.test(command)) return CrewChat.renderMarkdown(message.body, message.speaker_session_id);
+    return CrewChat.renderMarkdown(lines.slice(0, -1).join("\n"), message.speaker_session_id) +
+      `<div class="wr-restore"><code>${esc(command)}</code>${action("copy-command", "复制恢复命令", `data-command="${esc(command)}"`)}</div>`;
   }
 
   function messageHTML(ctx, message, internal = false) {
@@ -60,11 +89,8 @@
     const avatar = user ? `<span class="av round cx-av-user" style="--s:28px" aria-hidden="true">${name.slice(0, 1)}</span>` : ctx.avatar(message.speaker_name, 28, true);
     const reply = !user && !internal && isOpen(ctx.room) ? action("reply", "回复", `data-message="${message.id}"`) : "";
     const quote = message.reply ? `<blockquote class="wr-message-quote"><strong>${esc(message.reply.speaker_name)}</strong> ${esc(K.plain(message.reply.excerpt))}</blockquote>` : "";
-    const mention = user && message.mentions.find(item => item.session_id === ctx.room.lead_session_id);
-    const status = mention?.delivery === "queued" && !isOpen(ctx.room) ? "undelivered" : mention?.delivery;
-    const waiting = status === "queued" && (deliveryWait[mention.waiting] ?? mention.waiting);
-    const delivery = deliveryStatus[status] ? `<small class="wr-delivery" data-delivery="${status}">${deliveryStatus[status]}${waiting ? ` · ${esc(waiting)}` : ""}</small>` : "";
-    return `<article class="cx-msg${user ? " cx-user" : ""}">${avatar}<div class="cx-body-col"><div class="cx-meta"><strong>${name}</strong><time datetime="${esc(message.created_at)}">${esc(K.clock(message.created_at))}</time>${reply}</div>${quote}<div class="${user ? "cx-bubble" : "cx-content"}"><div class="markdown cx-md">${CrewChat.renderMarkdown(message.body, message.speaker_session_id)}</div></div>${delivery}</div></article>`;
+    const delivery = message.mentions.map(mention => receiptHTML(ctx.room, message, mention)).join("");
+    return `<article class="cx-msg${user ? " cx-user" : ""}">${avatar}<div class="cx-body-col"><div class="cx-meta"><strong>${name}</strong><time datetime="${esc(message.created_at)}">${esc(K.clock(message.created_at))}</time>${reply}</div>${quote}<div class="${user ? "cx-bubble" : "cx-content"}"><div class="markdown cx-md">${messageBody(message)}</div></div>${delivery}</div></article>`;
   }
 
   function conversation(room) {
@@ -130,7 +156,7 @@
     const unread = main.find(message => message.id > ctx.readFrom && message.speaker_session_id !== "user");
     if (unread && isOpen(room)) rows.push({at:unread.created_at, first:true, render:() => '<div class="cx-divider cx-unread"><span>新发言</span></div>'});
     rows.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || Number(Boolean(b.first)) - Number(Boolean(a.first)));
-    return `${room.origin ? `<p class="wr-note"><button type="button" class="text-link" data-wr="origin">查看交流区原帖 #${room.origin.id}</button></p>` : ""}${room.has_more ? '<p class="wr-muted">只显示最近 200 条房内发言</p>' : ""}${rows.map(row => row.render()).join("") || '<p class="cx-empty">还没有发言</p>'}`;
+    return `${room.origin ? `<p class="wr-note"><button type="button" class="text-link" data-wr="origin">查看交流区原帖 #${room.origin.id}</button></p>` : ""}${room.has_more ? '<p class="wr-muted">只显示最近 200 条房内发言</p>' : ""}${rows.map(row => row.render()).join("") || '<p class="wr-column-empty">还没有发言</p>'}`;
   }
 
   function planBudget(plan, previous) {
@@ -141,7 +167,7 @@
   function planHTML(ctx, inDialog = false) {
     const room = ctx.room;
     const plan = selectedPlan(ctx);
-    if (!plan) return `${inDialog ? "" : '<header class="wr-panel-head"><h2>作战计划书</h2></header>'}<p class="wr-panel-empty">等领头写第一版计划。</p>`;
+    if (!plan) return `${inDialog ? "" : '<header class="wr-panel-head"><h2>作战计划书</h2></header>'}<p class="wr-column-empty">等领头写第一版计划。</p>${planWarning(room)}`;
     const currentPlan = plan.version === room.draft_version, changes = planChanges(ctx, plan);
     const draft = canApprove(room) && currentPlan;
     const questions = draft ? P.pending(plan) : [];
@@ -154,7 +180,7 @@
       (!currentPlan ? action("latest", "回最新版") : "");
     const heading = inDialog ? "" : `<h2>作战计划书 <span>v${plan.version}</span></h2>`;
     return `${heading || tools ? `<header class="wr-panel-head">${heading}${tools ? `<div>${tools}</div>` : ""}</header>` : ""}
-      <div class="wr-panel-scroll">
+      <div class="wr-panel-scroll">${planWarning(room)}
         ${questions.length ? `<section class="wr-plan-decisions"><h3>等你定 <span>${questions.length}</span></h3>${questions.map(q => `<div class="wr-question"><div>${esc(q.title)}</div><small>${q.recommendation ? `领头建议 ${esc(q.recommendation)}` : "还没有推荐值"}</small>${action("reference", "引用回答", `data-entry="${esc(q.entry_id)}"`)}</div>`).join("")}</section>` : ""}
         ${closedDecisions.length ? `<details class="wr-plan-decided" data-wr-card="decided"><summary>✓ 已定 (${closedDecisions.length})</summary><ul>${closedDecisions.map(item => `<li>${esc(item.title)}${item.answer ? ` · ${esc(item.answer)}` : ""}</li>`).join("")}</ul></details>` : ""}
         ${ctx.compare && previous ? `<section class="wr-compare"><strong>v${previous.version} → v${plan.version}</strong><ul>${changes.map(change => `<li>${change.type} · ${esc(change.label)}</li>`).join("") || "<li>正文没有改动</li>"}</ul><details data-wr-card="previous-${previous.version}"><summary>展开上一版全文</summary><article class="crew-md-doc">${planData(ctx, previous).html}</article></details></section>` : ""}
@@ -162,21 +188,54 @@
       ${draft ? `<footer class="wr-plan-action"><p class="wr-error" role="alert">${esc(ctx.approvalError)}</p>${action("approve", preparing(room) ? "敲定，开打" : "敲定修订", `data-version="${plan.version}"`)}</footer>` : ""}`;
   }
 
+  function folderLabel(tree) {
+    return tree.state === "removed" ? folderOutcome[tree.outcome] : folderStatus[tree.state];
+  }
+
+  function memberName(room, id) {
+    return participants(room).find(person => person.session_id === id)?.crew_name ??
+      room.board.find(item => item.owner_session_id === id)?.owner_name ?? id;
+  }
+
+  function isolationHTML(room) {
+    if (room.isolation === "none") {
+      const reason = {not_git:sharedFolder, pre_upgrade:"升级前开的房，没有隔离"}[room.isolation_reason];
+      return `<p class="wr-isolation-note"><strong>没有隔离</strong>${reason ? `<span>${reason}</span>` : ""}</p>`;
+    }
+    if (!room.worktrees?.length) return "";
+    return `<ul class="wr-folders">${room.worktrees.map(tree =>
+      `<li><span>${esc(memberName(room, tree.member))}</span><small data-folder="${esc(tree.state)}">${esc(folderLabel(tree))}</small></li>`).join("")}</ul>`;
+  }
+
+  function attentionHTML(room) {
+    if (!isOpen(room)) return "";
+    const rows = [], watch = room.watchdog;
+    if (watch?.state === "attention") rows.push(action("ask-lead", "房里停下了，叫醒领头仍没动静 · 问问领头 ›"));
+    if (watch?.state === "waiting_user") rows.push(waitingOnUser(room));
+    for (const tree of room.worktrees ?? []) {
+      if (tree.state === "failed") rows.push(`${esc(memberName(room, tree.member))} 的独立目录没建好：${esc(tree.error || "原因见详情")}`);
+    }
+    for (const item of room.board.filter(item => item.status === "blocked")) {
+      const text = `卡住了 · ${esc(item.title)}${item.note ? ` · ${esc(item.note)}` : ""}`;
+      const [latest] = jobExecutions(room, item.goal_id);
+      rows.push(latest ? action("history", text + " ›", `data-execution="${esc(latest.id)}"`) : text);
+    }
+    for (const item of pending(room)) rows.push(action("decision-jump", esc(item.question) + " ›", `data-decision="${item.id}"`));
+    return rows.length ? `<section class="wr-attention"><h3>需要你关注</h3><ul>${rows.map(row => `<li>${row}</li>`).join("")}</ul></section>` : "";
+  }
+
   function statusHTML(ctx, internal, inDialog = false) {
     const room = ctx.room, jobs = assignments(room), done = jobs.filter(item => item.status === "done").length;
-    const blocked = room.board.filter(item => item.status === "blocked"), decisions = pending(room);
     const steps = room.events.filter(event => event.kind === "launch_step" && event.detail.version === room.approved_version);
     return `${inDialog ? "" : '<header class="wr-panel-head"><h2>战况</h2></header>'}<div class="wr-panel-scroll wr-status-scroll">
-      ${isOpen(room) && (blocked.length || decisions.length) ? `<section class="wr-attention"><h3>需要你关注</h3><ul>
-      ${blocked.map(item => `<li>卡住了 · ${esc(item.title)}${item.note ? ` · ${esc(item.note)}` : ""}</li>`).join("")}
-      ${decisions.map(item => `<li>${action("decision-jump", esc(item.question), `data-decision="${item.id}"`)}</li>`).join("")}</ul></section>` : ""}
+      ${attentionHTML(room)}
       <section class="wr-progress"><h3>分工进度 <span>${done}/${jobs.length}${isOpen(room) ? "" : ` · ${ending[room.close_reason]}`}</span></h3><progress value="${done}" max="${Math.max(1, jobs.length)}" aria-label="分工完成进度"></progress>
       ${jobs.length ? `<ul>${jobs.map(item => assignmentHTML(room, item)).join("")}</ul>` : '<p class="wr-muted">还没有分工</p>'}</section>
       ${room.budget || room.usage_pending ? `<section class="wr-budget"><h3>预算</h3>
         ${room.budget ? `<p>已用 ${count(room.budget.spent)} / ${count(room.budget.tokens)} tokens</p>` : "<p>未设上限</p>"}
         ${room.usage_pending ? `<p>另有 ${count(room.usage_pending)} 次用量待确认</p>` : ""}</section>` : ""}
       <div class="wr-drawers">${latest(room) ? action("full", `<span>计划书 v${room.draft_version}</span><span>${canApprove(room) ? "有修订待敲定 ›" : "看全文 ›"}</span>`) : ""}
-      ${action("internal", `<span>内部交流</span><span>${internal.length} 条 ›</span>`)}${action("members", `<span>参战成员</span><span>${participants(room).length} 人 ›</span>`)}</div>
+      ${action("internal", `<span>内部交流</span><span>${internal.length} 条 ›</span>`)}${action("members", `<span>参战成员</span><span>${participants(room).length} 人 ›</span>`)}</div>${isolationHTML(room)}
       ${steps.length ? `<details class="wr-steps" data-wr-card="steps"><summary>开局记录 · ${steps.length} 项</summary><ul>${steps.map(event => `<li>${esc(launchStep[event.detail.step])}${event.detail.step === "goal" ? ` · ${esc(event.detail.target)}` : ""}</li>`).join("")}</ul></details>` : ""}
       </div>`;
   }
@@ -221,7 +280,9 @@
     const items = assignments(room), done = items.filter(item => item.status === "done").length;
     if (!isOpen(room)) return `进度 ${done}/${items.length} · ${ending[room.close_reason]}`;
     const blocked = room.board.filter(item => item.status === "blocked").length, waiting = room.open_decisions;
-    return `进度 ${done}/${items.length}${blocked ? ` · ${blocked} 项卡住` : ""}${waiting ? ` · ${waiting} 项等你定` : ""}`;
+    const watch = room.watchdog;
+    const watchLabel = watch?.state === "attention" ? "等你关注" : watch?.state === "waiting_user" ? waitingOnUser(room) : "";
+    return `${watchLabel ? watchLabel + " · " : ""}进度 ${done}/${items.length}${blocked ? ` · ${blocked} 项卡住` : ""}${waiting && !(watch?.state === "waiting_user" && watch.reason === "decision") ? ` · ${waiting} 项等你定` : ""}`;
   }
 
   function headerHTML(ctx) {
@@ -229,18 +290,19 @@
     const actions = !open ? "" : (room.legacy ? action("close", "退出旧房") :
       preparing(room) ? action("cancel", "撤销筹备") : "") + action("stop", "叫停");
     const label = open ? (preparing(room) ? "筹备中" : "作战中") : ending[room.close_reason];
-    return `<a class="cx-btn wr-back" href="${roomLink(0)}" data-wr-route="0">‹ 作战室</a><div class="wr-heading"><h1>${esc(room.title)}</h1><p>${esc(room.goal)} · 领头 ${esc(room.lead_name)}</p></div>
+    return `<a class="cx-btn wr-back" href="${roomLink(0)}" data-wr-route="0">‹ 作战室</a><div class="wr-heading"><h1>${esc(room.title)}</h1><p>${esc(roomSubtitle(room))}</p></div>
       <span class="wr-phase" data-state="${open ? room.phase : "closed"}">${esc(label)}</span><div class="wr-room-actions">${actions}</div>`;
   }
 
   function membersHTML(ctx) {
     const room = ctx.room;
-    return `<ul class="wr-participants">${participants(room).map(item => {
+    return `${room.isolation === "none" ? isolationHTML(room) : ""}<ul class="wr-participants">${participants(room).map(item => {
       const live = ctx.state.leaders.find(person => person.session_id === item.session_id);
       const lead = item.session_id === room.lead_session_id;
       const working = lead ? room.lead_working_room_id : item.working_room_id;
+      const tree = room.worktrees?.find(row => row.member === item.session_id);
       return `<li>${ctx.avatar(item.crew_name, 28, true)}<strong>${esc(item.crew_name)}</strong>
-        ${lead ? "<span>领头</span>" : ""}${isOpen(room) && working === room.id ? '<small class="room-working-tag">作战室中</small>' : isOpen(room) && live ? `<small>${esc(K.presence(live).text)}</small>` : ""}</li>`;
+        ${tree ? `<small data-folder="${esc(tree.state)}">${esc(folderLabel(tree))}</small>` : ""}${lead ? "<span>领头</span>" : ""}${isOpen(room) && working === room.id ? '<small class="room-working-tag">作战室中</small>' : isOpen(room) && live ? `<small>${esc(K.presence(live).text)}</small>` : ""}</li>`;
     }).join("")}</ul>`;
   }
 
@@ -252,7 +314,8 @@
     ctx.host.dataset.collapsed = String(ctx.collapsed);
     put(ctx.head, headerHTML(ctx));
     put(ctx.bar, action("panel", `<span>${esc(summary(ctx))}</span><span>${showPlan ? "看计划书" : "展开战况"} ›</span>`));
-    put(ctx.toggle, showPlan ? "" : action("collapse", ctx.collapsed ? "展开战况" : "收起战况", `aria-expanded="${!ctx.collapsed}"`));
+    const expand = open && room.watchdog?.state === "attention" ? "等你关注 · 展开战况" : "展开战况";
+    put(ctx.toggle, showPlan ? "" : action("collapse", ctx.collapsed ? expand : "收起战况", `aria-expanded="${!ctx.collapsed}"`));
     const b = room.budget;
     ctx.notice.hidden = !open && !room.summary || open && !b?.paused_at;
     put(ctx.notice, open && b?.paused_at ? `<div><strong>预算用完了，已暂停</strong><small>已用 ${count(b.spent)} / ${count(b.tokens)} tokens</small></div><div>${action("end_budget","结束")}${action("budget","追加预算")}</div>` : room.summary ? `<p>${esc(room.summary)}</p>` : "");
@@ -381,9 +444,10 @@
     };
     const [title, description] = knobs[kind];
     ctx.confirmation = {kind, args};
-    if (kind === "approve" && !n) { void submit(ctx); return; }
-    ctx.form.innerHTML = `<h2 id="wr-confirm-title">${title}</h2>${description.startsWith("<") ? description : `<p>${description}</p>`}
-      <p class="wr-dialog-error" role="alert"></p><div class="wr-dialog-acts">${action("dismiss", "返回")}<button type="submit" class="cx-btn cx-primary">${kind === "approve" ? (preparing(room) ? "按推荐开打" : "按推荐敲定") : title}</button></div>`;
+    const warning = kind === "approve" ? planWarning(room) : "";
+    if (kind === "approve" && !n && !warning) { void submit(ctx); return; }
+    ctx.form.innerHTML = `<h2 id="wr-confirm-title">${title}</h2>${description.startsWith("<") || !description ? description : `<p>${description}</p>`}${warning}
+      <p class="wr-dialog-error" role="alert"></p><div class="wr-dialog-acts">${action("dismiss", "返回")}<button type="submit" class="cx-btn cx-primary">${kind === "approve" && n ? (preparing(room) ? "按推荐开打" : "按推荐敲定") : title}</button></div>`;
     ctx.confirmDialog.showModal();
   }
 
@@ -590,6 +654,13 @@
       ctx.feed.querySelector(`[data-wr="revision-more"][data-version="${value}"]`).focus({preventScroll:true});
       break;
     }
+    case "ask-lead":
+      if (ctx.panelDialog.open) ctx.panelDialog.close();
+      ctx.input.focus();
+      break;
+    case "copy-command":
+      void CrewBrowser.copyText(button.dataset.command).then(() => ctx.toast("已复制恢复命令"), error => ctx.toast(error.message));
+      break;
     case "reference": reference(ctx, `关于 ${entry}：`); break;
     case "reply":
       ctx.replyTo = ctx.room.messages.find(item => item.id === Number(message)); render(ctx); ctx.input.focus(); break;

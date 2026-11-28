@@ -16,7 +16,7 @@ function room(extra = {}) {
   return {id:3, status:"open", phase:"preparing", draft_version:2, approved_version:null, legacy:false, close_reason:null, title:"签名",
     goal:"统一 v2", lead_session_id:"assistant", lead_name:"工作区助手", budget:null, messages:[message(1,"assistant","先写计划")],
     decisions:[], consults:[], plans:[plan2, plan1], board:[], events:[], has_more:false, origin:null, read_id:1, latest_id:1, unread:0, open_decisions:0, members:[], summary:null,
-    executions:[], unread_execution_events:0, lead_working_room_id:null, usage_pending:0, ...extra};
+    watchdog:null, isolation:"worktree", isolation_reason:null, worktrees:[], executions:[], unread_execution_events:0, lead_working_room_id:null, usage_pending:0, ...extra};
 }
 function element() {
   const classes = new Set();
@@ -29,7 +29,7 @@ function element() {
   return node;
 }
 function harness(initial, {mobile = false, reads, mutation, directory = null, httpError} = {}) {
-  const calls = [], toasts = [], routes = [], nodes = new Map(), listeners = new Set();
+  const calls = [], toasts = [], copied = [], routes = [], nodes = new Map(), listeners = new Set();
   const state = {project:{name:"A"}, leaders:[{session_id:"pay", name:"支付"}]};
   const node = key => {
     if (!nodes.has(key)) nodes.set(key, element());
@@ -40,7 +40,7 @@ function harness(initial, {mobile = false, reads, mutation, directory = null, ht
     addEventListener:(_, callback) => listeners.add(callback), removeEventListener:(_, callback) => listeners.delete(callback)};
   const sandbox = {document, URL, URLSearchParams, atob, btoa, TextDecoder, location:{pathname:"/", search:""}, matchMedia:() => ({matches:mobile}),
     CrewChat:{renderMarkdown(text){ return sandbox.CrewReportMarkdown.render(text); }}, CrewBrowser:{
-      pageProject:() => ({mode:"workspace", project:"A"}), enableChatLists(){}, chatSendKey:event => event.key === "Enter" && !event.isComposing,
+      copyText:async text => { copied.push(text); }, pageProject:() => ({mode:"workspace", project:"A"}), enableChatLists(){}, chatSendKey:event => event.key === "Enter" && !event.isComposing,
       postOptions:data => ({body:JSON.stringify(data)})
     }};
   sandbox.window = sandbox;
@@ -72,7 +72,7 @@ function harness(initial, {mobile = false, reads, mutation, directory = null, ht
   const click = (wr, attrs = {}) => host.onclick({target:{closest:selector => selector === "button[data-wr]" ? {dataset:{wr,...attrs}} : null}});
   const send = async () => { node("send form").onsubmit({preventDefault(){}}); await tick(); };
   const confirm = async () => { form.onsubmit({preventDefault(){}}); await tick(); };
-  return {W, P:sandbox.CrewWarRoomPlan, rail:sandbox.CrewGlobalRail, calls, node, host, toasts, routes, listeners, click, send, confirm,
+  return {W, P:sandbox.CrewWarRoomPlan, rail:sandbox.CrewGlobalRail, calls, copied, node, host, toasts, routes, listeners, click, send, confirm,
     reload(value) { detail = value; W.changed([{type:"war_room.updated", entity:"3"}]); }};
 }
 
@@ -420,20 +420,21 @@ test("作战中战况显示卡住和待定项，成员和内部消息在独立�
   f.click("members"); assert.match(f.node(".wr-pane-content").innerHTML, /支付/);
 });
 
-test("领头的 mention 决定用户发言回执，其他收件人的状态不冒充领头回执", async () => {
-  const queued = http.queued, [lead] = queued.mentions;
-  const f = harness(room({lead_session_id:lead.session_id, messages:[
-    queued, {...queued, id:20, body:"再问一次", mentions:[{...lead, waiting:"failed"}]},
-    {...queued, id:21, body:"已投递的发言", mentions:[{...lead, delivery:"delivered"}]},
-    {...queued, id:22, body:"有人回了", mentions:[{...lead, delivery:"replied"}]},
-    {...queued, id:23, body:"问别人", mentions:[{...lead, session_id:"other", delivery:"delivered"}]}
-  ]}));
+test("每个被点名的人各有回执，取消原因可展开，内部帖同样显示", async () => {
+  const waiting = {busy:"对方还在忙", stopped:"已停止", external:"在外部窗口", maintenance:"维护中",
+    liveness_unknown:"还没确认状态", "failed|时间|原因":"上次没送成"};
+  const mentions = Object.keys(waiting).map((reason, i) => ({session_id:"s"+i, name:"成员"+i, state:"queued", waiting:reason}));
+  mentions.push({session_id:"pay", name:"支付", state:"cancelled", reason:"已取消：房间已结束"},
+    {session_id:"ops", name:"运维", state:"delivered"}, {session_id:"qa", name:"测试", state:"replied"});
+  const f = harness(room({messages:[message(1,"user","请确认",{mentions}), message(2,"pay","完成核对",{mentions})]}));
   await tick();
-  const html = f.node(".wr-timeline").innerHTML;
-  assert.equal((html.match(/待送达/g) || []).length, 2);
-  assert.match(html, /再问一次[\s\S]*待送达 · 上次没送成/);
-  assert.equal((html.match(/已送达/g) || []).length, 1);
-  assert.match(html, /已回复/);
+  f.click("internal");
+  for (const html of [f.node(".wr-timeline").innerHTML, f.node(".wr-pane-content").innerHTML]) {
+    for (const [i,label] of Object.values(waiting).entries()) assert(html.includes(`成员${i} · 待送达 · ${label}`));
+    assert.match(html, /<details[^>]*data-delivery="cancelled"[^>]*><summary title="已取消：房间已结束">支付 · 已取消<\/summary><span>已取消：房间已结束/);
+    assert.match(html, /运维 · 已送达/);
+    assert.match(html, /测试 · 已回复/);
+  }
 });
 
 test("用户可以回复领头的消息，自己的消息没有回复按钮", async () => {
@@ -450,7 +451,7 @@ test("结束后摘要和战况只提示进度与结局，排队回执和未决�
   for (const [phase, close_reason, label] of [["active","completed","做完了"],["preparing","cancelled","筹备已撤销"]]) {
     const f = harness(room({status:"closed", phase, close_reason, lead_session_id:lead.session_id,
       board:[job("A1","assignment","done","核对签名"),job("A2","assignment","blocked","发布")],
-      messages:[{...queued, mentions:[{...lead, waiting:"busy"}]}], open_decisions:1, decisions:[decision]}), {mobile:true});
+      messages:[{...queued, mentions:[{...lead, state:"queued", waiting:"busy"}]}], open_decisions:1, decisions:[decision]}), {mobile:true});
     await tick();
     const bar = f.node(".wr-panelbar").innerHTML, aside = f.node(".wr-plan-panel").innerHTML;
     assert.match(bar, new RegExp(`进度 1/2 · ${label}`));
@@ -461,7 +462,7 @@ test("结束后摘要和战况只提示进度与结局，排队回执和未决�
     assert.equal(f.node("#wr-pane-title").innerHTML, "战况");
     assert.doesNotMatch(f.node(".wr-pane-content").innerHTML, /<h2>战况/);
     const feed = f.node(".wr-timeline").innerHTML;
-    assert.match(feed, /data-delivery="undelivered">未送达<\/small>/);
+    assert.match(feed, /data-delivery="undelivered">lead · 未送达<\/small>/);
     assert.match(feed, /wr-decision" data-state="closed"[^>]*><strong>随房间结束关闭<\/strong><small class="decision-source">作战室 · 签名<\/small><p>作战室《签名》：可以上线吗？<\/p>/);
     assert.doesNotMatch(feed, /待送达|领头还在忙|去拍板/);
   }
@@ -569,4 +570,124 @@ test("领头放弃的理由按房内消息展示，旧房退出只出现在仍�
   await tick();
   assert.match(f.node(".wr-timeline").innerHTML,/放弃理由：依赖撤下/);
   assert.doesNotMatch(f.node(".wr-main-head").innerHTML,/退出旧房|撤销筹备|叫停/);
+});
+
+test("停滞同时出现在侧栏、目录、手机摘要和收起战况，点提醒保留草稿并聚焦", async () => {
+  const stalledRoom = room({phase:"active", progress:{done:0,total:1}, watchdog:{state:"attention", reason:"no_progress"}});
+  const list = harness(null,{directory:[stalledRoom]});
+  assert.match(list.node(".wr-directory").innerHTML, /data-state="attention">等你关注/);
+  assert.match(list.rail.roomMarkup("A",[room(),stalledRoom]), /等你关注[\s\S]*rail-dot/);
+  assert.equal(list.rail.roomState([room(),{...stalledRoom,status:"closed"}]),"waiting");
+  const f = harness(stalledRoom,{mobile:true});
+  await tick();
+  f.click("collapse");
+  assert.match(f.node(".wr-toggle").innerHTML,/等你关注/);
+  assert.match(f.node(".wr-panelbar").innerHTML,/等你关注/);
+  f.click("panel");
+  assert.match(f.node(".wr-pane-content").innerHTML,/data-wr="ask-lead"[^>]*>房里停下了，叫醒领头仍没动静 · 问问领头 ›/);
+  const input = f.node("textarea");
+  input.value = "已有草稿";
+  f.click("ask-lead");
+  assert.equal(f.node(".wr-pane-dialog").open,false);
+  assert.equal(input.focused,true);
+  assert.equal(input.value,"已有草稿");
+});
+
+test("关注区只显示需要用户处理的状态，等待原因可单独出现", async () => {
+  for (const [state,reason,label] of [["waiting_user","approval","在等你审批"],["waiting_user","decision","在等你定"],
+    ["stalled",null,null],["woken",null,null]]) {
+    const f = harness(room({phase:"active",watchdog:{state,reason}}));
+    await tick();
+    const html = f.node(".wr-plan-panel").innerHTML;
+    if (label) {
+      assert(html.includes(`<li>${label}</li>`));
+      assert(f.node(".wr-panelbar").innerHTML.includes(label));
+    } else assert.doesNotMatch(html,/需要你关注/);
+  }
+});
+
+test("目录状态按授权行展示，失败单独触发关注，关房后收起关注", async () => {
+  const rows = [["pending",null,"准备目录中"],["active",null,"独立目录运行中"],["awaiting_merge",null,"等合并"],
+    ["removed","merged","已清理"],["removed","backed_up","已备份"],["releasing",null,"收尾中"],["failed",null,"没建好"]];
+  const worktrees = rows.map(([state,outcome],i) => ({member:"s"+i,state,outcome,error:i === 6 ? "目录被占用" : null}));
+  const members = rows.map((_,i) => ({session_id:"s"+i,crew_name:"成员"+i}));
+  const detail = room({phase:"active",worktrees,members});
+  const f = harness(detail);
+  await tick();
+  assert.match(f.node(".wr-plan-panel").innerHTML,/成员6 的独立目录没建好：目录被占用<\/li>/);
+  f.click("members");
+  for (const [i,[,,label]] of rows.entries()) {
+    assert.match(f.node(".wr-pane-content").innerHTML,new RegExp(`成员${i}</strong>\\s*<small[^>]*>${label}`));
+    assert(f.node(".wr-plan-panel").innerHTML.includes(label));
+  }
+  f.reload({...detail, worktrees:[{member:"s6",state:"failed"}]});
+  await tick();
+  assert.match(f.node(".wr-plan-panel").innerHTML,/成员6 的独立目录没建好：原因见详情/);
+  assert.doesNotMatch(f.node(".wr-pane-content").innerHTML,/已备份|目录被占用/);
+  f.reload({...detail,status:"closed",close_reason:"user_stop",watchdog:{state:"attention"}});
+  await tick();
+  assert.doesNotMatch(f.node(".wr-plan-panel").innerHTML,/需要你关注/);
+});
+
+test("普通文件夹筹备提示覆盖空计划、计划和开打确认，升级前的房显示对应原因", async () => {
+  const shared = {isolation:"none",isolation_reason:"not_git"};
+  const note = "这是普通文件夹，大家共用同一目录直接改文件。";
+  const f = harness(room({...shared, plans:[],draft_version:0,messages:[]}),{mobile:true});
+  await tick();
+  assert(f.node(".wr-plan-panel").innerHTML.includes(note));
+  for (const [selector,text] of [[".wr-plan-panel","等领头写第一版计划。"],[".wr-timeline","还没有发言"]])
+    assert(f.node(selector).innerHTML.includes(`class="wr-column-empty">${text}`));
+  f.reload(room({...shared})); await tick();
+  f.click("panel");
+  assert(f.node(".wr-pane-content").innerHTML.includes(note));
+  f.click("approve",{version:"2"});
+  assert(f.node(".wr-confirm form").innerHTML.includes(note));
+  f.click("dismiss");
+  const answered = {...plan2, entries:plan2.entries.map(item => ({...item,answer:"同意"}))};
+  f.reload(room({...shared, plans:[answered]})); await tick();
+  f.click("approve",{version:"2"});
+  assert.equal(f.node(".wr-confirm").open,true);
+  assert(!f.calls.some(call => call.name === "plan.approve"));
+  for (const [isolation_reason,label] of [["not_git", note.slice(0,-1)],["pre_upgrade","升级前开的房，没有隔离"]]) {
+    const active = harness(room({...shared,phase:"active",isolation_reason}));
+    await tick(); active.click("members");
+    assert.match(active.node(".wr-pane-content").innerHTML, new RegExp(`没有隔离</strong><span>${label}`));
+  }
+});
+
+test("备份命令只识别末行，点击复制原文并反馈", async () => {
+  const command = "git branch crew/room-3/pay refs/crew-backup/room-3/pay";
+  const f = harness(room({messages:[message(1,"assistant",`已备份。\r\n${command}`),
+    message(2,"assistant",`${command}\n还有下一行`),message(3,"assistant","git branch feat refs/heads/main")]}));
+  await tick();
+  const html = f.node(".wr-timeline").innerHTML;
+  assert.equal(html.match(/复制恢复命令/g).length,1);
+  assert(html.includes(`<code>${command}</code>`));
+  assert(html.includes(`data-command="${command}"`));
+  f.click("copy-command",{command}); await tick();
+  assert.deepEqual(f.copied,[command]);
+  assert.deepEqual(f.toasts,["已复制恢复命令"]);
+});
+
+test("标题下的目标在目录和详情一致，去除句号并略过空目标和同名目标", async () => {
+  for (const [goal, subtitle] of [[null,"领头 工作区助手"],[" 。 ","领头 工作区助手"],["签名。。","领头 工作区助手"],
+    [" 统一 v2.。 ","统一 v2 · 领头 工作区助手"]]) {
+    const detail = room({goal});
+    assert(harness(null,{directory:[detail]}).node(".wr-directory").innerHTML.includes(`<small>${subtitle}</small>`));
+    const f = harness(detail); await tick();
+    assert(f.node(".wr-main-head").innerHTML.includes(`<p>${subtitle}</p>`));
+  }
+});
+
+test("关注区有执行记录的卡住项和可跳转拍板有箭头，纯文字无箭头", async () => {
+  const detail = room({phase:"active",board:[{...http.job,status:"blocked"},job("X","criterion","blocked","等签字")],
+    executions:[http.history], decisions:[{id:8,status:"open",question:"可以开打吗？",created_at:plan2.created_at}]});
+  const f = harness(detail,{mobile:true}); await tick(); f.click("panel");
+  const html = f.node(".wr-pane-content").innerHTML.split("</section>")[0];
+  assert.match(html,/data-wr="history"[^>]+>卡住了 · 切换网关[^<]* ›</);
+  assert.match(html,/data-wr="decision-jump"[^>]+>可以开打吗？ ›</);
+  assert.match(html,/<li>卡住了 · 等签字<\/li>/);
+  f.click("history",{execution:http.history.id}); await tick();
+  assert.equal(f.node("#wr-pane-title").innerHTML,"执行记录");
+  assert.match(f.node(".wr-pane-content").innerHTML,/回归已完成/);
 });
