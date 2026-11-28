@@ -57,8 +57,10 @@ class WorkspacePackageTests(unittest.TestCase):
             conn.execute("INSERT INTO personal_note_discussions VALUES('a',?,'missing-message-PRIVATE',22,?)", (sid, stamp))
             conn.execute("INSERT INTO personal_note_discussions VALUES('b',?,'B-private-read',21,?)", (sid, stamp))
             conn.execute("INSERT INTO mcp_tokens VALUES('PRIVATE_TOKEN',?,NULL,NULL,'workspace_assistant','codex','A','[]','[]',NULL,?,NULL)", (sid, stamp))
-            conn.execute("INSERT INTO interaction_requests VALUES('PRIVATE_PENDING','confirmation','caller','req',?,NULL,"
-                         "'workspace_assistant','op','{}','hash','A','pending',NULL,NULL,?,NULL)", (sid, stamp))
+            conn.execute("INSERT INTO interaction_requests "
+                         "(id,kind,message_id,summary,caller_key,request_id,session_id,role,op,args,args_hash,project,status,created_at) "
+                         "VALUES('PRIVATE_PENDING','confirmation','PRIVATE_PROOF','PRIVATE_SUMMARY','caller','req',?,"
+                         "'workspace_assistant','op','{}','hash','A','pending',?)", (sid, stamp))
             conn.execute("UPDATE personal_notes SET text=text || ?,source_json=? WHERE id='a'",
                          ('\n- b（原 id：b）', json.dumps(dict(source='human', session_id=admin, message_id='admin-secret'))))
             (self.home / 'chat').mkdir(exist_ok=True)
@@ -80,7 +82,8 @@ class WorkspacePackageTests(unittest.TestCase):
         self.assertEqual(manifest['schema_version'], 6)
         with zipfile.ZipFile(path) as archive:
             raw = b''.join(archive.read(name) for name in archive.namelist())
-            for private in [self.admin, self.sid, 'PRIVATE_TOKEN', 'PRIVATE_PENDING', 'B-private-read',
+            for private in [self.admin, self.sid, 'PRIVATE_TOKEN', 'PRIVATE_PENDING', 'PRIVATE_PROOF',
+                            'PRIVATE_SUMMARY', 'B-private-read',
                             'unusedByWorkspaces', 'source-message-PRIVATE', 'admin-secret', 'missing-message-PRIVATE']:
                 self.assertNotIn(private.encode(), raw)
             snapshot = self.base / 'data.sqlite'

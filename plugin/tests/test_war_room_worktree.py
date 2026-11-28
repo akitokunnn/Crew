@@ -7,7 +7,7 @@ from unittest import mock
 
 from crew import board, branch_claims, chat, codex_runtime, goals, runtimes, store, war_room, war_room_plan
 from crew import war_room_worktree as wt
-from crew import codex_events, war_room_scope
+from crew import codex_events, war_room_scope, workspace_assistant
 from crew.ops.errors import OpError
 from test_chat import FakeProcess
 from test_codex_runtime import FakeClient
@@ -209,11 +209,49 @@ class RoomCheckoutTests(DeliveryFixture):
         self.stop()
         before = len(self.notices('a'))
         self.tick()
-        self.tick()
         self.assertEqual(self.scope_events(), [{'member': None, 'files': ['tracked', '无主.txt'], 'source': 'git'}])
         self.assertEqual(war_room.get(self.conn, self.room, 'b')['unowned_changes'], ['tracked', '无主.txt'])
         self.assertFalse(war_room.get(self.conn, self.room, 'm')['unowned_changes'])
-        self.assertEqual(len(self.notices('a')), before)
+        notices = self.notices('a')[before:]
+        self.assertEqual(len(notices), 1)
+        notice = notices[0]
+        self.assertEqual((notice['room_id'], notice['source'], notice['wake'], notice['text']),
+                         (None, 'crew', 1, f'作战室 #{self.room}《测试》收尾时发现越界改动：'
+                          '共用目录中有人 改了范围外的文件 tracked、无主.txt，请核对是否要保留。'))
+        self.assertIn(notice, board.pending_notices(self.conn, 'a', main_session=True))
+        self.tick()
+        self.assertEqual(len(self.scope_events()), 1)
+        self.assertEqual(self.notices('a')[before:], [notice])
+
+    def test_close_notifies_room_lead_of_tool_changes_once(self):
+        lead = workspace_assistant.ensure(self.conn, self.home, 'demo')['session_id']
+        room = war_room.start(self.conn, 'demo', lead, '工具审计', '核对范围')
+        self.room = room['id']
+        room = approve_assignments(self.conn, room, ['beta'], [])
+        execution = goals.create_execution(self.conn, room['board'][0]['goal_id'], 'b', runtime='claude')
+        outside = [f'other-{i:02}.txt' for i in range(11)]
+        self.manager.journal(execution['id']).emit('assistant', id='writes', content=[
+            {'type': 'tool_use', 'id': path, 'name': 'Write', 'input': {'file_path': path}}
+            for path in ['checks/0/ok', *outside]])
+        self.stop()
+        before = len(self.notices(lead))
+        with mock.patch.object(war_room, '_touch', side_effect=board.BoardError('模拟写入失败')):
+            with self.assertLogs(war_room_scope.__name__, level='ERROR'):
+                self.tick()
+        self.assertEqual(self.scope_events(), [])
+        self.assertEqual(self.notices(lead)[before:], [])
+        self.tick()
+        self.assertEqual(self.scope_events(), [{'member': 'b', 'source': 'tools', 'files': outside}])
+        notices = self.notices(lead)[before:]
+        self.assertEqual(len(notices), 1)
+        notice = notices[0]
+        self.assertEqual((notice['room_id'], notice['source'], notice['wake'], notice['text']),
+                         (None, 'crew', 1, f'作战室 #{self.room}《工具审计》收尾时发现越界改动：'
+                          f'beta 改了范围外的文件 {"、".join(outside[:10])}，请核对是否要保留。'))
+        self.assertIn(notice, board.pending_notices(self.conn, lead, main_session=True))
+        self.tick()
+        self.assertEqual(len(self.scope_events()), 1)
+        self.assertEqual(self.notices(lead)[before:], [notice])
 
     def test_clean_audit_never_rechecks_or_notifies(self):
         self.init()
