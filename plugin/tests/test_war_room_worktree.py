@@ -721,4 +721,3 @@ class RoomCheckoutTests(DeliveryFixture):
         self.git('add', '--', data.name, cwd=path)
         self.tick()
         self.assertEqual(self.row()['outcome'], 'backed_up', self.row()['error'])
-

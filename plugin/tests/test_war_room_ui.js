@@ -712,7 +712,9 @@ test("计划书用原分工锚点渲染文件和可选标签，历史计划仍�
     assert.match(row,/文件：<code>src\/&lt;main&gt;.js、docs\/<\/code>/);
     assert.equal(row.includes('class="wr-folder-tag">独立目录'),item === assignments[0]);
   }
-  assert.doesNotMatch(f.P.document(plan2).html,/wr-folder-tag|wr-plan-files/);
+  // A plan saved before file scopes existed has no paths and renders as before.
+  const historical = {...plan2, entries:plan2.entries.map(({paths, worktree, ...item}) => item)};
+  assert.doesNotMatch(f.P.document(historical).html,/wr-folder-tag|wr-plan-files/);
 });
 
 test("Git 开打前显示两组成员，合计最多六个名字，无待定项也先确认", async () => {
