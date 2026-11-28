@@ -512,6 +512,50 @@ class RoomCheckoutTests(DeliveryFixture):
         self.tick()
         self.assertEqual(sum('恢复命令' in p['body'] for p in war_room.get(self.conn, self.room)['messages']), 1)
 
+    def test_idle_carrier_left_after_stop_is_stopped_so_cleanup_finishes(self):
+        room, path = self.active()
+        execution = self.manager.goal_controller.ensure(self.conn, room['board'][0]['goal_id'], 'b')
+        self.stop()
+        alive = {execution['id']}
+        stopped = []
+
+        def stop_managed(key, *, reason):
+            stopped.append((key, reason))
+            alive.discard(key)
+        with mock.patch.object(self.manager, 'running', side_effect=lambda key: key in alive), \
+                mock.patch.object(self.manager, 'busy', return_value=False), \
+                mock.patch.object(self.manager, 'stop_managed', side_effect=stop_managed):
+            self.tick()
+        self.assertEqual(stopped, [(execution['id'], 'war_room_release')])
+        self.assertEqual(self.row()['state'], 'removed')
+        self.assertFalse(path.exists())
+
+    def test_busy_carrier_still_blocks_removal(self):
+        room, path = self.active()
+        execution = self.manager.goal_controller.ensure(self.conn, room['board'][0]['goal_id'], 'b')
+        self.stop()
+        with mock.patch.object(self.manager, 'running', return_value=True), \
+                mock.patch.object(self.manager, 'busy', return_value=True), \
+                mock.patch.object(self.manager, 'stop_managed') as stop_managed:
+            self.tick()
+        stop_managed.assert_not_called()
+        self.assertEqual(self.row()['state'], 'releasing')
+        self.assertTrue(path.exists())
+
+    def test_changes_already_in_the_folder_at_approval_are_nobodys(self):
+        self.init()
+        (self.repo/'earlier').write_text('v1', encoding='utf-8')
+        self.git('add', '.')
+        self.git('commit', '-m', 'earlier')
+        (self.repo/'earlier').write_text('left by an earlier room', encoding='utf-8')
+        (self.repo/'草稿.txt').touch()
+        self.open(separate=())
+        (self.repo/'新的无主.txt').touch()
+        self.stop()
+        self.tick()
+        self.tick()
+        self.assertEqual(self.scope_events(), [{'member': None, 'files': ['新的无主.txt'], 'source': 'git'}])
+
     def test_mismatch_or_external_claude_blocks_removal(self):
         room, path = self.active()
         execution = self.manager.goal_controller.ensure(self.conn, room['board'][0]['goal_id'], 'b')

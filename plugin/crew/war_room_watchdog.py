@@ -195,6 +195,19 @@ def _advance(conn, room, watch, verdict, progress, wake_turn, now):
                 note_turn(rid)
         elif watch['notice_id'] is None and store.parse_iso(now) >= store.parse_iso(watch['check_at']):
             body = '作战室 #%d 停下了：没人在干活，目标还没完成。去查卡在哪，解决后继续朝目标推进，不用写说明。' % rid
+            # Name what is left, so the lead acts on it instead of only re-reading the room.
+            left = conn.execute("SELECT entry_id,kind,title,status,owner_session_id FROM war_room_items WHERE room_id=? "
+                                "AND plan_version=? AND kind IN ('assignment','criterion') AND status<>'done' ORDER BY kind,id",
+                                (rid, room['approved_version'])).fetchall()
+            work = ['[%s] %s（%s，%s）' % (i['entry_id'], i['title'], war_room._name(conn, i['owner_session_id'])
+                                          if i['owner_session_id'] else '无人', war_room.ITEM_STATES[i['status']])
+                    for i in left if i['kind'] == 'assignment']
+            criteria = ['[%s] %s' % (i['entry_id'], i['title']) for i in left if i['kind'] == 'criterion']
+            if work:
+                body += '\n没做完的分工：' + '；'.join(work) + '。'
+            else:
+                body += '\n分工都已完成，还差完成标准：' + '；'.join(criteria) + (
+                    '。核对证据后用 war_room_item 把每条标准标为 done（note 写证据），全部勾上后用 war_room_close 收尾。')
             notice = conn.execute("INSERT INTO leader_notices(room_id,project,session_id,text,source,created_at,wake) "
                                   "VALUES(?,?,?,?,'crew',?,1)",
                                   (rid, room['project'], room['lead_session_id'], body, now)).lastrowid

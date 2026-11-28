@@ -66,8 +66,19 @@ class WatchTests(DeliveryFixture):
         [one] = self.notices('a')
         self.assertEqual((one['id'], one['session_id'], one['source'], one['room_id'], one['wake']),
                          (notice, 'a', 'crew', self.rid, 1))
-        self.assertEqual(one['text'], '作战室 #%d 停下了：没人在干活，目标还没完成。去查卡在哪，解决后继续朝目标推进，不用写说明。' % self.rid)
+        self.assertEqual(one['text'], '作战室 #%d 停下了：没人在干活，目标还没完成。去查卡在哪，解决后继续朝目标推进，不用写说明。'
+                         '\n没做完的分工：[A0] 校验0（beta，待办）。' % self.rid)
         self.assertEqual(self.card()['state'], 'stalled')
+
+    def test_wake_names_the_criteria_left_once_every_assignment_is_done(self):
+        self.conn.execute("UPDATE war_room_items SET status='done' WHERE room_id=? AND kind='assignment'", (self.rid,))
+        notice = self.wake()
+        text = self.conn.execute('SELECT text FROM leader_notices WHERE id=?', (notice,)).fetchone()[0]
+        criteria = self.conn.execute("SELECT entry_id,title FROM war_room_items WHERE room_id=? AND kind='criterion' "
+                                     "ORDER BY id", (self.rid,)).fetchall()
+        self.assertIn('分工都已完成，还差完成标准：' + '；'.join('[%s] %s' % tuple(c) for c in criteria), text)
+        self.assertIn('用 war_room_item 把每条标准标为 done', text)
+        self.assertNotIn('没做完的分工', text)
 
     def test_old_dispatch_exits_without_receipt_or_turn(self):
         with subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE) as child:

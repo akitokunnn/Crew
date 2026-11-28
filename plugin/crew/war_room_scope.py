@@ -83,8 +83,12 @@ def _read_git(root, *args):
 
 def remember_base(conn, room_id, root, now):
     if not conn.execute("SELECT 1 FROM war_room_events WHERE room_id=? AND kind='isolation_base'", (room_id,)).fetchone():
+        # Changes already in the folder at approval (an earlier room's, the user's own) belong to nobody here.
+        dirty = _read_git(root, 'diff', '--name-only', '--no-renames', '--relative', '-z', 'HEAD', '--', '.')
+        dirty += _read_git(root, 'ls-files', '--others', '--exclude-standard', '-z', '--', '.')
         war_room._event(conn, room_id, board.HUMAN, 'isolation_base',
-                        {'commit': _read_git(root, 'rev-parse', '--verify', 'HEAD^{commit}').strip()}, now)
+                        {'commit': _read_git(root, 'rev-parse', '--verify', 'HEAD^{commit}').strip(),
+                         'dirty': sorted({path for path in dirty.split('\0') if path})}, now)
 
 
 def queue(conn, room_id, sid, now):
@@ -195,9 +199,12 @@ def sweep(manager, conn, now):
                                 (room_id,)).fetchone():
                     continue
                 scopes = [path for m in members(conn, war_room._room(conn, room_id)).values() for path in m['paths']]
-                names = _read_git(root, 'diff', '--name-only', '--no-renames', '--relative', '-z', json.loads(detail)['commit'], '--', '.')
+                base = json.loads(detail)
+                names = _read_git(root, 'diff', '--name-only', '--no-renames', '--relative', '-z', base['commit'], '--', '.')
                 names += _read_git(root, 'ls-files', '--others', '--exclude-standard', '-z', '--', '.')
-                outside = sorted({path for path in names.split('\0') if path and not any(contains(s, path) for s in scopes)})
+                before = set(base['dirty'])
+                outside = sorted({path for path in names.split('\0') if path and path not in before
+                                  and not any(contains(s, path) for s in scopes)})
                 _record(conn, room_id, None, 'git', outside, now)
         except (OSError, board.BoardError, subprocess.TimeoutExpired):
             logging.getLogger(__name__).exception('作战室 #%d 文件范围检查失败，下轮重试', room_id)

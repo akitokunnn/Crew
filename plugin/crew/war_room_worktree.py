@@ -322,6 +322,9 @@ def _occupied(manager, conn, row):
         'LEFT JOIN goal_execution_bindings b ON b.execution_id=e.id AND b.runtime=e.runtime '
         'WHERE i.room_id=? AND e.session_id=?', (row['room_id'], row['session_id']))
     for key, runtime, native in executions:
+        if manager.running(key) and not manager.busy(key):
+            # The member's work here is over (released); an idle carrier would only pin the directory.
+            manager.stop_managed(key, reason='war_room_release')
         if manager.running(key) or manager.busy(key):
             return True
         if runtime == 'codex' and lease_alive(manager.home, key):
