@@ -2,3 +2,12 @@ Temp/
 .cache/
 __pycache__/
 *.pyc
+
+android/.gradle/
+android/**/build/
+android/local.properties
+android/.cache/
+android/voice/libs/sherpa-onnx-2.0.3.aar
+android/voice/src/main/assets/models/
+android/.idea/
+*.iml
