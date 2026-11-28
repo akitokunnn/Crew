@@ -67,6 +67,7 @@ class PlanTests(DeliveryFixture):
         git('-c', 'user.email=crew@example.test', '-c', 'user.name=Crew test', 'commit', '-m', 'test root')
         room = war_room.start(self.conn, 'demo', 'a', '概况', '干净分支')
         self.assertIn('Git 分支：crew-test。没有未提交改动。', room['brief'])
+        self.assertRegex(room['brief'], r'仓库大小（已打包对象）：\S+')
         war_room.close(self.conn, room['id'], board.HUMAN, reason='cancelled')
         (root / '39-file').write_text('dirty', encoding='utf-8')
         (root / '40-file').touch()

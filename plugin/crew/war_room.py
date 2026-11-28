@@ -206,6 +206,12 @@ def _opening_brief(root, room_id, title, goal):
             status.check_returncode()
             lines.append('Git 分支：%s。%s。' % (branch or '分离 HEAD',
                                                '有未提交改动' if status.stdout else '没有未提交改动'))
+            # Helps the lead weigh a separate worktree per member: each one checks the whole tree out again.
+            objects = git_process.run(['-C', str(root), 'count-objects', '-vH'], timeout=10)
+            objects.check_returncode()
+            size = next(line.split(':', 1)[1].strip() for line in objects.stdout.splitlines()
+                        if line.startswith('size-pack:'))
+            lines.append('仓库大小（已打包对象）：%s。' % size)
     except subprocess.CalledProcessError as exc:
         raise board.BoardError('读取工作区 Git 状态失败：' + (exc.stderr.strip() if exc.stderr else str(exc))) from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
