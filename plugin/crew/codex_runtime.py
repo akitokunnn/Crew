@@ -343,8 +343,7 @@ class CodexRunning:
             if native_id:
                 if self._crew_created:
                     with closing(store.connect(self.home)) as conn:
-                        native_origins.archive_confirmed(conn, native_id, False)
-                    codex_visibility.restore_internal(self.client, native_id)
+                        codex_visibility.restore_internal(conn, self.client, native_id)
                 try:
                     result = self.client.resume_thread(native_id, **params)
                 except codex_client.RpcError as exc:
@@ -357,6 +356,8 @@ class CodexRunning:
             self.thread_id = result["thread"]["id"]
             if native_id and self.thread_id != native_id:
                 raise board.BoardError("Codex 返回了不同的恢复会话，已停止")
+            if native_id and self._crew_created and codex_visibility.archive_skipped(self.journal, native_id):
+                self.journal.emit('native_archive', native_id=native_id, result='resumed')
             with closing(store.connect(self.home)) as conn, board.transaction(conn):
                 if execution:
                     goals.bind_native(conn, execution_id, 'codex', self.thread_id,
@@ -741,13 +742,13 @@ class CodexRunning:
                 finally:
                     self.reader_done.set()
 
-    def close(self, *, archive=True):
-        if not archive:
-            self._archive_on_close = False
+    def close(self, *, reason='close', archive=True):
         try:
             with self.input_lock:
                 if self.process is not None and self.process.poll() is None and self.stop_reason is None:
-                    self.stop_reason = 'managed_stop'
+                    self.stop_reason = reason
+                if not archive or reason == 'detach':
+                    self._archive_on_close = False
                 self._closing = True
                 try:
                     self._approvals.cancel('原生进程正在关闭', close=True)
@@ -759,13 +760,16 @@ class CodexRunning:
             if self.client is not None:
                 with self._archive_lock:
                     try:
-                        if (self._crew_created and (self.execution or self.stop_reason == 'idle_reclaim')
-                                and self._archive_on_close and not self._native_archived and not self.client.closed):
-                            self.client.request('thread/archive', {'threadId': self.thread_id}, timeout=5)
-                            self._native_archived = True
-                            with closing(store.connect(self.home)) as conn:
-                                native_origins.archive_confirmed(conn, self.thread_id, True)
-                            self.journal.emit('native_archive', native_id=self.thread_id, result='archived')
+                        if self._crew_created and not self._native_archived and not self.client.closed:
+                            if not self._archive_on_close:
+                                self.journal.emit('native_archive', native_id=self.thread_id, result='skipped',
+                                                  reason=self.stop_reason)
+                            elif self.execution or self.stop_reason in ('idle_reclaim', 'service_close', 'user_stop'):
+                                self.client.request('thread/archive', {'threadId': self.thread_id}, timeout=5)
+                                self._native_archived = True
+                                with closing(store.connect(self.home)) as conn:
+                                    native_origins.archive_confirmed(conn, self.thread_id, True)
+                                self.journal.emit('native_archive', native_id=self.thread_id, result='archived')
                     except (codex_client.CodexError, OSError, ValueError) as exc:
                         self.journal.emit('error', native_id=self.thread_id, text='Codex 线程归档未确认：' + str(exc))
                     finally:

@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 
-from crew import board, goals, install, store
+from crew import board, install, store
 
 
 PLUGIN = Path(__file__).resolve().parents[1]
@@ -32,8 +32,12 @@ class InstallLauncherTests(unittest.TestCase):
             git = shutil.which('git')
             if git is None:
                 self.skipTest('Windows Git Bash is required for the real launcher regression')
-            self.shell = Path(git).resolve().parents[1] / 'bin' / 'bash.exe'
-            if not self.shell.is_file():
+            for parent in Path(git).resolve().parents:
+                bash = parent / 'bin' / 'bash.exe'
+                if bash.is_file():
+                    self.shell = bash
+                    break
+            else:
                 self.skipTest('Installed Git does not provide bin/bash.exe')
         else:
             shell = shutil.which('sh')
@@ -42,9 +46,11 @@ class InstallLauncherTests(unittest.TestCase):
             self.shell = Path(shell)
         install.install(self.home, PLUGIN)
 
-    def run_crew(self, *arguments, trap_python=False):
+    def run_crew(self, home, *arguments, trap_python=False, ambient_home=None):
         env = {key: value for key, value in os.environ.items()
                if not key.startswith('CREW_') and key != 'CLAUDE_CODE_SESSION_ID'}
+        if ambient_home is not None:
+            env['CREW_HOME'] = str(ambient_home)
         # Resolve Windows paths inside the real MSYS shell. The installed shim
         # itself must pass Windows-native C:/ paths to the installed Python.
         if os.name == 'nt':
@@ -55,15 +61,16 @@ class InstallLauncherTests(unittest.TestCase):
         command = [str(self.shell)]
         if os.name == 'nt':
             command += ['--noprofile', '--norc']
-        command += ['-c', script, 'crew-launcher-test', (self.home / 'bin').as_posix(), self.traps.as_posix(), *arguments]
+        command += ['-c', script, 'crew-launcher-test', (home / 'bin').as_posix(), self.traps.as_posix(), *arguments]
         return subprocess.run(command, cwd=self.root, env=env, capture_output=True,
                               timeout=20)
 
     def test_real_git_bash_help_uses_native_installed_paths_with_quoted_home(self):
-        result = self.run_crew('--help')
+        result = self.run_crew(self.home, '--help')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(b'goal', result.stdout)
-        self.assertIn(b'usage:', result.stdout)
+        self.assertIn(b'usage: crew', result.stdout)
+        self.assertIn(b'--home', result.stdout)
+        self.assertIn(b'doctor', result.stdout)
         self.assertTrue((self.home / 'bin' / 'crew.cmd').is_file())
         self.assertFalse((self.home / 'web.json').exists())
 
@@ -77,30 +84,38 @@ class InstallLauncherTests(unittest.TestCase):
         result = subprocess.run(command,
                                 cwd=self.root, env=env, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(b'usage:', result.stdout)
-        self.assertIn(b'goal', result.stdout)
-
-    def test_real_git_bash_goal_status_reads_only_its_installed_home_without_ambient_python(self):
-        with closing(store.connect(self.home)) as conn:
-            board.init_project(conn, 'demo', self.root)
-            board.join(conn, 'fixture-chief', 'demo', 'chief', self.root, self.root, 'main', role='leader')
-            goal = goals.create(conn, 'demo', 'fixture-chief', 'Read quoted launch paths',
-                                'Return persisted facts without starting a native model.', ['The queued goal is readable'])
-        result = self.run_crew('--session', 'fixture-chief', 'goal', 'status', goal['id'], '--project', 'demo',
-                               trap_python=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        value = json.loads(result.stdout)
-        self.assertEqual(value['goal']['id'], goal['id'])
-        self.assertEqual(value['goal']['status'], 'queued')
+        self.assertIn(b'usage: crew', result.stdout)
+        self.assertIn(b'--home', result.stdout)
+        self.assertIn(b'doctor', result.stdout)
         self.assertFalse((self.home / 'web.json').exists())
-        self.assertFalse((self.home / 'chat').exists())
+
+    def test_real_git_bash_doctor_reads_only_its_installed_home_without_ambient_python(self):
+        other_home = self.root / 'Other Crew home'
+        ambient_home = self.root / 'Ambient Crew home'
+        install.install(other_home, PLUGIN)
+        install.install(ambient_home, PLUGIN)
+        installations = ((self.home, 'first-project'), (other_home, 'second-project'))
+        for home, project in (*installations, (ambient_home, 'ambient-project')):
+            with closing(store.connect(home)) as conn:
+                board.init_project(conn, project, self.root)
+
+        for home, project in installations:
+            with self.subTest(home=home):
+                result = self.run_crew(home, 'doctor', trap_python=True, ambient_home=ambient_home)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                value = json.loads(result.stdout)
+                self.assertEqual(value['数据库'], '正常')
+                self.assertEqual(Path(value['插件目录']), PLUGIN)
+                self.assertEqual(value['当前项目'], project)
+                self.assertFalse((home / 'web.json').exists())
+                self.assertFalse((home / 'chat').exists())
 
     def test_shell_preserves_argv_without_expansion_or_injection_and_has_lf_shebang(self):
         (self.home / 'crew.py').write_text('import json,sys\nprint(json.dumps(sys.argv[1:]))\n',
                                           encoding='utf-8', newline='\n')
         arguments = ['space separated', "apostrophe ' quote", 'double " quote', '$HOME', '$(touch injected)',
                      '`touch injected`', '; touch injected', 'line one\nline two', '中文参数', '', '--flag=a b']
-        result = self.run_crew(*arguments, trap_python=True)
+        result = self.run_crew(self.home, *arguments, trap_python=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), arguments)
         self.assertFalse((self.root / 'injected').exists())
