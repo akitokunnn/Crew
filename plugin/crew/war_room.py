@@ -210,7 +210,9 @@ def _opening_brief(root, room_id, title, goal):
         raise board.BoardError('读取工作区 Git 状态失败：' + (exc.stderr.strip() if exc.stderr else str(exc))) from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise board.BoardError('读取工作区 Git 状态失败：' + str(exc)) from exc
-    lines.extend(('', '## 分工', '- [A1] 成员名 | 负责的文件和事项',
+    lines.extend(('', '分工行写负责的文件或目录；Git 工作区里要给某位成员开独立目录（单独的 worktree 和分支），'
+                  '在行末加「 | 独立目录」：仓库大时复制一份代价高，能按文件切开就共用目录，几人要改同一批文件才开。',
+                  '', '## 分工', '- [A1] 成员名 | 事项 | 文件: 目录/, 文件路径',
                   '## 等你定', '- [Q1] 要用户定的问题 | 推荐做法',
                   '## 完成标准', '- [C1] 可核验的结果'))
     return '\n'.join(lines)
